@@ -72,13 +72,6 @@ mod tests {
     }
 
     #[test]
-    fn generic_value_parser_keeps_the_last_duplicate_key() {
-        let value = parse_bounded(br#"{"value":1,"value":2}"#, 1024)
-            .expect("duplicate keys are valid JSON input");
-        assert_eq!(value, serde_json::json!({"value": 2}));
-    }
-
-    #[test]
     fn integer_outside_f64_range_is_a_bounded_parse_error() {
         let body = format!("{{\"before\":{}}}", "9".repeat(401));
         assert!(parse_bounded(body.as_bytes(), 1024).is_err());

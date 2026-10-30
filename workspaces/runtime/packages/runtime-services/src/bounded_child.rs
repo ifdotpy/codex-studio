@@ -36,6 +36,19 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+// Opt-in capture for isolated test probes; production error reporting is unchanged.
+#[cfg(test)]
+pub(crate) enum ProbeCapture {
+    Off,
+    Armed,
+    Failed { status: String, stderr: PipeOutput },
+}
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PROBE_FAILURE: std::cell::RefCell<ProbeCapture> =
+        const { std::cell::RefCell::new(ProbeCapture::Off) };
+}
+
 const MAX_ERROR_CHARS: usize = 1200;
 
 #[derive(Debug)]
@@ -231,6 +244,18 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
         return Err(ChildError::TimedOut);
     }
     if !status.success() {
+        #[cfg(test)]
+        PROBE_FAILURE.with_borrow_mut(|capture| {
+            if matches!(capture, ProbeCapture::Armed) {
+                *capture = ProbeCapture::Failed {
+                    status: status.to_string(),
+                    stderr: PipeOutput {
+                        bytes: stderr.bytes.clone(),
+                        truncated: stderr.truncated,
+                    },
+                };
+            }
+        });
         let message = String::from_utf8_lossy(&stderr.bytes)
             .trim()
             .chars()

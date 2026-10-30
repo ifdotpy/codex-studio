@@ -6,7 +6,8 @@ use crate::{
         self, Action as CapacityAction, CAPACITY_FOLLOWUP_PREFIX, Failure as CapacityFailure,
     },
     continuation::{
-        ContinuationError, Decision, Effect, Result, Snapshot, account, flag, present, text,
+        ContinuationError, Decision, Effect, Result, Snapshot, WaitStatus, account, flag, present,
+        text,
     },
     continuation_driver,
     usage_resume::{self, Cause as UsageCause, FailureObservation, LimitsObservation},
@@ -164,11 +165,7 @@ pub fn stage_capacity_retry_observed(
 ) -> Result<Staged> {
     if let Some(free) = disk_full {
         let snapshot = load(tx, agent_id, ContinuationTable::Capacity, Some(retry_id))?;
-        if snapshot
-            .record
-            .as_ref()
-            .is_some_and(|record| text(record, "status") != "scheduled")
-        {
+        if snapshot.record.is_some() && snapshot.status() != Some(WaitStatus::Scheduled) {
             // A manual retry of a finished or cancelled retry stays manual.
             return Err(ContinuationError::Unavailable("disk-space/full"));
         }
@@ -210,6 +207,7 @@ pub fn stage_capacity_retry_observed(
         {
             snapshot.agent[key] = value.clone();
         }
+        snapshot.invalidate_agent_record();
         let agent = snapshot
             .agent
             .as_object_mut()
@@ -271,7 +269,8 @@ pub fn stage_capacity_cancel(
     let decision = capacity_retry::transition(&snapshot, CapacityAction::Cancel, now)?;
     let value = decision
         .record
-        .clone()
+        .as_ref()
+        .map(|record| record.value())
         .or_else(|| snapshot.record.clone())
         .ok_or_else(|| ContinuationError::Invalid("/capacity/record".into()))?;
     continuation_driver::apply_in_transaction(
@@ -407,7 +406,7 @@ fn stage_terminal(
             let limits = limits.ok_or(ContinuationError::Unavailable(
                 "usage-policy/limits-snapshot",
             ))?;
-            if limits.account_key() != account(&snapshot.agent) {
+            if limits.account_key() != snapshot.agent_account() {
                 return Err(ContinuationError::Unavailable(
                     "usage-policy/limits-account-mismatch",
                 ));
@@ -416,13 +415,13 @@ fn stage_terminal(
     }
     if status == "completed" {
         let current = load(tx, agent_id, ContinuationTable::Usage, None)?;
-        let account_key = account(&current.agent);
+        let account_key = current.agent_account();
         let proof_at = now;
         let pending = auth_wait_ids(tx, account_key, 33)?;
         for (resume_id, resume_agent) in pending.iter().take(32) {
             let snapshot = load(tx, resume_agent, ContinuationTable::Usage, Some(resume_id))?;
             let decision =
-                usage_resume::completed_proof(&snapshot, account(&snapshot.agent), proof_at)?;
+                usage_resume::completed_proof(&snapshot, snapshot.agent_account(), proof_at)?;
             collect_apply(
                 tx,
                 &mut staged,
@@ -454,7 +453,7 @@ fn stage_terminal(
         }
         if let Some(resume_id) = child_id(tx, agent_id, "usageResume")? {
             let snapshot = load(tx, agent_id, ContinuationTable::Usage, Some(&resume_id))?;
-            let decision = usage_resume::completed_proof(&snapshot, account(&snapshot.agent), now)?;
+            let decision = usage_resume::completed_proof(&snapshot, snapshot.agent_account(), now)?;
             collect_apply(
                 tx,
                 &mut staged,
@@ -514,7 +513,7 @@ fn stage_terminal(
                 tx,
                 ContinuationTable::Capacity,
                 agent_id,
-                text(record, "id"),
+                text(&record.value(), "id"),
             )?
         {
             return Ok(staged);
@@ -536,7 +535,7 @@ fn stage_terminal(
         let limits = limits.ok_or(ContinuationError::Unavailable(
             "usage-policy/limits-snapshot",
         ))?;
-        if limits.account_key() != account(&snapshot.agent) {
+        if limits.account_key() != snapshot.agent_account() {
             return Err(ContinuationError::Unavailable(
                 "usage-policy/limits-account-mismatch",
             ));
@@ -548,13 +547,23 @@ fn stage_terminal(
                 turn_id,
                 cause,
                 error_reset: reset,
-                auth_attempt: snapshot.agent["authResumeAttempt"].as_u64().unwrap_or(0),
+                auth_attempt: snapshot
+                    .agent_view()
+                    .auth_resume_attempt
+                    .as_ref()
+                    .and_then(|n| n.as_u64())
+                    .unwrap_or(0),
                 limits,
             },
             now,
         )?;
         if let Some(record) = decision.record.as_ref()
-            && record_exists(tx, ContinuationTable::Usage, agent_id, text(record, "id"))?
+            && record_exists(
+                tx,
+                ContinuationTable::Usage,
+                agent_id,
+                text(&record.value(), "id"),
+            )?
         {
             return Ok(staged);
         }
@@ -671,13 +680,9 @@ pub fn stage_tick(
     // durable row is enough to re-signal its existing scheduler lane.
     if let Some(id) = child_id(tx, agent_id, "capacityRetry")? {
         let capacity = load(tx, agent_id, ContinuationTable::Capacity, Some(&id))?;
-        if capacity.record.as_ref().is_some_and(|record| {
-            text(record, "status") == "scheduled"
-                && record
-                    .get("dueAt")
-                    .and_then(Value::as_f64)
-                    .is_some_and(|due| due <= now)
-        }) {
+        if capacity.status() == Some(WaitStatus::Scheduled)
+            && capacity.record_due_at().is_some_and(|due| due <= now)
+        {
             let capacity_stage = stage_capacity_retry(tx, agent_id, &id, now, true)?;
             staged.changed |= capacity_stage.changed;
             staged.event_wake |= capacity_stage.event_wake;
@@ -693,13 +698,9 @@ pub fn stage_tick(
         return Ok(staged);
     };
     let snapshot = load(tx, agent_id, ContinuationTable::Usage, Some(&id))?;
-    if snapshot.record.as_ref().is_none_or(|record| {
-        text(record, "status") != "scheduled"
-            || record
-                .get("dueAt")
-                .and_then(Value::as_f64)
-                .is_none_or(|due| due > now)
-    }) {
+    if snapshot.status() != Some(WaitStatus::Scheduled)
+        || snapshot.record_due_at().is_none_or(|due| due > now)
+    {
         return Ok(staged);
     }
     let decision = match limits {
@@ -756,9 +757,7 @@ pub fn stage_limits_changed_for_account(
     let first = load(tx, &first_agent, ContinuationTable::Usage, Some(&first_id))?;
     let mut staged = Staged {
         agent_id: first_agent.clone(),
-        epoch: first.agent["epoch"]
-            .as_i64()
-            .ok_or_else(|| ContinuationError::Invalid("/agent/epoch".into()))?,
+        epoch: first.agent_epoch(),
         changed: false,
         event_wake: false,
         effects: Vec::new(),
@@ -805,9 +804,7 @@ fn empty_stage(tx: &Transaction<'_>, agent_id: &str) -> Result<Staged> {
     let snapshot = Snapshot::from_records(raw)?;
     Ok(Staged {
         agent_id: agent_id.into(),
-        epoch: snapshot.agent["epoch"]
-            .as_i64()
-            .ok_or_else(|| ContinuationError::Invalid("/agent/epoch".into()))?,
+        epoch: snapshot.agent_epoch(),
         changed: false,
         event_wake: false,
         effects: Vec::new(),
@@ -828,10 +825,22 @@ fn load(
 
 fn child_id(tx: &Transaction<'_>, agent_id: &str, field: &str) -> Result<Option<String>> {
     let snapshot = load(tx, agent_id, ContinuationTable::Usage, None)?;
-    Ok(snapshot.agent[field]
-        .get("id")
-        .and_then(Value::as_str)
-        .map(str::to_owned))
+    Ok(match field {
+        "usageResume" => snapshot
+            .agent_view()
+            .usage_resume
+            .as_ref()
+            .map(|r| r.id.as_str().to_owned()),
+        "capacityRetry" => snapshot
+            .agent_view()
+            .capacity_retry
+            .as_ref()
+            .map(|r| r.id.as_str().to_owned()),
+        _ => snapshot.agent[field]
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    })
 }
 
 fn record_exists(
@@ -862,11 +871,11 @@ fn collect_apply(
     let changed = decision
         .agent
         .as_ref()
-        .is_some_and(|agent| agent != &snapshot.agent)
+        .is_some_and(|agent| agent.value() != &snapshot.agent)
         || decision
             .record
             .as_ref()
-            .is_some_and(|record| snapshot.record.as_ref() != Some(record))
+            .is_some_and(|record| snapshot.record.as_ref() != Some(&record.value()))
         || !decision.events.is_empty()
         || !decision.metadata.is_empty()
         || !decision.effects.is_empty();

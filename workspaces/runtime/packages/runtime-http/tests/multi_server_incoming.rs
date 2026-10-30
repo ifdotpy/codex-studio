@@ -827,6 +827,7 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
         thread_id: None,
         turn_id: None,
         auto_wake: None,
+        usage_resume_enabled: None,
         execution_mode: None,
         turn_epoch: None,
         title_job: None,

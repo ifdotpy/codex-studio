@@ -1,12 +1,8 @@
 //! Persisted voice routes and explicit provider-dependent operations.
 
 use axum::Json;
-use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::post as axum_post;
-use serde_json::Value;
-use std::sync::Arc;
 use studio_runtime_services::voice::{self, VoiceError};
 
 use super::extractors::ApiJson;
@@ -18,47 +14,11 @@ const VOICE_PROVIDER: [Dependency; 1] = [Dependency::new("provider-session/voice
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
-        post(
-            "/api/voice/approval_speech",
-            OperationStatus::Implemented,
-            approval_speech,
-        ),
-        post(
-            "/api/voice/approvals",
-            OperationStatus::Implemented,
-            approvals,
-        ),
-        post("/api/voice/approve", OperationStatus::Implemented, approve),
-        post("/api/voice/audio", OperationStatus::Implemented, audio),
         post("/api/voice/end", OperationStatus::Implemented, end),
-        post("/api/voice/record", OperationStatus::Implemented, record),
         post("/api/voice/records", OperationStatus::Implemented, records),
-        post("/api/voice/speech", OperationStatus::Implemented, speech),
         post("/api/voice/start", OperationStatus::Implemented, start),
         post("/api/voice/status", OperationStatus::Implemented, status),
-        post("/api/voice/submit", OperationStatus::Implemented, submit),
     ])
-}
-
-pub(crate) fn fallback() -> Router<HttpState> {
-    Router::new().route("/api/voice/{*action}", axum_post(unknown_action))
-}
-
-async fn unknown_action(
-    State(state): State<HttpState>,
-    Path(_action): Path<String>,
-    Json(body): Json<Value>,
-) -> Result<(StatusCode, Json<Value>), ApiError> {
-    if state.store.is_none() {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "Not found"));
-    }
-    if !body.is_object() {
-        return Err(ApiError::validation(vec![Value::String("body".into())]));
-    }
-    Err(ApiError::new(
-        StatusCode::BAD_REQUEST,
-        "Unknown voice action",
-    ))
 }
 
 async fn status(
@@ -75,80 +35,6 @@ async fn status(
     >(result)?))
 }
 
-async fn audio(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<crate::generated::VoiceAudioRequest>,
-) -> Result<Json<crate::generated::VoiceRecordResponse>, ApiError> {
-    let store = state.store.ok_or_else(ApiError::internal)?;
-    let (agent, session, chunk, encoded, mime) = (
-        body.agent,
-        body.session_id,
-        body.chunk_id,
-        body.audio,
-        body.mime,
-    );
-    let result = voice::save_audio(
-        Arc::clone(&store),
-        &agent,
-        &session,
-        &chunk,
-        &encoded,
-        &mime,
-    )
-    .await
-    .map_err(voice_audio_error)?;
-    Ok(Json(super::generated_json::<
-        crate::generated::VoiceRecordResponse,
-    >(result)?))
-}
-
-async fn record(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<crate::generated::VoiceRecordRequest>,
-) -> Result<Json<crate::generated::VoiceRecordResponse>, ApiError> {
-    let store = state.store.ok_or_else(ApiError::internal)?;
-    let (kind, agent, session, event, text, item, previous, payload) = (
-        match body.kind {
-            crate::generated::VoiceRecordKind::User => "user",
-            crate::generated::VoiceRecordKind::Courier => "courier",
-            crate::generated::VoiceRecordKind::Assistant => "assistant",
-            crate::generated::VoiceRecordKind::Event => "event",
-            crate::generated::VoiceRecordKind::Playback => "playback",
-            crate::generated::VoiceRecordKind::Orchestrator => "orchestrator",
-        },
-        body.agent,
-        body.session_id,
-        body.event_id,
-        body.text.unwrap_or_default(),
-        body.item_id.unwrap_or_default(),
-        body.previous_item_id.unwrap_or_default(),
-        body.payload.flatten(),
-    );
-    let payload = payload
-        .map(serde_json::to_value)
-        .transpose()
-        .map_err(|_| ApiError::internal())?;
-    let result = voice::record(
-        &store,
-        voice::VoiceRecordInput {
-            agent_id: agent,
-            session_id: session,
-            event_id: event,
-            kind: kind.to_owned(),
-            text,
-            item_id: item,
-            previous_item_id: previous,
-            payload,
-            internal: false,
-        },
-    )
-    .await
-    .map_err(voice_error)?;
-    Ok(Json(super::generated_json::<
-        crate::generated::VoiceRecordResponse,
-    >(result)?))
-}
-
 async fn records(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::VoiceRecordsRequest>,
@@ -161,34 +47,6 @@ async fn records(
         .map_err(voice_error)?;
     Ok(Json(super::generated_json::<
         crate::generated::VoiceRecordsResponse,
-    >(result)?))
-}
-
-async fn approvals(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<crate::generated::VoiceApprovalsRequest>,
-) -> Result<Json<crate::generated::VoiceApprovalsResponse>, ApiError> {
-    let store = state.store.ok_or_else(ApiError::internal)?;
-    let agent_id = body.agent;
-    let result = voice::approvals(&store, &agent_id)
-        .await
-        .map_err(voice_error)?;
-    Ok(Json(super::generated_json::<
-        crate::generated::VoiceApprovalsResponse,
-    >(result)?))
-}
-
-async fn approval_speech(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<crate::generated::VoiceApprovalSpeechRequest>,
-) -> Result<Json<crate::generated::VoiceRecordResponse>, ApiError> {
-    let store = state.store.ok_or_else(ApiError::internal)?;
-    let (agent, request_id) = (body.agent, body.request_id);
-    let result = voice::approval_speech(store, &agent, &request_id)
-        .await
-        .map_err(voice_error)?;
-    Ok(Json(super::generated_json::<
-        crate::generated::VoiceRecordResponse,
     >(result)?))
 }
 
@@ -216,107 +74,6 @@ async fn end(
     Ok(Json(super::generated_json::<
         crate::generated::VoiceSessionResponse,
     >(result)?))
-}
-
-async fn speech(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<crate::generated::VoiceSpeechRequest>,
-) -> Result<Json<crate::generated::VoiceSpeechReceiptResponse>, ApiError> {
-    let store = state.store.ok_or_else(ApiError::internal)?;
-    let (agent, session, record) = (body.agent, body.session_id, body.record_id);
-    let Some(provider) = state.voice_request_port.clone() else {
-        if let Some(result) =
-            voice::provider::read_speech_receipt(&store, &agent, &session, &record)
-                .await
-                .map_err(provider_error)?
-        {
-            return Ok(Json(super::generated_json::<
-                crate::generated::VoiceSpeechReceiptResponse,
-            >(result)?));
-        }
-        return Err(voice_provider_unavailable());
-    };
-    let result = voice::provider::speech(store, provider, agent, session, record, None)
-        .await
-        .map_err(provider_error)?;
-    Ok(Json(super::generated_json::<
-        crate::generated::VoiceSpeechReceiptResponse,
-    >(result)?))
-}
-
-async fn approve(
-    State(state): State<HttpState>,
-    monitor: Option<
-        axum::Extension<
-            std::sync::Arc<studio_runtime_services::monitor_runtime_wiring::MonitorRuntime>,
-        >,
-    >,
-    ApiJson(body): ApiJson<crate::generated::VoiceApproveRequest>,
-) -> Result<Json<crate::generated::VoiceApprovalResponse>, ApiError> {
-    let store = state.store.ok_or_else(ApiError::internal)?;
-    let (agent_id, speech_id) = (body.agent.clone(), body.speech_id.clone());
-    let monitor_approval = voice::provider::is_monitor_approval(&store, &agent_id, &speech_id)
-        .await
-        .map_err(provider_error)?;
-    if monitor_approval {
-        let result = voice::provider::approve_monitor(
-            store,
-            body.agent,
-            body.session_id,
-            body.speech_id,
-            body.transcript_id,
-            now_seconds()?,
-            monitor.is_some(),
-        )
-        .await
-        .map_err(provider_error)?;
-        if let Some(monitor) = monitor {
-            monitor.0.dispatch_wake_handle().notify_one();
-        }
-        state.event_wake.notify_one();
-        return Ok(Json(super::generated_json::<
-            crate::generated::VoiceApprovalResponse,
-        >(result)?));
-    }
-    let provider = state
-        .voice_request_port
-        .clone()
-        .ok_or_else(voice_provider_unavailable)?;
-    let result = voice::provider::approve(
-        store,
-        provider,
-        body.agent,
-        body.session_id,
-        body.speech_id,
-        body.transcript_id,
-        now_seconds()?,
-    )
-    .await
-    .map_err(provider_error)?;
-    Ok(Json(super::generated_json::<
-        crate::generated::VoiceApprovalResponse,
-    >(result)?))
-}
-
-async fn submit(
-    State(state): State<HttpState>,
-    ApiJson(body): ApiJson<crate::generated::VoiceSubmitRequest>,
-) -> Result<Json<crate::generated::VoiceDeliveryResponse>, ApiError> {
-    let store = state.store.ok_or_else(ApiError::internal)?;
-    let (agent, message, record_ids, edited) = (
-        body.agent,
-        body.message_id,
-        body.record_ids,
-        body.edited_text.flatten(),
-    );
-    let result = voice::submit(store, &agent, &message, &record_ids, edited.as_deref())
-        .await
-        .map_err(voice_error)?;
-    let encoded = serde_json::to_vec(&result).map_err(ApiError::json)?;
-    Ok(Json(
-        serde_json::from_slice::<crate::generated::VoiceDeliveryResponse>(&encoded)
-            .map_err(ApiError::json)?,
-    ))
 }
 
 async fn start(
@@ -439,7 +196,7 @@ fn provider_error(error: voice::provider::VoiceProviderError) -> ApiError {
 
 fn voice_error(error: VoiceError) -> ApiError {
     match error {
-        VoiceError::InvalidRequest(_) => ApiError::validation(vec![Value::String("body".into())]),
+        VoiceError::InvalidRequest(_) => ApiError::validation(vec!["body".into()]),
         VoiceError::Conflict(message) => ApiError::new(StatusCode::BAD_REQUEST, message),
         VoiceError::InvalidStoredObject { object, id } => ApiError::invalid_stored(object, &id),
         VoiceError::RequiresDependency(dependency) => ApiError::new(
@@ -481,43 +238,6 @@ fn voice_error(error: VoiceError) -> ApiError {
         VoiceError::Store(_) | VoiceError::EventWrite(_) | VoiceError::Json(_) => {
             ApiError::internal()
         }
-    }
-}
-
-fn voice_audio_error(error: voice::VoiceAudioError) -> ApiError {
-    match error {
-        voice::VoiceAudioError::Voice(error) => voice_error(error),
-        voice::VoiceAudioError::Request(error) => match error {
-            voice::policy::VoiceError::UnknownSession
-            | voice::policy::VoiceError::UnsupportedAudioFormat
-            | voice::policy::VoiceError::InvalidAudioEncoding
-            | voice::policy::VoiceError::AudioTooLarge => {
-                ApiError::validation(vec![Value::String("body".into())])
-            }
-            voice::policy::VoiceError::AudioIdentityConflict
-            | voice::policy::VoiceError::SessionIdentityConflict => ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "Voice session or audio identity conflicts with its original content",
-            ),
-            voice::policy::VoiceError::InvalidSessionIdentity
-            | voice::policy::VoiceError::InvalidOffer
-            | voice::policy::VoiceError::InvalidStoredSession
-            | voice::policy::VoiceError::ActiveSessionExists
-            | voice::policy::VoiceError::InvalidClock => ApiError::internal(),
-        },
-        voice::VoiceAudioError::Store(studio_runtime_store::StoreError::InvalidStoredRecord {
-            object,
-            id,
-        }) => ApiError::invalid_stored(object, &id),
-        voice::VoiceAudioError::Store(studio_runtime_store::StoreError::AlreadyOwned) => {
-            ApiError::new(
-                StatusCode::CONFLICT,
-                "another runtime owns the state directory",
-            )
-        }
-        voice::VoiceAudioError::PreparationWorker
-        | voice::VoiceAudioError::Store(_)
-        | voice::VoiceAudioError::Io(_) => ApiError::internal(),
     }
 }
 

@@ -419,7 +419,7 @@ fn completed_attempt(agent: &studio_runtime_store::AgentRecord, attempt: &Value)
 /// restart. The request is never sent again; a later message continues.
 pub(super) const RECEIPT_PENDING_HOLD: &str = "thread-preparation/receipt-pending";
 /// Outstanding provider calls belonging to one account, without completed history.
-fn account_obligations(
+pub(super) fn account_obligations(
     connection: &rusqlite::Connection,
     account: &str,
 ) -> Result<Vec<OutboxRow<ProviderCall>>, WorkerError> {
@@ -437,6 +437,56 @@ fn account_obligations(
         );
     }
     Ok(rows)
+}
+
+pub(super) fn record_supervisor_written(
+    tx: &studio_runtime_store::Transaction<'_>,
+    account: &str,
+    operation: &str,
+    generation: Option<i64>,
+    remote_id: Option<u64>,
+) -> Result<(), WorkerError> {
+    let Some(mut row) = Outbox::get::<ProviderCall>(tx, operation).map_err(outbox_error)? else {
+        return Ok(());
+    };
+    if row.account.as_deref() != Some(account)
+        || row.stream_id.as_deref() != Some(account)
+        || row.generation != generation
+        || !matches!(row.status, OutboxStatus::Unknown | OutboxStatus::Submitted)
+    {
+        return Ok(());
+    }
+    match &mut row.payload {
+        ProviderCall::Account(call) => {
+            let mut request = call.request.clone();
+            if request.remote_id.is_some() && remote_id.is_some() && request.remote_id != remote_id
+            {
+                return Err(invalid(operation));
+            }
+            if remote_id.is_some() {
+                request.remote_id = remote_id;
+            }
+            if call.written.as_ref().is_some_and(|old| old != &request) {
+                return Err(invalid(operation));
+            }
+            call.written = Some(request);
+            row.status = OutboxStatus::Submitted;
+        }
+        ProviderCall::Retained(call) => {
+            let Some(request) = &mut call.request else {
+                return Ok(());
+            };
+            if request.remote_id.is_some() && remote_id.is_some() && request.remote_id != remote_id
+            {
+                return Err(invalid(operation));
+            }
+            if remote_id.is_some() {
+                request.remote_id = remote_id;
+            }
+            call.written = true;
+        }
+    }
+    Outbox::put(tx, &row).map_err(outbox_error)
 }
 
 pub(super) fn has_pending_thread_start(
@@ -663,8 +713,7 @@ pub(super) fn recover_vm_actor_requests(
     let Some(agent_record) = AgentRepository::get(connection, &AgentId::from(agent))? else {
         return Ok(Vec::new());
     };
-    if agent_record.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm)
-    {
+    if agent_record.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm) {
         return Ok(Vec::new());
     }
     let mut recovered = Vec::new();
@@ -2801,9 +2850,7 @@ pub(super) async fn stop(
         let Some(record) = AgentRepository::get(tx, &AgentId::from(agent.as_str()))? else {
             return Ok(None);
         };
-        if record.account_key.as_str()
-            != account.as_str()
-        {
+        if record.account_key.as_str() != account.as_str() {
             return Ok(None);
         }
         SchedulerRepository::stop_agent(tx, &agent, "Stopped by user")?;
@@ -2854,8 +2901,7 @@ pub(super) fn interrupt_intent(
                     agent_id: agent.into(),
                     epoch,
                     attempt_id: id.into(),
-                    account_key: a.account_key.as_str()
-                        .into(),
+                    account_key: a.account_key.as_str().into(),
                     provider,
                     thread_id: Some(thread.into()),
                     cwd: None,
@@ -4454,6 +4500,26 @@ mod pending_thread_start_tests {
         .expect("obligation");
         tx.commit().expect("commit");
         operation
+    }
+    #[test]
+    fn supervisor_written_is_fenced_to_the_original_provider_generation() {
+        let db = database();
+        let id = submit(&db, "account", "lead", Method::TurnStart);
+        let tx = db.unchecked_transaction().expect("transaction");
+        record_supervisor_written(&tx, "account", &id, Some(2), Some(9)).expect("stale generation");
+        let row = Outbox::get::<ProviderCall>(&tx, &id)
+            .expect("read")
+            .expect("row");
+        assert_eq!(row.status, OutboxStatus::Unknown);
+        record_supervisor_written(&tx, "account", &id, Some(1), Some(9)).expect("written");
+        let row = Outbox::get::<ProviderCall>(&tx, &id)
+            .expect("read")
+            .expect("row");
+        assert_eq!(row.status, OutboxStatus::Submitted);
+        let ProviderCall::Account(call) = row.payload else {
+            panic!("account call")
+        };
+        assert_eq!(call.written.expect("written request").remote_id, Some(9));
     }
     #[test]
     fn unresolved_thread_requests_block_only_their_agent() {

@@ -94,7 +94,7 @@ struct RadioCreationAdapter {
     /// Model lists fetched before blocking preparation, keyed by account key;
     /// an account whose list request failed is absent.
     model_lists: std::collections::BTreeMap<String, ModelCatalog>,
-    rows: Vec<Value>,
+    rows: Vec<studio_runtime_services::account_policy::PublicAccount>,
     identities: Option<[AccountIdentity; 2]>,
 }
 
@@ -187,24 +187,20 @@ impl studio_runtime_services::radio_runtime::RadioCreation for RadioCreationAdap
                 let row = self
                     .rows
                     .iter()
-                    .find(|row| row.get("id").and_then(Value::as_str) == Some(key))
+                    .find(|row| row.id.as_str() == Some(key))
                     .ok_or(ProjectsError::Invalid("Unknown account"))?;
-                if row.get("deleted").and_then(Value::as_bool) == Some(true)
-                    || row.get("disconnected").and_then(Value::as_bool) == Some(true)
-                {
+                if row.deleted.as_bool() == Some(true) || row.disconnected.as_bool() == Some(true) {
                     return Err(ProjectsError::Invalid(
                         "radio participant account is unavailable",
                     ));
                 }
                 Ok(AccountIdentity {
-                    provider: studio_runtime_providers::ProviderKind::of_record(row)
-                        .map_err(|_| ProjectsError::Invalid("Unknown account provider"))?,
-                    home: row.get("home").and_then(Value::as_str).map(str::to_owned),
-                    account_id: row
-                        .get("accountId")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    email: row.get("email").and_then(Value::as_str).map(str::to_owned),
+                    provider: row
+                        .provider_kind()
+                        .ok_or(ProjectsError::Invalid("Unknown account provider"))?,
+                    home: row.home.as_str().map(str::to_owned),
+                    account_id: row.account_id.as_str().map(str::to_owned),
+                    email: row.email.as_str().map(str::to_owned),
                 })
             })
             .collect::<Result<Vec<_>, _>>()?
@@ -240,7 +236,7 @@ impl studio_runtime_services::radio_runtime::RadioCreation for RadioCreationAdap
 async fn radio_model_lists(
     service: &studio_runtime_services::model_catalog::ModelCatalogService,
     body: &Value,
-    rows: &[Value],
+    rows: &[studio_runtime_services::account_policy::PublicAccount],
 ) -> std::collections::BTreeMap<String, ModelCatalog> {
     let mut lists = std::collections::BTreeMap::new();
     let participants = body.get("participants").and_then(Value::as_array);
@@ -250,13 +246,13 @@ async fn radio_model_lists(
         .filter_map(|participant| participant.get("account_key").and_then(Value::as_str))
     {
         let Some(row) = rows.iter().find(|row| {
-            row.get("id").and_then(Value::as_str) == Some(key)
-                && row.get("deleted").and_then(Value::as_bool) != Some(true)
-                && row.get("disconnected").and_then(Value::as_bool) != Some(true)
+            row.id.as_str() == Some(key)
+                && row.deleted.as_bool() != Some(true)
+                && row.disconnected.as_bool() != Some(true)
         }) else {
             continue;
         };
-        let Ok(provider) = studio_runtime_providers::ProviderKind::of_record(row) else {
+        let Some(provider) = row.provider_kind() else {
             continue;
         };
         if let Ok(value) = studio_runtime_services::model_catalog::ModelListPort::list(
@@ -420,7 +416,7 @@ async fn write_project(
         .clone()
         .ok_or_else(ApiError::internal)?;
     let accounts = account_policy.accounts();
-    let known: Vec<Value> = accounts.accounts.clone();
+    let known = accounts.accounts.clone();
     let default = accounts
         .default_account_key
         .as_str()
@@ -518,7 +514,7 @@ async fn local_project_registration(
     store: Arc<studio_runtime_store::RuntimeStore>,
     body: Value,
     default_account: String,
-    known_accounts: Vec<Value>,
+    known_accounts: Vec<studio_runtime_services::account_policy::PublicAccount>,
     local_server: String,
 ) -> Result<LocationResult, ApiError> {
     let path = body
@@ -702,7 +698,7 @@ async fn remote_project_write(
     store: Arc<studio_runtime_store::RuntimeStore>,
     body: Value,
     default_account: String,
-    known_accounts: Vec<Value>,
+    known_accounts: Vec<studio_runtime_services::account_policy::PublicAccount>,
     driver: Arc<studio_runtime_services::multi_server_orchestration::OrchestrationDriver>,
     now: i64,
 ) -> Result<LocationResult, ApiError> {
@@ -760,9 +756,9 @@ async fn remote_project_write(
         }
     }
     if action == "register"
-        && !known_accounts.iter().any(|account| {
-            account.get("id").and_then(Value::as_str) == Some(default_account.as_str())
-        })
+        && !known_accounts
+            .iter()
+            .any(|account| account.id.as_str() == Some(default_account.as_str()))
     {
         return Err(ApiError::internal());
     }

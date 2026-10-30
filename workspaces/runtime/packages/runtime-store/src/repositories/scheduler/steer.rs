@@ -344,7 +344,10 @@ fn steer_turn(agent: &AgentRecord) -> Option<(String, String)> {
     let text = |key: &str| agent.extra.get(key).and_then(Value::as_str);
     let flag = |key: &str| agent.extra.get(key).is_some_and(truthy);
     let turn = agent.turn_id.as_deref().filter(|turn| !turn.is_empty())?;
-    let thread = agent.thread_id.as_deref().filter(|thread| !thread.is_empty())?;
+    let thread = agent
+        .thread_id
+        .as_deref()
+        .filter(|thread| !thread.is_empty())?;
     let attempt = agent.start_attempt().ok().flatten()?;
     let eligible = agent.status == AgentStatus::Running
         && agent.auto_wake == Some(true)
@@ -608,8 +611,7 @@ impl SchedulerRepository {
             &SteerPayload {
                 agent: agent_id.into(),
                 epoch,
-                account_key: agent.account_key.as_str()
-                    .into(),
+                account_key: agent.account_key.as_str().into(),
                 thread_id: thread_id.clone(),
                 turn_id: turn_id.clone(),
                 events: ids,

@@ -199,7 +199,7 @@ async fn call(app: &axum::Router, body: Option<Value>) -> (u16, Value) {
 async fn promotion(app: &axum::Router) -> Value {
     let (status, queue) = call(app, None).await;
     assert_eq!(status, 200, "{queue}");
-    json!({"agent":ACTOR,"action":"send_now","message_id":USER,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_revision":queue["revision"]})
+    json!({"agent":ACTOR,"action":"send_now","id":USER,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"expected_revision":queue["revision"]})
 }
 fn snapshot(store: &RuntimeStore) -> Vec<Vec<String>> {
     let db = store.test_reader().unwrap();
@@ -256,7 +256,7 @@ async fn send_now_recovers_proven_unsent_failed_batch_and_replays_lost_http_succ
     assert_eq!(replay, receipt, "the durable receipt replays unchanged");
     assert_eq!(snapshot(&store), state);
     let mut conflicting = body;
-    conflicting["message_id"] = json!("original-0");
+    conflicting["id"] = json!("original-0");
     let (status, result) = call(&app, Some(conflicting)).await;
     assert_eq!(status, 409, "{result}");
     assert_eq!(
@@ -396,5 +396,46 @@ async fn send_now_does_not_release_owned_account_auth_holds() {
         assert_eq!(status, 400, "{reason}: {result}");
         assert_eq!(result, json!({"error":RETRY_REFUSAL}), "{reason}");
         assert_eq!(snapshot(&store), before);
+    }
+}
+
+#[tokio::test]
+async fn send_now_preserves_legacy_original_and_extensions_in_metadata() {
+    for (metadata, expected) in [
+        (
+            json!({"delivery":"after_turn","assets":[],"future":{"n":1}}),
+            "after_turn",
+        ),
+        (
+            json!({"delivery":"after_turn","requestedDelivery":"steer","assets":[],"future":{"n":1}}),
+            "steer",
+        ),
+    ] {
+        let (_directory, store, app) = fixture().await;
+        store
+            .transaction(move |tx| {
+                QueueWriteRepository::put_metadata(tx, USER, &metadata)?;
+                let mut agent = AgentRepository::get(tx, &AgentId::from(ACTOR))?.unwrap();
+                agent.status = studio_runtime_store::AgentStatus::Queued;
+                AgentRepository::put(tx, &agent)
+            })
+            .await
+            .unwrap();
+        let body = promotion(&app).await;
+        let (status, receipt) = call(&app, Some(body)).await;
+        assert_eq!(status, 200, "{receipt}");
+        let stored: String = store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT record FROM runtime_event_meta WHERE id=?1",
+                [USER],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let stored: Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(stored["requestedDelivery"], expected);
+        assert_eq!(stored["delivery"], "current_turn");
+        assert_eq!(stored["future"], json!({"n":1}));
     }
 }

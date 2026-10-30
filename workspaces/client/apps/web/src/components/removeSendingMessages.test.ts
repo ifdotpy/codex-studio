@@ -211,7 +211,7 @@ it("retains the same request when its write outcome is unknown", async () => {
   assert.deepEqual(mocks.removeMessageFromDevice.mock.calls, []);
 });
 
-it("does not replace an unrecognized saved cancellation with a new identity", async () => {
+it("preserves a saved cancellation with a removed legacy alias", async () => {
   const scope = { stateDir: "state", workspaceId: "workspace" };
   const message: Message = {
     id: "chat:client-1",
@@ -226,7 +226,18 @@ it("does not replace an unrecognized saved cancellation with a new identity", as
     "chat",
     "client-1",
   ])}`;
-  storage.set(key, JSON.stringify({ request_id: "request-unknown" }));
+  storage.set(
+    key,
+    JSON.stringify({
+      action: "cancel",
+      agent: "chat",
+      id: "client-1",
+      message_id: "client-1",
+      expectedText: "hello",
+      expected_revision: "revision",
+      request_id: "request-unknown",
+    }),
+  );
 
   await assert.rejects(removeSendingMessage(scope, { chat: "chat", message }), {
     message: "The saved message cancellation cannot be verified.",

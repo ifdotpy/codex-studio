@@ -39,14 +39,20 @@ fn write_intent(intent: &Intent, open: bool) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     std::fs::rename(temporary, &intent.path).map_err(|e| e.to_string())
 }
+fn enabled(value: &serde_json::Value) -> Option<bool> {
+    if !value.is_object() {
+        return None;
+    }
+    serde_json::from_value::<studio_client_core::startup::EnabledRecovery>(value.clone())
+        .ok()?
+        .enabled
+}
 fn preference(state: &std::path::Path) -> Result<bool, String> {
     match std::fs::read(state.join("background-recovery.json")) {
         Ok(bytes) => {
             let value: serde_json::Value =
                 serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-            value["enabled"]
-                .as_bool()
-                .ok_or("Invalid background recovery setting.".into())
+            enabled(&value).ok_or("Invalid background recovery setting.".into())
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
         Err(error) => Err(error.to_string()),
@@ -194,9 +200,11 @@ fn configure(
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
-    let receipt: serde_json::Value =
-        serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
-    if receipt["enabled"] != enabled {
+    configure_receipt(&output.stdout, enabled)
+}
+fn configure_receipt(bytes: &[u8], expected: bool) -> Result<(), String> {
+    let receipt: serde_json::Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    if enabled(&receipt) != Some(expected) {
         return Err("Recovery configuration returned an unexpected setting.".into());
     }
     Ok(())
@@ -215,9 +223,30 @@ pub fn close(app: &tauri::AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CLOSE_SIGNAL, intent_value};
+    use super::{CLOSE_SIGNAL, configure_receipt, intent_value, preference};
     use std::path::Path;
 
+    #[test]
+    fn preference_and_configure_receipt_read_only_enabled() {
+        let root =
+            std::env::temp_dir().join(format!("studio-recovery-preference-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("background-recovery.json");
+        assert_eq!(preference(&root), Ok(true));
+        std::fs::write(
+            &file,
+            br#"{"enabled":false,"supervisorEnabled":"invalid","environment":null}"#,
+        )
+        .unwrap();
+        assert_eq!(preference(&root), Ok(false));
+        std::fs::write(&file, br#"{"supervisorEnabled":true}"#).unwrap();
+        assert!(preference(&root).is_err());
+        assert!(configure_receipt(br#"{"enabled":true,"environment":null}"#, true).is_ok());
+        assert!(configure_receipt(br#"{"enabled":true}"#, false).is_err());
+        assert!(configure_receipt(b"[]", true).is_err());
+        assert!(configure_receipt(b"{", true).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn the_intent_names_the_close_signal_only_when_the_handler_runs() {
         let executable =

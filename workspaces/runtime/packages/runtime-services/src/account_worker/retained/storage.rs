@@ -210,7 +210,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         && !crate::shell_policy::monitor_cleanup_allowed(
             tx,
             &agent_record.value(),
-            monitor.value(),
+            &monitor.value(),
             crate::idle_compaction::wall_now(),
         )?
     {
@@ -239,8 +239,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 && source["id"] == actor.agent
                 && source["epoch"].as_i64() == Some(actor.epoch)
                 && source["accountKey"].as_str() == Some(call.scope.account.as_str())
-                && source["threadId"].as_str()
-                    == agent_record.thread_id.as_deref()
+                && source["threadId"].as_str() == agent_record.thread_id.as_deref()
                 && path_is_absolute(&snapshot["sourcePath"])
                 && path_is_absolute(&snapshot["copyPath"])
                 && snapshot["sourceSha256"]
@@ -276,9 +275,9 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         )
         && actor.epoch.checked_add(1) == Some(agent_record.epoch)
         && agent_record.auto_wake == Some(false);
-    let thread_matches = call.params["threadId"].as_str().is_some_and(|thread| {
-        agent_record.thread_id.as_deref() == Some(thread)
-    });
+    let thread_matches = call.params["threadId"]
+        .as_str()
+        .is_some_and(|thread| agent_record.thread_id.as_deref() == Some(thread));
     let thread_start = call.method == Method::ThreadStart && call.params.get("threadId").is_none();
     let ephemeral_turn = if call.method == Method::TurnStart {
         match call.params["threadId"].as_str() {
@@ -511,8 +510,7 @@ fn authorize_recovered_monitor_cancel(
         cancel_requested: bool,
         reattached_connection_id: String,
     }
-    let Ok(monitor) = serde_json::from_value::<RecoveredCancelMonitor>(record.value().clone())
-    else {
+    let Ok(monitor) = serde_json::from_value::<RecoveredCancelMonitor>(record.value()) else {
         return Ok(false);
     };
     Ok(monitor.agent == actor.agent
@@ -1578,7 +1576,7 @@ mod replay_identity_tests {
             request.method = Method::ClaudeShellPolicy;
             request.operation = "shell-policy:agent-1:tick".into();
             request.params = json!({"threadId":"thread-1","settings":studio_runtime_schema::shell_policy::Settings::default(),"eligible":true,"critical":true});
-            let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
+            let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default","provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
             AgentRepository::put(tx,&agent)?;
             assert!(authorize(tx,&request).expect("eligible handoff"));
             agent.in_flight = Some(true); AgentRepository::put(tx,&agent)?;
@@ -1735,9 +1733,9 @@ mod replay_identity_tests {
         store
             .transaction(|tx| {
                 for record in [
-                    json!({"id":"stopped","rootId":"stopped","epoch":8,"status":"paused","autoWake":false,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
-                    json!({"id":"deleted","rootId":"deleted","epoch":8,"deletedAt":1,"status":"paused","autoWake":false,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
-                    json!({"id":"woken","rootId":"woken","epoch":8,"status":"queued","autoWake":true,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
+                    json!({"accountKey":"default","id":"stopped","rootId":"stopped","epoch":8,"status":"paused","autoWake":false,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
+                    json!({"accountKey":"default","id":"deleted","rootId":"deleted","epoch":8,"deletedAt":1,"status":"paused","autoWake":false,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
+                    json!({"accountKey":"default","id":"woken","rootId":"woken","epoch":8,"status":"queued","autoWake":true,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
                 ] {
                     AgentRepository::put(
                         tx,
@@ -1819,7 +1817,7 @@ mod replay_identity_tests {
         let root = tempfile::tempdir().expect("root");
         let store = database(root.path()).await;
         store.transaction(|tx| {
-            AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"id":"agent-1","rootId":"agent-1","epoch":9,"deletedAt":1,"status":"interrupted","autoWake":false,"provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
+            AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default","id":"agent-1","rootId":"agent-1","epoch":9,"deletedAt":1,"status":"interrupted","autoWake":false,"provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
             studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","cancelRequested":true,"reattachedConnectionId":"new-connection","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old"}}))?)?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.expect("seed deleted owner and proved handle");

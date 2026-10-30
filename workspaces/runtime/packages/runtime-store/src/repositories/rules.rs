@@ -54,12 +54,11 @@ impl RulesRepository {
 
     pub fn put(transaction: &Transaction<'_>, record: &RuleRecord) -> StoreResult<()> {
         let id = record.id().as_ref();
-        let value = record.value();
         put_rule_entity(
             transaction,
             id,
-            value.get("agent"),
-            value.get("name"),
+            record.agent.as_deref(),
+            record.name.as_ref().map(|name| name.as_str()),
             false,
         )?;
         Table::<RuleRecord>::new(transaction).put(record)
@@ -89,18 +88,18 @@ impl RulesRepository {
 fn put_rule_entity(
     transaction: &Transaction<'_>,
     id: &str,
-    agent: Option<&Value>,
-    name: Option<&Value>,
+    agent: Option<&str>,
+    name: Option<&str>,
     deleted: bool,
 ) -> StoreResult<()> {
     let mut value = serde_json::Map::new();
     if !deleted {
         value.insert("id".to_owned(), Value::String(id.to_owned()));
-        if let Some(agent) = agent.filter(|value| value.is_string()) {
-            value.insert("agent".to_owned(), agent.clone());
+        if let Some(agent) = agent {
+            value.insert("agent".to_owned(), Value::String(agent.to_owned()));
         }
-        if let Some(name) = name.filter(|value| value.is_string()) {
-            value.insert("name".to_owned(), name.clone());
+        if let Some(name) = name {
+            value.insert("name".to_owned(), Value::String(name.to_owned()));
         }
     }
     let payload = serde_json::to_string(&json!({
@@ -125,7 +124,7 @@ mod tests {
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              INSERT INTO runtime_rules VALUES('r2','{\"id\":\"r2\",\"kind\":\"interval\"}');
              INSERT INTO runtime_rules VALUES('r1','{\"id\":\"r1\",\"kind\":\"interval\"}');
-             INSERT INTO runtime_agents(id,record) VALUES('a1','{\"id\":\"a1\",\"provider\":\"codex\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');"),
+             INSERT INTO runtime_agents(id,record) VALUES('a1','{\"id\":\"a1\",\"provider\":\"codex\",\"accountKey\":\"default\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');"),
         )
         .expect("declared tables create");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())

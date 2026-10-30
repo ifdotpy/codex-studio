@@ -41,7 +41,7 @@ async fn call(app: &axum::Router, method: &str, body: Option<Value>) -> (u16, Va
 }
 
 fn settings(hold: Value, unload: Value) -> Value {
-    json!({ HOLD: hold, UNLOAD: unload, "idleCompaction":{"mode":"off","minTokens":200000}, "shellPolicy":{"quietThresholdMs":0,"pressureCleanup":true} })
+    json!({ HOLD: hold, UNLOAD: unload, "idleCompaction":{"mode":"default","minTokens":150000}, "shellPolicy":{"quietThresholdMs":0,"pressureCleanup":true} })
 }
 
 #[tokio::test]
@@ -88,6 +88,10 @@ async fn settings_default_persist_and_refuse_out_of_range_values() {
         settings(json!(0), json!(IDLE_SESSION_UNLOAD_SETTING.max + 1)),
         settings(json!(0), json!(-1)),
         json!({ HOLD: 0 }),
+        json!({ HOLD: 0, UNLOAD: 0, "unexpected": true }),
+        json!({ HOLD: 0, UNLOAD: 0, "idleCompaction": null }),
+        json!({ HOLD: 0, UNLOAD: 0, "shellPolicy": null }),
+        json!({ HOLD: 0.5, UNLOAD: 0 }),
     ] {
         let (status, response) = call(&app, "POST", Some(body.clone())).await;
         assert!((400..500).contains(&status), "{body}: {status} {response}");
@@ -119,16 +123,16 @@ async fn idle_compaction_modes_and_token_minimum_round_trip() {
         None,
     ))
     .unwrap();
-    for mode in ["off", "log", "compact"] {
+    for mode in ["default", "off", "log", "compact", "compact_on_return"] {
         let mut requested = settings(json!(10), json!(15));
-        requested["idleCompaction"] = json!({"mode":mode,"minTokens":100000});
+        requested["idleCompaction"] = json!({"mode":mode,"minTokens":60000});
         let (status, body) = call(&app, "POST", Some(requested.clone())).await;
         assert_eq!(status, 200, "{body}");
         assert_eq!(body["settings"], requested);
     }
     for invalid in [
-        json!({"mode":"compact_on_return","minTokens":200000}),
-        json!({"mode":"compact","minTokens":99999}),
+        json!({"mode":"unknown","minTokens":150000}),
+        json!({"mode":"compact","minTokens":59999}),
     ] {
         let mut requested = settings(json!(10), json!(15));
         requested["idleCompaction"] = invalid;

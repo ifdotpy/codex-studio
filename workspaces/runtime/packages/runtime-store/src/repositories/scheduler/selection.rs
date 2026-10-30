@@ -339,9 +339,7 @@ impl SchedulerRepository {
         {
             return Ok(false);
         }
-        let Some(thread) = agent.thread_id.as_deref()
-            .filter(|value| !value.is_empty())
-        else {
+        let Some(thread) = agent.thread_id.as_deref().filter(|value| !value.is_empty()) else {
             return Ok(false);
         };
         let account = agent.account_key.as_str();
@@ -349,15 +347,15 @@ impl SchedulerRepository {
             return Ok(false);
         };
         if run.status != studio_runtime_schema::persistence::ExecutionStatus::Unsent
-            || run.epoch != agent.epoch
+            || run.epoch.as_i64() != Some(agent.epoch)
             || run.account_key != account
-            || run.thread_id.as_deref() != Some(thread)
-            || run.turn_id.is_some()
-            || run.root_attempt_id.is_some()
+            || run.thread_id.value().map(String::as_str) != Some(thread)
+            || run.turn_id.value().is_some()
+            || run.root_attempt_id.value().is_some()
         {
             return Ok(false);
         }
-        let Some(id) = run.latest_attempt_id.as_deref() else {
+        let Some(id) = run.latest_attempt_id.value().map(String::as_str) else {
             return Ok(false);
         };
         let Some(saved) = ExecutionHistoryRepository::attempt(tx, id)? else {
@@ -1318,13 +1316,19 @@ pub(super) fn replay_claim(
         preparation.result == true
             && preparation.input["agent"] == agent.id.0
             && preparation.input["epoch"] == epoch
-            && preparation.input["account"]
-                == Value::String(agent.account_key.clone())
+            && preparation.input["account"] == Value::String(agent.account_key.clone())
             && preparation.input["previousThread"]
-                == original.thread_id.clone().map(Value::String)
+                == original
+                    .thread_id
+                    .clone()
+                    .map(Value::String)
                     .unwrap_or(Value::Null)
             && preparation.input["thread"]
-                == agent.thread_id.clone().map(Value::String).unwrap_or(Value::Null)
+                == agent
+                    .thread_id
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null)
     });
     if original.id != agent.id
         || original.epoch != epoch
@@ -1571,18 +1575,7 @@ pub(super) fn load_policy_records(
 }
 
 pub(super) fn complaint_ids(text: &str) -> Option<Vec<String>> {
-    let value: Value = serde_json::from_str(text).ok()?;
-    let entries = value.get("complaints")?.as_array()?;
-    if entries.is_empty() {
-        return None;
-    }
-    entries
-        .iter()
-        .map(|entry| {
-            let id = entry.get("complaint_id")?.as_str()?;
-            (!id.is_empty()).then(|| id.to_owned())
-        })
-        .collect()
+    studio_runtime_schema::notification_text::complaint_ids(text)
 }
 
 pub(super) fn complaints_resolved(
@@ -1615,22 +1608,7 @@ pub(super) fn complaints_resolved(
 }
 
 pub(super) fn progress_update(text: &str) -> Option<((String, String, String), u64)> {
-    let value: Value = serde_json::from_str(text).ok()?;
-    if value.get("importance")?.as_str()? != "progress" {
-        return None;
-    }
-    let field = |key| {
-        value
-            .get(key)?
-            .as_str()
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-    };
-    let version = value.get("progress_version")?.as_u64()?;
-    Some((
-        (field("sender")?, field("room")?, field("progress_key")?),
-        version,
-    ))
+    studio_runtime_schema::notification_text::progress_update(text)
 }
 
 pub(super) fn obsolete_events(
@@ -1836,11 +1814,7 @@ pub(super) fn apply_preparation(
 }
 
 pub(super) fn work_review_ids(event: &QueueEvent) -> Option<(String, String)> {
-    let value: Value = serde_json::from_str(&event.text).ok()?;
-    Some((
-        value.get("task")?.as_str()?.to_owned(),
-        value.get("result")?.get("id")?.as_str()?.to_owned(),
-    ))
+    studio_runtime_schema::notification_text::work_review_ids(&event.text)
 }
 
 pub(super) fn obsolete_work_review_ids(

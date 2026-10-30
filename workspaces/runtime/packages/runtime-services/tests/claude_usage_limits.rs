@@ -50,7 +50,10 @@ fn sonnet_wait_uses_main_reset_and_ignores_full_opus_bucket() {
     )
     .expect("record failure");
     assert_eq!(
-        recorded.record.expect("failure creates resume record")["dueAt"],
+        recorded
+            .record
+            .expect("failure creates resume record")
+            .value()["dueAt"],
         1305.0
     );
     let changed = usage_resume::limits_changed(&s, &full, 1000.0).expect("limits changed");
@@ -58,10 +61,11 @@ fn sonnet_wait_uses_main_reset_and_ignores_full_opus_bucket() {
         changed
             .record
             .as_ref()
-            .expect("limit change preserves resume record")["dueAt"],
+            .expect("limit change preserves resume record")
+            .value()["dueAt"],
         1305.0
     );
-    let scheduled = Snapshot::from_records(json!({"agent":changed.agent,"record":changed.record}))
+    let scheduled = Snapshot::from_records(json!({"agent":changed.agent.as_ref().map(|agent| agent.value()),"record":changed.record.as_ref().map(|record| record.value())}))
         .expect("rescheduled snapshot");
     let mut reset_data = data(20.0);
     reset_data["rateLimits"]["primary"]["resetsAt"] = json!(2300.0);
@@ -75,7 +79,8 @@ fn sonnet_wait_uses_main_reset_and_ignores_full_opus_bucket() {
     assert_eq!(
         released
             .record
-            .expect("reset release creates resume record")["status"],
+            .expect("reset release creates resume record")
+            .value()["status"],
         "started"
     );
     assert_eq!(released.effects.len(), 1);
@@ -90,12 +95,15 @@ fn allowed_overage_releases_a_scheduled_resume() {
     let s = snapshot("sonnet");
     let changed = usage_resume::limits_changed(&s, &limits, 1000.0).expect("limits changed");
     assert_eq!(
-        changed.record.expect("limit change creates resume record")["dueAt"],
+        changed
+            .record
+            .expect("limit change creates resume record")
+            .value()["dueAt"],
         1000.0
     );
     let released = usage_resume::tick(&s, &limits, 1000.0).expect("tick");
     assert_eq!(
-        released.record.expect("resume tick creates record")["status"],
+        released.record.expect("resume tick creates record").value()["status"],
         "started"
     );
 }
@@ -105,7 +113,7 @@ fn unknown_models_and_buckets_keep_the_latest_reset() {
     for model in ["default", "custom-sonnet-proxy", "claude-new-model", ""] {
         let decision =
             usage_resume::tick(&snapshot(model), &observation(data(100.0)), 1000.0).expect("tick");
-        let record = decision.record.expect("model tick creates record");
+        let record = decision.record.expect("model tick creates record").value();
         assert_eq!(record["status"], "scheduled", "{model}");
         assert_eq!(record["dueAt"], 9005.0, "{model}");
     }
@@ -115,7 +123,10 @@ fn unknown_models_and_buckets_keep_the_latest_reset() {
     let decision =
         usage_resume::tick(&snapshot("sonnet"), &observation(data), 1000.0).expect("tick");
     assert_eq!(
-        decision.record.expect("long reset creates resume record")["dueAt"],
+        decision
+            .record
+            .expect("long reset creates resume record")
+            .value()["dueAt"],
         10005.0
     );
 }
@@ -141,7 +152,10 @@ fn plain_429_typed_error_schedules_a_rate_limit_resume() {
         1000.0,
     )
     .expect("record failure");
-    let record = decision.record.expect("failure creates resume record");
+    let record = decision
+        .record
+        .expect("failure creates resume record")
+        .value();
     assert_eq!(record["cause"], "rate_limit");
     assert_eq!(record["dueAt"], 1305.0);
 }
@@ -159,7 +173,10 @@ fn overage_does_not_bypass_unknown_scope_rejection_or_spend_controls() {
         let decision =
             usage_resume::tick(&snapshot("sonnet"), &observation(data), 1000.0).expect("tick");
         assert_eq!(
-            decision.record.expect("tick preserves scheduled record")["status"],
+            decision
+                .record
+                .expect("tick preserves scheduled record")
+                .value()["status"],
             "scheduled"
         );
     }
@@ -176,7 +193,10 @@ fn overage_does_not_bypass_unknown_scope_rejection_or_spend_controls() {
         let decision =
             usage_resume::tick(&snapshot("sonnet"), &observation(data), 1000.0).expect("tick");
         assert_eq!(
-            decision.record.expect("tick preserves scheduled record")["status"],
+            decision
+                .record
+                .expect("tick preserves scheduled record")
+                .value()["status"],
             "scheduled"
         );
     }
@@ -199,7 +219,8 @@ fn overage_permission_covers_known_limits_but_requires_a_fresh_observation() {
         assert_eq!(
             decision
                 .record
-                .expect("fresh observation starts resume record")["status"],
+                .expect("fresh observation starts resume record")
+                .value()["status"],
             "started"
         );
         let stale = LimitsObservation::from_record(
@@ -211,7 +232,8 @@ fn overage_permission_covers_known_limits_but_requires_a_fresh_observation() {
         assert_eq!(
             decision
                 .record
-                .expect("stale observation preserves scheduled record")["status"],
+                .expect("stale observation preserves scheduled record")
+                .value()["status"],
             "scheduled"
         );
     }
@@ -251,7 +273,7 @@ async fn account_limits_change_updates_each_wait_by_its_model() {
 fn missing_observation_reschedules_without_followup() {
     let decision = usage_resume::tick_without_observation(&snapshot("sonnet"), 1000.0)
         .expect("reschedule without telemetry");
-    let record = decision.record.expect("wait remains durable");
+    let record = decision.record.expect("wait remains durable").value();
     assert_eq!(record["status"], "scheduled");
     assert_eq!(
         record["dueAt"],
@@ -276,7 +298,11 @@ fn ui_eligibility_matches_resume_decisions_on_shared_fixtures() {
             usage_resume::tick(&state, &limits, 1000.0).expect("resume decision succeeds");
         assert_eq!(
             view["canRun"],
-            decision.record.expect("resume decision retains its record")["status"] == "started",
+            decision
+                .record
+                .expect("resume decision retains its record")
+                .value()["status"]
+                == "started",
             "{}",
             case["name"]
         );
@@ -347,7 +373,7 @@ fn a_limits_read_without_a_current_reset_keeps_the_provider_reset() {
     .expect("failed read");
     let decision =
         usage_resume::tick(&with_due(waiting_for_reset(), 1000.0), &failed, 1000.0).expect("tick");
-    let record = decision.record.expect("wait remains durable");
+    let record = decision.record.expect("wait remains durable").value();
     assert_eq!(record["status"], "scheduled");
     assert_eq!(record["resetAt"], 1300.0, "{record}");
     assert_eq!(record["dueAt"], 1305.0, "{record}");
@@ -356,7 +382,7 @@ fn a_limits_read_without_a_current_reset_keeps_the_provider_reset() {
     let snapshot = Snapshot::from_records(waiting_for_reset()).expect("snapshot");
     let decision =
         usage_resume::limits_changed(&snapshot, &observation(data(20.0)), 1000.0).expect("limits");
-    let record = decision.record.expect("wait remains durable");
+    let record = decision.record.expect("wait remains durable").value();
     assert_eq!(record["resetAt"], 1300.0, "{record}");
     assert_eq!(record["plannedAt"], 1300.0, "{record}");
 }
@@ -368,7 +394,7 @@ fn a_limits_read_without_a_current_reset_keeps_the_provider_reset() {
 fn a_wait_resumes_once_after_the_provider_reset_when_limits_reads_fail() {
     let now = 1306.0;
     let started = |decision: studio_runtime_services::continuation::Decision, case: &str| {
-        let record = decision.record.clone().expect("record");
+        let record = decision.record.clone().expect("record").value();
         assert_eq!(record["status"], "started", "{case}: {record}");
         assert_eq!(
             decision.effects,
@@ -378,7 +404,7 @@ fn a_wait_resumes_once_after_the_provider_reset_when_limits_reads_fail() {
             }],
             "{case}"
         );
-        let agent = decision.agent.clone().expect("agent");
+        let agent = decision.agent.clone().expect("agent").into_value();
         assert_eq!(agent["status"], "queued", "{case}");
         assert!(agent.get("nativeFailureHold").is_none(), "{case}");
         // The started wait never sends its follow-up again.
@@ -423,7 +449,7 @@ fn a_wait_resumes_once_after_the_provider_reset_when_limits_reads_fail() {
     )
     .expect("current read");
     let decision = usage_resume::tick(&snapshot, &current, now).expect("tick");
-    let record = decision.record.expect("wait remains durable");
+    let record = decision.record.expect("wait remains durable").value();
     assert_eq!(record["status"], "scheduled", "{record}");
     assert_eq!(record["resetAt"], 5000.0, "{record}");
     assert!(decision.effects.is_empty());
@@ -431,7 +457,7 @@ fn a_wait_resumes_once_after_the_provider_reset_when_limits_reads_fail() {
     // Before the reset a failed read only reschedules for it.
     let early = with_due(waiting_for_reset(), 1200.0);
     let decision = usage_resume::tick_without_observation(&early, 1201.0).expect("tick");
-    let record = decision.record.expect("wait remains durable");
+    let record = decision.record.expect("wait remains durable").value();
     assert_eq!(record["status"], "scheduled", "{record}");
     assert_eq!(record["dueAt"], 1305.0, "{record}");
     assert!(decision.effects.is_empty());
@@ -442,6 +468,9 @@ fn a_wait_resumes_once_after_the_provider_reset_when_limits_reads_fail() {
     set_wait(&mut records, "resetAt", json!(800.0));
     let old = Snapshot::from_records(records).expect("snapshot");
     let decision = usage_resume::tick_without_observation(&old, now).expect("tick");
-    assert_eq!(decision.record.expect("record")["status"], "scheduled");
+    assert_eq!(
+        decision.record.expect("record").value()["status"],
+        "scheduled"
+    );
     assert!(decision.effects.is_empty());
 }

@@ -7,12 +7,115 @@ export type paths = Record<string, never>;
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /** @description Identity of the agent that owns the turn. */
+    AgentId: string;
+    /** @description The answer a person or policy gives. Its kind must fit the request kind. */
+    Answer:
+      | {
+          decision: components["schemas"]["Decision"];
+          /** @constant */
+          kind: "decision";
+        }
+      | {
+          answers: components["schemas"]["QuestionAnswer"][];
+          /** @constant */
+          kind: "answers";
+        }
+      | {
+          action: components["schemas"]["ElicitationAction"];
+          content: unknown;
+          /** @constant */
+          kind: "elicitation";
+        };
+    /** @description A row. `fire_at` is the durable expiry timer of a pending approval. */
+    Approval: {
+      agent: components["schemas"]["AgentId"];
+      created: components["schemas"]["Timestamp"];
+      deferral: components["schemas"]["Deferral"] | null;
+      /** @description Present for provider requests that Studio answers over a connection. */
+      delivery: components["schemas"]["Delivery"] | null;
+      detail: components["schemas"]["Detail"];
+      /**
+       * Format: uint64
+       * @description Agent epoch when the request was made. Absent on old rows.
+       */
+      epoch: number | null;
+      fire_at: components["schemas"]["Timestamp"] | null;
+      hidden: components["schemas"]["Hidden"] | null;
+      id: components["schemas"]["ApprovalId"];
+      request: components["schemas"]["Request"];
+      state: components["schemas"]["ApprovalState"];
+      /**
+       * @description None only for kinds in `RequestKind::TURN_OPTIONAL`: requests of the
+       *     agent itself (not of a provider turn).
+       */
+      turn: components["schemas"]["TurnId"] | null;
+    };
+    /** @description Identity of one approval. Equals the legacy request id after migration. */
+    ApprovalId: string;
+    ApprovalState:
+      | {
+          /** @constant */
+          kind: "pending";
+        }
+      | {
+          answer: components["schemas"]["Answer"];
+          command: components["schemas"]["CommandId"];
+          /** @constant */
+          kind: "answering";
+        }
+      | {
+          answer: components["schemas"]["Answer"];
+          at: components["schemas"]["Timestamp"];
+          by: components["schemas"]["Principal"];
+          /** @constant */
+          kind: "answered";
+        }
+      | {
+          answer: components["schemas"]["Answer"];
+          /** @constant */
+          kind: "unknown";
+          since: components["schemas"]["Timestamp"];
+        }
+      | {
+          at: components["schemas"]["Timestamp"];
+          /** @constant */
+          kind: "closed";
+          reason: components["schemas"]["CloseReason"];
+        };
+    CloseReason:
+      | (
+          | "turn_ended"
+          | "provider_resolved"
+          | "session_lost"
+          | "chat_deleted"
+          | "expired"
+        )
+      | "legacy";
     CommandError: {
       code: string;
       details?: unknown | undefined;
       message: string;
       /** Format: uint16 */
       status?: number | null | undefined;
+    };
+    /** @description Identity of the outbox command that delivers an answer. */
+    CommandId: string;
+    /** @enum {string} */
+    Decision: "accept" | "accept_for_session" | "decline" | "cancel";
+    /** @description The user moved the question aside. `active` is false after it came back. */
+    Deferral: {
+      active: boolean;
+      at: components["schemas"]["Timestamp"];
+      by: components["schemas"]["Principal"];
+    };
+    /** @description What the server needs to send the answer back to the provider. */
+    Delivery: {
+      account: string;
+      connection: string;
+      rpc_id: components["schemas"]["RpcId"];
+      /** @description Absent on rows written before supervisor generations were recorded. */
+      supervisor: components["schemas"]["Supervisor"] | null;
     };
     /** @enum {string} */
     DeliveryStatus:
@@ -25,6 +128,17 @@ export interface components {
       | "delivered"
       | "failed"
       | "uncertain";
+    /** @description Display content and provider fields that no logic reads by name. */
+    Detail: {
+      /** @description Human text of a lost delivery. */
+      answer_error: string | null;
+      /** @description Text the browser host gave when it closed a browser request. */
+      host_close_reason: string | null;
+      /** @description Provider request params without the fields typed in `Request`. */
+      params: components["schemas"]["ProviderObject"];
+      /** @description Item body shown on the card (command run, file changes). */
+      preview: components["schemas"]["ProviderObject"] | null;
+    };
     /** @description Committed draft view and its native workspace metadata. */
     DraftSnapshot: {
       conflicts: components["schemas"]["DraftVersion"][];
@@ -61,6 +175,10 @@ export interface components {
     };
     /** @enum {string} */
     Durability: "sqlite-full-sync-per-request";
+    /** @enum {string} */
+    ElicitationAction: "accept" | "decline" | "cancel";
+    /** @enum {string} */
+    Grant: "full" | "observe";
     HealthHandle: {
       /** Format: uint64 */
       acknowledged: number;
@@ -96,6 +214,11 @@ export interface components {
       stateDir: string;
     } & {
       [key: string]: unknown;
+    };
+    /** @description History stays: a hidden row is not shown in the default list. */
+    Hidden: {
+      at: components["schemas"]["Timestamp"];
+      by: components["schemas"]["Principal"];
     };
     MarkdownBlock:
       | components["schemas"]["MarkdownTree"]
@@ -153,6 +276,69 @@ export interface components {
           /** @constant */
           type: "channel";
         };
+    /**
+     * @description Who acts. Local copy of the permissions work (`feat/principal-permissions`);
+     *     the second change to land unifies the two.
+     */
+    Principal:
+      | {
+          /** @constant */
+          kind: "owner";
+        }
+      | {
+          grant: components["schemas"]["Grant"];
+          id: string;
+          /** @constant */
+          kind: "device";
+        }
+      | {
+          /** @constant */
+          kind: "peer";
+          server: string;
+        }
+      | {
+          /** Format: uint64 */
+          epoch: number;
+          id: string;
+          /** @constant */
+          kind: "agent";
+        }
+      | {
+          /** @constant */
+          kind: "federated";
+          peer: string;
+        }
+      | {
+          /** @constant */
+          kind: "policy";
+        };
+    /**
+     * @description Provider-owned content that Studio stores and shows as is (tolerant at the
+     *     provider boundary). Typed request fields are removed from `params`.
+     */
+    ProviderObject: {
+      [key: string]: unknown;
+    };
+    Question: {
+      header: string | null;
+      id: string;
+      is_other: boolean | null;
+      is_secret: boolean;
+      /** @description Absent when the provider did not send the flag. */
+      multi_select: boolean | null;
+      options: components["schemas"]["QuestionOption"][];
+      question: string;
+    };
+    QuestionAnswer: {
+      answer: string[];
+      id: string;
+    };
+    QuestionOption: {
+      description: string | null;
+      label: string;
+      /** @description Markdown shown next to the option. */
+      preview: string | null;
+    };
     /** @description One recipient's delivery state. Error text is separate from the closed status. */
     RecipientDelivery: {
       error: string | null;
@@ -177,7 +363,61 @@ export interface components {
       replyAtNs: number;
       requestId: components["schemas"]["RequestId"];
     };
-    Request: {
+    /** @description Fixed at creation. Decides which answers are allowed. */
+    Request:
+      | {
+          command: string;
+          cwd: string;
+          /** @constant */
+          kind: "exec";
+          reason: string | null;
+        }
+      | {
+          files: string[];
+          item: string;
+          /** @constant */
+          kind: "patch";
+          reason: string | null;
+        }
+      | {
+          /** @constant */
+          kind: "permissions";
+          requested: string[];
+        }
+      | {
+          /** @constant */
+          kind: "elicitation";
+          /** @description JSON schema chosen by the provider; shown as is. */
+          schema: unknown;
+        }
+      | {
+          /** @constant */
+          kind: "question";
+          questions: components["schemas"]["Question"][];
+        }
+      | {
+          input: unknown;
+          /** @constant */
+          kind: "tool_use";
+          tool: string;
+        }
+      | {
+          /** @constant */
+          kind: "agent_question";
+          questions: components["schemas"]["Question"][];
+        }
+      | {
+          command: string;
+          /** @constant */
+          kind: "monitor_start";
+          monitor: string;
+        }
+      | {
+          /** @constant */
+          kind: "browser_open";
+          url: string;
+        };
+    Request2: {
       id: string;
       method: string;
       /** @default null */
@@ -190,6 +430,19 @@ export interface components {
       id: string;
       result?: unknown | undefined;
     };
+    /** @description JSON-RPC id of a provider request. The reply must use the same form. */
+    RpcId:
+      | {
+          /** @constant */
+          kind: "number";
+          /** Format: int64 */
+          value: number;
+        }
+      | {
+          /** @constant */
+          kind: "text";
+          value: string;
+        };
     StdinTimingDiagnostic: {
       /** Format: uint64 */
       generation: number;
@@ -200,6 +453,13 @@ export interface components {
       /** Format: uint128 */
       stdinFlushedAtNs: number;
     };
+    /** @description The provider process generation that owns a request, under the supervisor. */
+    Supervisor: {
+      /** Format: uint64 */
+      generation: number;
+      handle: string | null;
+      state_dir: string | null;
+    };
     /** SupervisorHandshakeV2Result */
     SupervisorHandshakeV2Result: {
       error?: string | null | undefined;
@@ -208,6 +468,13 @@ export interface components {
       /** Format: uint64 */
       protocol?: number | null | undefined;
     };
+    /**
+     * Format: double
+     * @description Unix seconds.
+     */
+    Timestamp: number;
+    /** @description Provider turn identifier. A domain Turn table replaces this later. */
+    TurnId: string;
   };
   responses: never;
   parameters: never;
@@ -218,6 +485,13 @@ export interface components {
 export type $defs = Record<string, never>;
 export type operations = Record<string, never>;
 
+export const Decision = {
+  accept: "accept",
+  accept_for_session: "accept_for_session",
+  decline: "decline",
+  cancel: "cancel",
+} as const;
+export type Decision = components["schemas"]["Decision"];
 export const DeliveryStatus = {
   queued: "queued",
   stored_only: "stored_only",
@@ -234,29 +508,58 @@ export const Durability = {
   "sqlite-full-sync-per-request": "sqlite-full-sync-per-request",
 } as const;
 export type Durability = components["schemas"]["Durability"];
+export const ElicitationAction = {
+  accept: "accept",
+  decline: "decline",
+  cancel: "cancel",
+} as const;
+export type ElicitationAction = components["schemas"]["ElicitationAction"];
+export const Grant = { full: "full", observe: "observe" } as const;
+export type Grant = components["schemas"]["Grant"];
 export const MarkdownKind = { html: "html", mermaid: "mermaid" } as const;
 export type MarkdownKind = components["schemas"]["MarkdownKind"];
+export type AgentId = components["schemas"]["AgentId"];
+export type Answer = components["schemas"]["Answer"];
+export type Approval = components["schemas"]["Approval"];
+export type ApprovalId = components["schemas"]["ApprovalId"];
+export type ApprovalState = components["schemas"]["ApprovalState"];
+export type CloseReason = components["schemas"]["CloseReason"];
 export type CommandError = components["schemas"]["CommandError"];
+export type CommandId = components["schemas"]["CommandId"];
+export type Deferral = components["schemas"]["Deferral"];
+export type Delivery = components["schemas"]["Delivery"];
+export type Detail = components["schemas"]["Detail"];
 export type DraftSnapshot = components["schemas"]["DraftSnapshot"];
 export type DraftVersion = components["schemas"]["DraftVersion"];
 export type DraftView = components["schemas"]["DraftView"];
 export type HealthHandle = components["schemas"]["HealthHandle"];
 export type HealthResult = components["schemas"]["HealthResult"];
+export type Hidden = components["schemas"]["Hidden"];
 export type MarkdownBlock = components["schemas"]["MarkdownBlock"];
 export type MarkdownNode = components["schemas"]["MarkdownNode"];
 export type MarkdownSentence = components["schemas"]["MarkdownSentence"];
 export type MarkdownTree = components["schemas"]["MarkdownTree"];
 export type NativeVoiceEvent = components["schemas"]["NativeVoiceEvent"];
+export type Principal = components["schemas"]["Principal"];
+export type ProviderObject = components["schemas"]["ProviderObject"];
+export type Question = components["schemas"]["Question"];
+export type QuestionAnswer = components["schemas"]["QuestionAnswer"];
+export type QuestionOption = components["schemas"]["QuestionOption"];
 export type RecipientDelivery = components["schemas"]["RecipientDelivery"];
 export type RecoveryStatus = components["schemas"]["RecoveryStatus"];
 export type ReplyTimingDiagnostic =
   components["schemas"]["ReplyTimingDiagnostic"];
 export type Request = components["schemas"]["Request"];
+export type Request2 = components["schemas"]["Request2"];
 export type RequestId = components["schemas"]["RequestId"];
 export type Response = components["schemas"]["Response"];
+export type RpcId = components["schemas"]["RpcId"];
 export type StdinTimingDiagnostic =
   components["schemas"]["StdinTimingDiagnostic"];
+export type Supervisor = components["schemas"]["Supervisor"];
 export type SupervisorHandshakeV2Result =
   components["schemas"]["SupervisorHandshakeV2Result"];
+export type Timestamp = components["schemas"]["Timestamp"];
+export type TurnId = components["schemas"]["TurnId"];
 export const STDIN_TIMING_DIAGNOSTIC_PREFIX = "studio_provider_stdin_write ";
 export const REPLY_TIMING_DIAGNOSTIC_PREFIX = "studio_provider_reply ";

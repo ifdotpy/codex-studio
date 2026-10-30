@@ -8,9 +8,65 @@ pub const SUPERVISOR_PROTOCOL_VERSION: u64 = 3;
 pub const HANDLE_LIMIT: u64 = 256 * 1024 * 1024;
 pub const MAX_HANDLE_CHARACTERS: usize = 180;
 
+/// Supervisor evidence for one provider operation, not provider application.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderOperationState {
+    Unknown,
+    Accepted,
+    Written,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderOperationStatus {
+    pub state: ProviderOperationState,
+    pub native_id: Option<NativeId>,
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("{0}")]
 pub struct Refusal(pub &'static str);
+
+/// Wire event kinds accept future values; the journal separately restricts persisted kinds.
+pub const EVENT_KIND_STDOUT: &str = "stdout";
+pub const EVENT_KIND_STDERR: &str = "stderr";
+pub const EVENT_KIND_EXIT: &str = "exit";
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EventKind {
+    Stdout,
+    Stderr,
+    Exit,
+    Unknown(String),
+}
+impl EventKind {
+    pub fn parse(value: &str) -> Self {
+        match value {
+            EVENT_KIND_STDOUT => Self::Stdout,
+            EVENT_KIND_STDERR => Self::Stderr,
+            EVENT_KIND_EXIT => Self::Exit,
+            other => Self::Unknown(other.to_owned()),
+        }
+    }
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Stdout => EVENT_KIND_STDOUT,
+            Self::Stderr => EVENT_KIND_STDERR,
+            Self::Exit => EVENT_KIND_EXIT,
+            Self::Unknown(other) => other,
+        }
+    }
+}
+impl<'de> Deserialize<'de> for EventKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self::parse(&String::deserialize(deserializer)?))
+    }
+}
+impl Serialize for EventKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
 
 /// The provider JSON-RPC message id of one supervisor write: the `nativeId` request field,
 /// the `remoteId` result field, and the `operations.native_id` journal column.
@@ -252,6 +308,23 @@ impl HandleSnapshot {
     pub fn from_record(record: Value) -> Result<Self, Refusal> {
         let record: HandleRecord = serde_json::from_value(record)
             .map_err(|_| Refusal("Invalid supervisor handles record"))?;
+        Self::checked(record)
+    }
+    pub fn from_columns(
+        sequence: i64,
+        acknowledged: i64,
+        rpc_sequence: i64,
+        generation: i64,
+    ) -> Result<Self, Refusal> {
+        let invalid = || Refusal("Invalid supervisor handles record");
+        Self::checked(HandleRecord {
+            sequence: u64::try_from(sequence).map_err(|_| invalid())?,
+            acknowledged: u64::try_from(acknowledged).map_err(|_| invalid())?,
+            rpc_sequence: u64::try_from(rpc_sequence).map_err(|_| invalid())?,
+            generation: u64::try_from(generation).map_err(|_| invalid())?,
+        })
+    }
+    fn checked(record: HandleRecord) -> Result<Self, Refusal> {
         let snapshot = Self { record };
         if snapshot.record.acknowledged > snapshot.record.sequence
             || snapshot.record.sequence >= i64::MAX as u64
@@ -375,6 +448,34 @@ impl ReceiptSnapshot {
     pub fn from_record(record: Value) -> Result<Self, Refusal> {
         let record: ReceiptRecord = serde_json::from_value(record)
             .map_err(|_| Refusal("Invalid supervisor operations record"))?;
+        Self::checked(record)
+    }
+    pub fn from_columns(
+        digest: String,
+        native_id: Option<NativeId>,
+        generation: Option<i64>,
+        response: Option<String>,
+        response_sequence: Option<i64>,
+    ) -> Result<Self, Refusal> {
+        let invalid = || Refusal("Invalid supervisor operations record");
+        Self::checked(ReceiptRecord {
+            digest,
+            native_id,
+            generation: generation
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| invalid())?,
+            response: response
+                .map(|raw| serde_json::from_str(&raw))
+                .transpose()
+                .map_err(|_| invalid())?,
+            response_sequence: response_sequence
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| invalid())?,
+        })
+    }
+    fn checked(record: ReceiptRecord) -> Result<Self, Refusal> {
         if record.generation.is_some_and(|id| id > i64::MAX as u64)
             || record
                 .response_sequence
@@ -462,6 +563,31 @@ mod start_identity_tests {
         let partial = ReceiptSnapshot::from_record(json!({"digest":"d","native_id":7,"generation":1,"response":"{}","response_sequence":null})).unwrap();
         assert!(partial.status(&snapshot(2))["response"].is_null());
         assert!(ReceiptSnapshot::from_record(json!({"digest":"d","native_id":7,"generation":1,"response":"bad","response_sequence":2})).is_err());
+    }
+
+    #[test]
+    fn sql_snapshot_constructors_preserve_record_validation_and_replay() {
+        let current = HandleSnapshot::from_columns(2, 2, 1, 1).unwrap();
+        assert!(HandleSnapshot::from_columns(-1, 0, 0, 1).is_err());
+        assert!(HandleSnapshot::from_columns(1, 2, 0, 1).is_err());
+        assert!(HandleSnapshot::from_columns(i64::MAX, 0, 0, 1).is_err());
+        let receipt = ReceiptSnapshot::from_columns(
+            "d".into(),
+            Some(super::NativeId::Integer(7)),
+            Some(1),
+            Some("{\"result\":4}".into()),
+            Some(2),
+        )
+        .unwrap();
+        assert_eq!(
+            receipt.status(&current),
+            json!({"accepted":true,"nativeId":7,"response":{"result":4}})
+        );
+        assert!(ReceiptSnapshot::from_columns("d".into(), None, Some(-1), None, None).is_err());
+        assert!(
+            ReceiptSnapshot::from_columns("d".into(), None, None, Some("bad".into()), None)
+                .is_err()
+        );
     }
 
     const MAC: &str = "macos:1CCC2169-B973-447A-B702-3F226EECA807:1790895321.190147";

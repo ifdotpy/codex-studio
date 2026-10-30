@@ -1,7 +1,13 @@
 //! Durable capacity retry and usage resume records.
 
 use rusqlite::{OptionalExtension, Transaction, params};
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::{Number, Value, json};
+use std::collections::BTreeMap;
+use studio_runtime_schema::continuation_snapshot::{
+    UsageContinuationCause, UsageContinuationStatus,
+};
+use studio_runtime_schema::queue_command::Field;
 use thiserror::Error;
 
 use crate::StoreError;
@@ -47,6 +53,68 @@ pub enum UsageRepositoryError {
 }
 
 pub type UsageRepositoryResult<T> = Result<T, UsageRepositoryError>;
+
+// Cancellation historically accepts more than the bounded decision snapshot,
+// but requires more than the permissive persisted record schema.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CancellableResume {
+    id: String,
+    account_key: String,
+    thread_id: String,
+    turn_id: String,
+    epoch: u64,
+    failed_at: Number,
+    #[serde(deserialize_with = "studio_runtime_schema::string_enum::deserialize")]
+    cause: UsageContinuationCause,
+    #[serde(deserialize_with = "studio_runtime_schema::string_enum::deserialize")]
+    status: UsageContinuationStatus,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    due_at: Field<Number>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    last_checked_at: Field<Number>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    planned_at: Field<Number>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    reset_at: Field<Number>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    updated_at: Field<Number>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    proof_at: Field<Number>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    started_at: Field<Number>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    auth_refresh_marker: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    reason: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    auth_attempt: Field<u64>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    waiting_for_auth: Field<bool>,
+    #[serde(
+        default,
+        deserialize_with = "optional_claims",
+        skip_serializing_if = "Option::is_none"
+    )]
+    task_claims: Option<Vec<String>>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
+}
+
+fn optional_claims<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    Vec::<String>::deserialize(d).map(Some)
+}
+
+impl CancellableResume {
+    fn cancel(&mut self, reason: &str, now: f64) {
+        self.status = UsageContinuationStatus::Cancelled;
+        self.due_at = Field::Null;
+        self.reason = Field::Value(reason.to_owned());
+        self.updated_at = Number::from_f64(now).map_or(Field::Null, Field::Value);
+    }
+}
 
 pub fn cancel_capacity_retry(
     transaction: &Transaction<'_>,
@@ -144,11 +212,11 @@ pub fn disable_usage_resume(
         )
         .optional()?
         .ok_or(UsageRepositoryError::UnknownContinuation)?;
-    let mut resume: Value =
+    // Parse through Value first to retain the stored last-duplicate-key behavior.
+    let raw_value: Value =
         serde_json::from_str(&raw).map_err(|_| invalid("runtime_usage_resumes", resume_id))?;
-    if !validate_resume(&resume, resume_id) {
-        return Err(invalid("runtime_usage_resumes", resume_id));
-    }
+    let mut resume = decode_resume(raw_value, resume_id)
+        .ok_or_else(|| invalid("runtime_usage_resumes", resume_id))?;
     let is_current = agent
         .extra
         .get("usageResume")
@@ -160,20 +228,15 @@ pub fn disable_usage_resume(
             .extra
             .get("usageResume")
             .ok_or_else(|| invalid("runtime_agents", agent_id))?;
-        if !validate_resume(embedded, resume_id) {
+        if decode_resume(embedded.clone(), resume_id).is_none() {
             return Err(invalid("runtime_agents", agent_id));
         }
-        if agent.extra.get("usageResumeEnabled") == Some(&Value::Bool(false)) {
+        if agent.usage_resume_enabled == Some(false) {
             return Ok(embedded.clone());
         }
-        agent
-            .extra
-            .insert("usageResumeEnabled".to_owned(), Value::Bool(false));
-        if resume.get("status").and_then(Value::as_str) == Some("scheduled") {
-            resume["status"] = Value::String("cancelled".to_owned());
-            resume["dueAt"] = Value::Null;
-            resume["reason"] = Value::String("Automatic resume is off for this chat.".to_owned());
-            resume["updatedAt"] = json!(now);
+        agent.usage_resume_enabled = Some(false);
+        if resume.status == UsageContinuationStatus::Scheduled {
+            resume.cancel("Automatic resume is off for this chat.", now);
             transaction.execute(
                 "UPDATE runtime_usage_resumes SET record=?1 WHERE id=?2 AND agent=?3",
                 params![
@@ -184,7 +247,7 @@ pub fn disable_usage_resume(
                 ],
             )?;
         }
-        agent.extra.insert("usageResume".to_owned(), resume.clone());
+        agent.extra.insert("usageResume".to_owned(), json!(resume));
         AgentRepository::put(transaction, &agent)?;
     } else {
         return Ok(agent
@@ -193,7 +256,7 @@ pub fn disable_usage_resume(
             .cloned()
             .unwrap_or(Value::Null));
     }
-    Ok(resume)
+    Ok(json!(resume))
 }
 
 /// Cancel a pending resume when an agent moves accounts, preserving the user's
@@ -221,11 +284,11 @@ pub fn cancel_usage_resume(
         )
         .optional()?
         .ok_or(UsageRepositoryError::UnknownContinuation)?;
-    let mut resume: Value =
+    // Parse through Value first to retain the stored last-duplicate-key behavior.
+    let raw_value: Value =
         serde_json::from_str(&raw).map_err(|_| invalid("runtime_usage_resumes", resume_id))?;
-    if !validate_resume(&resume, resume_id) {
-        return Err(invalid("runtime_usage_resumes", resume_id));
-    }
+    let mut resume = decode_resume(raw_value, resume_id)
+        .ok_or_else(|| invalid("runtime_usage_resumes", resume_id))?;
     if agent
         .extra
         .get("usageResume")
@@ -240,15 +303,12 @@ pub fn cancel_usage_resume(
             .unwrap_or(Value::Null));
     }
     if !matches!(
-        resume.get("status").and_then(Value::as_str),
-        Some("scheduled" | "started")
+        resume.status,
+        UsageContinuationStatus::Scheduled | UsageContinuationStatus::Started
     ) {
-        return Ok(resume);
+        return Ok(json!(resume));
     }
-    resume["status"] = Value::String("cancelled".to_owned());
-    resume["dueAt"] = Value::Null;
-    resume["reason"] = Value::String(reason.to_owned());
-    resume["updatedAt"] = json!(now);
+    resume.cancel(reason, now);
     transaction.execute(
         "UPDATE runtime_usage_resumes SET record=?1 WHERE id=?2 AND agent=?3",
         params![
@@ -258,9 +318,9 @@ pub fn cancel_usage_resume(
             agent_id
         ],
     )?;
-    agent.extra.insert("usageResume".to_owned(), resume.clone());
+    agent.extra.insert("usageResume".to_owned(), json!(resume));
     AgentRepository::put(transaction, &agent)?;
-    Ok(resume)
+    Ok(json!(resume))
 }
 
 inventory::submit! {
@@ -283,57 +343,11 @@ fn validate_retry(value: &Value, expected_id: &str) -> bool {
             .unwrap_or(false)
 }
 
-fn validate_resume(value: &Value, expected_id: &str) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-    let number_or_null = |field: &str| {
-        object
-            .get(field)
-            .is_none_or(|value| value.is_null() || value.as_f64().is_some())
-    };
-    value.get("id").and_then(Value::as_str) == Some(expected_id)
-        && studio_runtime_schema::validate("PersistedUsageResumeRecord", value).unwrap_or(false)
-        && matches!(
-            object.get("status").and_then(Value::as_str),
-            Some("scheduled" | "started" | "cancelled" | "unknown")
-        )
-        && matches!(
-            object.get("cause").and_then(Value::as_str),
-            Some("usage_limit" | "rate_limit" | "auth")
-        )
-        && ["accountKey", "threadId", "turnId"]
-            .into_iter()
-            .all(|field| object.get(field).and_then(Value::as_str).is_some())
-        && object.get("epoch").and_then(Value::as_u64).is_some()
-        && object.get("failedAt").and_then(Value::as_f64).is_some()
-        && [
-            "dueAt",
-            "lastCheckedAt",
-            "plannedAt",
-            "resetAt",
-            "updatedAt",
-            "proofAt",
-            "startedAt",
-        ]
-        .into_iter()
-        .all(number_or_null)
-        && ["authRefreshMarker", "reason"].into_iter().all(|field| {
-            object
-                .get(field)
-                .is_none_or(|value| value.is_null() || value.is_string())
-        })
-        && object
-            .get("authAttempt")
-            .is_none_or(|value| value.is_null() || value.as_u64().is_some())
-        && object
-            .get("waitingForAuth")
-            .is_none_or(|value| value.is_null() || value.is_boolean())
-        && object.get("taskClaims").is_none_or(|value| {
-            value
-                .as_array()
-                .is_some_and(|items| items.iter().all(Value::is_string))
-        })
+fn decode_resume(value: Value, expected_id: &str) -> Option<CancellableResume> {
+    let studio_runtime_schema::json_object::JsonObject(resume) =
+        studio_runtime_schema::json_object::JsonObject::<CancellableResume>::deserialize(value)
+            .ok()?;
+    (resume.id == expected_id).then_some(resume)
 }
 
 fn require_table(transaction: &Transaction<'_>, name: &str) -> UsageRepositoryResult<()> {
@@ -354,7 +368,9 @@ fn require_table(transaction: &Transaction<'_>, name: &str) -> UsageRepositoryRe
 
 #[cfg(test)]
 mod tests {
-    use super::{UsageRepositoryError, cancel_capacity_retry, disable_usage_resume};
+    use super::{
+        UsageRepositoryError, cancel_capacity_retry, cancel_usage_resume, disable_usage_resume,
+    };
     use rusqlite::Connection;
     use serde_json::{Value, json};
 
@@ -382,7 +398,7 @@ mod tests {
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         let mut agent =
-            json!({"id":AGENT,"provider":"codex","rootId":AGENT,"epoch":1,"status":"idle"});
+            json!({"accountKey":"default","id":AGENT,"provider":"codex","rootId":AGENT,"epoch":1,"status":"idle"});
         agent
             .as_object_mut()
             .expect("agent fixture is an object")
@@ -499,6 +515,19 @@ mod tests {
     }
 
     #[test]
+    fn disabling_resume_updates_the_typed_agent_field() {
+        let saved = resume("resume", "scheduled");
+        let connection = database(json!({"usageResumeEnabled":true,"usageResume":saved}));
+        insert(&connection, "runtime_usage_resumes", "resume", &saved);
+        let tx = connection.unchecked_transaction().expect("transaction");
+        disable_usage_resume(&tx, AGENT, "resume", 200.0).expect("disable result");
+        let agent: serde_json::Value =
+            serde_json::from_str(&read(&tx, "runtime_agents", AGENT)).unwrap();
+        assert_eq!(agent["usageResumeEnabled"], false);
+        assert_eq!(agent["usageResume"]["status"], "cancelled");
+    }
+
+    #[test]
     fn malformed_complete_continuation_is_named_and_rejected_before_any_write() {
         let mut malformed = resume("resume", "scheduled");
         malformed["dueAt"] = json!("tomorrow");
@@ -533,5 +562,64 @@ mod tests {
             row.to_string()
         );
         tx.rollback().expect("rollback");
+    }
+
+    #[test]
+    fn cancellation_preserves_extensions_presence_and_numeric_spelling() {
+        let mut stored = resume("resume", "started");
+        stored["failedAt"] = json!(1.0);
+        stored["proofAt"] = json!(3.0);
+        stored["taskClaims"] = json!(["", "task"]);
+        stored["future"] = json!({"epoch": 7.0, "arbitrary": [null, false]});
+        let db = database(json!({"usageResumeEnabled":true,"usageResume":stored}));
+        insert(&db, "runtime_usage_resumes", "resume", &stored);
+        let tx = db.unchecked_transaction().unwrap();
+        let result = cancel_usage_resume(&tx, AGENT, "resume", "moved", 200.0).unwrap();
+        let mut expected = stored;
+        expected["status"] = json!("cancelled");
+        expected["dueAt"] = Value::Null;
+        expected["reason"] = json!("moved");
+        expected["updatedAt"] = json!(200.0);
+        assert_eq!(result, expected);
+        assert_eq!(
+            serde_json::from_str::<Value>(&read(&tx, "runtime_usage_resumes", "resume")).unwrap(),
+            expected
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&read(&tx, "runtime_agents", AGENT)).unwrap()["usageResume"],
+            expected
+        );
+        tx.rollback().unwrap();
+    }
+
+    #[test]
+    fn cancellation_rejects_invalid_identity_and_claims_without_writes() {
+        for (field, bad) in [
+            ("epoch", json!(1.0)),
+            ("taskClaims", Value::Null),
+            ("status", json!({"scheduled":{}})),
+            ("id", json!("other")),
+        ] {
+            let mut row = resume("resume", "scheduled");
+            row[field] = bad;
+            let db = database(json!({"usageResume":resume("resume", "scheduled")}));
+            insert(&db, "runtime_usage_resumes", "resume", &row);
+            let agent_before = read(&db, "runtime_agents", AGENT);
+            let record_before = read(&db, "runtime_usage_resumes", "resume");
+            let tx = db.unchecked_transaction().unwrap();
+            assert!(
+                matches!(
+                    cancel_usage_resume(&tx, AGENT, "resume", "moved", 200.0),
+                    Err(UsageRepositoryError::InvalidStoredObject {
+                        table: "runtime_usage_resumes",
+                        ..
+                    })
+                ),
+                "{field}"
+            );
+            assert_eq!(read(&tx, "runtime_agents", AGENT), agent_before);
+            assert_eq!(read(&tx, "runtime_usage_resumes", "resume"), record_before);
+            tx.rollback().unwrap();
+        }
     }
 }

@@ -600,6 +600,23 @@ fn check_account_group_parity(openapi: &Value) -> Result<(), String> {
 
 /// Hold the committed OpenAPI document and persisted-state schemas to the Rust owners.
 pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<(), String> {
+    crate::event_metadata::check_schema_parity()?;
+    crate::graph_agent_record::check_schema_parity()?;
+    crate::rule_record::check_schema_parity()?;
+    crate::monitor_record::check_schema_parity()?;
+    crate::tool_result::check_schema_parity()?;
+    crate::transcript_asset::check_schema_parity()?;
+    crate::complaint_record::check_schema_parity()?;
+    crate::checkpoint_record::check_schema_parity()?;
+    crate::plan_record::check_schema_parity()?;
+    crate::annotation_record::check_schema_parity()?;
+    crate::terminal_record::check_schema_parity()?;
+    crate::work_item_record::check_schema_parity()?;
+    crate::request_record::check_schema_parity()?;
+    crate::workspace_operation::check_schema_parity()?;
+    crate::task_record::check_schema_parity()?;
+    crate::transcript_record::check_schema_parity()?;
+    crate::usage_resume_record::check_schema_parity()?;
     for (schema, provider) in PROVIDER_NATIVE_DISCRIMINATORS {
         let path = format!("/components/schemas/{schema}/properties/provider/const");
         if openapi.pointer(&path) != Some(&serde_json::json!(provider)) {
@@ -731,9 +748,11 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         values::MAX_SAFE_INTEGER,
     )?;
     let modes = serde_json::to_value([
+        crate::idle_compaction::Mode::Default,
         crate::idle_compaction::Mode::Off,
         crate::idle_compaction::Mode::Log,
         crate::idle_compaction::Mode::Compact,
+        crate::idle_compaction::Mode::CompactOnReturn,
     ])
     .map_err(|error| error.to_string())?;
     if openapi.pointer("/components/schemas/IdleCompactionSettings/properties/mode/enum")
@@ -1180,6 +1199,8 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     }
     crate::records::refresh_openapi(&mut openapi)?;
     crate::multi_server_protocol::refresh_openapi(&mut openapi);
+    openapi["components"]["schemas"]["BackgroundShellPolicySettings"]["properties"]["quietThresholdMs"]
+        ["not"] = serde_json::json!({"minimum":1,"maximum":crate::shell_policy::QUIET_MIN_MS - 1});
     let native_command = &mut openapi["components"]["schemas"]["NativeCommandRequest"];
     native_command["properties"]["request_id"] = serde_json::json!({
         "type":"string", "format":"uuid",
@@ -1306,6 +1327,75 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     crate::task_command::apply_tool_contract("orchestration_task", &mut task_tool);
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-graph-agent-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-graph-agent-record.schema.json", &serde_json::to_string_pretty(&crate::graph_agent_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/runtime-event-metadata.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/runtime-event-metadata.schema.json", &serde_json::to_string_pretty(&crate::event_metadata::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-rule-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-rule-record.schema.json", &serde_json::to_string_pretty(&crate::rule_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: crate::studio_errors::MONITOR_RECORD_SCHEMA_PATH.into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-monitor-record.schema.json", &serde_json::to_string_pretty(&crate::monitor_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/runtime-transcript-asset.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/runtime-transcript-asset.schema.json", &serde_json::to_string_pretty(&crate::transcript_asset::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-task-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-task-record.schema.json", &serde_json::to_string_pretty(&crate::task_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-transcript-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-transcript-record.schema.json", &serde_json::to_string_pretty(&crate::transcript_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-work-item-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-work-item-record.schema.json", &serde_json::to_string_pretty(&crate::work_item_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-complaint-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-complaint-record.schema.json", &serde_json::to_string_pretty(&crate::complaint_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-checkpoint-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-checkpoint-record.schema.json", &serde_json::to_string_pretty(&crate::checkpoint_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-plan-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-plan-record.schema.json", &serde_json::to_string_pretty(&crate::plan_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-annotation-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-annotation-record.schema.json", &serde_json::to_string_pretty(&crate::annotation_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-terminal-record.schema.json".into(),
+            text: run_node(
+                root,
+                "node_modules/oxfmt/bin/oxfmt",
+                "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-terminal-record.schema.json",
+                &serde_json::to_string_pretty(&crate::terminal_record::schema()).map_err(|error| error.to_string())?,
+            )?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-workspace-operation-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-workspace-operation-record.schema.json", &serde_json::to_string_pretty(&crate::workspace_operation::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-usage-resume-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-usage-resume-record.schema.json", &serde_json::to_string_pretty(&crate::usage_resume_record::schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-request-record.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-request-record.schema.json", &serde_json::to_string_pretty(&crate::request_record::schema()).map_err(|error| error.to_string())?)?,
+        },
         Rendered {
             path: web("persistence.ts"),
             text: persistence_ts(root)?,
@@ -1524,14 +1614,6 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             &serde_json::to_string_pretty(&messages).map_err(|error| error.to_string())?,
         )?,
     });
-    let monitor_path = crate::studio_errors::MONITOR_RECORD_SCHEMA_PATH;
-    let mut monitor = read_json(root, monitor_path)?;
-    monitor["properties"]["status"]["anyOf"][0] =
-        openapi["components"]["schemas"]["MonitorState"].clone();
-    rendered.push(Rendered {
-        path: monitor_path.into(),
-        text: serde_json::to_string_pretty(&monitor).map_err(|error| error.to_string())? + "\n",
-    });
     for (name, pointer) in PROVIDER_PERSISTED_RECORDS {
         let path =
             format!("workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json");
@@ -1694,6 +1776,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .into_generator();
         generator.subschema_for::<crate::supervisor_contract::HealthResult>();
         generator.subschema_for::<crate::persistence::RecipientDelivery>();
+        generator.subschema_for::<crate::approvals::Approval>();
         generator.subschema_for::<crate::provider_diagnostics::StdinTimingDiagnostic>();
         generator.subschema_for::<crate::provider_diagnostics::ReplyTimingDiagnostic>();
         generator.subschema_for::<studio_client_domain::protocol::Request>();

@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine as _;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -66,6 +67,18 @@ const LIMIT_WINDOW_SECONDS: f64 = 600.0;
 const LIMIT_COUNT: usize = 6;
 const CONNECTIONS_PER_UID: usize = 2;
 const LINE_LIMIT: usize = 16 * 1024;
+// The launcher and listener share this wire owner. URL and session remain
+// open JSON until the existing session, UID and URL checks run in order.
+#[derive(Deserialize, Serialize)]
+struct LauncherRequest {
+    #[serde(default)]
+    session: Value,
+    #[serde(default)]
+    url: Value,
+    #[serde(default)]
+    v: Option<serde_json::Number>,
+}
+
 const CONTROL_LINE_LIMIT: usize = 64 * 1024;
 const READ_SECONDS: u64 = 5;
 const CHECK_SECONDS: u64 = 5;
@@ -1314,18 +1327,17 @@ impl HostBridge {
         let Ok(value) = serde_json::from_slice::<Value>(line) else {
             return json!({"ok": false, "code": "invalid_request", "message": "The request is not valid JSON"});
         };
-        if !value.is_object() || value.get("v") != Some(&json!(1)) {
+        // Parse the full document first to retain duplicate-last, number and
+        // depth admission; only then project the known launcher fields.
+        let request = value
+            .is_object()
+            .then(|| LauncherRequest::deserialize(value).ok())
+            .flatten();
+        let Some(request) = request.filter(|request| request.v == Some(1.into())) else {
             return json!({"ok": false, "code": "invalid_request", "message": "Use protocol version 1"});
-        }
+        };
         // `open`: the launcher also opens the link in the browser of this Mac (`local_open`).
-        match self
-            .open_link(
-                uid,
-                value.get("url").unwrap_or(&Value::Null),
-                value.get("session").unwrap_or(&Value::Null),
-            )
-            .await
-        {
+        match self.open_link(uid, &request.url, &request.session).await {
             Ok(item) => {
                 // A joined link waits on a card whose page is already open: no second page.
                 let joined = item["state"] == JOINED;
@@ -1688,7 +1700,11 @@ pub fn shim(
     let [link] = links else {
         return (2, "studio-browser: give exactly one URL".into());
     };
-    let request = json!({"v": 1, "url": link, "session": session});
+    let request = LauncherRequest {
+        v: Some(1.into()),
+        url: json!(link),
+        session: json!(session),
+    };
     let exchange = || -> std::io::Result<Value> {
         let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
         stream.set_read_timeout(Some(Duration::from_secs(15)))?;
@@ -1852,6 +1868,22 @@ mod tests {
             uid: 5,
         }];
         assert_eq!(connect_address(5, 8000, &v6).expect("own listener"), "::1");
+    }
+
+    #[test]
+    fn launcher_request_encoding_preserves_existing_wire_shape() {
+        for session in [None, Some("session")] {
+            let request = LauncherRequest {
+                v: Some(1.into()),
+                url: json!("https://example.test"),
+                session: json!(session),
+            };
+            assert_eq!(
+                serde_json::to_vec(&request).expect("typed request"),
+                serde_json::to_vec(&json!({"v":1,"url":"https://example.test","session":session}))
+                    .expect("original request")
+            );
+        }
     }
 
     #[test]

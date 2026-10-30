@@ -237,13 +237,22 @@ pub fn verify_history_ancestry(
             .ok_or(HistoryFileError::Ancestry)?;
         let (records, digest) = read_prefix(&path, end_byte_offset)?;
         let first = records.first().ok_or(HistoryFileError::Ancestry)?;
-        if first["type"] != "session_meta" || first["payload"]["id"] != thread {
+        let header = crate::analytics_history::SessionHeader::from_value(first);
+        if !header
+            .as_ref()
+            .is_some_and(|header| header.is_session() && header.exact_id(&thread))
+        {
             return Err(HistoryFileError::Ancestry);
         }
 
         let mut previous_ordinal = None;
-        let requires_ordinals =
-            ordinal_end.is_some() || json_truthy(&first["payload"]["history_base"]);
+        let requires_ordinals = ordinal_end.is_some()
+            || json_truthy(
+                header
+                    .as_ref()
+                    .and_then(|header| header.history_base())
+                    .unwrap_or(&Value::Null),
+            );
         for record in &records {
             if requires_ordinals {
                 let ordinal = record["ordinal"]
@@ -261,7 +270,11 @@ pub fn verify_history_ancestry(
             return Err(HistoryFileError::Ancestry);
         }
 
-        let base = first["payload"]["history_base"].clone();
+        let base = header
+            .as_ref()
+            .and_then(|header| header.history_base())
+            .cloned()
+            .unwrap_or(Value::Null);
         if json_truthy(&base) {
             let base_thread = base["thread_id"]
                 .as_str()
@@ -1046,7 +1059,8 @@ fn find_ancestor(
             }
             let (records, _) = read_prefix(&candidate, end)?;
             if records.first().is_some_and(|record| {
-                record["type"] == "session_meta" && record["payload"]["id"] == thread_id
+                crate::analytics_history::SessionHeader::from_value(record)
+                    .is_some_and(|header| header.is_session() && header.exact_id(thread_id))
             }) {
                 candidates.push(candidate);
             }

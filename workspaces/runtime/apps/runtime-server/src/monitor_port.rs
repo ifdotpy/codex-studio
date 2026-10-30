@@ -98,6 +98,47 @@ struct CommandTiming {
     timeout_ms: u64,
 }
 
+// This provider read predates the stricter supervisor receipt contract. Invalid
+// optional fields are ignored independently, as they were in the JSON view.
+#[derive(Deserialize)]
+struct RuleOperationStatus {
+    #[serde(default, deserialize_with = "status_boolean")]
+    accepted: Option<bool>,
+    #[serde(default, deserialize_with = "status_text")]
+    reason: Option<String>,
+    #[serde(default)]
+    response: Value,
+}
+
+#[derive(Deserialize)]
+struct RuleOperationResponse {
+    #[serde(default, deserialize_with = "status_present")]
+    result: Option<Value>,
+    #[serde(default, rename = "exitCode", deserialize_with = "status_integer")]
+    exit_code: Option<i64>,
+    #[serde(default, deserialize_with = "status_text")]
+    error: Option<String>,
+}
+
+fn status_boolean<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
+    Ok(Value::deserialize(d)?.as_bool())
+}
+fn status_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
+}
+fn status_integer<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    Ok(Value::deserialize(d)?.as_i64())
+}
+fn status_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(d).map(Some)
+}
+
+fn rule_response(value: &Value) -> Option<RuleOperationResponse> {
+    studio_runtime_schema::json_object::JsonObject::<RuleOperationResponse>::deserialize(value)
+        .ok()
+        .map(|object| object.0)
+}
+
 pub(crate) struct RetainedMonitorPort {
     store: Arc<RuntimeStore>,
     session: Arc<dyn AccountSessionPort>,
@@ -548,12 +589,10 @@ impl RetainedMonitorPort {
         self.store
             .transaction_with(move |tx| {
                 let (snapshot, _) = studio_runtime_services::monitor_runtime::snapshot(tx, &id)?;
-                if snapshot.record()["status"] != "starting"
+                if snapshot.status()
+                    != studio_runtime_schema::studio_errors::MonitorStatus::Starting
                     || snapshot.operation().is_some()
-                    || snapshot
-                        .record()
-                        .get("ruleId")
-                        .is_some_and(|value| !value.is_null())
+                    || snapshot.rule_id().is_some()
                 {
                     return Ok(());
                 }
@@ -628,11 +667,9 @@ impl RetainedMonitorPort {
             .transaction_with(move |tx| {
                 let (snapshot, _actor) =
                     studio_runtime_services::monitor_runtime::snapshot(tx, &monitor_id)?;
-                if snapshot.record()["status"] != "starting"
-                    || snapshot
-                        .record()
-                        .get("ruleId")
-                        .is_some_and(|value| !value.is_null())
+                if snapshot.status()
+                    != studio_runtime_schema::studio_errors::MonitorStatus::Starting
+                    || snapshot.rule_id().is_some()
                     || snapshot.operation().is_some()
                 {
                     return Err(MonitorError::Refused(
@@ -646,44 +683,44 @@ impl RetainedMonitorPort {
                 if agent.id().as_ref() != snapshot.agent() {
                     return Err(MonitorError::Refused("Monitor owner changed"));
                 }
-                Ok((
-                    saved.value().clone(),
-                    serde_json::to_value(agent).map_err(studio_runtime_store::StoreError::from)?,
-                ))
+                Ok((saved, agent))
             })
             .await?;
-        let timing: CommandTiming = serde_json::from_value(monitor.clone())
+        // PreparedStart's transactional fence compares the original JSON shape.
+        let monitor_value = monitor.value();
+        let timing: CommandTiming = serde_json::from_value(monitor_value.clone())
             .map_err(studio_runtime_store::StoreError::from)?;
         if now >= timing.created + timing.timeout_ms as f64 / 1000.0 {
             return Err(MonitorError::Refused("Monitor startup deadline expired"));
         }
-        let agent_id = monitor["agent"]
-            .as_str()
+        let agent_id = monitor
+            .agent()
             .ok_or(MonitorError::Refused("Monitor owner is invalid"))?;
-        let epoch = monitor["epoch"]
-            .as_u64()
+        let epoch = monitor
+            .epoch
+            .value()
+            .and_then(|value| value.number().as_u64())
             .ok_or(MonitorError::Refused("Monitor epoch is invalid"))?;
-        if actor["epoch"].as_u64() != Some(epoch)
-            || actor["autoWake"] != true
-            || actor["deletedAt"]
-                .as_f64()
+        if u64::try_from(actor.epoch).ok() != Some(epoch)
+            || actor.auto_wake != Some(true)
+            || actor
+                .extra
+                .get("deletedAt")
+                .and_then(Value::as_f64)
                 .is_some_and(|deleted| deleted != 0.0)
         {
             return Err(MonitorError::Refused(
                 studio_runtime_schema::shared_values::MONITOR_OWNER_STOPPED_ERROR,
             ));
         }
-        let cwd = monitor["cwd"]
-            .as_str()
+        let cwd = monitor
+            .cwd
+            .as_deref()
             .filter(|cwd| Path::new(cwd).is_absolute())
             .ok_or(MonitorError::Refused(
                 "Monitor working directory is unavailable",
             ))?;
-        let account = monitor["accountKey"]
-            .as_str()
-            .filter(|account| !account.is_empty())
-            .or_else(|| actor["accountKey"].as_str())
-            .unwrap_or("default");
+        let account = monitor_account(&monitor, &actor);
         let scope = self
             .session
             .ensure_session(account)
@@ -764,23 +801,29 @@ impl RetainedMonitorPort {
                 });
             }
         };
-        let command = monitor["command"]
-            .as_str()
+        let command = monitor
+            .command
+            .as_ref()
+            .map(|value| value.as_str())
             .ok_or(MonitorError::Refused("Monitor command is invalid"))?;
-        let argv = monitor_command(command, &config, actor["executionMode"] == "vm")
-            .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?;
+        let argv = monitor_command(
+            command,
+            &config,
+            actor.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm),
+        )
+        .map_err(|_| MonitorError::Refused("Monitor command preparation was refused"))?;
         let mut params = json!({
             "command":argv,
             "cwd":cwd,
             "processId":id,
             "streamStdoutStderr":true,
-            "timeoutMs":monitor["timeout_ms"],
+            "timeoutMs":timing.timeout_ms,
         });
         apply_turn_permissions(&mut params, &prepared.settings, &actor)
             .map_err(|_| MonitorError::Refused("Monitor sandbox policy refused the command"))?;
         let start = studio_runtime_services::monitor_runtime::PreparedStart {
-            monitor,
-            actor,
+            monitor: monitor_value,
+            actor: serde_json::to_value(actor).map_err(studio_runtime_store::StoreError::from)?,
             operation,
             params,
         };
@@ -832,8 +875,8 @@ impl RetainedMonitorPort {
                 let actor = AgentRepository::get(tx, &AgentId::from(check.agent_id.as_str()))?
                     .ok_or(MonitorError::Refused("Rule agent is unavailable"))?;
                 let check_snapshot =
-                    studio_runtime_services::rules_engine::RuleSnapshot::from_records(
-                        rule.value().clone(),
+                    studio_runtime_services::rules_engine::RuleSnapshot::from_stored(
+                        &rule,
                         actor.value(),
                     )
                     .map_err(|_| MonitorError::Refused("Rule check record is invalid"))?;
@@ -891,14 +934,15 @@ impl RetainedMonitorPort {
                 // never take over this deterministic monitor identity.
                 let saved = MonitorsRepository::get(tx, &check.monitor_id)?
                     .ok_or(MonitorError::Refused("Monitor record disappeared"))?;
-                if saved.get("ruleId").and_then(Value::as_str) != Some(&check.rule_id)
-                    || saved.get("command").and_then(Value::as_str) != Some(&check.command)
+                if saved.rule_id.value() != Some(&check.rule_id)
+                    || saved.command.as_ref().map(|command| command.as_str())
+                        != Some(check.command.as_str())
                 {
                     return Err(MonitorError::Refused(
                         "Rule monitor identity has different content",
                     ));
                 }
-                Ok(saved.value().clone())
+                Ok(saved.value())
             })
             .await
             .map_err(|error: MonitorError| error.to_string())
@@ -914,9 +958,7 @@ impl RetainedMonitorPort {
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "Rule agent is unavailable".to_owned())?;
-        let actor_value = serde_json::to_value(&actor).map_err(|error| error.to_string())?;
-        let approved = actor_value["yoloMode"] == true
-            || actor_value["approvalPolicy"].as_str() == Some("never");
+        let approved = rule_liveness_approved(&actor);
         if check.liveness && !approved {
             return Ok(CheckSubmission::NotSubmitted {
                 error: "Liveness command not run because monitor approval is required.".into(),
@@ -946,16 +988,17 @@ impl RetainedMonitorPort {
             .store
             .read_async("runtime-server/rule-monitor-admission", move |db| {
                 MonitorsRepository::get(db, &monitor_id)?
-                    .map(|record| record.value().clone())
                     .ok_or(MonitorError::Refused("Rule monitor disappeared"))
             })
             .await
             .map_err(|error| error.to_string())?;
-        if monitor["status"] == "approval" || monitor["status"] != "starting" {
+        if monitor.status() != Some(studio_runtime_schema::studio_errors::MonitorStatus::Starting) {
             return Ok(CheckSubmission::Accepted);
         }
-        let cwd = actor_value["cwd"]
-            .as_str()
+        let cwd = actor
+            .extra
+            .get("cwd")
+            .and_then(Value::as_str)
             .filter(|cwd| Path::new(cwd).is_absolute())
             .ok_or_else(|| "Rule working directory is unavailable".to_owned())?;
         let scope = self
@@ -1004,7 +1047,7 @@ impl RetainedMonitorPort {
         let command = monitor_command(
             &check.command,
             &config,
-            actor_value["executionMode"] == "vm",
+            actor.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm),
         )?;
         let mut params = json!({
             "command":command,
@@ -1013,10 +1056,10 @@ impl RetainedMonitorPort {
             "streamStdoutStderr":true,
             "timeoutMs":check.timeout_ms,
         });
-        apply_turn_permissions(&mut params, &prepared_action.settings, &actor_value)?;
+        apply_turn_permissions(&mut params, &prepared_action.settings, &actor)?;
         let prepared = studio_runtime_services::monitor_runtime::PreparedStart {
-            monitor: monitor.clone(),
-            actor: actor_value,
+            monitor: monitor.value(),
+            actor: serde_json::to_value(&actor).map_err(|error| error.to_string())?,
             operation: operation.clone(),
             params,
         };
@@ -1050,7 +1093,10 @@ impl RetainedMonitorPort {
             return CheckReconciliation::Submitted;
         }
         let monitor_id = check.monitor_id.clone();
-        let loaded: Result<Option<(Value, MonitorSnapshot)>, MonitorError> = self
+        let loaded: Result<
+            Option<(studio_runtime_store::MonitorRecord, MonitorSnapshot)>,
+            MonitorError,
+        > = self
             .store
             .transaction_with(move |tx| {
                 let Some(record) = MonitorsRepository::get(tx, &monitor_id)? else {
@@ -1058,20 +1104,31 @@ impl RetainedMonitorPort {
                 };
                 let (snapshot, _) =
                     studio_runtime_services::monitor_runtime::snapshot(tx, &monitor_id)?;
-                Ok(Some((record.value().clone(), snapshot)))
+                Ok(Some((record, snapshot)))
             })
             .await;
         let Ok(Some((record, snapshot))) = loaded else {
             return CheckReconciliation::Unknown;
         };
-        if record["ruleId"].as_str() != Some(&check.rule_id)
-            || record["command"].as_str() != Some(&check.command)
-            || record["agent"].as_str() != Some(&check.agent_id)
-            || record["epoch"].as_u64() != Some(check.epoch)
+        if record.rule_id.value().map(String::as_str) != Some(check.rule_id.as_str())
+            || record.command.as_ref().map(|command| command.as_str())
+                != Some(check.command.as_str())
+            || record.agent() != Some(check.agent_id.as_str())
+            || record
+                .epoch
+                .value()
+                .and_then(|epoch| epoch.number().as_u64())
+                != Some(check.epoch)
         {
             return CheckReconciliation::Unknown;
         }
-        if matches!(record["status"].as_str(), Some("approval" | "starting")) {
+        if matches!(
+            record.status(),
+            Some(
+                studio_runtime_schema::studio_errors::MonitorStatus::Approval
+                    | studio_runtime_schema::studio_errors::MonitorStatus::Starting
+            )
+        ) {
             return CheckReconciliation::Submitted;
         }
         let Some(operation) = snapshot.operation() else {
@@ -1093,12 +1150,19 @@ impl RetainedMonitorPort {
                 let Some(ProviderResponse::Reply(result)) = receipt.into_response() else {
                     return CheckReconciliation::Unknown;
                 };
-                if result["accepted"] == true {
-                    if let Some(response) = result.get("response").filter(|value| !value.is_null())
-                    {
-                        let response = response.get("result").unwrap_or(response);
-                        let code = response["exitCode"].as_i64();
-                        let error = response["error"].as_str().map(str::to_owned);
+                let Ok(studio_runtime_schema::json_object::JsonObject(result)) =
+                    studio_runtime_schema::json_object::JsonObject::<RuleOperationStatus>::deserialize(&result)
+                else {
+                    return CheckReconciliation::Unknown;
+                };
+                if result.accepted == Some(true) {
+                    if let Some(response) = rule_response(&result.response) {
+                        let response = match response.result {
+                            Some(nested) => rule_response(&nested),
+                            None => Some(response),
+                        };
+                        let (code, error) =
+                            response.map_or((None, None), |value| (value.exit_code, value.error));
                         if code.is_some() || error.is_some() {
                             let queued = monitor_event_queue::enqueue_exit(
                                 &self.store,
@@ -1117,11 +1181,10 @@ impl RetainedMonitorPort {
                         }
                     }
                     CheckReconciliation::Submitted
-                } else if result["accepted"] == false {
-                    let reason = result["reason"]
-                        .as_str()
-                        .unwrap_or("Native monitor command was not accepted")
-                        .to_owned();
+                } else if result.accepted == Some(false) {
+                    let reason = result
+                        .reason
+                        .unwrap_or_else(|| "Native monitor command was not accepted".to_owned());
                     let now = studio_runtime_services::event_write::unix_time().unwrap_or(0.0);
                     let monitor_id = check.monitor_id.clone();
                     let operation = operation.clone();
@@ -1174,11 +1237,10 @@ impl RetainedMonitorPort {
                 let Some(record) = MonitorsRepository::get(tx, &monitor_id)? else {
                     return Ok(None);
                 };
-                if record.get("ruleId").and_then(Value::as_str) != Some(&rule_id)
-                    || record.get("status").and_then(Value::as_str) != Some("starting")
-                    || record
-                        .get("operation")
-                        .is_some_and(|operation| !operation.is_null())
+                if record.rule_id.value() != Some(&rule_id)
+                    || record.status()
+                        != Some(studio_runtime_schema::studio_errors::MonitorStatus::Starting)
+                    || record.operation.value().is_some()
                 {
                     return Ok(Some(false));
                 }
@@ -1404,7 +1466,7 @@ impl RuleMonitor for RetainedMonitorPort {
                         let Some(monitor) = MonitorsRepository::get(db, &monitor_id_owned)? else {
                             return Ok(None);
                         };
-                        let Some(agent) = monitor.get("agent").and_then(Value::as_str) else {
+                        let Some(agent) = monitor.agent() else {
                             return Err(RulesTickError::MonitorUnavailable);
                         };
                         Ok(Some(agent.to_owned()))
@@ -1705,8 +1767,6 @@ impl MonitorPort for RetainedMonitorPort {
             let dispatch_wake = self.dispatch_wake.get().cloned();
             let id = id.to_owned();
             let command = command.to_owned();
-            let actor = serde_json::to_value(actor)
-                .map_err(|_| MonitorError::Refused("Monitor actor is invalid"))?;
             let probe_task = tokio::spawn(async move {
                 let prepare_store = Arc::clone(&store);
                 let prepare_resources = Arc::clone(&resources);
@@ -1794,7 +1854,7 @@ struct MonitorProbeRequest<'a> {
     generation: i64,
     command: &'a str,
     operation: &'a studio_runtime_services::monitor_policy::Operation,
-    actor: Value,
+    actor: studio_runtime_store::AgentRecord,
 }
 
 async fn run_probe(
@@ -1810,15 +1870,13 @@ async fn run_probe(
         operation,
         actor,
     } = request;
-    if actor["yoloMode"]
-        .as_bool()
-        .or_else(|| actor["approvalPolicy"].as_str().map(|v| v == "never"))
-        != Some(true)
-    {
+    if !probe_liveness_approved(&actor) {
         return Err("Liveness command not run because monitor approval is required.".into());
     }
-    let cwd = actor["cwd"]
-        .as_str()
+    let cwd = actor
+        .extra
+        .get("cwd")
+        .and_then(Value::as_str)
         .filter(|cwd| Path::new(cwd).is_absolute())
         .ok_or_else(|| "Thread working directory is unavailable".to_owned())?;
     let config_operation = format!("monitor-config:{id}:{generation}");
@@ -1846,7 +1904,7 @@ async fn run_probe(
     if !config.is_object() {
         return Err("Provider configuration is invalid; liveness command was not submitted".into());
     }
-    let guest = actor["executionMode"].as_str() == Some("vm");
+    let guest = actor.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm);
     let argv = monitor_command(command, &config, guest)?;
     let mut params = json!({
         "command":argv,
@@ -1987,10 +2045,44 @@ async fn provider_request(
     Ok(receipt)
 }
 
+fn monitor_account<'a>(
+    monitor: &'a studio_runtime_store::MonitorRecord,
+    actor: &'a studio_runtime_store::AgentRecord,
+) -> &'a str {
+    monitor
+        .extra
+        .get("accountKey")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(actor.account_key.as_str())
+}
+
+// Rule launch and existing probes intentionally use different precedence:
+// a boolean false overrides the policy only for an already-running probe.
+fn rule_liveness_approved(actor: &studio_runtime_store::AgentRecord) -> bool {
+    actor.extra.get("yoloMode") == Some(&Value::Bool(true))
+        || actor.extra.get("approvalPolicy").and_then(Value::as_str) == Some("never")
+}
+
+fn probe_liveness_approved(actor: &studio_runtime_store::AgentRecord) -> bool {
+    actor
+        .extra
+        .get("yoloMode")
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            actor
+                .extra
+                .get("approvalPolicy")
+                .and_then(Value::as_str)
+                .map(|value| value == "never")
+        })
+        == Some(true)
+}
+
 fn apply_turn_permissions(
     params: &mut Value,
     settings: &Value,
-    actor: &Value,
+    actor: &studio_runtime_store::AgentRecord,
 ) -> Result<(), String> {
     if let Some(policy) = settings
         .get("sandboxPolicy")
@@ -2000,12 +2092,19 @@ fn apply_turn_permissions(
         return Ok(());
     }
     let sandbox = actor
+        .extra
         .get("sandbox")
         .filter(|value| studio_runtime_store::truthy(Some(value)));
     if sandbox.is_none() {
         return Err("Thread sandbox is unknown; refusing liveness command".into());
     }
-    if let Some(profile) = actor["profile"]["id"].as_str().filter(|id| !id.is_empty()) {
+    if let Some(profile) = actor
+        .extra
+        .get("profile")
+        .and_then(|profile| profile.get("id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+    {
         params["permissionProfile"] = json!(profile);
     } else {
         params["sandboxPolicy"] = sandbox.cloned().unwrap_or(Value::Null);
@@ -2022,6 +2121,52 @@ mod tests {
 
     struct NoSession;
     impl AccountSessionPort for NoSession {}
+
+    #[test]
+    fn monitor_account_fallback_matches_partial_json() {
+        for monitor_account in [Value::Null, json!(""), json!("watch-account"), json!(2)] {
+            for actor_account in [json!(""), json!("owner-account"), json!("default")] {
+                let mut raw_monitor = starting_watch(Path::new("/"), "watch");
+                raw_monitor["accountKey"] = monitor_account.clone();
+                let mut raw_actor = owner(Path::new("/"), true);
+                raw_actor["accountKey"] = actor_account.clone();
+                let monitor = studio_runtime_store::MonitorRecord::from_value(raw_monitor.clone())
+                    .expect("monitor");
+                let actor = studio_runtime_store::AgentRecord::from_value(raw_actor.clone())
+                    .expect("actor");
+                let legacy = raw_monitor["accountKey"]
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| raw_actor["accountKey"].as_str())
+                    .unwrap_or("default");
+                assert_eq!(super::monitor_account(&monitor, &actor), legacy);
+            }
+        }
+    }
+
+    #[test]
+    fn monitor_actor_permissions_preserve_partial_json_precedence() {
+        for yolo in [Value::Null, json!(true), json!(false), json!("bad")] {
+            for policy in [Value::Null, json!("never"), json!("ask"), json!(3)] {
+                let mut raw = owner(Path::new("/"), true);
+                raw["yoloMode"] = yolo.clone();
+                raw["approvalPolicy"] = policy.clone();
+                let actor: studio_runtime_store::AgentRecord =
+                    serde_json::from_value(raw.clone()).expect("actor fixture");
+                assert_eq!(
+                    rule_liveness_approved(&actor),
+                    raw["yoloMode"] == true || raw["approvalPolicy"].as_str() == Some("never")
+                );
+                assert_eq!(
+                    probe_liveness_approved(&actor),
+                    raw["yoloMode"]
+                        .as_bool()
+                        .or_else(|| raw["approvalPolicy"].as_str().map(|v| v == "never"))
+                        == Some(true)
+                );
+            }
+        }
+    }
 
     #[test]
     fn terminal_exit_requires_a_definitive_outcome() {
@@ -3266,7 +3411,6 @@ mod tests {
                 .expect("read")
                 .expect("watch")
                 .value()
-                .clone()
         };
         if generation == 2 {
             let watch = read(Arc::clone(&store)).await;
@@ -3423,7 +3567,6 @@ mod tests {
                 .expect("read")
                 .expect("watch")
                 .value()
-                .clone()
         };
         let exits = |store: Arc<RuntimeStore>| async move {
             store
@@ -3855,6 +3998,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn monitor_start_inactive_owner_fence_precedes_deadline() {
+        let root = tempfile::tempdir().expect("state root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let actor = owner(root.path(), false);
+        let watch = starting_watch(root.path(), "watch");
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(actor)?)?;
+                studio_runtime_store::Table::new(tx)
+                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                Ok::<_, studio_runtime_store::StoreError>(())
+            })
+            .await
+            .expect("seed watch");
+        let port = RetainedMonitorPort::new(store, Arc::new(NoSession));
+        let error = port
+            .dispatch_monitor_start("watch", 62.0)
+            .await
+            .expect_err("expired start");
+        assert!(
+            error
+                .to_string()
+                .contains("Monitor owner is no longer active"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
     async fn monitor_completion_expired_preparation_wakes_without_submitting() {
         let root = tempfile::tempdir().expect("state root");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
@@ -4046,7 +4217,7 @@ mod tests {
         let cwd = root.path().to_string_lossy().into_owned();
         let owner = json!({"id":"owner","rootId":"owner","epoch":0,"status":"waiting",
             "autoWake":true,"cwd":cwd,"accountKey":"default","provider":"codex"});
-        let rule = json!({"id":"rule","agent":"owner","rootId":"owner","epoch":0,
+        let rule = json!({"accountKey":"default","id":"rule","agent":"owner","rootId":"owner","epoch":0,
             "name":"watch","kind":"interval","intervalSeconds":240,"nextAt":2.0,"at":1.0,
             "path":null,"event":"worker_completed","command":"true","text":"Report.",
             "status":"active","created":1.0,"inFlight":true,"checks":7,"wakes":0,
@@ -4079,7 +4250,7 @@ mod tests {
         let cwd = root.to_string_lossy().into_owned();
         let owner = json!({"id":"owner","rootId":"owner","epoch":0,"status":"waiting",
             "autoWake":true,"cwd":cwd,"accountKey":"default","provider":"codex"});
-        let mut rule = json!({"id":"rule","agent":"owner","rootId":"owner","epoch":0,
+        let mut rule = json!({"accountKey":"default","id":"rule","agent":"owner","rootId":"owner","epoch":0,
             "name":"watch","kind":"interval","intervalSeconds":240,"nextAt":2.0,"at":1.0,
             "path":null,"event":"worker_completed","command":"sleep 3600","text":"Report.",
             "status":"active","created":1.0,"inFlight":true,"checks":7,"wakes":0,
@@ -4100,6 +4271,114 @@ mod tests {
         check
     }
 
+    #[tokio::test]
+    async fn rule_reconciliation_preserves_partial_status_and_exit_receipts() {
+        for (response, submitted, exits) in [
+            (json!({"accepted":true,"response":{"exitCode":0}}), true, 1),
+            (
+                json!({"accepted":true,"response":{"result":null,"exitCode":0}}),
+                true,
+                0,
+            ),
+            (
+                json!({"accepted":true,"response":{"result":{"error":"failed"}}}),
+                true,
+                1,
+            ),
+            (
+                json!({"accepted":"true","response":{"exitCode":0}}),
+                false,
+                0,
+            ),
+            (json!({"accepted":true,"response":null}), true, 0),
+            (json!({"accepted":false,"reason":42}), true, 0),
+            (
+                json!({"accepted":true,"response":{"exitCode":1.0,"error":false}}),
+                true,
+                0,
+            ),
+            (
+                serde_json::from_str(
+                    r#"{"accepted":false,"accepted":true,"response":{"exitCode":0}}"#,
+                )
+                .unwrap(),
+                true,
+                1,
+            ),
+        ] {
+            let root = tempfile::tempdir().expect("fixture");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+            let check = seed_in_flight_rule(&store, root.path()).await;
+            let (operation, _, _) = retained_command(root.path(), Some(42));
+            let mut watch = starting_watch(root.path(), &check.monitor_id);
+            watch["status"] = json!("running");
+            watch["ruleId"] = json!(check.rule_id);
+            watch["command"] = json!(check.command);
+            watch["operation"] = json!(operation);
+            store
+                .transaction(move |tx| {
+                    studio_runtime_store::Table::new(tx)
+                        .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)?;
+                    Ok::<_, studio_runtime_store::StoreError>(())
+                })
+                .await
+                .expect("monitor");
+            let session = Arc::new(ExecSession {
+                input_writes: Default::default(),
+                terminate: Mutex::new(Some(ProviderResponse::Reply(response.clone()))),
+            });
+            let unknown_port =
+                RetainedMonitorPort::new(Arc::clone(&store), Arc::new(ExecSession::default()));
+            assert_eq!(
+                unknown_port.reconcile_rule_check(&check).await,
+                CheckReconciliation::Unknown
+            );
+            let port = RetainedMonitorPort::new(Arc::clone(&store), session);
+            let mut mismatched = check.clone();
+            mismatched.epoch += 1;
+            assert_eq!(
+                port.reconcile_rule_check(&mismatched).await,
+                CheckReconciliation::Unknown
+            );
+            let outcome = port.reconcile_rule_check(&check).await;
+            assert_eq!(
+                outcome == CheckReconciliation::Submitted,
+                submitted,
+                "{response}"
+            );
+            let record = store
+                .read_async("test/rule-monitor", move |db| {
+                    MonitorsRepository::get(db, &check.monitor_id)
+                })
+                .await
+                .expect("read")
+                .expect("monitor")
+                .value();
+            assert_eq!(
+                record["streamQueue"].as_array().map_or(0, Vec::len),
+                exits,
+                "{response}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rule_monitor_admission_rejects_a_changed_check() {
+        let root = tempfile::tempdir().expect("state root");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let mut check = seed_in_flight_rule(&store, root.path()).await;
+        check.command = "changed".into();
+        let port = RetainedMonitorPort::new(Arc::clone(&store), Arc::new(NoSession));
+        let error = port
+            .persist_rule_monitor(&check)
+            .await
+            .expect_err("stale check");
+        assert!(
+            error.contains("Rule check changed before monitor admission"),
+            "{error}"
+        );
+    }
+
     async fn saved_rule(store: &RuntimeStore) -> Value {
         store
             .read_async("test", |db| RulesRepository::get(db, "rule"))
@@ -4107,7 +4386,6 @@ mod tests {
             .expect("read rule")
             .expect("rule")
             .value()
-            .clone()
     }
 
     async fn settled_rule(store: &RuntimeStore) -> Value {

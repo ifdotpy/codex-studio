@@ -85,13 +85,13 @@ async fn fixture(provider: &'static str) -> (State, String) {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.thread_id = None;
                     for (key, value) in [
-
                         ("workspaceMode", json!("layr")),
                         ("layrReady", json!(true)),
                         ("provider", json!(provider)),
                         ("cwd", json!("/home/studio/project")),
-
-                    ] { record.extra.insert(key.into(), value); }
+                    ] {
+                        record.extra.insert(key.into(), value);
+                    }
                     AgentRepository::put(tx, &record)?;
                     record.id = AgentId::from(sibling_id.as_str());
                     record.root_id = record.id.clone();

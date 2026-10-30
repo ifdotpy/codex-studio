@@ -22,6 +22,7 @@ Each bug fix needs a failing test first and a passing `just test-fast` stated in
 a package for installation also needs `just test-comprehensive` on its exact commit.
 Keep test load low: run focused tests, use `cargo -j 4`, and run at most one full
 `just test-fast` or workspace nextest at a time per agent.
+The full gates take a machine-wide lock (`/tmp/studio-gate.lock`), so a second one waits.
 
 Read README.md and the relevant source before editing. Use the engineering-protocol
 skill for substantive work when it is available. Match checks to the changed scope.

@@ -18,96 +18,6 @@ pub(crate) mod validation_counts {
     }
 }
 
-macro_rules! row_key_accessor {
-    ($name:ident, $id:ty, PayloadId) => {
-        impl $name {
-            pub fn id(&self) -> &$id {
-                // `from_value` caches the required payload ID before a record
-                // can enter a typed table operation.
-                self.row_key.as_ref().expect("payload-id record has no id")
-            }
-        }
-    };
-    ($name:ident, $id:ty, External) => {};
-}
-
-macro_rules! record_newtype {
-    ($name:ident, $id:ty, table = $table:literal, schema = $schema:literal,
-     key = $key:ident, query = $query:ident) => {
-        #[derive(Clone, Debug, PartialEq)]
-        pub struct $name {
-            row_key: Option<$id>,
-            value: Value,
-        }
-
-        impl $name {
-            pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
-                let row_key = match RecordKeyMode::$key {
-                    RecordKeyMode::PayloadId => Some(<$id>::from(record_id(&value)?)),
-                    RecordKeyMode::External => None,
-                };
-                Ok(Self { row_key, value })
-            }
-
-            pub fn value(&self) -> &Value {
-                &self.value
-            }
-
-            pub fn into_value(self) -> Value {
-                self.value
-            }
-
-            pub fn get(&self, key: &str) -> Option<&Value> {
-                self.value.get(key)
-            }
-
-            pub fn set(&mut self, key: impl Into<String>, value: Value) {
-                if let Some(object) = self.value.as_object_mut() {
-                    object.insert(key.into(), value);
-                }
-            }
-
-            pub fn remove(&mut self, key: &str) -> Option<Value> {
-                self.value.as_object_mut()?.remove(key)
-            }
-        }
-
-        row_key_accessor!($name, $id, $key);
-
-        impl Serialize for $name {
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: serde::Serializer,
-            {
-                self.value.serialize(serializer)
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: serde::Deserializer<'de>,
-            {
-                Self::from_value(Value::deserialize(deserializer)?)
-                    .map_err(serde::de::Error::custom)
-            }
-        }
-
-        impl JsonRecord for $name {
-            type Id = $id;
-
-            const TABLE: &'static str = $table;
-            const SCHEMA: &'static str = $schema;
-            const KEY_MODE: RecordKeyMode = RecordKeyMode::$key;
-            const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::$query;
-
-            fn record_key(&self) -> Option<&Self::Id> {
-                self.row_key.as_ref()
-            }
-        }
-    };
-}
-
 macro_rules! string_id {
     ($name:ident) => {
         #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -135,11 +45,11 @@ macro_rules! string_id {
 }
 
 string_id!(AgentId);
-string_id!(TaskId);
+pub use studio_runtime_schema::task_record::TaskId;
 string_id!(QueueEventId);
 string_id!(ChatMessageId);
-string_id!(TranscriptItemId);
-string_id!(TranscriptAssetId);
+pub use studio_runtime_schema::transcript_asset::{TranscriptAssetId, TranscriptAssetRecord};
+pub use studio_runtime_schema::transcript_record::TranscriptItemId;
 
 /// A future agent status that is distinct from every known status.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -235,11 +145,6 @@ pub enum AgentExecutionMode {
     Vm,
 }
 
-// Transitional for Value-based creation paths; remove when they supply accountKey.
-fn default_account_key() -> String {
-    crate::cost_aggregate::DEFAULT_ACCOUNT.to_owned()
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRecord {
@@ -252,10 +157,11 @@ pub struct AgentRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_wake: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_resume_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_mode: Option<AgentExecutionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_epoch: Option<i64>,
-    #[serde(default = "default_account_key")]
     pub account_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
@@ -556,9 +462,10 @@ impl AgentRecord {
             status: AgentStatus::Unknown,
             in_flight: None,
             auto_wake: None,
+            usage_resume_enabled: None,
             execution_mode: None,
             turn_epoch: None,
-            account_key: default_account_key(),
+            account_key: crate::cost_aggregate::DEFAULT_ACCOUNT.to_owned(),
             thread_id: None,
             turn_id: None,
             title_job: None,
@@ -642,7 +549,7 @@ impl AgentRecord {
     }
 
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
-        serde_json::from_value(value)
+        Self::deserialize(value)
     }
 
     pub fn id(&self) -> &AgentId {
@@ -665,6 +572,9 @@ impl AgentRecord {
         }
         if let Some(auto_wake) = self.auto_wake {
             value["autoWake"] = Value::Bool(auto_wake);
+        }
+        if let Some(enabled) = self.usage_resume_enabled {
+            value["usageResumeEnabled"] = Value::Bool(enabled);
         }
         if let Some(mode) = self.execution_mode {
             value["executionMode"] = crate::projection_value(&mode);
@@ -722,248 +632,667 @@ impl JsonRecord for AgentRecord {
     fn record_key(&self) -> Option<&Self::Id> {
         Some(&self.id)
     }
+
+    fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
+        let mut value = parse_agent_value(row_id, encoded)?;
+        crate::agent_volatile::merge(connection, row_id, &mut value)?;
+        let projection = checked_agent_projection(row_id, &value)?;
+        let id = AgentId(projection.id);
+        let root_id = AgentId(projection.root_id);
+        let epoch = projection.epoch.as_i64();
+        let status = AgentStatus::parse(&projection.status);
+        let Value::Object(mut fields) = value else {
+            return Err(invalid_agent_field(row_id, "", "record_decode", None));
+        };
+        for key in ["id", "rootId", "epoch", "status"] {
+            fields.remove(key);
+        }
+        fn field<T: DeserializeOwned>(
+            fields: &mut serde_json::Map<String, Value>,
+            key: &str,
+        ) -> Result<Option<T>, serde_json::Error> {
+            fields
+                .remove(key)
+                .map(Option::<T>::deserialize)
+                .transpose()
+                .map(Option::flatten)
+        }
+        let decode = |_: serde_json::Error| invalid_agent_field(row_id, "", "record_decode", None);
+        let in_flight = field(&mut fields, "inFlight").map_err(decode)?;
+        let auto_wake = field(&mut fields, "autoWake").map_err(decode)?;
+        let execution_mode = field(&mut fields, "executionMode").map_err(decode)?;
+        let turn_epoch = field(&mut fields, "turnEpoch").map_err(decode)?;
+        let account_key = fields
+            .remove("accountKey")
+            .map(String::deserialize)
+            .transpose()
+            .map_err(decode)?
+            .ok_or_else(|| invalid_agent_field(row_id, "accountKey", "record_decode", None))?;
+        let thread_id = field(&mut fields, "threadId").map_err(decode)?;
+        let turn_id = field(&mut fields, "turnId").map_err(decode)?;
+        let title_job = field(&mut fields, "titleJob").map_err(decode)?;
+        let start_outcome_hold = field(&mut fields, "startOutcomeHold").map_err(decode)?;
+        let fired_events = fields
+            .remove("firedEvents")
+            .map(BTreeSet::<String>::deserialize)
+            .transpose()
+            .map_err(decode)?
+            .unwrap_or_default();
+        let native_review_thread = field(&mut fields, "nativeReviewThread").map_err(decode)?;
+        let vm_launch = field(&mut fields, "vmLaunch").map_err(decode)?;
+        let credential_copy = field(&mut fields, "credentialCopy").map_err(decode)?;
+        let vm_auth_bootstrap = field(&mut fields, "vmAuthBootstrap").map_err(decode)?;
+        let native_release = field(&mut fields, "nativeRelease").map_err(decode)?;
+        Ok(Self {
+            id,
+            root_id,
+            epoch,
+            status,
+            in_flight,
+            auto_wake,
+            usage_resume_enabled: field(&mut fields, "usageResumeEnabled").map_err(decode)?,
+            execution_mode,
+            turn_epoch,
+            account_key,
+            thread_id,
+            turn_id,
+            title_job,
+            start_outcome_hold,
+            fired_events,
+            native_review_thread,
+            vm_launch,
+            credential_copy,
+            vm_auth_bootstrap,
+            native_release,
+            extra: fields.into_iter().collect(),
+        })
+    }
 }
 
 pub use studio_runtime_schema::records::WorkStatus;
 
-record_newtype!(
-    TaskRecord,
-    TaskId,
-    table = "runtime_tasks",
-    schema = "PersistedTaskRecord",
-    key = PayloadId,
-    query = JsonAgent
-);
-record_newtype!(
-    PlanRecord,
-    AgentId,
-    table = "runtime_plans",
-    schema = "PersistedPlanRecord",
-    key = External,
-    query = None
-);
-record_newtype!(
-    AnnotationRecord,
-    String,
-    table = "runtime_annotations",
-    schema = "PersistedAnnotationRecord",
-    key = PayloadId,
-    query = None
-);
-record_newtype!(
-    ToolResultRecord,
-    String,
-    table = "request_results",
-    schema = "PersistedToolResult",
-    key = External,
-    query = None
-);
-record_newtype!(
-    RequestRecord,
-    String,
-    table = "runtime_requests",
-    schema = "PersistedRequestRecord",
-    key = PayloadId,
-    query = JsonAgent
-);
-record_newtype!(
-    ComplaintRecord,
-    String,
-    table = "runtime_complaints",
-    schema = "PersistedComplaintRecord",
-    key = PayloadId,
-    query = None
-);
-record_newtype!(
-    CheckpointRecord,
-    String,
-    table = "runtime_checkpoints",
-    schema = "PersistedCheckpointRecord",
-    key = PayloadId,
-    query = JsonAgent
-);
-record_newtype!(
-    MonitorRecord,
-    String,
-    table = "runtime_monitors",
-    schema = "PersistedMonitorRecord",
-    key = PayloadId,
-    query = JsonAgent
-);
-record_newtype!(
-    TerminalRecord,
-    String,
-    table = "user_terminals",
-    schema = "PersistedTerminalRecord",
-    key = PayloadId,
-    query = None
-);
-record_newtype!(
-    UsageResumeRecord,
-    String,
-    table = "runtime_usage_resumes",
-    schema = "PersistedUsageResumeRecord",
-    key = External,
-    query = UsageResumeRecovery
-);
-/// Checked operational fields plus the original extensible record. Retaining
-/// the original JSON preserves omission, nulls and historical extension fields.
+pub use studio_runtime_schema::task_record::TaskRecord;
+impl JsonRecord for TaskRecord {
+    type Id = TaskId;
+    const TABLE: &'static str = "runtime_tasks";
+    const SCHEMA: &'static str = "PersistedTaskRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+pub use studio_runtime_schema::plan_record::PlanRecord;
+
+#[cfg(test)]
+mod duplicate_stored_record_tests {
+    use super::*;
+
+    fn check<R: JsonRecord>(raw: &str, row_id: &str) {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(&format!(
+            "CREATE TABLE {}(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+            R::TABLE
+        ))
+        .unwrap();
+        db.execute(
+            &format!("INSERT INTO {}(id,record) VALUES(?1,?2)", R::TABLE),
+            [row_id, raw],
+        )
+        .unwrap();
+        let expected: Value = serde_json::from_str(raw).unwrap();
+        assert!(studio_runtime_schema::validate(R::SCHEMA, &expected).unwrap());
+        let record = Table::<R>::new(&db)
+            .get(&R::Id::from(row_id.to_owned()))
+            .unwrap()
+            .unwrap();
+        let encoded = serde_json::to_string(&record).unwrap();
+        let actual: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(actual, expected);
+        db.execute(&format!("UPDATE {} SET id='different'", R::TABLE), [])
+            .unwrap();
+        let other = Table::<R>::new(&db).get(&R::Id::from("different".to_owned()));
+        if R::KEY_MODE == RecordKeyMode::PayloadId {
+            assert!(matches!(
+                other,
+                Err(crate::StoreError::InvalidStoredObject { .. })
+            ));
+        } else {
+            assert!(other.unwrap().is_some());
+        }
+    }
+
+    #[test]
+    fn duplicate_stored_record_plan() {
+        check::<PlanRecord>(
+            r#"{"id":"first","id":"last","rootId":"r","text":"x","version":1.0,"updated":null,"extra":{"x":1}}"#,
+            "external",
+        );
+    }
+    #[test]
+    fn duplicate_stored_record_annotation() {
+        check::<AnnotationRecord>(r#"{"id":"other","id":"a","line":1.0,"future":null}"#, "a");
+    }
+    #[test]
+    fn duplicate_stored_record_complaint() {
+        check::<ComplaintRecord>(
+            r#"{"id":"other","id":"c","status":"future","extra":[1]}"#,
+            "c",
+        );
+    }
+    #[test]
+    fn duplicate_stored_record_checkpoint() {
+        check::<CheckpointRecord>(r#"{"id":"other","id":"c","agent":null,"future":[1]}"#, "c");
+    }
+    #[test]
+    fn duplicate_stored_record_monitor() {
+        check::<MonitorRecord>(r#"{"id":"other","id":"m","future":null}"#, "m");
+    }
+    #[test]
+    fn duplicate_stored_record_asset() {
+        check::<TranscriptAssetRecord>(
+            r#"{"id":"other","id":"a","agent":"owner","name":"n","path":"p","mime":"m","image":false,"size":1.0,"hash":"h","created":2,"future":[1]}"#,
+            "a",
+        );
+    }
+    #[test]
+    fn duplicate_stored_record_workspace() {
+        check::<WorkspaceOperationRecord>(
+            r#"{"id":"other","id":"op","agent":"a","kind":"branch","phase":"provider_pending","other":{"opaque":[1,null]}}"#,
+            "op",
+        );
+    }
+}
+
+impl JsonRecord for PlanRecord {
+    type Id = AgentId;
+    const TABLE: &'static str = "runtime_plans";
+    const SCHEMA: &'static str = "PersistedPlanRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::External;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        None
+    }
+}
+#[cfg(test)]
+mod plan_typed_tests {
+    use super::{AgentId, PlanRecord, Table};
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[test]
+    fn plan_deserialization_enforces_shape_and_preserves_extensions() {
+        for invalid in [
+            json!({"id":"a"}),
+            json!({"id":"a","rootId":"r","text":"","version":1.5,"updated":null}),
+            json!({"id":"a","rootId":"r","text":"","version":1,"updated":null,"native":[]}),
+        ] {
+            assert!(PlanRecord::deserialize(invalid).is_err());
+        }
+        let value = json!({"id":"different-from-row","rootId":"r","text":"x","version":1.0,"updated":null,"native":null,"future":[1]});
+        let record = PlanRecord::deserialize(value.clone()).unwrap();
+        assert_eq!(record.into_value(), value);
+    }
+
+    #[test]
+    fn plan_store_uses_external_key_and_keeps_last_duplicate() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        let value = json!({"id":"payload-id","rootId":"root","text":"x","version":1.0,"updated":null,"future":true});
+        let record = PlanRecord::from_value(value.clone()).unwrap();
+        let key = AgentId::from("row-id");
+        Table::<PlanRecord>::new(&db).put_at(&key, &record).unwrap();
+        assert_eq!(
+            Table::<PlanRecord>::new(&db)
+                .get(&key)
+                .unwrap()
+                .unwrap()
+                .into_value(),
+            value
+        );
+        db.execute(
+            "UPDATE runtime_plans SET record=?1",
+            [r#"{"id":"a","id":"b","rootId":"r","text":"","version":0,"updated":null}"#],
+        )
+        .unwrap();
+        assert_eq!(
+            Table::<PlanRecord>::new(&db)
+                .get(&key)
+                .unwrap()
+                .unwrap()
+                .into_value()["id"],
+            "b"
+        );
+    }
+}
+pub use studio_runtime_schema::annotation_record::AnnotationRecord;
+impl JsonRecord for AnnotationRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_annotations";
+    const SCHEMA: &'static str = "PersistedAnnotationRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+#[cfg(test)]
+mod annotation_typed_tests {
+    use super::{AnnotationRecord, Table};
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[test]
+    fn annotation_deserialization_enforces_shapes() {
+        for value in [
+            json!(["a"]),
+            json!({"id":"a","line":1.5}),
+            json!({"id":"a","text":1}),
+        ] {
+            assert!(AnnotationRecord::deserialize(value).is_err());
+        }
+        for value in [
+            json!({"id":"a"}),
+            json!({"id":"a","line":1.0,"created":null,"extra":[1]}),
+        ] {
+            let record = AnnotationRecord::deserialize(value.clone()).unwrap();
+            assert_eq!(record.into_value(), value);
+        }
+    }
+
+    #[test]
+    fn annotation_line_validator_domain() {
+        for value in [json!(-1), json!(u64::MAX), json!(1.0)] {
+            assert!(
+                studio_runtime_schema::validate(
+                    "PersistedAnnotationRecord",
+                    &json!({"id":"a","line":value})
+                )
+                .unwrap(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn annotation_store_preserves_identity_extensions_and_last_duplicate() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let value = json!({"id":"a","line":-1.0,"created":null,"future":{"x":1}});
+        let record = AnnotationRecord::from_value(value.clone()).unwrap();
+        Table::<AnnotationRecord>::new(&db).put(&record).unwrap();
+        assert_eq!(
+            Table::<AnnotationRecord>::new(&db)
+                .get(&"a".to_owned())
+                .unwrap()
+                .unwrap()
+                .into_value(),
+            value
+        );
+        db.execute(
+            "UPDATE runtime_annotations SET record=?1 WHERE id='a'",
+            [r#"{"id":"other","id":"a"}"#],
+        )
+        .unwrap();
+        assert_eq!(
+            Table::<AnnotationRecord>::new(&db)
+                .get(&"a".to_owned())
+                .unwrap()
+                .unwrap()
+                .into_value()["id"],
+            "a"
+        );
+        db.execute(
+            "UPDATE runtime_annotations SET record=?1 WHERE id='a'",
+            [r#"{"id":"other"}"#],
+        )
+        .unwrap();
+        assert!(
+            Table::<AnnotationRecord>::new(&db)
+                .get(&"a".to_owned())
+                .is_err()
+        );
+    }
+}
+pub use studio_runtime_schema::tool_result::ToolResultRecord;
+impl JsonRecord for ToolResultRecord {
+    type Id = String;
+    const TABLE: &'static str = "request_results";
+    const SCHEMA: &'static str = "PersistedToolResult";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::External;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        None
+    }
+}
+#[cfg(test)]
+mod tool_result_typed_tests {
+    use super::{Table, ToolResultRecord};
+    use serde_json::json;
+    #[test]
+    fn tool_result_table_checks_shell_and_preserves_extensions() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE request_results(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        let table = Table::<ToolResultRecord>::new(&db);
+        let input = json!({"success":null,"contentItems":[{"type":"image","text":null,"data":[1,2]}],"extension":true});
+        table
+            .put_at(
+                &"r".into(),
+                &ToolResultRecord::from_value(input.clone()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(table.get(&"r".into()).unwrap().unwrap().into_value(), input);
+        db.execute(
+            "UPDATE request_results SET record=?1",
+            [r#"{"success":false,"success":true}"#],
+        )
+        .unwrap();
+        assert_eq!(
+            table.get(&"r".into()).unwrap().unwrap().success(),
+            Some(true)
+        );
+        db.execute(
+            "UPDATE request_results SET record=?1",
+            [r#"{"contentItems":[null]}"#],
+        )
+        .unwrap();
+        assert!(table.get(&"r".into()).is_err());
+    }
+}
+pub use studio_runtime_schema::request_record::RequestRecord;
+impl JsonRecord for RequestRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_requests";
+    const SCHEMA: &'static str = "PersistedRequestRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&String> {
+        Some(self.id())
+    }
+}
+#[cfg(test)]
+mod request_typed_tests {
+    use super::{RequestRecord, Table};
+    use serde_json::{Value, json};
+
+    #[test]
+    fn request_table_keeps_last_duplicate_and_checks_row_identity() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        db.execute("INSERT INTO runtime_requests VALUES('r',?1)", [r#"{"id":"wrong","id":"r","status":false,"status":"future","method":"x","params":{"opaque":[1,null]}}"#]).unwrap();
+        let row = Table::<RequestRecord>::new(&db)
+            .get(&"r".into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.status(), Some("future"));
+        assert_eq!(row.into_value()["params"], json!({"opaque":[1,null]}));
+        db.execute(
+            "UPDATE runtime_requests SET record=?1",
+            [r#"{"id":"other","status":"pending"}"#],
+        )
+        .unwrap();
+        assert!(Table::<RequestRecord>::new(&db).get(&"r".into()).is_err());
+        db.execute(
+            "UPDATE runtime_requests SET record=?1",
+            [r#"{"id":"r","status":false}"#],
+        )
+        .unwrap();
+        assert!(Table::<RequestRecord>::new(&db).get(&"r".into()).is_err());
+        let unchanged: Value = serde_json::from_str(
+            &db.query_row("SELECT record FROM runtime_requests", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(unchanged["status"], false);
+    }
+}
+pub use studio_runtime_schema::complaint_record::ComplaintRecord;
+impl JsonRecord for ComplaintRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_complaints";
+    const SCHEMA: &'static str = "PersistedComplaintRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+#[cfg(test)]
+mod complaint_typed_tests {
+    use super::{ComplaintRecord, Table};
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[test]
+    fn complaint_deserialization_enforces_shape_and_preserves_open_status() {
+        for value in [
+            json!(["c"]),
+            json!({"id":"c","author":1}),
+            json!({"id":"c","status":false}),
+            json!({"id":"c","leadId":[]}),
+        ] {
+            assert!(ComplaintRecord::deserialize(value).is_err());
+        }
+        for value in [
+            json!({"id":"c"}),
+            json!({"id":"c","author":null,"leadId":"l","status":"future","text":null,"future":[1]}),
+        ] {
+            let decoded = ComplaintRecord::deserialize(value.clone()).unwrap();
+            assert_eq!(decoded.into_value(), value);
+        }
+    }
+
+    #[test]
+    fn complaint_storage_preserves_extensions_and_enforces_identity() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let tx = db.transaction().unwrap();
+        let raw = r#"{ "id":"c", "status":"future", "author":null, "future":{"a":1} }"#;
+        crate::QuestionsWriteRepository::put_complaint(&tx, "c", raw).unwrap();
+        let saved: String = tx
+            .query_row(
+                "SELECT record FROM runtime_complaints WHERE id='c'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, raw);
+        assert_eq!(
+            Table::<ComplaintRecord>::new(&tx)
+                .get(&"c".to_owned())
+                .unwrap()
+                .unwrap()
+                .into_value(),
+            serde_json::from_str::<serde_json::Value>(raw).unwrap()
+        );
+        assert!(crate::QuestionsWriteRepository::put_complaint(&tx, "other", raw).is_err());
+        tx.execute(
+            "UPDATE runtime_complaints SET record=?1",
+            [r#"{"id":"other","id":"c"}"#],
+        )
+        .unwrap();
+        assert_eq!(
+            Table::<ComplaintRecord>::new(&tx)
+                .get(&"c".to_owned())
+                .unwrap()
+                .unwrap()
+                .into_value()["id"],
+            "c"
+        );
+    }
+}
+pub use studio_runtime_schema::checkpoint_record::CheckpointRecord;
+impl JsonRecord for CheckpointRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_checkpoints";
+    const SCHEMA: &'static str = "PersistedCheckpointRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+pub use studio_runtime_schema::monitor_record::MonitorRecord;
+impl JsonRecord for MonitorRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_monitors";
+    const SCHEMA: &'static str = "PersistedMonitorRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+pub use studio_runtime_schema::terminal_record::TerminalRecord;
+
+impl JsonRecord for TerminalRecord {
+    type Id = String;
+    const TABLE: &'static str = "user_terminals";
+    const SCHEMA: &'static str = "PersistedTerminalRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+
+#[cfg(test)]
+mod terminal_typed_tests {
+    use super::{Table, TerminalRecord};
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[test]
+    fn terminal_deserialization_enforces_schema_and_preserves_fields() {
+        for invalid in [
+            json!(["t"]),
+            json!({"id":"t","agent":7}),
+            json!({"id":"t","status":false}),
+            json!({"id":"t","exitCode":1.5}),
+        ] {
+            assert!(TerminalRecord::deserialize(invalid).is_err());
+        }
+        for valid in [
+            json!({"id":"t"}),
+            json!({"id":"t","agent":null,"status":null,"exitCode":null,"extra":{"a":1}}),
+            json!({"id":"t","exitCode":1.0}),
+            json!({"id":"t","exitCode":u64::MAX}),
+        ] {
+            let record = TerminalRecord::deserialize(valid.clone()).unwrap();
+            assert_eq!(record.value(), valid);
+        }
+    }
+
+    #[test]
+    fn terminal_storage_checks_row_identity_and_preserves_sql_columns() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE user_terminals(id TEXT PRIMARY KEY,record TEXT NOT NULL,output TEXT NOT NULL,offset INTEGER NOT NULL,output_generation INTEGER NOT NULL)").unwrap();
+        let payload = json!({"id":"t","status":null,"exitCode":1.0,"future":{"value":true}});
+        let record = TerminalRecord::from_value(payload.clone()).unwrap();
+        let tx = db.transaction().unwrap();
+        crate::TerminalsRepository::put(&tx, "t", &record, "hello", 4).unwrap();
+        let row = crate::TerminalsRepository::get(&tx, "t").unwrap().unwrap();
+        assert_eq!(row.record.value(), payload);
+        assert_eq!(
+            (row.output.as_str(), row.offset, row.output_generation),
+            ("hello", 4, 0)
+        );
+        let mut conflicting = record;
+        assert!(conflicting.set("status", json!(false)).is_err());
+        assert_eq!(conflicting.value(), payload);
+        tx.execute(
+            "UPDATE user_terminals SET record=?1 WHERE id='t'",
+            [json!({"id":"other"}).to_string()],
+        )
+        .unwrap();
+        assert!(
+            Table::<TerminalRecord>::new(&tx)
+                .get(&"t".to_string())
+                .is_err()
+        );
+        tx.execute(
+            "UPDATE user_terminals SET record=?1 WHERE id='t'",
+            [r#"{"id":"old","id":"t","status":3,"status":"running"}"#],
+        )
+        .unwrap();
+        assert_eq!(
+            Table::<TerminalRecord>::new(&tx)
+                .get(&"t".to_string())
+                .unwrap()
+                .unwrap()
+                .status(),
+            Some("running")
+        );
+    }
+}
+pub use studio_runtime_schema::usage_resume_record::UsageResumeRecord;
+impl JsonRecord for UsageResumeRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_usage_resumes";
+    const SCHEMA: &'static str = "PersistedUsageResumeRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::External;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::UsageResumeRecovery;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&String> {
+        None
+    }
+}
+/// Historical public receipts validated these five fields and retained all other JSON.
 #[derive(Clone, Debug, PartialEq)]
-pub struct WorkItemRecord {
+pub struct LegacyWorkReply {
     value: Value,
     fields: WorkItemFields,
 }
-
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 struct WorkItemFields {
     id: TaskId,
     status: WorkStatus,
-    // WorkItem.dependencies owns the absent-field default. Present malformed
-    // values still fail deserialization, including null.
     #[serde(default)]
     dependencies: Vec<String>,
     owner: Option<String>,
-    // Omission retains the existing progress timestamp default. Present null
-    // or malformed timestamps cannot become a legitimate epoch-zero value.
     #[serde(default)]
     updated: f64,
 }
-
-impl Serialize for WorkItemRecord {
+impl Serialize for LegacyWorkReply {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.value.serialize(serializer)
     }
 }
-
-impl<'de> Deserialize<'de> for WorkItemRecord {
+impl<'de> Deserialize<'de> for LegacyWorkReply {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Self::from_value(Value::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
-
-impl JsonRecord for WorkItemRecord {
-    type Id = TaskId;
-    const TABLE: &'static str = "runtime_work";
-    const SCHEMA: &'static str = "PersistedWorkItemRecord";
-    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
-    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
-    fn record_key(&self) -> Option<&Self::Id> {
-        Some(&self.fields.id)
+impl LegacyWorkReply {
+    pub fn id(&self) -> &TaskId {
+        &self.fields.id
     }
-    fn decode_stored(_connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
-        Self::decode(row_id, encoded)
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.value.get(key)
     }
-}
-record_newtype!(
-    ExecutionRunRecord,
-    String,
-    table = "runtime_execution_runs",
-    schema = "PersistedExecutionRunRecord",
-    key = PayloadId,
-    query = None
-);
-record_newtype!(
-    WorkspaceOperationRecord,
-    String,
-    table = "runtime_workspace_operations",
-    schema = "PersistedWorkspaceOperationRecord",
-    key = PayloadId,
-    query = JsonAgent
-);
-record_newtype!(
-    RuleRecord,
-    String,
-    table = "runtime_rules",
-    schema = "PersistedRuleRecord",
-    key = PayloadId,
-    query = None
-);
-record_newtype!(
-    TranscriptItemRecord,
-    TranscriptItemId,
-    table = "runtime_items",
-    schema = "PersistedTranscriptRecord",
-    key = PayloadId,
-    query = PhysicalAgent
-);
-record_newtype!(
-    TranscriptAssetRecord,
-    TranscriptAssetId,
-    table = "runtime_assets",
-    schema = "PersistedTranscriptAsset",
-    key = PayloadId,
-    query = JsonAgent
-);
-record_newtype!(
-    EventMetadataRecord,
-    QueueEventId,
-    table = "runtime_event_meta",
-    schema = "RuntimeEventMetadataRecord",
-    key = External,
-    query = None
-);
-record_newtype!(
-    GraphAgentRecord,
-    String,
-    table = "graph_agents",
-    schema = "PersistedGraphAgentRecord",
-    key = PayloadId,
-    query = None
-);
-
-impl WorkItemRecord {
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         let fields = WorkItemFields::deserialize(&value)?;
         Ok(Self { value, fields })
-    }
-
-    pub fn checked(value: Value) -> StoreResult<Self> {
-        let id = value
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or("<unknown>")
-            .to_owned();
-        Self::checked_at(value, &id)
-    }
-
-    fn checked_at(value: Value, row_id: &str) -> StoreResult<Self> {
-        #[cfg(test)]
-        validation_counts::CHECKS.with(|count| count.set(count.get() + 1));
-        if let Some((pointer, reason)) = studio_runtime_schema::first_error(Self::SCHEMA, &value)
-            .map_err(crate::StoreError::SchemaValidation)?
-        {
-            return Err(crate::StoreError::InvalidSyncObjectField {
-                scope: Self::TABLE.into(),
-                id: row_id.to_owned(),
-                pointer,
-                reason,
-            });
-        }
-        Self::from_value(value).map_err(|error| crate::StoreError::InvalidSyncObjectField {
-            scope: Self::TABLE.into(),
-            id: row_id.to_owned(),
-            pointer: String::new(),
-            reason: error.to_string(),
-        })
-    }
-
-    pub fn decode(row_id: &str, encoded: &str) -> StoreResult<Self> {
-        let invalid = || crate::StoreError::InvalidStoredObject {
-            table: Self::TABLE,
-            id: row_id.to_owned(),
-        };
-        let record = Self::checked_at(
-            serde_json::from_str(encoded).map_err(|_| invalid())?,
-            row_id,
-        )?;
-        if record.id().as_ref() != row_id {
-            return Err(invalid());
-        }
-        Ok(record)
-    }
-
-    pub fn id(&self) -> &TaskId {
-        &self.fields.id
     }
     pub fn value(&self) -> &Value {
         &self.value
@@ -971,22 +1300,274 @@ impl WorkItemRecord {
     pub fn into_value(self) -> Value {
         self.value
     }
-    pub fn get(&self, key: &str) -> Option<&Value> {
-        self.value.get(key)
+    pub fn set(&mut self, key: &str, value: Value) -> Result<(), serde_json::Error> {
+        let mut updated = self.value.clone();
+        updated[key] = value;
+        let updated = Self::from_value(updated)?;
+        if updated.fields.id != self.fields.id {
+            return Err(serde::de::Error::custom("work record id is immutable"));
+        }
+        *self = updated;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct WorkItemRecord(studio_runtime_schema::work_item_record::WorkItem);
+impl JsonRecord for WorkItemRecord {
+    type Id = TaskId;
+    const TABLE: &'static str = "runtime_work";
+    const SCHEMA: &'static str = "PersistedWorkItemRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+    fn decode_stored(_connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
+        Self::decode(row_id, encoded)
+    }
+}
+/// The stored run uses the execution-history owner with unconstrained historical evidence.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct ExecutionRunRecord(
+    crate::ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>,
+);
+impl<'de> Deserialize<'de> for ExecutionRunRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let studio_runtime_schema::json_object::JsonObject(run) =
+            studio_runtime_schema::json_object::JsonObject::deserialize(deserializer)?;
+        Ok(Self(run))
+    }
+}
+impl ExecutionRunRecord {
+    pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
+        Self::deserialize(value)
+    }
+    pub fn run(
+        &self,
+    ) -> &crate::ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>
+    {
+        &self.0
+    }
+}
+impl JsonRecord for ExecutionRunRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_execution_runs";
+    const SCHEMA: &'static str = "PersistedExecutionRunRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(&self.0.id)
+    }
+}
+#[cfg(test)]
+mod execution_run_record_tests {
+    use super::{ExecutionRunRecord, Table};
+    use serde::Serialize;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn execution_run_table_preserves_evidence_and_checks_physical_identity() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let raw = r#"{"id":"bad","id":"run","agent":"a","accountKey":"default","epoch":1.0,"created":1.0,"status":"running","latestAttemptId":null,"rootAttemptId":{"opaque":[1]},"extra":9007199254740993}"#;
+        db.execute("INSERT INTO runtime_execution_runs VALUES('run',?1)", [raw])
+            .unwrap();
+        let record = Table::<ExecutionRunRecord>::new(&db)
+            .get(&"run".into())
+            .unwrap()
+            .unwrap();
+        let value = record.serialize(serde_json::value::Serializer).unwrap();
+        let expected: Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(value, expected);
+        assert_eq!(value["extra"], json!(9007199254740993_u64));
+        assert!(value.get("threadId").is_none());
+        db.execute(
+            "UPDATE runtime_execution_runs SET record=?1",
+            [raw.replace("\"id\":\"run\"", "\"id\":\"other\"")],
+        )
+        .unwrap();
+        assert!(
+            Table::<ExecutionRunRecord>::new(&db)
+                .get(&"run".into())
+                .is_err()
+        );
+    }
+}
+pub use studio_runtime_schema::workspace_operation::WorkspaceOperationRecord;
+impl JsonRecord for WorkspaceOperationRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_workspace_operations";
+    const SCHEMA: &'static str = "PersistedWorkspaceOperationRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(&self.id)
+    }
+}
+pub use studio_runtime_schema::rule_record::RuleRecord;
+impl JsonRecord for RuleRecord {
+    type Id = String;
+    const TABLE: &'static str = "runtime_rules";
+    const SCHEMA: &'static str = "PersistedRuleRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+pub use studio_runtime_schema::transcript_record::TranscriptItemRecord;
+impl JsonRecord for TranscriptItemRecord {
+    type Id = TranscriptItemId;
+    const TABLE: &'static str = "runtime_items";
+    const SCHEMA: &'static str = "PersistedTranscriptRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::PhysicalAgent;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+impl JsonRecord for TranscriptAssetRecord {
+    type Id = TranscriptAssetId;
+    const TABLE: &'static str = "runtime_assets";
+    const SCHEMA: &'static str = "PersistedTranscriptAsset";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+pub use studio_runtime_schema::event_metadata::EventMetadataRecord;
+impl JsonRecord for EventMetadataRecord {
+    type Id = QueueEventId;
+    const TABLE: &'static str = "runtime_event_meta";
+    const SCHEMA: &'static str = "RuntimeEventMetadataRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::External;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        None
+    }
+}
+pub use studio_runtime_schema::graph_agent_record::GraphAgentRecord;
+impl JsonRecord for GraphAgentRecord {
+    type Id = String;
+    const TABLE: &'static str = "graph_agents";
+    const SCHEMA: &'static str = "PersistedGraphAgentRecord";
+    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
+    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
+    fn record_key(&self) -> Option<&Self::Id> {
+        Some(self.id())
+    }
+}
+
+impl WorkItemRecord {
+    pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
+        Self::deserialize(value)
+    }
+    pub fn checked(value: &Value) -> StoreResult<Self> {
+        let id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("<unknown>")
+            .to_owned();
+        Self::checked_at(value, &id)
+    }
+    fn checked_at(value: &Value, row_id: &str) -> StoreResult<Self> {
+        #[cfg(test)]
+        validation_counts::CHECKS.with(|count| count.set(count.get() + 1));
+        match Self::deserialize(value) {
+            Ok(record) => Ok(record),
+            Err(error) => {
+                if let Some((pointer, reason)) =
+                    studio_runtime_schema::first_error(Self::SCHEMA, value)
+                        .map_err(crate::StoreError::SchemaValidation)?
+                {
+                    return Err(crate::StoreError::InvalidSyncObjectField {
+                        scope: Self::TABLE.into(),
+                        id: row_id.into(),
+                        pointer,
+                        reason,
+                    });
+                }
+                Err(crate::StoreError::InvalidSyncObjectField {
+                    scope: Self::TABLE.into(),
+                    id: row_id.into(),
+                    pointer: String::new(),
+                    reason: error.to_string(),
+                })
+            }
+        }
+    }
+    pub fn decode(row_id: &str, encoded: &str) -> StoreResult<Self> {
+        let invalid = || crate::StoreError::InvalidStoredObject {
+            table: Self::TABLE,
+            id: row_id.into(),
+        };
+        let value = serde_json::from_str(encoded).map_err(|_| invalid())?;
+        let record = Self::checked_at(&value, row_id)?;
+        if record.id().as_ref() != row_id {
+            return Err(invalid());
+        }
+        Ok(record)
+    }
+    pub fn id(&self) -> &TaskId {
+        self.0.id()
+    }
+    pub fn value(&self) -> Value {
+        self.0.value()
+    }
+    pub fn into_value(self) -> Value {
+        self.0.into_value()
+    }
+    pub fn extension(&self, key: &str) -> Option<&Value> {
+        self.0.extra(key)
     }
     pub fn status(&self) -> WorkStatus {
-        self.fields.status
+        self.0.status()
     }
     pub fn dependencies(&self) -> &[String] {
-        &self.fields.dependencies
+        self.0.dependencies()
     }
     pub fn owner(&self) -> Option<&str> {
-        self.fields.owner.as_deref()
+        self.0.owner()
+    }
+    pub fn root_id(&self) -> Option<&str> {
+        self.0.root_id()
+    }
+    pub fn title(&self) -> Option<&str> {
+        self.0.title()
     }
     pub fn updated(&self) -> f64 {
-        self.fields.updated
+        self.0.updated()
     }
-
+    pub fn version(&self) -> Option<&serde_json::Number> {
+        self.0.version()
+    }
+    pub fn results(&self) -> Option<&[serde_json::Map<String, Value>]> {
+        self.0.results()
+    }
+    pub fn decisions(&self) -> Option<&[serde_json::Map<String, Value>]> {
+        self.0.decisions()
+    }
+    pub fn results_mut(&mut self) -> Option<&mut Vec<serde_json::Map<String, Value>>> {
+        self.0.results_mut()
+    }
+    pub fn decisions_mut(&mut self) -> Option<&mut Vec<serde_json::Map<String, Value>>> {
+        self.0.decisions_mut()
+    }
     pub fn blocked_by(&self, statuses: &BTreeMap<String, WorkStatus>) -> Vec<String> {
         self.dependencies()
             .iter()
@@ -994,36 +1575,12 @@ impl WorkItemRecord {
             .cloned()
             .collect()
     }
-
     pub fn set(&mut self, key: impl Into<String>, value: Value) -> Result<(), serde_json::Error> {
-        let mut updated = self.value.clone();
-        updated[key.into()] = value;
-        let updated = Self::from_value(updated)?;
-        if updated.id() != self.id() {
-            return Err(<serde_json::Error as serde::de::Error>::custom(
-                "work record id is immutable",
-            ));
-        }
-        *self = updated;
-        Ok(())
+        self.0.set(key, value)
     }
-
-    pub fn title(&self) -> Option<&str> {
-        self.value.get("title").and_then(Value::as_str)
-    }
-
     pub fn set_status(&mut self, status: WorkStatus) {
-        self.value["status"] = serde_json::json!(status);
-        self.fields.status = status;
+        self.0.set_status(status);
     }
-}
-
-fn record_id(value: &Value) -> Result<String, serde_json::Error> {
-    value
-        .get("id")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| serde::de::Error::custom("record id must be a string"))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1068,6 +1625,8 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
     const SCHEMA: &'static str;
     const KEY_MODE: RecordKeyMode;
     const QUERY_SHAPE: RecordQueryShape;
+    const TYPED_SHAPE: bool = false;
+    const DIRECT_TYPED_DECODE: bool = false;
 
     fn record_key(&self) -> Option<&Self::Id>;
 
@@ -1555,21 +2114,25 @@ pub(crate) fn decode_value(
 }
 
 pub(crate) fn decode_record<R: JsonRecord>(
-    connection: &Connection,
+    _connection: &Connection,
     row_id: &str,
     encoded: &str,
 ) -> StoreResult<R> {
-    if R::TABLE == AgentRecord::TABLE {
-        // The checked value already carries the typed fields; decode moves it.
-        return serde_json::from_value::<R>(decode_agent_value(connection, row_id, encoded)?)
-            .map_err(|_| invalid_agent_field(row_id, "", "record_decode", None));
-    }
     let invalid = || crate::StoreError::InvalidStoredObject {
         table: R::TABLE,
         id: row_id.to_owned(),
     };
-    let value = decode_value(R::SCHEMA, encoded, invalid)?;
-    let record = serde_json::from_value::<R>(value).map_err(|_| invalid())?;
+    let record = if R::DIRECT_TYPED_DECODE {
+        serde_json::from_str::<R>(encoded).map_err(|_| invalid())?
+    } else if R::TYPED_SHAPE {
+        // Stored JSON was historically parsed to a map first, so duplicate
+        // property names retain serde_json's last-value behavior.
+        let value = serde_json::from_str::<Value>(encoded).map_err(|_| invalid())?;
+        R::deserialize(value).map_err(|_| invalid())?
+    } else {
+        let value = decode_value(R::SCHEMA, encoded, invalid)?;
+        R::deserialize(value).map_err(|_| invalid())?
+    };
     if R::KEY_MODE == RecordKeyMode::PayloadId
         && record.record_key().map(AsRef::as_ref) != Some(row_id)
     {
@@ -1588,7 +2151,8 @@ pub fn decode_agent_value(
 ) -> StoreResult<Value> {
     let mut value = parse_agent_value(row_id, encoded)?;
     crate::agent_volatile::merge(connection, row_id, &mut value)?;
-    validate_agent_value(row_id, value)
+    checked_agent_projection(row_id, &value)?;
+    Ok(value)
 }
 
 pub(crate) fn parse_agent_value(row_id: &str, encoded: &str) -> StoreResult<Value> {
@@ -1608,37 +2172,33 @@ pub(crate) fn parse_agent_value(row_id: &str, encoded: &str) -> StoreResult<Valu
     Ok(value)
 }
 
-pub(crate) fn validate_agent_value(row_id: &str, value: Value) -> StoreResult<Value> {
-    /// The fields [`AgentRecord`] types; every other field is free JSON.
-    #[derive(Deserialize)]
-    struct TypedFields<'a> {
-        id: &'a str,
-        #[serde(rename = "rootId")]
-        _root_id: &'a str,
-        #[serde(rename = "epoch")]
-        _epoch: i64,
-        #[serde(rename = "status")]
-        _status: &'a str,
-    }
-    if !studio_runtime_schema::validate(AgentRecord::SCHEMA, &value)
-        .map_err(crate::StoreError::SchemaValidation)?
-    {
-        let (pointer, reason) = studio_runtime_schema::first_error(AgentRecord::SCHEMA, &value)
-            .map_err(crate::StoreError::SchemaValidation)?
-            .unwrap_or_else(|| ("/".to_owned(), "schema_invalid".to_owned()));
-        return Err(invalid_agent_field(row_id, &pointer, &reason, Some(&value)));
-    }
-    let fields = TypedFields::deserialize(&value)
-        .map_err(|_| invalid_agent_field(row_id, "", "record_decode", None))?;
-    if fields.id != row_id {
+pub(crate) fn checked_agent_projection(
+    row_id: &str,
+    value: &Value,
+) -> StoreResult<studio_runtime_schema::records::agent_projection::AgentProjection> {
+    use studio_runtime_schema::json_object::JsonObject;
+    use studio_runtime_schema::records::agent_projection::AgentProjection;
+    let JsonObject(projection) =
+        JsonObject::<AgentProjection>::deserialize(value).map_err(|_| {
+            let detail = studio_runtime_schema::first_error(AgentRecord::SCHEMA, value)
+                .ok()
+                .flatten();
+            match detail {
+                Some((pointer, reason)) => {
+                    invalid_agent_field(row_id, &pointer, &reason, Some(value))
+                }
+                None => invalid_agent_field(row_id, "", "record_decode", None),
+            }
+        })?;
+    if projection.id != row_id {
         return Err(invalid_agent_field(
             row_id,
             "/id",
             "row_id_mismatch",
-            Some(&value),
+            Some(value),
         ));
     }
-    Ok(value)
+    Ok(projection)
 }
 
 pub(crate) fn invalid_agent_field(
@@ -1675,7 +2235,7 @@ fn encode_record<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<String>
 fn checked_value<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<Value> {
     #[cfg(test)]
     validation_counts::CHECKS.with(|count| count.set(count.get() + 1));
-    let value = serde_json::to_value(record)?;
+    let value = record.serialize(serde_json::value::Serializer)?;
     let invalid = || crate::StoreError::InvalidStoredObject {
         table: R::TABLE,
         id: row_id.to_owned(),
@@ -1683,8 +2243,9 @@ fn checked_value<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<Value> 
     if (R::KEY_MODE == RecordKeyMode::PayloadId
         && (record.record_key().map(AsRef::as_ref) != Some(row_id)
             || value.get("id").and_then(Value::as_str) != Some(row_id)))
-        || !studio_runtime_schema::validate(R::SCHEMA, &value)
-            .map_err(crate::StoreError::SchemaValidation)?
+        || (!R::TYPED_SHAPE
+            && !studio_runtime_schema::validate(R::SCHEMA, &value)
+                .map_err(crate::StoreError::SchemaValidation)?)
     {
         return Err(invalid());
     }
@@ -1796,6 +2357,11 @@ pub(crate) fn decode_json_record<T: DeserializeOwned>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_record_requires_materialized_account() {
+        let old = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle"}"#;
+        assert!(serde_json::from_str::<super::AgentRecord>(old).is_err());
+    }
     use super::{
         AgentId, AgentRecord, AgentStatus, EventMetadataRecord, QueueEventId, RecordOrder,
         RecordPredicate, RequestRecord, Table, TaskRecord, TranscriptAssetId,
@@ -1808,7 +2374,7 @@ mod tests {
 
     #[test]
     fn agent_effect_records_keep_live_and_current_shapes() {
-        let legacy = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","nativeReviewThread":{"attempt":"attempt","connection":"connection","generation":2,"operation":"operation","requestDigest":"digest","sequence":1,"status":"accepted","threadId":"thread"},"nativeRelease":{"id":"release","phase":"released","resetPending":false}}"#;
+        let legacy = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","nativeReviewThread":{"attempt":"attempt","connection":"connection","generation":2,"operation":"operation","requestDigest":"digest","sequence":1,"status":"accepted","threadId":"thread"},"nativeRelease":{"id":"release","phase":"released","resetPending":false}}"#;
         let agent: AgentRecord = serde_json::from_str(legacy).expect("live review and release");
         assert!(
             agent
@@ -1855,7 +2421,7 @@ mod tests {
                 "nativeRequest":{"params":{"vendorExtension":[1,2]}}}),
         ] {
             let mut record = agent(
-                json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":attempt}),
+                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":attempt}),
             );
             let before = record.extra.get("startAttempt").cloned().expect("attempt");
             let view = record.start_attempt().expect("view").expect("attempt");
@@ -1874,7 +2440,7 @@ mod tests {
     fn start_attempt_action_view_rejects_unnormalized_values() {
         for action in ["compact", "review", "capacity", "safety"] {
             let record = agent(
-                json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
             );
             assert!(
                 record
@@ -1894,7 +2460,7 @@ mod tests {
             json!({}),
         ] {
             let record = agent(
-                json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
             );
             assert!(record.start_attempt().is_err());
         }
@@ -1906,7 +2472,7 @@ mod tests {
             json!({"x":1}),
         ] {
             let record = agent(
-                json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
             );
             assert!(record.start_attempt().is_err());
         }
@@ -1915,7 +2481,7 @@ mod tests {
     #[test]
     fn active_execution_view_and_field_writes_preserve_migration_record() {
         let mut record = agent(
-            json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle",
+            json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle",
             "activeExecution":{"runId":"run","attemptId":null,"futureField":{"keep":true}}}),
         );
         let view = record
@@ -1942,7 +2508,7 @@ mod tests {
 
     #[test]
     fn consuming_agent_projection_moves_extra_json() {
-        let record = agent(json!({
+        let record = agent(json!({"accountKey":"default",
             "id":"agent-1", "provider":"codex", "rootId":"root-1", "epoch":3, "status":"running",
             "futureField":[{"nested":"retained"}]
         }));
@@ -1972,16 +2538,30 @@ mod tests {
     #[test]
     fn consuming_json_record_projection_moves_value_tree() {
         let record = TranscriptItemRecord::from_value(json!({
-            "id":"item-1", "agent":"agent-1", "nested":[{"retained":true}]
+            "id":"item-1", "agent":"agent-1", "nested":[{"retained":true}],
+            "inputs":[{"text":"allocated input content", "blob":[{"v":1}]}]
         }))
         .expect("transcript item has an id");
-        let source_ptr = record.value()["nested"]
+        let source_ptr = record
+            .extra("nested")
+            .unwrap()
             .as_array()
             .expect("nested value is an array")
             .as_ptr();
 
+        let input = &record.inputs().value().unwrap()[0];
+        let text_ptr = input.text().unwrap().as_ptr();
+        let input_blob_ptr = input.extra("blob").unwrap().as_array().unwrap().as_ptr();
         let projected = record.into_value();
 
+        assert_eq!(
+            projected["inputs"][0]["text"].as_str().unwrap().as_ptr(),
+            text_ptr
+        );
+        assert_eq!(
+            projected["inputs"][0]["blob"].as_array().unwrap().as_ptr(),
+            input_blob_ptr
+        );
         assert_eq!(projected["nested"][0]["retained"], Value::Bool(true));
         assert_eq!(
             projected["nested"]
@@ -2013,13 +2593,44 @@ mod tests {
     }
 
     #[test]
+    fn stored_agent_decodes_typed_execution_fields_and_preserves_extensions() {
+        let connection = database();
+        let value = json!({
+            "id":"agent", "rootId":"agent", "epoch":2, "status":"idle",
+            "inFlight":true, "autoWake":false, "executionMode":"native", "turnEpoch":2,
+            "accountKey":"account", "threadId":"thread", "turnId":"turn", "future":42
+        });
+        connection
+            .execute(
+                "INSERT INTO runtime_agents VALUES (?1, ?2)",
+                ["agent", &value.to_string()],
+            )
+            .unwrap();
+        let record = Table::<AgentRecord>::new(&connection)
+            .get(&AgentId::from("agent"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.in_flight, Some(true));
+        assert_eq!(record.auto_wake, Some(false));
+        assert_eq!(
+            record.execution_mode,
+            Some(super::AgentExecutionMode::Native)
+        );
+        assert_eq!(record.turn_epoch, Some(2));
+        assert_eq!(record.account_key, "account");
+        assert_eq!(record.thread_id.as_deref(), Some("thread"));
+        assert_eq!(record.turn_id.as_deref(), Some("turn"));
+        assert_eq!(record.value(), value);
+    }
+
+    #[test]
     fn agent_round_trip_keeps_unknown_json_fields_and_number_kinds() {
         let value = json!({
             "id":"agent-1", "provider":"codex", "rootId":"agent-1", "epoch":2, "status":"idle", "accountKey":"default",
             "futureObject":{"number":1.5,"flag":true}, "futureInteger":9007199254740993_i64
         });
         let record = agent(value.clone());
-        let rewritten = serde_json::to_value(record).expect("agent record serializes");
+        let rewritten = record.into_value();
         assert_eq!(rewritten["futureObject"]["number"].as_f64(), Some(1.5));
         assert_eq!(rewritten["futureObject"]["flag"].as_bool(), Some(true));
         assert_eq!(rewritten["futureInteger"].as_i64(), Some(9007199254740993));
@@ -2090,8 +2701,8 @@ mod tests {
             json!([])
         );
         let raw = json!({"id":"work","status":"ready","owner":null,"futureField":{"proof":7}});
-        let record = WorkItemRecord::checked(raw.clone())
-            .expect("nullable owner and absent default dependencies");
+        let record =
+            WorkItemRecord::checked(&raw).expect("nullable owner and absent default dependencies");
         assert_eq!(record.status(), WorkStatus::Ready);
         assert_eq!(record.owner(), None);
         assert!(record.dependencies().is_empty());
@@ -2113,7 +2724,7 @@ mod tests {
             "id":"task-1", "agent":"agent-1", "kind":"command", "status":"completed",
             "created":1.25, "interactive":true, "exitCode":7
         }));
-        let rewritten = serde_json::to_value(runtime_task).expect("runtime task serializes");
+        let rewritten = runtime_task.into_value();
         assert_eq!(rewritten["interactive"], json!(true));
         assert_eq!(rewritten["exitCode"].as_i64(), Some(7));
 
@@ -2122,10 +2733,7 @@ mod tests {
             "created":1.25, "updated":1.5, "version":3, "futureField":true
         }));
         assert_eq!(work.status(), WorkStatus::Ready);
-        assert_eq!(
-            serde_json::to_value(work).expect("work item serializes")["futureField"],
-            json!(true)
-        );
+        assert_eq!(work.into_value()["futureField"], json!(true));
     }
 
     #[test]
@@ -2135,16 +2743,16 @@ mod tests {
             "outputPreviewOnly":true
         }));
         assert_eq!(
-            task.get("reattachRecovery").expect("recovery metadata")["status"],
+            task.extra("reattachRecovery").expect("recovery metadata")["status"],
             "running"
         );
-        assert_eq!(task.get("outputPreviewOnly"), Some(&Value::Bool(true)));
+        assert_eq!(task.extra("outputPreviewOnly"), Some(&Value::Bool(true)));
 
         let request = RequestRecord::from_value(json!({
             "id":"request-1", "connectionId":null
         }))
         .expect("Python may persist a request without a connection identity");
-        assert_eq!(request.get("connectionId"), Some(&Value::Null));
+        assert_eq!(request.value().get("connectionId"), Some(&Value::Null));
     }
 
     #[test]
@@ -2156,10 +2764,7 @@ mod tests {
             record.status,
             AgentStatus::Other(UnknownAgentStatus::new("future-agent-state".into()).unwrap())
         );
-        assert_eq!(
-            serde_json::to_value(record).expect("record serializes"),
-            value
-        );
+        assert_eq!(record.into_value(), value);
     }
 
     #[test]
@@ -2180,9 +2785,9 @@ mod tests {
         let connection = database();
         let table = Table::<AgentRecord>::new(&connection);
         let first =
-            agent(json!({"id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}));
+            agent(json!({"accountKey":"default","id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}));
         let second =
-            agent(json!({"id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}));
+            agent(json!({"accountKey":"default","id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}));
 
         assert!(table.insert_new(&first).expect("first insert succeeds"));
         assert!(!table.insert_new(&first).expect("duplicate id is ignored"));
@@ -2314,8 +2919,8 @@ mod tests {
                 .get(&key)
                 .expect("external key read")
                 .expect("metadata exists")
-                .value(),
-            &json!({"timing":{"enqueuedAt":9}})
+                .into_value(),
+            json!({"timing":{"enqueuedAt":9}})
         );
         let stored: String = connection
             .query_row(
@@ -2333,13 +2938,15 @@ mod tests {
     fn persisted_asset_table_keeps_path_and_extension_fields() {
         let connection = Connection::open_in_memory().expect("memory database opens");
         let table = Table::<TranscriptAssetRecord>::new(&connection);
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("notes.txt");
         connection
             .execute_batch("CREATE TABLE runtime_assets(id TEXT PRIMARY KEY,record TEXT NOT NULL);")
             .expect("assets table creates");
 
         let asset = TranscriptAssetRecord::from_value(json!({
             "id":"asset-1", "agent":"agent-1", "name":"notes.txt",
-            "path":"/private/uploads/asset-1/notes.txt", "mime":"text/plain",
+            "path":path, "mime":"text/plain",
             "image":false, "size":5, "hash":"sha256:abc", "created":1.5,
             "futureField":{"retained":true}
         }))
@@ -2352,23 +2959,18 @@ mod tests {
             .get(&TranscriptAssetId::from("asset-1"))
             .expect("asset reads")
             .expect("asset exists");
+        assert_eq!(read.path(), path.to_str().unwrap());
         assert_eq!(
-            read.get("path").and_then(Value::as_str),
-            Some("/private/uploads/asset-1/notes.txt")
+            read.into_value()["futureField"]["retained"],
+            Value::Bool(true)
         );
-        assert_eq!(read.value()["futureField"]["retained"], Value::Bool(true));
 
         let invalid = TranscriptAssetRecord::from_value(json!({
             "id":"bad-asset", "agent":"agent-1", "name":"notes.txt",
             "mime":"text/plain", "image":false, "size":5,
             "hash":"sha256:abc", "created":1.5
-        }))
-        .expect("invalid schema fixture has an id");
-        assert!(matches!(
-            table.put(&invalid).expect_err("path is required for persisted asset"),
-            StoreError::InvalidStoredObject { table: "runtime_assets", id }
-                if id == "bad-asset"
-        ));
+        }));
+        assert!(invalid.is_err());
     }
 
     #[test]
@@ -2384,7 +2986,7 @@ mod tests {
             .expect("volatile agent table creates");
         let table = Table::<AgentRecord>::new(&connection);
         let blocked = agent(
-            json!({"id":"blocked","provider":"codex","rootId":"blocked","epoch":0,"status":"idle"}),
+            json!({"accountKey":"default","id":"blocked","provider":"codex","rootId":"blocked","epoch":0,"status":"idle"}),
         );
         assert!(matches!(
             table.insert_new(&blocked),
@@ -2456,5 +3058,145 @@ mod tests {
             ),
             Err(StoreError::RecordContract(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod agent_projection_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn checked_projection_preserves_opaque_evidence_presence_and_volatile_override() {
+        let db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .expect("agents");
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile");
+        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"future","accountKey":null,
+            "activity":false,"titleJob":{"malformed":true},"startOutcomeHold":[null],"vmLaunch":false,
+            "vendor":{"nested":[null,true]}});
+        db.execute(
+            "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
+            [raw.to_string()],
+        )
+        .expect("agent");
+        db.execute(
+            "INSERT INTO runtime_agent_volatile(id,activity,tail) VALUES('a',?1,?2)",
+            [r#"{"phase":"active","vendor":true}"#, r#""answer""#],
+        )
+        .expect("volatile row");
+        let value = decode_agent_value(&db, "a", &raw.to_string()).expect("merged projection");
+        let mut expected = raw;
+        expected["activity"] = json!({"phase":"active","vendor":true});
+        expected["tail"] = json!("answer");
+        assert_eq!(value, expected);
+        assert!(
+            Table::<AgentRecord>::new(&db)
+                .get(&AgentId::from("a"))
+                .is_err(),
+            "narrow business evidence remains independently checked"
+        );
+    }
+
+    #[test]
+    fn fractional_spelling_of_root_epoch_is_rejected_by_projection_and_business_decode() {
+        let db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .expect("agents");
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile");
+        let raw = r#"{"id":"a","rootId":"r","epoch":1.0,"status":"idle"}"#;
+        db.execute(
+            "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
+            [raw],
+        )
+        .expect("agent");
+        assert!(decode_agent_value(&db, "a", raw).is_err());
+        assert!(
+            Table::<AgentRecord>::new(&db)
+                .get(&AgentId::from("a"))
+                .is_err()
+        );
+        let raw = r#"{"id":"a","rootId":"r","epoch":1,"status":"idle","events":1.0,"agentArchive":{"at":1,"epoch":1.0}}"#;
+        let value = decode_agent_value(&db, "a", raw).expect("nested decimal aliases");
+        assert_eq!(value["events"], json!(1.0));
+        assert_eq!(value["agentArchive"]["epoch"], json!(1.0));
+    }
+
+    #[test]
+    fn stored_agent_business_decode_preserves_checked_wire_fields() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"idle", "accountKey":"default",
+            "events":1.0,"agentArchive":{"at":1.5,"epoch":1.0},"future":{"x":[1,null]},
+            "titleJob":{"legacy":true},"startOutcomeHold":{"stage":"held","reason":"pending"},"firedEvents":["one"]});
+        db.execute(
+            "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
+            [raw.to_string()],
+        )
+        .unwrap();
+        let record = Table::<AgentRecord>::new(&db)
+            .get(&AgentId::from("a"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.into_value(), raw);
+    }
+
+    #[test]
+    fn stored_agent_account_key_must_be_present() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        for (account, valid) in [
+            (None, false),
+            (Some(json!(null)), false),
+            (Some(json!(12)), false),
+            (Some(json!("custom")), true),
+        ] {
+            let mut raw = json!({"id":"a","rootId":"a","epoch":1,"status":"idle"});
+            if let Some(value) = account {
+                raw["accountKey"] = value;
+            }
+            db.execute(
+                "INSERT OR REPLACE INTO runtime_agents VALUES ('a', ?1)",
+                [raw.to_string()],
+            )
+            .unwrap();
+            let result = Table::<AgentRecord>::new(&db).get(&AgentId::from("a"));
+            assert_eq!(result.is_ok(), valid, "{raw}");
+            if valid {
+                assert_eq!(
+                    result.unwrap().unwrap().account_key,
+                    raw["accountKey"].as_str().unwrap()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn checked_projection_refuses_schema_errors_and_wrong_row_identity_without_content() {
+        let db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .expect("agents");
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .expect("volatile");
+        for value in [
+            json!({"id":"a","rootId":"r","epoch":0,"status":"idle","activity":{"phase":{"secret-value":true}}}),
+            json!({"id":"wrong","rootId":"r","epoch":0,"status":"idle"}),
+        ] {
+            let error =
+                decode_agent_value(&db, "a", &value.to_string()).expect_err("invalid projection");
+            assert!(matches!(
+                error,
+                crate::StoreError::InvalidSyncObjectField { .. }
+            ));
+            assert!(!error.to_string().contains("secret-value"));
+        }
     }
 }

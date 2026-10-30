@@ -464,7 +464,8 @@ pub fn authentication_recovery_account_keys(
         .into_iter()
         .filter_map(|record| {
             record
-                .get("accountKey")
+                .account_key
+                .value()
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         })
@@ -836,6 +837,7 @@ mod tests {
         let db = Connection::open_in_memory().expect("SQLite");
         db.execute_batch("CREATE TABLE runtime_usage_resumes(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)").expect("table");
         db.execute("INSERT INTO runtime_usage_resumes VALUES('due','agent',?1)", [json!({"status":"scheduled","cause":"auth","accountKey":"default","failedAt":100.0}).to_string()]).expect("row");
+        db.execute("INSERT INTO runtime_usage_resumes VALUES('opaque','agent',?1)", [json!({"status":"scheduled","cause":"auth","accountKey":[1],"failedAt":100.0,"epoch":null,"taskClaims":{"old":true}}).to_string()]).expect("historical row");
         assert_eq!(
             authentication_recovery_account_keys(&db, 1900.0).expect("read"),
             vec!["default"]

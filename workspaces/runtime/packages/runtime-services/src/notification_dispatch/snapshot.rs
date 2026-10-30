@@ -1,22 +1,20 @@
 //! One checked boundary for the JSON records consumed by pure notification rules.
 use super::{NotificationDispatchError, stored};
 use serde_json::Value;
+use studio_runtime_store::TaskRecord;
 
 pub(super) struct NotificationSnapshot {
     agent: Value,
-    task: Option<Value>,
+    task: Option<TaskRecord>,
     item: Option<Value>,
 }
 impl NotificationSnapshot {
     pub(super) fn from_records(
         agent: Value,
-        task: Option<Value>,
+        task: Option<TaskRecord>,
         item: Option<Value>,
     ) -> Result<Self, NotificationDispatchError> {
         checked("runtime_agents", &agent)?;
-        if let Some(record) = &task {
-            checked("runtime_tasks", record)?;
-        }
         if let Some(record) = &item {
             checked("runtime_items", record)?;
         }
@@ -25,7 +23,7 @@ impl NotificationSnapshot {
     pub(super) fn agent(&self) -> &Value {
         &self.agent
     }
-    pub(super) fn task(&self) -> Option<&Value> {
+    pub(super) fn task(&self) -> Option<&TaskRecord> {
         self.task.as_ref()
     }
     pub(super) fn item(&self) -> Option<&Value> {

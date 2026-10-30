@@ -1,14 +1,111 @@
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io::Read,
     path::{Path, PathBuf},
     sync::OnceLock,
 };
 
 const MAX_ARCHIVE: u64 = 256 * 1024 * 1024;
-static ARCHIVE: OnceLock<Result<Option<(Value, PathBuf)>, String>> = OnceLock::new();
+// Maximum profile chunk file size in bytes; shared with the web importer.
+const MAX_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
+// These are deliberately partial views of the archive contract owned by
+// web/src/native/importBrowserProfile.ts. Invalid fields stay deferred until
+// the operation that needs them; snapshots remain raw for the renderer.
+#[derive(Default, Deserialize)]
+#[serde(untagged)]
+enum Field<T> {
+    Valid(T),
+    Invalid(serde::de::IgnoredAny),
+    #[default]
+    #[serde(skip)]
+    Missing,
+}
+impl<T> Field<T> {
+    fn get(&self) -> Option<&T> {
+        match self {
+            Self::Valid(value) => Some(value),
+            Self::Invalid(_) | Self::Missing => None,
+        }
+    }
+}
 
-fn read_archive(path: &Path) -> Result<Value, String> {
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Archive {
+    id: Field<String>,
+    version: Field<u64>,
+    owners: Field<BTreeMap<String, Field<String>>>,
+    snapshots: Field<Vec<Value>>,
+    parts: Field<String>,
+}
+impl Archive {
+    fn from_value(value: Value) -> Self {
+        if value.is_object() {
+            serde_json::from_value(value).unwrap_or_default()
+        } else {
+            Self::default()
+        }
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct Origin<'a> {
+    #[serde(borrow)]
+    origin: Field<&'a str>,
+}
+
+// Struct deserialization normally also accepts sequences. Archive traversal
+// has always treated non-object array members as absent.
+struct Object<T>(T);
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Object<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor<T>(std::marker::PhantomData<T>);
+        impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Visitor<T> {
+            type Value = Object<T>;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an object")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                map: M,
+            ) -> Result<Self::Value, M::Error> {
+                T::deserialize(serde::de::value::MapAccessDeserializer::new(map)).map(Object)
+            }
+        }
+        deserializer.deserialize_map(Visitor(std::marker::PhantomData))
+    }
+}
+
+// Invalid array members are ignored exactly as in the former partial traversal.
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ChunkSnapshot {
+    databases: Field<Vec<Field<Object<ChunkDatabase>>>>,
+}
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ChunkDatabase {
+    stores: Field<Vec<Field<Object<ChunkStore>>>>,
+}
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ChunkStore {
+    chunks: Field<Vec<Field<Object<ChunkReference>>>>,
+}
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ChunkReference {
+    sha256: Field<String>,
+    bytes: Field<u64>,
+    records: Field<u64>,
+}
+
+static ARCHIVE: OnceLock<Result<Option<(Archive, PathBuf)>, String>> = OnceLock::new();
+
+fn read_archive(path: &Path) -> Result<Archive, String> {
     let metadata = std::fs::metadata(path).map_err(|e| e.to_string())?;
     if !metadata.is_file() || metadata.len() > MAX_ARCHIVE {
         return Err("The profile archive must be a regular file below 256 MiB.".into());
@@ -22,30 +119,43 @@ fn read_archive(path: &Path) -> Result<Value, String> {
     if bytes.len() as u64 > MAX_ARCHIVE {
         return Err("The profile archive exceeds 256 MiB.".into());
     }
-    serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+    serde_json::from_slice(&bytes)
+        .map(Archive::from_value)
+        .map_err(|e| e.to_string())
 }
 
-fn select(archive: &Value, owner: &str) -> Result<Value, String> {
-    let id = archive["id"]
-        .as_str()
+fn select(archive: &Archive, owner: &str) -> Result<Value, String> {
+    let id = archive
+        .id
+        .get()
+        .map(String::as_str)
         .filter(|v| !v.is_empty())
         .ok_or("The profile archive has no identity.")?;
-    if archive["version"] != 1 && archive["version"] != 2 {
+    if !matches!(archive.version.get(), Some(1 | 2)) {
         return Err("Unsupported profile archive version.".into());
     }
-    let owners = archive["owners"]
-        .as_object()
+    let owners = archive
+        .owners
+        .get()
         .ok_or("The profile archive needs an explicit destination owner mapping.")?;
     let origin = owners
         .get(owner)
-        .and_then(Value::as_str)
+        .and_then(Field::get)
+        .map(String::as_str)
         .ok_or("The profile archive does not map this destination owner.")?;
-    let snapshots = archive["snapshots"]
-        .as_array()
+    let snapshots = archive
+        .snapshots
+        .get()
         .ok_or("Invalid profile snapshots.")?;
     let matching: Vec<_> = snapshots
         .iter()
-        .filter(|v| v["origin"].as_str() == Some(origin))
+        .filter(|v| {
+            v.is_object()
+                && Origin::deserialize(*v)
+                    .ok()
+                    .and_then(|view| view.origin.get().copied())
+                    == Some(origin)
+        })
         .collect();
     if matching.len() != 1 {
         return Err("The profile archive must contain exactly one snapshot for this owner.".into());
@@ -53,7 +163,7 @@ fn select(archive: &Value, owner: &str) -> Result<Value, String> {
     Ok(json!({"id":id, "snapshot":matching[0]}))
 }
 
-fn archive() -> Result<Option<&'static (Value, PathBuf)>, String> {
+fn archive() -> Result<Option<&'static (Archive, PathBuf)>, String> {
     match ARCHIVE.get_or_init(|| {
         std::env::var_os("CODEX_NATIVE_PROFILE_IMPORT")
             .map(|path| {
@@ -73,10 +183,8 @@ pub fn snapshot(owner: &str) -> Result<Value, String> {
     }
 }
 
-fn select_workspace(archive: &Value) -> Result<Value, String> {
-    let owners = archive["owners"]
-        .as_object()
-        .ok_or("Missing profile owners.")?;
+fn select_workspace(archive: &Archive) -> Result<Value, String> {
+    let owners = archive.owners.get().ok_or("Missing profile owners.")?;
     if !owners.contains_key("root") {
         return Err("The profile archive needs a root owner.".into());
     }
@@ -95,7 +203,7 @@ fn select_workspace(archive: &Value) -> Result<Value, String> {
         let selected = select(archive, owner)?;
         profiles.push(json!({"owner":owner,"snapshot":selected["snapshot"]}));
     }
-    Ok(json!({"id":archive["id"],"profiles":profiles}))
+    Ok(json!({"id":archive.id.get(),"profiles":profiles}))
 }
 
 pub fn workspace() -> Result<Value, String> {
@@ -105,9 +213,9 @@ pub fn workspace() -> Result<Value, String> {
     }
 }
 
-fn read_chunk(archive: &Value, path: &Path, owner: &str, digest: &str) -> Result<Value, String> {
+fn read_chunk(archive: &Archive, path: &Path, owner: &str, digest: &str) -> Result<Value, String> {
     use sha2::{Digest, Sha256};
-    if archive["version"] != 2
+    if archive.version.get() != Some(&2)
         || digest.len() != 64
         || !digest
             .bytes()
@@ -116,16 +224,31 @@ fn read_chunk(archive: &Value, path: &Path, owner: &str, digest: &str) -> Result
         return Err("Invalid profile chunk.".into());
     }
     let selected = select(archive, owner)?;
-    let reference = selected["snapshot"]["databases"]
-        .as_array()
+    let snapshot = &selected["snapshot"];
+    let view = if snapshot.is_object() {
+        ChunkSnapshot::deserialize(snapshot).unwrap_or_default()
+    } else {
+        ChunkSnapshot::default()
+    };
+    let reference = view
+        .databases
+        .get()
         .into_iter()
         .flatten()
-        .flat_map(|db| db["stores"].as_array().into_iter().flatten())
-        .flat_map(|store| store["chunks"].as_array().into_iter().flatten())
-        .find(|chunk| chunk["sha256"].as_str() == Some(digest))
+        .filter_map(Field::get)
+        .map(|object| &object.0)
+        .flat_map(|db| db.stores.get().into_iter().flatten())
+        .filter_map(Field::get)
+        .map(|object| &object.0)
+        .flat_map(|store| store.chunks.get().into_iter().flatten())
+        .filter_map(Field::get)
+        .map(|object| &object.0)
+        .find(|chunk| chunk.sha256.get().map(String::as_str) == Some(digest))
         .ok_or("This chunk does not belong to the profile owner.")?;
-    let parts = archive["parts"]
-        .as_str()
+    let parts = archive
+        .parts
+        .get()
+        .map(String::as_str)
         .filter(|s| {
             !s.is_empty() && !s.contains('/') && !s.contains('\\') && *s != "." && *s != ".."
         })
@@ -140,8 +263,8 @@ fn read_chunk(archive: &Value, path: &Path, owner: &str, digest: &str) -> Result
     let chunk = directory.join(format!("{digest}.json"));
     let metadata = std::fs::symlink_metadata(&chunk).map_err(|e| e.to_string())?;
     if !metadata.is_file()
-        || metadata.len() > 64 * 1024 * 1024
-        || reference["bytes"].as_u64() != Some(metadata.len())
+        || metadata.len() > MAX_CHUNK_BYTES
+        || reference.bytes.get().copied() != Some(metadata.len())
     {
         return Err("The profile chunk size changed.".into());
     }
@@ -152,7 +275,7 @@ fn read_chunk(archive: &Value, path: &Path, owner: &str, digest: &str) -> Result
         .custom_flags(libc::O_NOFOLLOW)
         .open(chunk)
         .map_err(|e| e.to_string())?
-        .take(64 * 1024 * 1024 + 1)
+        .take(MAX_CHUNK_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     let actual: String = Sha256::digest(&bytes)
@@ -164,7 +287,7 @@ fn read_chunk(archive: &Value, path: &Path, owner: &str, digest: &str) -> Result
     }
     let records: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     if !records.is_array()
-        || records.as_array().map(|v| v.len() as u64) != reference["records"].as_u64()
+        || records.as_array().map(|v| v.len() as u64) != reference.records.get().copied()
     {
         return Err("The profile chunk record count changed.".into());
     }
@@ -182,6 +305,15 @@ pub fn chunk(owner: &str, digest: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn select(value: &Value, owner: &str) -> Result<Value, String> {
+        super::select(&Archive::from_value(value.clone()), owner)
+    }
+    fn select_workspace(value: &Value) -> Result<Value, String> {
+        super::select_workspace(&Archive::from_value(value.clone()))
+    }
+    fn read_chunk(value: &Value, path: &Path, owner: &str, digest: &str) -> Result<Value, String> {
+        super::read_chunk(&Archive::from_value(value.clone()), path, owner, digest)
+    }
     #[test]
     fn workspace_requires_explicit_complete_owner_mappings() {
         let mut archive = json!({"version":1,"id":"all-owners",
@@ -204,6 +336,31 @@ mod tests {
             "The profile archive needs a root owner."
         );
     }
+    #[test]
+    fn selection_preserves_raw_snapshots_and_ignores_unselected_malformed_data() {
+        let snapshot = json!({"origin":"local", "version":2, "unknown":{"value":[1, null]}, "databases":"invalid until renderer import"});
+        for version in [1, 2] {
+            let archive = json!({"id":"stable", "version":version, "owners":{"root":"local", "other":false},
+                "snapshots":[null, 7, {"origin":false, "databases":[null]}, snapshot]});
+            assert_eq!(select(&archive, "root").unwrap()["snapshot"], snapshot);
+            assert_eq!(
+                select(&archive, "other").unwrap_err(),
+                "The profile archive does not map this destination owner."
+            );
+        }
+        let invalid = json!({"id":"", "version":3, "owners":null, "snapshots":null});
+        assert_eq!(
+            select(&invalid, "root").unwrap_err(),
+            "The profile archive has no identity."
+        );
+        let float_version =
+            json!({"id":"id", "version":1.0, "owners":{"root":"x"}, "snapshots":[]});
+        assert_eq!(
+            select(&float_version, "root").unwrap_err(),
+            "Unsupported profile archive version."
+        );
+    }
+
     #[test]
     fn chunks_require_the_owner_exact_bytes_and_a_regular_file() {
         use sha2::{Digest, Sha256};
@@ -229,6 +386,13 @@ mod tests {
           "snapshots":[{"origin":"local","databases":[{"stores":[{"chunks":[{"sha256":hash,"bytes":bytes.len(),"records":1}]}]}]},
                        {"origin":"remote","databases":[]}]});
         let path = dir.join("archive.json");
+        std::fs::write(&path, serde_json::to_vec(&archive).unwrap()).unwrap();
+        let parsed = super::read_archive(&path).unwrap();
+        assert_eq!(
+            super::select(&parsed, "root").unwrap()["snapshot"],
+            archive["snapshots"][0]
+        );
+        assert!(super::read_chunk(&parsed, &path, "root", &hash).is_ok());
         assert_eq!(
             serde_json::from_str::<Value>(
                 read_chunk(&archive, &path, "root", &hash)
@@ -244,6 +408,31 @@ mod tests {
         );
         assert!(read_chunk(&archive, &path, "server:remote", &hash).is_err());
         assert!(read_chunk(&archive, &path, "root", "../escape").is_err());
+        let malformed = json!({"version":2,"id":"test","parts":"parts", "owners":{"root":"local"},
+          "snapshots":[{"origin":"local","databases":[[[[{"sha256":hash,"bytes":bytes.len(),"records":1}]]]]} ]});
+        assert_eq!(
+            read_chunk(&malformed, &path, "root", &hash).unwrap_err(),
+            "This chunk does not belong to the profile owner."
+        );
+        let mut wrong_count = archive.clone();
+        wrong_count["snapshots"][0]["databases"][0]["stores"][0]["chunks"][0]["records"] = json!(2);
+        assert_eq!(
+            read_chunk(&wrong_count, &path, "root", &hash).unwrap_err(),
+            "The profile chunk record count changed."
+        );
+        let mut wrong_size = archive.clone();
+        wrong_size["snapshots"][0]["databases"][0]["stores"][0]["chunks"][0]["bytes"] =
+            json!(bytes.len() + 1);
+        assert_eq!(
+            read_chunk(&wrong_size, &path, "root", &hash).unwrap_err(),
+            "The profile chunk size changed."
+        );
+        std::os::unix::fs::symlink(dir.join("parts"), dir.join("redirect")).unwrap();
+        archive["parts"] = json!("redirect");
+        assert_eq!(
+            read_chunk(&archive, &path, "root", &hash).unwrap_err(),
+            "Profile chunks cannot use a redirected directory."
+        );
         archive["parts"] = json!("../parts");
         assert!(read_chunk(&archive, &path, "root", &hash).is_err());
         archive["parts"] = json!("parts");

@@ -102,3 +102,59 @@ fn unsafe_identity_permissions_are_refused() {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("unsafe file mode");
     assert_identity_error(file_root.path(), "permissions");
 }
+
+#[tokio::test]
+async fn startup_public_identity_admission_keeps_legacy_json_rules() {
+    let root = tempfile::tempdir().expect("fixture operation");
+    let path = private_identity(
+        root.path(),
+        br#"{"serverId":false,"serverId":"public-id","unknown":{"private":null}}"#,
+    );
+    let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("fixture operation");
+    assert_eq!(
+        store
+            .local_server_id()
+            .expect("fixture operation")
+            .as_deref(),
+        Some("public-id")
+    );
+    drop(store);
+    for (contents, reason) in [
+        (
+            r#"{"serverId":"ok","serverId":null}"#.to_owned(),
+            "missing serverId",
+        ),
+        ("[]".to_owned(), "missing serverId"),
+        (r#"{"serverId":"bad/id"}"#.to_owned(), "invalid serverId"),
+        (
+            r#"{"serverId":"ok","other":1e999}"#.to_owned(),
+            "malformed JSON",
+        ),
+        (
+            format!(
+                r#"{{"serverId":"ok","other":{}0{}}}"#,
+                "[".repeat(130),
+                "]".repeat(130)
+            ),
+            "malformed JSON",
+        ),
+    ] {
+        fs::write(&path, contents).expect("fixture operation");
+        assert_identity_error(root.path(), reason);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unsafe_identity_path_and_size_precede_json_validation() {
+    let root = tempfile::tempdir().expect("fixture directory");
+    let path = private_identity(root.path(), &vec![b'x'; 16_385]);
+    assert_identity_error(root.path(), "bounded regular file");
+    fs::remove_file(&path).expect("remove fixture");
+    let target = root.path().join("target");
+    fs::write(&target, b"not json").expect("target fixture");
+    std::os::unix::fs::symlink(&target, &path).expect("symlink fixture");
+    assert_identity_error(root.path(), "bounded regular file");
+}

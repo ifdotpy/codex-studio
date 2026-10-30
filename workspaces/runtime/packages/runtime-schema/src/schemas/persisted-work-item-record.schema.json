@@ -1,70 +1,49 @@
 {
-  "$defs": {
-    "JsonValue": {}
-  },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": true,
   "properties": {
+    "decisions": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "type": "array"
+    },
     "dependencies": {
       "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/WorkItem/properties/dependencies"
     },
-    "updated": {
-      "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/WorkItem/properties/updated"
-    },
-    "results": { "type": "array", "items": { "type": "object" } },
-    "decisions": { "type": "array", "items": { "type": "object" } },
     "id": {
-      "title": "Id",
       "type": "string"
     },
     "owner": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Owner"
+      "type": ["string", "null"]
     },
     "releases": {
+      "items": true,
+      "type": "array"
+    },
+    "results": {
       "items": {
-        "$ref": "#/$defs/JsonValue"
+        "additionalProperties": true,
+        "type": "object"
       },
-      "title": "Releases",
       "type": "array"
     },
     "rootId": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Rootid"
+      "type": ["string", "null"]
     },
     "status": {
       "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/WorkItem/properties/status"
     },
     "title": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Title"
+      "type": ["string", "null"]
+    },
+    "updated": {
+      "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/WorkItem/properties/updated"
     },
     "version": {
       "maximum": 9007199254740991,
       "minimum": 0,
-      "title": "Version",
       "type": "integer"
     }
   },

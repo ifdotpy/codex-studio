@@ -481,7 +481,7 @@ pub async fn write(
     store: Arc<RuntimeStore>,
     body: Value,
     default_account: String,
-    known_accounts: Vec<Value>,
+    known_accounts: Vec<crate::account_policy::PublicAccount>,
 ) -> Result<Value, ProjectsError> {
     let action = body
         .get("action")
@@ -533,7 +533,7 @@ pub async fn write(
     if action == "set_account"
         && !known_accounts
             .iter()
-            .any(|row| row.get("id").and_then(Value::as_str) == account.as_deref())
+            .any(|row| row.id.as_str() == account.as_deref())
     {
         return Err(ProjectsError::Invalid("select an existing account"));
     }
@@ -575,8 +575,8 @@ pub async fn write(
                     ));
                 }
                 if known_accounts.iter().any(|row| {
-                    row.get("id").and_then(Value::as_str) == account.as_deref()
-                        && row.get("disconnected").and_then(Value::as_bool) == Some(true)
+                    row.id.as_str() == account.as_deref()
+                        && row.disconnected.as_bool() == Some(true)
                 }) {
                     return Err(ProjectsError::Invalid(
                         "reconnect this account before selecting it",
@@ -729,12 +729,9 @@ fn new_project(
     path: &str,
     name: &str,
     account: &str,
-    accounts: &[Value],
+    accounts: &[crate::account_policy::PublicAccount],
 ) -> Result<Value, ProjectsError> {
-    if !accounts
-        .iter()
-        .any(|row| row.get("id").and_then(Value::as_str) == Some(account))
-    {
+    if !accounts.iter().any(|row| row.id.as_str() == Some(account)) {
         return Err(ProjectsError::Invalid("select an existing account"));
     }
     let server = prepared.server()?;
@@ -789,7 +786,7 @@ async fn set_accounts(
     store: Arc<RuntimeStore>,
     body: Value,
     _default_account: String,
-    known_accounts: Vec<Value>,
+    known_accounts: Vec<crate::account_policy::PublicAccount>,
 ) -> Result<Value, ProjectsError> {
     let path_value = body.get("path").cloned();
     let keys_value = body
@@ -821,14 +818,13 @@ async fn set_accounts(
         .map(|key| {
             known_accounts
                 .iter()
-                .find(|row| row.get("id").and_then(Value::as_str) == Some(key))
+                .find(|row| row.id.as_str() == Some(key))
                 .map(|row| (key.as_str(), row))
                 .ok_or(ProjectsError::Invalid("select existing project accounts"))
         })
         .collect::<Result<Vec<_>, _>>()?;
     if selected.iter().any(|(_, row)| {
-        row.get("status").and_then(Value::as_str) != Some("ready")
-            && row.get("canAttemptNativeProof").and_then(Value::as_bool) != Some(true)
+        row.status.as_str() != Some("ready") && row.can_attempt_native_proof.as_bool() != Some(true)
     }) {
         return Err(ProjectsError::Invalid(
             "sign in to the selected project accounts first",
@@ -854,10 +850,10 @@ async fn set_accounts(
         for key in &keys {
             let account = known_accounts
                 .iter()
-                .find(|row| row.get("id").and_then(Value::as_str) == Some(key.as_str()))
+                .find(|row| row.id.as_str() == Some(key.as_str()))
                 .ok_or(ProjectsError::Invalid("select existing project accounts"))?;
-            if account.get("deleted").and_then(Value::as_bool) == Some(true) { return Err(ProjectsError::Invalid("deleted accounts cannot be added to a project")); }
-            if account.get("disconnected").and_then(Value::as_bool) == Some(true)
+            if account.deleted.as_bool() == Some(true) { return Err(ProjectsError::Invalid("deleted accounts cannot be added to a project")); }
+            if account.disconnected.as_bool() == Some(true)
                 && (key == &default || !existing_keys.iter().any(|value| value.as_str() == Some(key.as_str()))) {
                 return Err(ProjectsError::Invalid("reconnect this account before adding it to a project or selecting it as the default"));
             }
@@ -880,7 +876,7 @@ async fn set_worker_environment(
     store: Arc<RuntimeStore>,
     body: Value,
     default_account: String,
-    known_accounts: Vec<Value>,
+    known_accounts: Vec<crate::account_policy::PublicAccount>,
 ) -> Result<Value, ProjectsError> {
     let environment = body
         .get("environment")
@@ -949,7 +945,7 @@ async fn set_workspace_policy(
     store: Arc<RuntimeStore>,
     body: Value,
     default_account: String,
-    known_accounts: Vec<Value>,
+    known_accounts: Vec<crate::account_policy::PublicAccount>,
 ) -> Result<Value, ProjectsError> {
     let policy = match body.get("workspace_policy") {
         Some(Value::Null) => None,
@@ -1047,7 +1043,7 @@ async fn set_account_groups(
     store: Arc<RuntimeStore>,
     body: Value,
     default_account: String,
-    known_accounts: Vec<Value>,
+    known_accounts: Vec<crate::account_policy::PublicAccount>,
 ) -> Result<Value, ProjectsError> {
     use crate::account_preference::{
         PROJECT_GROUPS_FIELD, PROJECT_GROUPS_REVISION_FIELD, validate_groups,
@@ -1120,7 +1116,7 @@ async fn organize(
     store: Arc<RuntimeStore>,
     body: Value,
     default_account: String,
-    accounts: Vec<Value>,
+    accounts: Vec<crate::account_policy::PublicAccount>,
 ) -> Result<Value, ProjectsError> {
     let action = body
         .get("action")

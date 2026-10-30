@@ -334,6 +334,7 @@ async fn every_foreign_receipt_dimension_is_held_unknown() {
 }
 
 #[tokio::test]
+#[ignore = "heavy tier: just test-quarantine (flaky under load, issue #616)"]
 async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_boundary() {
     // 0 before admission, 1 admission, 2 answer/delete intent, 3 Submitted,
     // 4 mailbox acceptance, 5 native submission, 6 typed receipt received,

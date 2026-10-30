@@ -28,8 +28,16 @@ async fn analytics_reads_decode_compressed_item_records() {
         .expect("item reads")
         .expect("item exists");
 
+    assert_eq!(item.kind.as_deref(), Some("agentMessage"));
+    let decoded: String = reader
+        .query_row(
+            "SELECT record FROM analytics_items WHERE id='item-1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("open record reads");
     assert_eq!(
-        item,
+        serde_json::from_str::<Value>(&decoded).expect("decoded JSON"),
         serde_json::from_str::<Value>(&record).expect("record JSON")
     );
     drop(store);
