@@ -3164,7 +3164,7 @@ fn submit(
             &lead,
             format!("work-result:{result_id}"),
             "work_review",
-            json!({"task":input.task_id,"title":work.value()["title"],"result":result}).to_string(),
+            json!({"task":input.task_id,"title":work.title(),"result":result}).to_string(),
             now,
         )?;
     }
@@ -3571,8 +3571,7 @@ pub fn work_item_view(
 }
 
 fn single_view(tx: &Transaction<'_>, work: &WorkItemRecord) -> Result<Value, Error> {
-    let statuses = dependency_statuses(tx, work)?;
-    Ok(crate::work_policy::work_item_view(work, &statuses))
+    Ok(work_item_view(tx, work)?)
 }
 
 fn validate_dependencies(
