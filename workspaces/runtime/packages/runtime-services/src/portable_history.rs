@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use studio_runtime_store::path_identity::CanonicalPath;
 
@@ -617,40 +617,6 @@ where
         seen.insert(ancestor.path);
         Ok(())
     })
-}
-
-/// Open the complete validated JSONL archive, including its integrity footer.
-/// The returned file is rewound and verified against the descriptor hash.
-pub fn read_history(
-    state_root: &Path,
-    descriptor: &ArchiveDescriptor,
-) -> Result<File, PortableHistoryError> {
-    let validated = validate_history(state_root, descriptor)?;
-    let mut file = open_archive_file(state_root, &validated.path)?;
-    let mut digest = Sha256::new();
-    let mut bytes = 0_u64;
-    let mut chunk = [0_u8; 64 * 1024];
-    loop {
-        let count = file.read(&mut chunk)?;
-        if count == 0 {
-            break;
-        }
-        bytes = bytes
-            .checked_add(u64::try_from(count).unwrap_or(u64::MAX))
-            .ok_or(PortableHistoryError::LimitExceeded {
-                limit: "archive byte",
-                record_index: 0,
-                actual: u64::MAX,
-                maximum: MAX_ARCHIVE_BYTES,
-            })?;
-        enforce_archive_size(bytes, 0)?;
-        digest.update(&chunk[..count]);
-    }
-    if bytes != validated.bytes || hex_digest(digest.finalize().as_slice()) != validated.sha256 {
-        return Err(PortableHistoryError::ChangedContent);
-    }
-    file.seek(SeekFrom::Start(0))?;
-    Ok(file)
 }
 
 /// Build the bounded historical context after validating every referenced file.
