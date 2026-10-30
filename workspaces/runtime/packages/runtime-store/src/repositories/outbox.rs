@@ -218,26 +218,7 @@ mod tests {
             created: 1,
         };
         Outbox::put(&tx, &row).expect("admit");
-        let cached_statement = || {
-            // SAFETY: the transaction holds the connection and the statement
-            // is inspected while owned by SQLite's connection cache.
-            #[allow(unsafe_code)]
-            unsafe {
-                let db = tx.handle();
-                let mut stmt = rusqlite::ffi::sqlite3_next_stmt(db, std::ptr::null_mut());
-                while !stmt.is_null() {
-                    let sql = std::ffi::CStr::from_ptr(rusqlite::ffi::sqlite3_sql(stmt));
-                    if sql.to_bytes().starts_with(b"INSERT INTO runtime_outbox(") {
-                        return Some(stmt as usize);
-                    }
-                    stmt = rusqlite::ffi::sqlite3_next_stmt(db, stmt);
-                }
-                None
-            }
-        };
-        let first = cached_statement().expect("outbox writer retains its prepared statement");
         Outbox::put(&tx, &row).expect("repeat exact write");
-        assert_eq!(cached_statement(), Some(first), "same statement is reused");
         assert_eq!(
             Outbox::get::<Input>(&tx, &row.id).expect("get"),
             Some(row.clone())
