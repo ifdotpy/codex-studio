@@ -1641,18 +1641,6 @@ impl JsonRecord for EventMetadataRecord {
         None
     }
 }
-pub use studio_runtime_schema::graph_agent_record::GraphAgentRecord;
-impl JsonRecord for GraphAgentRecord {
-    type Id = String;
-    const TABLE: &'static str = "graph_agents";
-    const SCHEMA: &'static str = "PersistedGraphAgentRecord";
-    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
-    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
-    const TYPED_SHAPE: bool = true;
-    fn record_key(&self) -> Option<&Self::Id> {
-        Some(self.id())
-    }
-}
 
 impl WorkItemRecord {
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {

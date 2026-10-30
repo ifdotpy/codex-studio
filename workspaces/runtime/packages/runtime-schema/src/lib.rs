@@ -23,7 +23,6 @@ pub mod delivery;
 pub mod desktop;
 pub mod event_metadata;
 pub mod federation_limits;
-pub mod graph_agent_record;
 pub mod idle_compaction;
 pub mod json_compat;
 pub mod json_object;
@@ -126,8 +125,6 @@ const USAGE_RESUME_RECORD_URI: &str =
 const WORK_ITEM_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-work-item-record.schema.json";
 const RULE_RECORD_URI: &str = "https://codex-studio.invalid/persisted-rule-record.schema.json";
-const GRAPH_AGENT_RECORD_URI: &str =
-    "https://codex-studio.invalid/persisted-graph-agent-record.schema.json";
 const PROFILE_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-profile-record.schema.json";
 const EXECUTION_RUN_RECORD_URI: &str =
@@ -218,8 +215,6 @@ const USAGE_RESUME_RECORD: &[u8] =
     include_bytes!("schemas/persisted-usage-resume-record.schema.json");
 const WORK_ITEM_RECORD: &[u8] = include_bytes!("schemas/persisted-work-item-record.schema.json");
 const RULE_RECORD: &[u8] = include_bytes!("schemas/persisted-rule-record.schema.json");
-const GRAPH_AGENT_RECORD: &[u8] =
-    include_bytes!("schemas/persisted-graph-agent-record.schema.json");
 const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.schema.json");
 const EXECUTION_RUN_RECORD: &[u8] =
     include_bytes!("schemas/persisted-execution-run-record.schema.json");
@@ -320,7 +315,6 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (FEDERATION_ROOM_RECORD_URI, FEDERATION_ROOM_RECORD),
     (FEDERATION_ROOM_URI, FEDERATION_ROOM),
     (FEDERATION_SETTINGS_URI, FEDERATION_SETTINGS),
-    (GRAPH_AGENT_RECORD_URI, GRAPH_AGENT_RECORD),
     (MESSAGE_EVENT_URI, MESSAGE_EVENT),
     (MONITOR_RECORD_URI, MONITOR_RECORD),
     (MONITOR_RESULT_URI, MONITOR_RESULT),
@@ -478,7 +472,6 @@ pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
 /// Return the authoritative persisted schema for a typed runtime table.
 pub fn table_schema(table: &str) -> Option<&'static str> {
     Some(match table {
-        "graph_agents" => "PersistedGraphAgentRecord",
         "runtime_access_clients" | "runtime_access_discovered" => "PersistedAccessClient",
         "runtime_access_invites" => "PersistedAccessInvite",
         "runtime_access_receipts" => "PersistedAccessReceipt",
@@ -946,7 +939,6 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedFederationRoom", FEDERATION_ROOM_URI),
         ("PersistedFederationRoomRecord", FEDERATION_ROOM_RECORD_URI),
         ("PersistedFederationSettings", FEDERATION_SETTINGS_URI),
-        ("PersistedGraphAgentRecord", GRAPH_AGENT_RECORD_URI),
         ("PersistedMessageEvent", MESSAGE_EVENT_URI),
         ("PersistedMonitorRecord", MONITOR_RECORD_URI),
         ("PersistedMonitorResult", MONITOR_RESULT_URI),
@@ -1285,7 +1277,6 @@ mod tests {
             ("runtime_usage_resumes", "PersistedUsageResumeRecord"),
             ("runtime_work", "PersistedWorkItemRecord"),
             ("runtime_rules", "PersistedRuleRecord"),
-            ("graph_agents", "PersistedGraphAgentRecord"),
             ("runtime_assets", "PersistedTranscriptAsset"),
             ("runtime_items", "PersistedTranscriptRecord"),
             ("runtime_event_meta", "RuntimeEventMetadataRecord"),

@@ -42,6 +42,7 @@ pub(crate) mod m2026_10_30_monitor_errors;
 mod m2026_10_30_monitor_generated;
 pub(crate) mod m2026_10_30_monitor_queue;
 pub(crate) mod m2026_10_30_monitor_status;
+mod m2026_10_30_retire_graph_agents;
 mod m2026_10_30_rule_monitor_records;
 mod m2026_10_30_start_wait;
 mod m2026_10_30_unused_agent_columns;
@@ -302,6 +303,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_unused_agent_columns::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-retire-graph-agents",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Legacy registered graph agent rows",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_retire_graph_agents::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
