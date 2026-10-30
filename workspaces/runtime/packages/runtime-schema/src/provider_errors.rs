@@ -1,6 +1,7 @@
 //! Known Codex error classifications. The generated vendor leaf owns their
 //! spellings and payloads; parity rejects a changed known set. This is a tag
 //! projection, not a replacement for the lossless provider error JSON record.
+use serde::de::value::{Error, StrDeserializer};
 use serde_json::{Value, json};
 
 pub const CODEX_ERROR_SCHEMA: &str = include_str!("schemas/codex/CodexErrorInfo.json");
@@ -10,20 +11,17 @@ pub use crate::codex_generated::KnownCodexErrorKind;
 /// External and historical records may carry a string or a single-key object.
 /// Never choose an arbitrary key from an ambiguous provider extension object.
 pub fn raw_error_kind(error: &Value) -> Option<&str> {
-    let info = error.get("codexErrorInfo")?;
-    info.as_str().or_else(|| {
-        let object = info.as_object()?;
-        if object.len() != 1 {
-            return None;
-        }
-        object.keys().next().map(String::as_str)
-    })
+    match error.get("codexErrorInfo")? {
+        Value::String(value) => Some(value),
+        Value::Object(object) if object.len() == 1 => object.keys().next().map(String::as_str),
+        _ => None,
+    }
 }
 
 /// Classify known tags only. Unknown external records remain with their caller;
 /// this function never rewrites the original payload or invents an enum variant.
 pub fn known_error_kind(error: &Value) -> Option<KnownCodexErrorKind> {
-    serde_json::from_value(Value::String(raw_error_kind(error)?.into())).ok()
+    serde::Deserialize::deserialize(StrDeserializer::<Error>::new(raw_error_kind(error)?)).ok()
 }
 
 /// The vendor's thread-scoped precaution stop, shared by admission and recovery.
