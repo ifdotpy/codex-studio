@@ -474,11 +474,8 @@ fn tick_before_observation(s: &Snapshot, now: f64) -> Result<Option<Decision>> {
         d.hold(s.record_id().unwrap_or(""), "account-excluded", &reason);
         return Ok(Some(d));
     }
-    if s.agent_view()
-        .deleted_at
-        .as_ref()
-        .is_some_and(|v| v.get() != 0.0)
-        || !s.agent_view().auto_wake.unwrap_or(false)
+    if s.agent_record().is_deleted()
+        || !s.agent_record().auto_wake.unwrap_or(false)
         || s.agent_record().usage_resume_enabled == Some(false)
         || s.agent_account() != key
         || !s.parents_running(false)
@@ -592,11 +589,7 @@ pub struct FailureObservation<'a> {
 pub fn failure_eligible(s: &Snapshot) -> bool {
     !crate::continuation::native_thread_blocked(&s.agent)
         && s.agent_record().auto_wake.unwrap_or(false)
-        && !s
-            .agent_view()
-            .deleted_at
-            .as_ref()
-            .is_some_and(|v| v.get() != 0.0)
+        && !s.agent_record().is_deleted()
         && s.agent_record().usage_resume_enabled != Some(false)
         && s.agent_record().thread_id.is_some()
         && !s

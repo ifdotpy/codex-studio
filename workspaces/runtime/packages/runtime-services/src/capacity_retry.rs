@@ -90,7 +90,7 @@ pub fn failed(
     now_checked(now)?;
     if crate::continuation::native_thread_blocked(&s.agent)
         || !s.agent_record().auto_wake.unwrap_or(false)
-        || present(&s.agent, "deletedAt")
+        || s.agent_record().is_deleted()
         || s.agent_record().thread_id.is_none()
         || s.agent
             .get("turnEpoch")

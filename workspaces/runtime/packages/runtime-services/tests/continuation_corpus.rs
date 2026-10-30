@@ -49,6 +49,51 @@ fn limits_observation_keeps_its_own_validation() {
 }
 
 #[test]
+fn deleted_agent_blocks_new_continuations() {
+    let cases = cases();
+    let original = &cases
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "capacity-create-server-0")
+        .unwrap()["input"];
+    for (marker, eligible) in [(Value::Null, true), (json!(0), true), (json!(1), false)] {
+        let mut input = original.clone();
+        input["agent"]["deletedAt"] = marker;
+        let snapshot = Snapshot::from_records(input).unwrap();
+        assert_eq!(
+            studio_runtime_services::usage_resume::failure_eligible(&snapshot),
+            eligible
+        );
+        let decision = capacity_retry::failed(
+            &snapshot,
+            capacity_retry::Failure::ServerOverloaded,
+            "turn",
+            &json!({}),
+            1000.0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(decision.record.is_some(), eligible);
+    }
+    let original = &cases
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "usage-identity-deletedAt")
+        .unwrap()["input"];
+    for (marker, status) in [(json!(0), "scheduled"), (json!(1), "cancelled")] {
+        let mut input = original.clone();
+        input["agent"]["deletedAt"] = marker;
+        let snapshot = Snapshot::from_records(input).unwrap();
+        let decision =
+            studio_runtime_services::usage_resume::tick_without_observation(&snapshot, 1000.0)
+                .unwrap();
+        assert_eq!(decision.record.unwrap().value()["status"], status);
+    }
+}
+
+#[test]
 fn continuation_ignores_unread_agent_details() {
     let input = json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"running",
         "provider":"codex","accountKey":"default","startAttempt":{"unrelated":true},"isLead":true}});
