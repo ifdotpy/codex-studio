@@ -278,10 +278,9 @@ fn read_chunk(archive: &Archive, path: &Path, owner: &str, digest: &str) -> Resu
     if actual != digest {
         return Err("The profile chunk checksum changed.".into());
     }
-    let records: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    if !records.is_array()
-        || records.as_array().map(|v| v.len() as u64) != reference.records.get().copied()
-    {
+    let records: Vec<serde::de::IgnoredAny> =
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if Some(records.len() as u64) != reference.records.get().copied() {
         return Err("The profile chunk record count changed.".into());
     }
     // Keep a large nested array out of WebKit's callback source. The renderer
