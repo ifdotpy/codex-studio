@@ -341,9 +341,6 @@ pub(super) fn push(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options) -> Res
 
 pub(super) fn push_locked(store: &Store, ctx: &Ctx, repo: &Repo, opts: &Options) -> Result<Report> {
     let _push = crate::trace::span("store push");
-    if opts.caches && serde_json::from_value::<crate::model::StateKind>(serde_json::json!("cache")).is_err() {
-        bail!("store --caches is not available until cache states exist");
-    }
     super::epochs::check_current(store)?;
     store.private_dir()?;
     let descriptor = store.descriptor()?;
