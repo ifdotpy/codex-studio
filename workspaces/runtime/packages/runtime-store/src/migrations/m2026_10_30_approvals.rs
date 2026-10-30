@@ -8,7 +8,8 @@ use rusqlite::Transaction;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use studio_runtime_schema::approvals::{
-    AgentId, Answer, Approval, ApprovalId, ApprovalState, CloseReason, CommandId, Decision,
+    AgentId, Answer, Approval, ApprovalId, ApprovalState, BrowserCard, BrowserForward,
+    BrowserOutcome, BrowserPhase, BrowserRedirect, BrowserSource, CloseReason, CommandId, Decision,
     Deferral, Delivery, Detail, Hidden, Principal, ProviderObject, Question, QuestionAnswer,
     QuestionOption, Request, RequestKind, RpcId, Supervisor, Timestamp, TurnId,
 };
@@ -154,6 +155,144 @@ fn take_text(params: &mut Map<String, Value>, key: &str) -> Option<String> {
     }
 }
 
+/// A string, null or absent value. Any other type cannot be placed.
+fn nullable_text(id: &str, params: &mut Map<String, Value>, key: &str) -> StoreResult<Option<String>> {
+    match params.remove(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(text)) => Ok(Some(text)),
+        Some(_) => Err(bad(id, &format!("browser {key} is not text"))),
+    }
+}
+
+fn nullable_time(id: &str, params: &mut Map<String, Value>, key: &str) -> StoreResult<Option<Timestamp>> {
+    match params.remove(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => Ok(number.as_f64().map(Timestamp)),
+        Some(_) => Err(bad(id, &format!("browser {key} is not a number"))),
+    }
+}
+
+fn required_text(id: &str, params: &mut Map<String, Value>, key: &str) -> StoreResult<String> {
+    nullable_text(id, params, key)?.ok_or_else(|| bad(id, &format!("browser {key} is missing")))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyWaiting {
+    expires_at: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyPaste {
+    at: f64,
+}
+
+fn browser_outcome(id: &str, text: &str) -> StoreResult<BrowserOutcome> {
+    Ok(match text {
+        "signed-in" => BrowserOutcome::SignedIn,
+        "refused" => BrowserOutcome::Refused,
+        "provider-error" => BrowserOutcome::ProviderError,
+        "unknown" => BrowserOutcome::Unknown,
+        "expired" => BrowserOutcome::Expired,
+        "cancelled" => BrowserOutcome::Cancelled,
+        other => return Err(bad(id, &format!("unknown browser outcome {other}"))),
+    })
+}
+
+/// Places the `browser/open` params. The phase, paste mark and outcome of the old
+/// state machine become one `BrowserPhase`. A card written before the host bridge
+/// existed has no source: the VM guest was the only one.
+fn browser_card(id: &str, params: &mut Map<String, Value>) -> StoreResult<BrowserCard> {
+    let phase = nullable_text(id, params, "phase")?;
+    let waiting = params.remove("waiting");
+    let paste = params.remove("paste").filter(|value| !value.is_null());
+    let outcome = nullable_text(id, params, "outcome")?;
+    let http = params.remove("outcomeHttp");
+    let waiting: Option<LegacyWaiting> = waiting
+        .filter(|value| !value.is_null())
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| bad(id, &format!("browser waiting: {e}")))?;
+    let paste: Option<LegacyPaste> = paste
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|e| bad(id, &format!("browser paste: {e}")))?;
+    let phase = match (phase.as_deref(), outcome, waiting, paste) {
+        (_, Some(outcome), ..) => BrowserPhase::Finished {
+            outcome: browser_outcome(id, &outcome)?,
+            http: match http {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(
+                    serde_json::from_value(value)
+                        .map_err(|e| bad(id, &format!("browser outcomeHttp: {e}")))?,
+                ),
+            },
+        },
+        (None, None, None, None) => BrowserPhase::Link,
+        (Some("waiting"), None, Some(waiting), None) => BrowserPhase::Waiting {
+            expires_at: Timestamp(waiting.expires_at),
+        },
+        (Some("waiting"), None, Some(waiting), Some(paste)) => BrowserPhase::Pasted {
+            expires_at: Timestamp(waiting.expires_at),
+            at: Timestamp(paste.at),
+        },
+        _ => return Err(bad(id, "browser phase cannot be placed")),
+    };
+    let redirect = match params.remove("redirect") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            serde_json::from_value::<BrowserRedirect>(value)
+                .map_err(|e| bad(id, &format!("browser redirect: {e}")))?,
+        ),
+    };
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LegacyForward {
+        token_hash: String,
+        expires_at: f64,
+    }
+    let forward = match params.remove("forward") {
+        None | Some(Value::Null) => None,
+        Some(value) => {
+            let legacy: LegacyForward = serde_json::from_value(value)
+                .map_err(|e| bad(id, &format!("browser forward: {e}")))?;
+            Some(BrowserForward {
+                token_hash: legacy.token_hash,
+                expires_at: Timestamp(legacy.expires_at),
+            })
+        }
+    };
+    let joined = match params.remove("joined") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(value) => serde_json::from_value::<Vec<String>>(value)
+            .map_err(|e| bad(id, &format!("browser joined: {e}")))?
+            .into_iter()
+            .map(AgentId)
+            .collect(),
+    };
+    let source = match nullable_text(id, params, "source")?.as_deref() {
+        None | Some("vm") => BrowserSource::Vm,
+        Some("host") => BrowserSource::Host,
+        Some(other) => return Err(bad(id, &format!("unknown browser source {other}"))),
+    };
+    Ok(BrowserCard {
+        url: required_text(id, params, "url")?,
+        bridge_id: required_text(id, params, "bridgeId")?,
+        host: required_text(id, params, "host")?,
+        source,
+        redirect,
+        client_id: nullable_text(id, params, "clientId")?,
+        scope: nullable_text(id, params, "scope")?,
+        linux_user: nullable_text(id, params, "linuxUser")?,
+        user_code: nullable_text(id, params, "userCode")?,
+        expires_at: nullable_time(id, params, "expiresAt")?,
+        joined,
+        forward,
+        phase,
+    })
+}
+
 /// Moves the typed fields out of `params`; the rest stays in `Detail.params`.
 fn request(id: &str, legacy: &Legacy, params: &mut Map<String, Value>) -> StoreResult<Request> {
     let preview_text = |key: &str| {
@@ -210,9 +349,7 @@ fn request(id: &str, legacy: &Legacy, params: &mut Map<String, Value>) -> StoreR
             monitor: take_text(params, "monitorId").unwrap_or_default(),
             command: take_text(params, "command").unwrap_or_default(),
         },
-        "browser/open" => Request::BrowserOpen {
-            url: take_text(params, "url").unwrap_or_default(),
-        },
+        "browser/open" => Request::BrowserOpen(browser_card(id, params)?),
         other => return Err(bad(id, &format!("unmapped method {other}"))),
     })
 }
@@ -221,6 +358,13 @@ fn answer(id: &str, legacy: &Legacy) -> StoreResult<Option<Answer>> {
     let Some(decision) = legacy.decision.as_deref() else {
         return Ok(None);
     };
+    // A pasted sign-in result was recorded as "answer". The consent was an accept;
+    // the paste and its outcome live in the card's phase.
+    if legacy.method == "browser/open" && decision == "answer" {
+        return Ok(Some(Answer::Decision {
+            decision: Decision::Accept,
+        }));
+    }
     Ok(Some(match decision {
         "accept" => Answer::Decision {
             decision: Decision::Accept,
@@ -417,7 +561,7 @@ mod tests {
                 "params":{"turnId":"t","questions":[]}}),
             json!({"id":"x1","method":"item/commandExecution/requestApproval","agent":"a","status":"expired","createdAt":1.0,"params":{"turnId":"t"}}),
             json!({"id":"m1","method":"monitor/approve","agent":"a","status":"answered","params":{"monitorId":"m","command":"c"}}),
-            json!({"id":"b1","method":"browser/open","agent":"a","status":"expired","closeReason":"stale","params":{"url":"https://x"}}),
+            json!({"id":"b1","method":"browser/open","agent":"a","status":"expired","closeReason":"stale","params":{"url":"https://x","bridgeId":"b","host":"x"}}),
             json!({"id":"f1","method":"item/fileChange/requestApproval","agent":"a","status":"resolved","params":{"itemId":"i","turnId":"t"},"preview":{"changes":[{"path":"/p"}]}}),
         ];
         for row in &rows {
@@ -475,6 +619,85 @@ mod tests {
         assert!(
             matches!(state("f1").request, Request::Patch { ref files, .. } if files == &["/p"])
         );
+    }
+
+    #[test]
+    fn browser_params_become_a_typed_card_and_phase() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let card = |extra: Value| {
+            let mut params = json!({"bridgeId":"b","url":"https://x/","host":"x","source":"host",
+                "redirect":{"host":"127.0.0.1","port":1455,"path":"/cb"},"clientId":null,"expiresAt":9.0,
+                "joined":["c"],"forward":{"tokenHash":"h","expiresAt":8.0}});
+            params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            params
+        };
+        let rows = [
+            json!({"id":"p","method":"browser/open","agent":"a","status":"pending","params":card(json!({}))}),
+            json!({"id":"w","method":"browser/open","agent":"a","status":"pending",
+                "params":card(json!({"phase":"waiting","waiting":{"expiresAt":7.0}}))}),
+            json!({"id":"d","method":"browser/open","agent":"a","status":"answered","decision":"answer","answeredBy":"user","answeredAt":5.0,
+                "params":card(json!({"phase":"waiting","waiting":{"expiresAt":7.0},"paste":{"at":4.0},"outcome":"signed-in","outcomeHttp":200}))}),
+            json!({"id":"u","method":"browser/open","agent":"a","status":"uncertain","decision":"answer","answeredBy":"user","answeredAt":5.0,
+                "params":card(json!({"phase":"waiting","waiting":{"expiresAt":7.0},"paste":{"at":4.0},"outcome":"unknown","outcomeHttp":null}))}),
+        ];
+        for row in &rows {
+            db.execute(
+                "INSERT INTO runtime_requests VALUES (?1,?2)",
+                [row["id"].as_str().unwrap(), &row.to_string()],
+            )
+            .unwrap();
+        }
+        let tx = db.transaction().unwrap();
+        apply(&tx).unwrap();
+        let get = |id: &str| {
+            let Request::BrowserOpen(card) = approvals::get(&tx, &ApprovalId(id.into()))
+                .unwrap()
+                .unwrap()
+                .request
+            else {
+                panic!("browser request")
+            };
+            card
+        };
+        let p = get("p");
+        assert_eq!(p.phase, BrowserPhase::Link);
+        assert_eq!(p.source, BrowserSource::Host);
+        assert_eq!(p.redirect.unwrap().port, 1455);
+        assert_eq!(p.forward.unwrap().token_hash, "h");
+        assert_eq!(p.joined, vec![AgentId("c".into())]);
+        assert_eq!(get("w").phase, BrowserPhase::Waiting { expires_at: Timestamp(7.0) });
+        assert_eq!(
+            get("d").phase,
+            BrowserPhase::Finished { outcome: BrowserOutcome::SignedIn, http: Some(200) }
+        );
+        assert!(matches!(
+            approvals::get(&tx, &ApprovalId("u".into())).unwrap().unwrap().state,
+            ApprovalState::Unknown { answer: Answer::Decision { decision: Decision::Accept }, .. }
+        ));
+    }
+
+    #[test]
+    fn a_browser_field_the_card_cannot_hold_fails_the_migration() {
+        for params in [
+            json!({"bridgeId":"b","url":"u","host":"h","phase":"bogus"}),
+            json!({"bridgeId":"b","url":"u","host":"h","forward":{"tokenHash":null}}),
+            json!({"bridgeId":"b","url":"u","host":"h","source":"elsewhere"}),
+            json!({"url":"u","host":"h"}),
+        ] {
+            let mut db = Connection::open_in_memory().unwrap();
+            db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL)").unwrap();
+            db.execute(
+                "INSERT INTO runtime_requests VALUES ('b',?1)",
+                [json!({"id":"b","method":"browser/open","agent":"a","status":"pending","params":params}).to_string()],
+            )
+            .unwrap();
+            let tx = db.transaction().unwrap();
+            assert!(apply(&tx).is_err(), "{params}");
+        }
     }
 
     #[test]

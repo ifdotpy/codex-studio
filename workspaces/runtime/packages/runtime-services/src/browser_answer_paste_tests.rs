@@ -1,8 +1,13 @@
 //! Paste mode and the pasted redirect (docs/vm-browser-bridge.md, section 6.3).
 
 use super::{BrowserAnswerContext, BrowserAnswerError, answer};
+use crate::browser_cards::fixture;
 use crate::linux_vm_guest::{GuestError, GuestRpc};
 use serde_json::{Value, json};
+use studio_runtime_schema::approvals::{
+    Answer, Approval, ApprovalState, BrowserCard, BrowserOutcome, BrowserPhase, BrowserRedirect,
+    CloseReason, Decision, Timestamp,
+};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -74,7 +79,7 @@ fn signed_in(_: &Value) -> Result<Value, GuestError> {
 
 async fn store(
     url: &str,
-    redirect: Value,
+    redirect: Option<BrowserRedirect>,
 ) -> (
     tempfile::TempDir,
     studio_runtime_store::RuntimeStore,
@@ -84,13 +89,6 @@ async fn store(
     let store = studio_runtime_store::RuntimeStore::open(Some(dir.path()))
         .await
         .expect("runtime store opens");
-    let id = "browser-paste-card".to_owned();
-    let record = json!({
-        "id": id, "agent": AGENT, "method": "browser/open", "status": "pending",
-        "params": {"bridgeId": BRIDGE, "url": url, "host": "id.example.com", "redirect": redirect,
-                   "source": "vm", "expiresAt": 600.0}
-    });
-    let request_id = id.clone();
     store
         .transaction_with(move |tx| {
             tx.execute(
@@ -101,38 +99,32 @@ async fn store(
                         .to_string(),
                 ],
             )
-            .map_err(studio_runtime_store::StoreError::from)?;
-            studio_runtime_store::QuestionsWriteRepository::put_request(
-                tx,
-                &request_id,
-                &studio_runtime_store::python_json_utf8(&record),
-            )
+            .map(drop)
+            .map_err(studio_runtime_store::StoreError::from)
         })
         .await
-        .expect("browser request is seeded");
+        .expect("agent is seeded");
+    let mut card = fixture::card(BRIDGE);
+    card.url = url.into();
+    card.host = "id.example.com".into();
+    card.redirect = redirect;
+    card.expires_at = Some(Timestamp(600.0));
+    let id = fixture::seed(&store, AGENT, card).await;
     (dir, store, id)
 }
 
-fn context(
-    guest: Arc<ScriptGuest>,
-    local: bool,
-) -> BrowserAnswerContext<impl Fn(&Value) -> bool + Send + Sync + 'static> {
+fn context(guest: Arc<ScriptGuest>, local: bool) -> BrowserAnswerContext {
     BrowserAnswerContext {
         local_window: local,
         guest,
         local_forwarder: None,
         now: 100.0,
-        validate: |_: &Value| true,
         http_providers: Default::default(),
     }
 }
 
-fn record(store: &studio_runtime_store::RuntimeStore, id: &str) -> Value {
-    let raw = store
-        .test_read_transaction(|tx| studio_runtime_store::QuestionsWriteRepository::request(tx, id))
-        .expect("request reads")
-        .expect("request exists");
-    serde_json::from_str(&raw).expect("request JSON")
+fn record(store: &studio_runtime_store::RuntimeStore, id: &str) -> (Approval, BrowserCard) {
+    fixture::read(store, id)
 }
 
 fn events(store: &studio_runtime_store::RuntimeStore) -> Vec<(String, String, String)> {
@@ -147,8 +139,12 @@ fn events(store: &studio_runtime_store::RuntimeStore) -> Vec<(String, String, St
         .expect("test step")
 }
 
-fn redirect() -> Value {
-    json!({"host":"localhost","port":8000,"path":"/"})
+fn redirect() -> Option<BrowserRedirect> {
+    Some(BrowserRedirect {
+        host: "localhost".into(),
+        port: 8000,
+        path: "/".into(),
+    })
 }
 
 async fn open_in_paste_mode(
@@ -192,10 +188,9 @@ async fn a_remote_window_opens_in_paste_mode_and_the_card_waits() {
         "a remote accept without paste stays refused"
     );
     open_in_paste_mode(&store, &id, &guest).await;
-    let waiting = record(&store, &id);
-    assert_eq!(waiting["status"], "pending");
-    assert_eq!(waiting["params"]["phase"], "waiting");
-    assert_eq!(waiting["params"]["waiting"]["expiresAt"], 700.0);
+    let (row, card) = record(&store, &id);
+    assert!(matches!(row.state, ApprovalState::Pending));
+    assert_eq!(card.phase, BrowserPhase::Waiting { expires_at: Timestamp(700.0) });
     let replay = answer(
         &store,
         &id,
@@ -233,13 +228,20 @@ async fn a_pasted_redirect_reaches_the_command_once() {
         json!({"id":BRIDGE,"target":"/?code=fake-code&state=S1","headers":{}})
     );
     assert!(calls[1].2.starts_with("browser-callback:"));
-    let done = record(&store, &id);
-    assert_eq!(done["status"], "answered");
-    assert_eq!(done["params"]["outcome"], "signed-in");
-    assert_eq!(done["params"]["outcomeHttp"], 200);
-    assert_eq!(done["decision"], "answer");
+    let (done, card) = record(&store, &id);
+    assert!(matches!(
+        done.state,
+        ApprovalState::Answered {
+            answer: Answer::Decision { decision: Decision::Accept },
+            ..
+        }
+    ));
+    assert_eq!(
+        card.phase,
+        BrowserPhase::Finished { outcome: BrowserOutcome::SignedIn, http: Some(200) }
+    );
     assert!(
-        !done.to_string().contains("fake-code"),
+        !format!("{done:?}{card:?}").contains("fake-code"),
         "Studio stores no pasted address"
     );
     assert_eq!(
@@ -281,9 +283,9 @@ async fn a_result_of_another_sign_in_is_refused_and_nothing_is_relayed() {
         assert_eq!(refusal(refused), message);
     }
     assert_eq!(guest.methods(), vec!["browser.answer"]);
-    let waiting = record(&store, &id);
-    assert_eq!(waiting["status"], "pending");
-    assert!(waiting["params"].get("paste").is_none());
+    let (row, card) = record(&store, &id);
+    assert!(matches!(row.state, ApprovalState::Pending));
+    assert!(matches!(card.phase, BrowserPhase::Waiting { .. }));
 }
 
 #[tokio::test]
@@ -309,10 +311,16 @@ async fn a_paste_before_the_approval_or_after_the_deadline_is_refused() {
         refusal(late),
         "The sign-in command stopped waiting. Ask the agent to run it again."
     );
-    let expired = record(&store, &id);
-    assert_eq!(expired["status"], "expired");
-    assert_eq!(expired["closeReason"], "stale");
-    assert_eq!(expired["params"]["outcome"], "expired");
+    let (expired, card) = record(&store, &id);
+    assert!(matches!(
+        expired.state,
+        ApprovalState::Closed { reason: CloseReason::Expired, .. }
+    ));
+    assert_eq!(expired.detail.host_close_reason.as_deref(), Some("stale"));
+    assert_eq!(
+        card.phase,
+        BrowserPhase::Finished { outcome: BrowserOutcome::Expired, http: None }
+    );
 }
 
 #[tokio::test]
@@ -328,9 +336,12 @@ async fn a_lost_relay_reply_is_unknown_and_never_sent_again() {
     let pasted = json!({"decision":"answer","result":"http://localhost:8000/?code=x&state=S1"});
     let lost = answer(&store, &id, &pasted, context(Arc::clone(&guest), false)).await;
     assert!(refusal(lost).starts_with("The result of the sign-in is unknown."));
-    let unknown = record(&store, &id);
-    assert_eq!(unknown["status"], "uncertain");
-    assert_eq!(unknown["params"]["outcome"], "unknown");
+    let (unknown, card) = record(&store, &id);
+    assert!(matches!(unknown.state, ApprovalState::Unknown { .. }));
+    assert!(matches!(
+        card.phase,
+        BrowserPhase::Finished { outcome: BrowserOutcome::Unknown, .. }
+    ));
     let replay = answer(&store, &id, &pasted, context(Arc::clone(&guest), false))
         .await
         .expect("test step")
@@ -370,20 +381,22 @@ async fn a_relay_that_the_bridge_did_not_send_keeps_the_card_waiting_for_a_retry
         refusal(refused),
         "Studio could not check the sign-in command now. Nothing was sent. Paste the address again."
     );
-    let waiting = record(&store, &id);
-    assert_eq!(waiting["status"], "pending");
-    assert_eq!(waiting["params"]["phase"], "waiting");
-    assert!(
-        waiting["params"].get("paste").is_none(),
+    let (row, card) = record(&store, &id);
+    assert!(matches!(row.state, ApprovalState::Pending));
+    assert_eq!(
+        card.phase,
+        BrowserPhase::Waiting { expires_at: Timestamp(700.0) },
         "a retry may paste"
     );
-    assert!(waiting["params"].get("outcome").is_none());
     let retried = answer(&store, &id, &pasted, context(Arc::clone(&guest), false))
         .await
         .expect("test step")
         .expect("test step");
     assert_eq!(retried.response, json!({"status":"answered"}));
-    assert_eq!(record(&store, &id)["params"]["outcome"], "signed-in");
+    assert!(matches!(
+        record(&store, &id).1.phase,
+        BrowserPhase::Finished { outcome: BrowserOutcome::SignedIn, .. }
+    ));
     assert_eq!(
         guest.methods(),
         vec!["browser.answer", "browser.callback", "browser.callback"],
@@ -406,9 +419,12 @@ async fn a_relay_that_failed_after_the_forward_started_stays_unknown() {
     let pasted = json!({"decision":"answer","result":"http://localhost:8000/?code=x&state=S1"});
     let failed = answer(&store, &id, &pasted, context(Arc::clone(&guest), false)).await;
     assert!(refusal(failed).starts_with("The result of the sign-in is unknown."));
-    let unknown = record(&store, &id);
-    assert_eq!(unknown["status"], "uncertain");
-    assert_eq!(unknown["params"]["outcome"], "unknown");
+    let (unknown, card) = record(&store, &id);
+    assert!(matches!(unknown.state, ApprovalState::Unknown { .. }));
+    assert!(matches!(
+        card.phase,
+        BrowserPhase::Finished { outcome: BrowserOutcome::Unknown, .. }
+    ));
     assert_eq!(
         guest.methods(),
         vec!["browser.answer", "browser.callback", "browser.close"]
@@ -429,10 +445,18 @@ async fn decline_while_waiting_cancels_the_sign_in() {
     .await
     .expect("test step")
     .expect("test step");
-    let cancelled = record(&store, &id);
-    assert_eq!(cancelled["status"], "answered");
-    assert_eq!(cancelled["decision"], "decline");
-    assert_eq!(cancelled["params"]["outcome"], "cancelled");
+    let (cancelled, card) = record(&store, &id);
+    assert!(matches!(
+        cancelled.state,
+        ApprovalState::Answered {
+            answer: Answer::Decision { decision: Decision::Decline },
+            ..
+        }
+    ));
+    assert_eq!(
+        card.phase,
+        BrowserPhase::Finished { outcome: BrowserOutcome::Cancelled, http: None }
+    );
     assert_eq!(
         guest.calls.lock().expect("test step")[1].1,
         json!({"id":BRIDGE,"reason":"cancelled"})
@@ -448,7 +472,7 @@ async fn decline_while_waiting_cancels_the_sign_in() {
 #[tokio::test]
 async fn a_device_code_page_opens_from_any_window_without_a_forward() {
     let device = "https://device.sso.us-east-1.amazonaws.com/?user_code=ABCD-EFGH";
-    let (_dir, store, id) = store(device, Value::Null).await;
+    let (_dir, store, id) = store(device, None).await;
     let guest = ScriptGuest::new(|method, _| match method {
         "browser.answer" => Ok(json!({"state":"opened","lease":null})),
         _ => Err(GuestError::InvalidRequest),
@@ -465,6 +489,9 @@ async fn a_device_code_page_opens_from_any_window_without_a_forward() {
         .expect("test step");
         assert_eq!(opened.response["openUrl"], device);
     }
-    assert_eq!(record(&store, &id)["status"], "answered");
+    assert!(matches!(
+        record(&store, &id).0.state,
+        ApprovalState::Answered { .. }
+    ));
     assert_eq!(guest.methods(), vec!["browser.answer"]);
 }
