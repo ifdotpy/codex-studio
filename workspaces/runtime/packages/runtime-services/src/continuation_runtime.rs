@@ -95,14 +95,6 @@ pub struct Staged {
 }
 
 impl Staged {
-    pub fn agent_id(&self) -> &str {
-        &self.agent_id
-    }
-
-    pub fn epoch(&self) -> i64 {
-        self.epoch
-    }
-
     pub fn changed(&self) -> bool {
         self.changed
     }
