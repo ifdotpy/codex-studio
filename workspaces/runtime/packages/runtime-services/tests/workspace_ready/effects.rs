@@ -438,7 +438,7 @@ async fn partial_or_dirty_effect_is_never_adopted_reset_or_cleaned() {
 #[tokio::test]
 async fn late_completion_never_attaches_to_deleted_stopped_replaced_or_new_epoch_actor() {
     for (key, value) in [
-        ("deletedAt", json!(10)),
+        ("deletedAt", json!(10.0)),
         ("autoWake", json!(false)),
         ("epoch", json!(999)),
         ("cwd", json!("/var/tmp/changed")),

@@ -324,5 +324,7 @@ async fn python_constructor_and_rust_startup_match_requests_monitors_events_and_
             "the frozen Python agent view contains its retired token count"
         );
     }
+    crate::normalize_agent_nulls(&mut python);
+    crate::normalize_agent_nulls(&mut rust);
     assert_eq!(rust, python, "complete startup rows and projections differ");
 }

@@ -29,26 +29,25 @@ pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
     if has_legacy {
         super::m2026_10_20_agents::migrate_2026_10_20(tx)?;
     }
-    tx.execute_batch(
-        "DROP TRIGGER IF EXISTS runtime_agent_volatile_journal_insert;
-        DROP TRIGGER IF EXISTS runtime_agent_volatile_journal_update;
-        DROP TRIGGER IF EXISTS runtime_agent_volatile_transcript_insert;
-        DROP TRIGGER IF EXISTS runtime_agent_volatile_transcript_update;
-        INSERT OR IGNORE INTO runtime_agent_volatile(id) SELECT id FROM runtime_agents;",
-    )?;
-    let assignments = fields
-        .iter()
-        .map(|field| format!("\"{field}\"=NULLIF(\"{field}\",'null')"))
-        .collect::<Vec<_>>()
-        .join(",");
     let changed = fields
         .iter()
         .map(|field| format!("\"{field}\"='null'"))
         .collect::<Vec<_>>()
         .join(" OR ");
-    tx.execute_batch(&format!(
-        "UPDATE runtime_agent_volatile SET {assignments} WHERE {changed}"
-    ))?;
+    let needs_materialization: bool = tx.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM runtime_agents a LEFT JOIN runtime_agent_volatile v ON v.id=a.id WHERE v.id IS NULL) OR EXISTS(SELECT 1 FROM runtime_agent_volatile WHERE {changed})"),
+        [], |row| row.get(0),
+    )?;
+    if needs_materialization {
+        tx.execute_batch("DROP TRIGGER IF EXISTS runtime_agent_volatile_journal_insert;
+            DROP TRIGGER IF EXISTS runtime_agent_volatile_journal_update;
+            DROP TRIGGER IF EXISTS runtime_agent_volatile_transcript_insert;
+            DROP TRIGGER IF EXISTS runtime_agent_volatile_transcript_update;
+            INSERT OR IGNORE INTO runtime_agent_volatile(id) SELECT id FROM runtime_agents;")?;
+        let assignments = fields.iter().map(|field| format!("\"{field}\"=NULLIF(\"{field}\",'null')"))
+            .collect::<Vec<_>>().join(",");
+        tx.execute_batch(&format!("UPDATE runtime_agent_volatile SET {assignments} WHERE {changed}"))?;
+    }
     crate::agent_volatile::prepare(tx)
 }
 

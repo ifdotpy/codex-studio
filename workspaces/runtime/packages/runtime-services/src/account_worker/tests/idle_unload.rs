@@ -931,7 +931,7 @@ async fn delete_agent(state: &State) {
                 .transaction_with(move |tx| {
                     let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
                         .expect("test agent exists");
-                    agent.deleted_at = Some((1.0) as f64);
+                    agent.deleted_at = Some(1.0);
                     AgentRepository::put(tx, &agent)
                 })
                 .await?;

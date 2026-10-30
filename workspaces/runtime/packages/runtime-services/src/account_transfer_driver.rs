@@ -1388,7 +1388,7 @@ mod request_tests {
         run_async(store.transaction(|tx| {
             let mut deleted =
                 AgentRepository::get(tx, &AgentId::from("fixture-1"))?.expect("fixture member");
-            deleted.deleted_at = Some((1.0) as f64);
+            deleted.deleted_at = Some(1.0);
             AgentRepository::put(tx, &deleted)
         }))
         .expect("deleted own-team records do not consume the snapshot boundary");

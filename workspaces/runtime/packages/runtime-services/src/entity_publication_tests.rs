@@ -859,11 +859,7 @@ async fn synced_agent_values_recompute_the_view_and_create_a_missing_entity() {
             let mut agent = AgentRepository::get(tx, &"sync-worker".into())?.expect("worker");
             agent.status = studio_runtime_store::AgentStatus::Completed;
             agent.last_answer = Some("The work is done.".into());
-            for (key, value) in [
-                ("lastCompletedTurn", json!("turn-1")),
-            ] {
-                agent.extra.insert(key.into(), value);
-            }
+            agent.extra.insert("lastCompletedTurn".into(), json!("turn-1"));
             AgentRepository::put(tx, &agent)?;
             studio_runtime_store::EventWriteRepository::set_agent_sync_values(
                 tx,

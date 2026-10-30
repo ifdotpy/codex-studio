@@ -1945,7 +1945,7 @@ async fn recovery_selection_matches_frozen_scheduler_roster_without_changing_sto
     );
     let db = fixture.store.test_reader().unwrap();
     let mut query = db.prepare("SELECT id,record FROM runtime_agents").unwrap();
-    let stored = query
+    let mut stored = query
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
@@ -1957,7 +1957,14 @@ async fn recovery_selection_matches_frozen_scheduler_roster_without_changing_sto
             (id, record)
         })
         .collect::<BTreeMap<_, _>>();
-    assert_eq!(json!(stored), fixture.agents["stored"]);
+    let mut expected = fixture.agents["stored"].clone();
+    for record in expected.as_object_mut().expect("agent records").values_mut().chain(stored.values_mut()) {
+        let fields = record.as_object_mut().expect("agent record");
+        for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS.into_iter().chain(["parentId", "threadId", "turnId"]) {
+            if fields.get(key).is_some_and(Value::is_null) { fields.remove(key); }
+        }
+    }
+    assert_eq!(json!(stored), expected);
     assert_eq!(fixture.agents["cases"], 9);
 }
 

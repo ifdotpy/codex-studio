@@ -131,19 +131,19 @@ pub async fn pending(store: &Arc<RuntimeStore>, context: &CallbackContext) -> (S
     (id, frame)
 }
 pub fn actor(store: &RuntimeStore, context: &CallbackContext) -> Value {
-    studio_runtime_store::agent_volatile::merged_record(
-        &store.test_reader().unwrap(),
-        &context.agent,
-    )
-    .unwrap()
-    .unwrap()
+    let mut record = studio_runtime_store::agent_volatile::merged_record(
+        &store.test_reader().unwrap(), &context.agent,
+    ).unwrap().unwrap();
+    normalize_agent_nulls(&mut record);
+    record
 }
 pub fn normalized_actor(value: &Value) -> Value {
     let mut record = value.clone();
     for field in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS {
         let default = template()["agents"][0].get(field).cloned().unwrap_or(Value::Null);
-        record.as_object_mut().unwrap().entry(field).or_insert(default);
+        if !default.is_null() { record.as_object_mut().unwrap().entry(field).or_insert(default); }
     }
+    normalize_agent_nulls(&mut record);
     record
 }
 pub async fn put_actor(store: &RuntimeStore, value: &Value) {
@@ -272,16 +272,8 @@ pub fn assert_writes(before: &Value, store: &RuntimeStore, expected: &Value) {
             }
         }
     }
-    if let Some(change) = expected.get_mut("sync_entities") {
-        for row in change["added"].as_array_mut().unwrap() {
-            if row[0] == "agent" {
-                let value = row[2]["value"].as_object_mut().unwrap();
-                for field in ["activity", "lastAnswer", "lastEvent"] {
-                    value.entry(field).or_insert(Value::Null);
-                }
-            }
-        }
-    }
+    normalize_agent_nulls(&mut expected);
+    normalize_agent_nulls(&mut actual);
     crate::removed_budget_fields::strip(&mut actual);
     crate::removed_budget_fields::strip(&mut expected);
     for root in [&mut actual, &mut expected] {
@@ -453,4 +445,19 @@ fn insert_row(
         rusqlite::params_from_iter(values),
     )?;
     Ok(())
+}
+
+pub(crate) fn normalize_agent_nulls(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            if fields.contains_key("rootId") && fields.contains_key("epoch") {
+                for field in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS.into_iter().chain(["parentId", "threadId", "turnId", "deletedAt"]) {
+                    if fields.get(field).is_some_and(serde_json::Value::is_null) { fields.remove(field); }
+                }
+            }
+            fields.values_mut().for_each(normalize_agent_nulls);
+        }
+        serde_json::Value::Array(values) => values.iter_mut().for_each(normalize_agent_nulls),
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) | serde_json::Value::String(_) => {}
+    }
 }

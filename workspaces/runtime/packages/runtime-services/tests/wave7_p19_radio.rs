@@ -240,6 +240,7 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
                     )?;
                 }
             }
+            db.execute("INSERT OR IGNORE INTO runtime_agent_volatile(id) SELECT id FROM runtime_agents", [])?;
             Ok(())
         })
         .await
@@ -315,7 +316,7 @@ fn normalize(value: &mut Value) {
         Value::Object(map) => {
             if map.contains_key("rootId") && map.contains_key("epoch") && map.contains_key("status")
             {
-                for key in ["threadId", "turnId"] {
+                for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS.into_iter().chain(["parentId", "threadId", "turnId"]) {
                     if map.get(key).is_some_and(Value::is_null) {
                         map.remove(key);
                     }

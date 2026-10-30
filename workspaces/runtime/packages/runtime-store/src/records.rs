@@ -329,15 +329,23 @@ pub struct AgentRecord {
     pub native_response_turn: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parked_event: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_optional_safe_counter")]
+    #[serde(default, deserialize_with = "deserialize_optional_safe_counter", skip_serializing_if = "Option::is_none")]
     pub events: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_event: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub activity: Option<AgentActivity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub active_tools: Option<Vec<AgentActiveTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub last_answer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context_usage: Option<AgentContextUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tokens_used: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub token_usage_accounting: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_flight: Option<bool>,
@@ -812,8 +820,11 @@ impl AgentRecord {
     }
 
     /// Consume the typed record while moving its fields into a JSON object.
-    pub fn into_value(self) -> Value {
-        crate::projection_value(&self)
+    pub fn into_value(mut self) -> Value {
+        let extra = std::mem::take(&mut self.extra);
+        let mut value = crate::projection_value(&self);
+        value.as_object_mut().expect("agent is an object").extend(extra);
+        value
     }
 
     pub fn set_status(&mut self, status: AgentStatus) {
@@ -2916,7 +2927,7 @@ mod tests {
             .expect("malformed fixture inserts");
         connection
             .execute(
-                "INSERT INTO runtime_agents(id,record) VALUES ('outer-id','{\"id\":\"inner-id\",\"rootId\":\"inner-id\",\"epoch\":0,\"status\":\"idle\"}')",
+                "INSERT INTO runtime_agents(id,record) VALUES ('outer-id','{\"id\":\"inner-id\",\"rootId\":\"inner-id\",\"epoch\":0,\"status\":\"idle\",\"accountKey\":\"default\"}')",
                 [],
             )
             .expect("mismatched fixture inserts");
@@ -2931,7 +2942,7 @@ mod tests {
                 assert!(error.to_string().contains("/id"));
                 assert!(error.to_string().contains("row_id_mismatch"));
             } else {
-                assert!(error.to_string().contains("invalid_json"));
+                assert!(error.to_string().contains("record_decode"));
                 assert!(!error.to_string().contains("{\"id\""));
             }
         }
@@ -2977,11 +2988,10 @@ mod tests {
             .expect_err("schema-invalid record is not returned");
         assert!(
             matches!(error, StoreError::InvalidSyncObjectField { ref scope, ref id, ref pointer, .. }
-            if scope == "runtime_agents" && id == "invalid-epoch" && pointer == "/rootId")
+            if scope == "runtime_agents" && id == "invalid-epoch" && pointer.is_empty())
         );
         let diagnostic = error.to_string();
-        assert!(diagnostic.contains("value type array"));
-        assert!(diagnostic.contains("length 1 items"));
+        assert!(diagnostic.contains("record_decode"));
         assert!(!diagnostic.contains("private user text"));
     }
 

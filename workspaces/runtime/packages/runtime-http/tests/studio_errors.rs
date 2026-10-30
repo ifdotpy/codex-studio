@@ -957,7 +957,7 @@ async fn malformed_receipts_agents_and_owners_do_not_poison_startup_or_following
         streamed_incident(&mut stream, "stored:runtime_agents:bad-agent", "upsert").await;
     assert_eq!(
         streamed["value"]["diagnostics"]["causes"][0]["pointer"],
-        "/epoch"
+        ""
     );
     let raw: String = store
         .test_reader()

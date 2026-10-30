@@ -140,3 +140,5 @@ fn rule_snapshot(rule: serde_json::Value, owner: serde_json::Value) -> Result<st
     let record = serde_path_to_error::deserialize(&rule).map_err(|error| studio_runtime_services::rules_engine::RuleError::Invalid { object: format!("rules/{id}"), location: format!("/{}", error.path()) })?;
     studio_runtime_services::rules_engine::RuleSnapshot::from_stored(&record, owner)
 }
+
+pub(crate) use callback_fixtures::normalize_agent_nulls;

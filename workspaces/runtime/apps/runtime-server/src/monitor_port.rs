@@ -2102,10 +2102,8 @@ mod tests {
                 raw["approvalPolicy"] = policy.clone();
                 let actor: studio_runtime_store::AgentRecord = match serde_json::from_value(raw.clone()) {
                     Ok(actor) => actor,
-                    Err(_) => {
-                        assert!(yolo.is_string() || policy.is_number());
-                        continue;
-                    }
+                    Err(_) if yolo.is_string() || policy.is_number() => continue,
+                    Err(error) => panic!("actor fixture: {error}"),
                 };
                 assert_eq!(
                     rule_liveness_approved(&actor),

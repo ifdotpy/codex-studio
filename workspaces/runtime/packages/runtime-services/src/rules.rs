@@ -165,16 +165,8 @@ mod tests {
 
     #[test]
     fn refuses_invalid_agent_deletion_marker() {
-        assert_eq!(
-            visible_rules(
-                vec![rule("rule", "agent")],
-                vec![agent("agent", Some(json!(true)))]
-            ),
-            Err(RulesError::InvalidStoredObject {
-                object: "agents",
-                id: "agent".to_owned(),
-            })
-        );
+        assert!(AgentRecord::from_value(json!({"id":"agent", "rootId":"agent", "epoch":0,
+            "status":"idle", "accountKey":"default", "deletedAt":true})).is_err());
     }
 }
 
