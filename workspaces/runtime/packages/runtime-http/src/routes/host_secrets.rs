@@ -1998,7 +1998,7 @@ mod tests {
         vault_project(state.path());
         let script = r#"printf '%s\n' "$1" >> "$0.calls"
 if [ "$1" = deploy ]; then
- printf '%s\n' 'progress' '{"site":"ignored","site":"https://desk.example/"}'
+ printf '%s\n' 'progress' '{"site":"https://desk.example/"}'
 elif [ "$1" = service ]; then
  printf '{"installed":true,"site":"https://desk.example","at":"%s.disk","program":"%s"}\n' "$0" "$0"
  exit 7
