@@ -322,10 +322,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
 fn audio_request(request: &Request) -> bool {
     request.method.starts_with("media.")
         || request.method.starts_with("voice.")
-        || matches!(
-            request.method.as_str(),
-            "desktop.requestMicrophone" | "desktop.reserveMicrophone"
-        )
+        || matches!(request.method.as_str(), "desktop.requestMicrophone")
         || (request.method == "view.subscribe"
             && matches!(
                 request.params["topic"].as_str(),
@@ -552,12 +549,10 @@ mod audio_ownership_tests {
         for method in [
             "media.captureStart",
             "media.captureStop",
-            "media.requestMicrophone",
             "voice.create",
             "voice.answer",
             "voice.close",
             "desktop.requestMicrophone",
-            "desktop.reserveMicrophone",
         ] {
             assert!(
                 audio_request(&Request {

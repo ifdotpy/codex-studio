@@ -70,7 +70,7 @@ fn purpose(method: &str) -> Option<u32> {
         | crate::desktop::SIGN_IN_PREPARE_METHOD => EXTERNAL_LINK_PURPOSE,
         "desktop.saveBegin" => 5,
         "desktop.fileAction" => 6,
-        "desktop.requestMicrophone" | "desktop.reserveMicrophone" => 7,
+        "desktop.requestMicrophone" => 7,
         "desktop.prepareTranscription" => 8,
         "desktop.cancelTranscription" => 9,
         "desktop.showVaultKeys" => 11,
@@ -281,7 +281,6 @@ pub async fn dispatch(request: Request, backend: Option<&crate::backend::Backend
             "desktop.showVaultKeys" => return crate::vault_keys::show(&value).await,
             "desktop.saveBegin" => return crate::file_save::command(&request.method, &value),
             "desktop.requestMicrophone" => return crate::media::request_microphone().await,
-            "desktop.reserveMicrophone" => return crate::media::reserve_microphone(Instant::now()),
             "desktop.prepareTranscription" => return crate::speech::prepare(Instant::now()),
             "desktop.cancelTranscription" => return crate::speech::cancel(&value),
             _ => {}
@@ -808,6 +807,19 @@ mod tests {
                 id: "retired".into(),
                 method: "desktop.copyText".into(),
                 params: serde_json::json!({"value":"text"}),
+            },
+            None,
+        )
+        .await;
+        assert_eq!(
+            retired.error.unwrap().message,
+            "This native action is not available."
+        );
+        let retired = dispatch(
+            Request {
+                id: "retired".into(),
+                method: "desktop.reserveMicrophone".into(),
+                params: serde_json::json!({}),
             },
             None,
         )
