@@ -1012,6 +1012,11 @@ async fn run(
             ))
         })
         .collect();
+    // Declines the approvals whose expiry timer fired: a Claude agent in full access
+    // mode asks nobody who watches. The timers are rows, so a restart keeps them.
+    let approval_expiry_task = state
+        .callback_runtime()
+        .map(|runtime| tokio::spawn(runtime.run_expiry(monitor_shutdown.subscribe())));
     // Links that agents give for a sign-in (docs/vm-browser-bridge.md, section 7): the
     // `orchestration_sign_in` tool and sign-in links in completed messages reach the same
     // bridges and cards.
@@ -1404,6 +1409,9 @@ async fn run(
         shutdown_join("held turn release task", auth_release_task).await??;
         for task in browser_card_tasks {
             shutdown_join("browser card poll", task).await??;
+        }
+        if let Some(task) = approval_expiry_task {
+            shutdown_join("approval expiry", task).await??;
         }
         shutdown_join("sign-in message links", sign_in_task).await??;
         shutdown_join("web push", web_push_task).await??;

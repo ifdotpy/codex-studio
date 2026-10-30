@@ -269,66 +269,60 @@ impl VoiceRequestPort for AccountSessionVoicePort {
     }
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VoiceCallbackAuthority {
-    agent: String,
-    account_key: String,
-    connection_id: String,
-    epoch: i64,
-    supervisor: VoiceCallbackGeneration,
-    params: VoiceCallbackThread,
-    status: studio_runtime_schema::persistence::RequestCardStatus,
-    rpc_id: VoiceRpcId,
-}
-#[derive(serde::Deserialize)]
-struct VoiceCallbackGeneration {
-    generation: u64,
-}
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VoiceCallbackThread {
-    thread_id: String,
-}
-
 async fn callback_request_matches(
     store: &RuntimeStore,
     id: &str,
     scope: &VoiceConnectionScope,
     rpc_id: &VoiceRpcId,
 ) -> Result<(), VoiceWriteCertainty> {
-    use studio_runtime_schema::persistence::RequestCardStatus;
+    use studio_runtime_schema::approvals::{ApprovalId, ApprovalState, CloseReason, RpcId};
     let id = id.to_owned();
-    let request: VoiceCallbackAuthority = store
+    let card = store
         .read_async(
             "runtime-services/voice/account_session",
             move |connection| {
-                let raw: String = connection.query_row(
-                    "SELECT record FROM runtime_requests WHERE id=?1",
-                    [id],
-                    |row| row.get(0),
-                )?;
-                serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)
+                Ok::<_, studio_runtime_store::StoreError>(studio_runtime_store::approvals::get(
+                    connection,
+                    &ApprovalId(id),
+                )?)
             },
         )
         .await
-        .map_err(|_| VoiceWriteCertainty::NotSent)?;
-    if request.agent != scope.agent_id
-        || request.account_key != scope.account_key
-        || request.connection_id != scope.connection_id
-        || request.epoch != scope.epoch
-        || request.supervisor.generation != scope.generation
-        || request.params.thread_id != scope.thread_id
-        || request.rpc_id != *rpc_id
+        .map_err(|_| VoiceWriteCertainty::NotSent)?
+        .ok_or(VoiceWriteCertainty::NotSent)?;
+    let delivery = card.delivery.as_ref().ok_or(VoiceWriteCertainty::NotSent)?;
+    let same_rpc = match (&delivery.rpc_id, rpc_id) {
+        (RpcId::Number { value }, VoiceRpcId::Number(given)) => value == given,
+        (RpcId::Text { value }, VoiceRpcId::String(given)) => value == given,
+        _ => false,
+    };
+    if card.agent.as_str() != scope.agent_id
+        || delivery.account != scope.account_key
+        || delivery.connection != scope.connection_id
+        || card.epoch.and_then(|epoch| i64::try_from(epoch).ok()) != Some(scope.epoch)
+        || delivery.supervisor.as_ref().map(|s| s.generation) != Some(scope.generation)
+        || card
+            .detail
+            .params
+            .0
+            .get("threadId")
+            .and_then(|thread| thread.as_str())
+            != Some(scope.thread_id.as_str())
+        || !same_rpc
     {
         return Err(VoiceWriteCertainty::NotSent);
     }
-    if request.status == RequestCardStatus::Expired {
-        Err(VoiceWriteCertainty::Expired)
-    } else if request.status == RequestCardStatus::Pending {
-        Ok(())
-    } else {
-        Err(VoiceWriteCertainty::NotSent)
+    match card.state {
+        ApprovalState::Pending => Ok(()),
+        // A session that ended or a timer that fired closed the card unanswered.
+        ApprovalState::Closed {
+            reason: CloseReason::ProviderResolved,
+            ..
+        } => Err(VoiceWriteCertainty::NotSent),
+        ApprovalState::Closed { .. } => Err(VoiceWriteCertainty::Expired),
+        ApprovalState::Answering { .. }
+        | ApprovalState::Answered { .. }
+        | ApprovalState::Unknown { .. } => Err(VoiceWriteCertainty::NotSent),
     }
 }
 

@@ -218,9 +218,7 @@ test("a CLI whose stream outlives its close still ends the stalled turn once", a
 
 test("an unanswered approval is not a stall, and the tool budget restarts at the answer", async () => {
   // An agent that asks for approvals waits for the user as long as it takes.
-  const bridge = await startBridge({
-    env: { STUDIO_CLAUDE_UNEXPECTED_APPROVAL_WAIT_MS: "200" },
-  });
+  const bridge = await startBridge();
   const turn = await start(bridge, "approval");
   const approval = await bridge.note(
     (n): n is BridgeNoteFor<"item/commandExecution/requestApproval"> =>
@@ -246,12 +244,11 @@ test("an unanswered approval is not a stall, and the tool budget restarts at the
   );
 });
 
-test("an approval nobody answers in a no-approval agent is declined and its card closed", async () => {
+test("the bridge keeps no timer for an approval in a no-approval agent: the server's decline is the answer", async () => {
   const bridge = await startBridge({
     env: {
-      STUDIO_CLAUDE_UNEXPECTED_APPROVAL_WAIT_MS: "400",
-      // The decline restarts the tool budget. Keep the stall watchdog out of
-      // this test, so a slow CLI answer to the decline cannot end the turn.
+      // The wait restarts the tool budget. Keep the stall watchdog out of
+      // this test, so a slow CLI cannot end the turn.
       STUDIO_CLAUDE_TOOL_STALL_GRACE_MS: "600000",
     },
     thread: { approvalPolicy: "never" },
@@ -265,37 +262,20 @@ test("an approval nobody answers in a no-approval agent is declined and its card
     approval.params.reason,
     "Claude requests permission to use Bash although this agent runs without approvals: rm on a critical path",
   );
-  const resolved = await bridge.advanceUntil(
-    (n): n is BridgeNoteFor<"serverRequest/resolved"> =>
-      n.method === "serverRequest/resolved",
-  );
-  assert.deepEqual(resolved.params, {
-    threadId: bridge.thread,
-    requestId: approval.id,
-  });
-  const done = await completed(bridge, turn);
-  assert.equal(done.params.turn.status, "completed");
+  // The server owns the expiry. A long wait changes nothing in the bridge.
+  await bridge.advanceTime(3_600_000);
   assert.equal(
-    await fs.readFile(path.join(bridge.root, ".approved"), "utf8"),
-    "deny",
-  );
-  const notice = bridge.notes.find(
-    (n): n is BridgeNoteFor<"item/completed"> =>
-      n.method === "item/completed" &&
-      n.params.item.id === "approval-expired:toolu_stall",
-  );
-
-  assert.match(notice!.params.item.text!, /Studio declined it/);
-  assert.equal(
-    bridge.notes.find(
-      (n): n is BridgeNoteFor<"item/completed"> =>
-        n.method === "item/completed" && n.params.item.phase === "final_answer",
-    )?.params.item.studioNotice,
+    bridge.notes.find((n) => n.method === "serverRequest/resolved"),
     undefined,
   );
-  // A late answer to the closed card changes nothing.
-  bridge.answer(approval.id, { decision: "accept" });
-  await bridge.advanceTime(100);
+  assert.equal(
+    bridge.notes.find((n) => n.method === "turn/completed"),
+    undefined,
+  );
+  // The server's decline denies the tool and the turn goes on.
+  bridge.answer(approval.id, { decision: "decline" });
+  const done = await completed(bridge, turn);
+  assert.equal(done.params.turn.status, "completed");
   assert.equal(
     await fs.readFile(path.join(bridge.root, ".approved"), "utf8"),
     "deny",

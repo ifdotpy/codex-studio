@@ -56,14 +56,7 @@ fn answers(runtime_session: RetainedSessionPort, state: &State) -> Arc<CallbackR
 
 fn cards(state: &State) -> Vec<Value> {
     let reader = state.bridge.store.test_reader().expect("reader");
-    let mut statement = reader
-        .prepare("SELECT record FROM runtime_requests ORDER BY rowid")
-        .expect("request query");
-    statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .expect("request rows")
-        .map(|raw| serde_json::from_str(&raw.expect("request row")).expect("request JSON"))
-        .collect()
+    crate::provider_callbacks::legacy_view::views(&reader)
 }
 
 /// Wait for the card of `rpc`. The provider must not get an answer first.
