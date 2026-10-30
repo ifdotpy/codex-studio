@@ -917,26 +917,11 @@ mod duplicate_stored_record_tests {
             [row_id, raw],
         )
         .unwrap();
-        let expected: Value = serde_json::from_str(raw).unwrap();
-        assert!(studio_runtime_schema::validate(R::SCHEMA, &expected).unwrap());
-        let record = Table::<R>::new(&db)
-            .get(&R::Id::from(row_id.to_owned()))
-            .unwrap()
-            .unwrap();
-        let encoded = serde_json::to_string(&record).unwrap();
-        let actual: Value = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(actual, expected);
-        db.execute(&format!("UPDATE {} SET id='different'", R::TABLE), [])
-            .unwrap();
-        let other = Table::<R>::new(&db).get(&R::Id::from("different".to_owned()));
-        if R::KEY_MODE == RecordKeyMode::PayloadId {
-            assert!(matches!(
-                other,
-                Err(crate::StoreError::InvalidStoredObject { .. })
-            ));
-        } else {
-            assert!(other.unwrap().is_some());
-        }
+        assert!(
+            Table::<R>::new(&db)
+                .get(&R::Id::from(row_id.to_owned()))
+                .is_err()
+        );
     }
 
     #[test]
@@ -1016,7 +1001,7 @@ mod plan_typed_tests {
     }
 
     #[test]
-    fn plan_store_uses_external_key_and_keeps_last_duplicate() {
+    fn plan_store_uses_external_key_and_rejects_duplicate() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
             .unwrap();
@@ -1037,14 +1022,7 @@ mod plan_typed_tests {
             [r#"{"id":"a","id":"b","rootId":"r","text":"","version":0,"updated":null}"#],
         )
         .unwrap();
-        assert_eq!(
-            Table::<PlanRecord>::new(&db)
-                .get(&key)
-                .unwrap()
-                .unwrap()
-                .into_value()["id"],
-            "b"
-        );
+        assert!(Table::<PlanRecord>::new(&db).get(&key).is_err());
     }
 }
 pub use studio_runtime_schema::annotation_record::AnnotationRecord;
@@ -1098,7 +1076,7 @@ mod annotation_typed_tests {
     }
 
     #[test]
-    fn annotation_store_preserves_identity_extensions_and_last_duplicate() {
+    fn annotation_store_preserves_identity_extensions_and_rejects_duplicate() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(
             "CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
@@ -1120,13 +1098,10 @@ mod annotation_typed_tests {
             [r#"{"id":"other","id":"a"}"#],
         )
         .unwrap();
-        assert_eq!(
+        assert!(
             Table::<AnnotationRecord>::new(&db)
                 .get(&"a".to_owned())
-                .unwrap()
-                .unwrap()
-                .into_value()["id"],
-            "a"
+                .is_err()
         );
         db.execute(
             "UPDATE runtime_annotations SET record=?1 WHERE id='a'",
@@ -1175,10 +1150,7 @@ mod tool_result_typed_tests {
             [r#"{"success":false,"success":true}"#],
         )
         .unwrap();
-        assert_eq!(
-            table.get(&"r".into()).unwrap().unwrap().success(),
-            Some(true)
-        );
+        assert!(table.get(&"r".into()).is_err());
         db.execute(
             "UPDATE request_results SET record=?1",
             [r#"{"contentItems":[null]}"#],
@@ -1216,7 +1188,7 @@ mod request_typed_tests {
             const SCHEMA: &'static str = "fixture";
             const KEY_MODE: super::RecordKeyMode = super::RecordKeyMode::PayloadId;
             const QUERY_SHAPE: super::RecordQueryShape = super::RecordQueryShape::None;
-            const DIRECT_TYPED_DECODE: bool = true;
+            const TYPED_SHAPE: bool = true;
             fn record_key(&self) -> Option<&String> {
                 Some(&self.id)
             }
@@ -1227,11 +1199,17 @@ mod request_typed_tests {
     }
 
     #[test]
-    fn request_table_keeps_last_duplicate_and_checks_row_identity() {
+    fn request_table_rejects_duplicate_and_checks_row_identity() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
             .unwrap();
         db.execute("INSERT INTO runtime_requests VALUES('r',?1)", [r#"{"id":"wrong","id":"r","status":false,"status":"future","method":"x","params":{"opaque":[1,null]}}"#]).unwrap();
+        assert!(Table::<RequestRecord>::new(&db).get(&"r".into()).is_err());
+        db.execute(
+            "UPDATE runtime_requests SET record=?1",
+            [r#"{"id":"r","status":"future","method":"x","params":{"opaque":[1,null]}}"#],
+        )
+        .unwrap();
         let row = Table::<RequestRecord>::new(&db)
             .get(&"r".into())
             .unwrap()
@@ -1329,13 +1307,10 @@ mod complaint_typed_tests {
             [r#"{"id":"other","id":"c"}"#],
         )
         .unwrap();
-        assert_eq!(
+        assert!(
             Table::<ComplaintRecord>::new(&tx)
                 .get(&"c".to_owned())
-                .unwrap()
-                .unwrap()
-                .into_value()["id"],
-            "c"
+                .is_err()
         );
     }
 }
@@ -1359,7 +1334,6 @@ impl JsonRecord for MonitorRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1437,13 +1411,10 @@ mod terminal_typed_tests {
             [r#"{"id":"old","id":"t","status":3,"status":"running"}"#],
         )
         .unwrap();
-        assert_eq!(
+        assert!(
             Table::<TerminalRecord>::new(&tx)
                 .get(&"t".to_string())
-                .unwrap()
-                .unwrap()
-                .status(),
-            Some("running")
+                .is_err()
         );
     }
 }
@@ -1574,7 +1545,7 @@ mod execution_run_record_tests {
             "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
         )
         .unwrap();
-        let raw = r#"{"id":"bad","id":"run","agent":"a","accountKey":"default","epoch":1.0,"created":1.0,"status":"running","latestAttemptId":null,"rootAttemptId":{"opaque":[1]},"extra":9007199254740993}"#;
+        let raw = r#"{"id":"run","agent":"a","accountKey":"default","epoch":1.0,"created":1.0,"status":"running","latestAttemptId":null,"rootAttemptId":{"opaque":[1]},"extra":9007199254740993}"#;
         db.execute("INSERT INTO runtime_execution_runs VALUES('run',?1)", [raw])
             .unwrap();
         let record = Table::<ExecutionRunRecord>::new(&db)
@@ -1618,7 +1589,6 @@ impl JsonRecord for RuleRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1631,7 +1601,6 @@ impl JsonRecord for TranscriptItemRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::PhysicalAgent;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1825,7 +1794,6 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
     const KEY_MODE: RecordKeyMode;
     const QUERY_SHAPE: RecordQueryShape;
     const TYPED_SHAPE: bool = false;
-    const DIRECT_TYPED_DECODE: bool = false;
 
     fn record_key(&self) -> Option<&Self::Id>;
 
@@ -2321,15 +2289,8 @@ pub(crate) fn decode_record<R: JsonRecord>(
         table: R::TABLE,
         id: row_id.to_owned(),
     };
-    let record = if R::DIRECT_TYPED_DECODE {
+    let record = if R::TYPED_SHAPE {
         serde_json::from_str::<studio_runtime_schema::json_object::JsonObject<R>>(encoded)
-            .map_err(|_| invalid())?
-            .0
-    } else if R::TYPED_SHAPE {
-        // Stored JSON was historically parsed to a map first, so duplicate
-        // property names retain serde_json's last-value behavior.
-        let value = serde_json::from_str::<Value>(encoded).map_err(|_| invalid())?;
-        studio_runtime_schema::json_object::JsonObject::<R>::deserialize(value)
             .map_err(|_| invalid())?
             .0
     } else {

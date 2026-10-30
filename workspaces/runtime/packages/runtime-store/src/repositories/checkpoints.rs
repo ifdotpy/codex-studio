@@ -1106,13 +1106,7 @@ mod tests {
             [r#"{"id":"other","id":"c"}"#],
         )
         .unwrap();
-        assert_eq!(
-            CheckpointsRepository::checkpoint(&db, "c")
-                .unwrap()
-                .unwrap()
-                .record,
-            json!({"id":"c"})
-        );
+        assert!(CheckpointsRepository::checkpoint(&db, "c").is_err());
         db.execute(
             "UPDATE runtime_checkpoints SET record=?1",
             [r#"{"id":"c","id":"other"}"#],

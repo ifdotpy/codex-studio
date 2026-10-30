@@ -24,28 +24,21 @@ const VAULT_JOB_MESSAGE_CAPACITY: usize = 256;
 const INVALID_LOGIN_JSON: &str = "layr-desk aws-login returned invalid JSON";
 const OVERSIZED_PROGRESS_LINE: &str = "layr-desk emitted an oversized progress line";
 
-// Desk is a separate workspace. These partial views deliberately retain its
-// historical permissive command-output admission after full JSON parsing.
+// Desk is a separate workspace. These partial views read its command-output fields.
 #[derive(Deserialize)]
 struct DeskLogin {
-    #[serde(default, deserialize_with = "desk_text")]
     page: Option<String>,
-    #[serde(default, deserialize_with = "desk_present")]
-    code: Option<Value>,
+    code: Option<String>,
 }
 #[derive(Deserialize)]
 struct DeskDeployment {
     site: Option<String>,
 }
-#[derive(Default, Deserialize)]
+#[derive(Deserialize)]
 struct DeskServiceStatus {
-    #[serde(default, deserialize_with = "desk_bool")]
     installed: Option<bool>,
-    #[serde(default, deserialize_with = "desk_text")]
     program: Option<String>,
-    #[serde(default, deserialize_with = "desk_text")]
     site: Option<String>,
-    #[serde(default, deserialize_with = "desk_text")]
     at: Option<String>,
 }
 #[derive(Deserialize)]
@@ -63,22 +56,9 @@ enum DeskProjectOrOther {
     Project(JsonObject<DeskProject>),
     Other(serde::de::IgnoredAny),
 }
-fn desk_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
-}
-fn desk_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
-    Ok(Value::deserialize(d)?.as_bool())
-}
-fn desk_present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
-    Value::deserialize(d).map(Some)
-}
 
 fn desk_service_status(raw: &str) -> Result<DeskServiceStatus, serde_json::Error> {
-    let value: Value = serde_json::from_str(raw)?;
-    Ok(JsonObject::<DeskServiceStatus>::deserialize(&value)
-        .ok()
-        .map(|view| view.0)
-        .unwrap_or_default())
+    serde_json::from_str::<JsonObject<DeskServiceStatus>>(raw).map(|view| view.0)
 }
 
 // The OpenAPI resource owns the shared job-kind contract.
@@ -699,26 +679,15 @@ fn login_progress(
     request_id: &str,
     line: &str,
 ) -> Result<(), &'static str> {
-    let value = serde_json::from_str::<Value>(line).map_err(|_| INVALID_LOGIN_JSON)?;
-    let view =
-        studio_runtime_schema::json_object::JsonObject::<DeskLogin>::deserialize(&value).ok();
+    let view = serde_json::from_str::<
+        Option<studio_runtime_schema::json_object::JsonObject<DeskLogin>>,
+    >(line)
+    .map_err(|_| INVALID_LOGIN_JSON)?;
     if let Some(view) = view
         && let Some(page) = view.0.page.as_deref()
         && page.starts_with("https://")
     {
-        let code = view
-            .0
-            .code
-            .as_ref()
-            .map(|code| match code {
-                Value::String(value) => value.clone(),
-                other @ Value::Null
-                | other @ Value::Bool(_)
-                | other @ Value::Number(_)
-                | other @ Value::Array(_)
-                | other @ Value::Object(_) => other.to_string(),
-            })
-            .unwrap_or_default();
+        let code = view.0.code.as_deref().unwrap_or_default();
         update_job(
             client,
             VaultJobKind::Login,
@@ -1398,7 +1367,6 @@ mod tests {
 
     #[test]
     fn desk_partial_views_track_producer_fields_and_legacy_json() {
-        use serde::Deserialize;
         use studio_runtime_schema::json_object::JsonObject;
         let main = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1423,49 +1391,24 @@ mod tests {
             "storage still has the old field"
         );
         assert!(!desk_producer_fields_match(main, service, &changed_setup));
+        let view: JsonObject<super::DeskLogin> =
+            serde_json::from_str(r#"{"page":"https://x","code":null}"#).unwrap();
+        assert_eq!(view.0.page.as_deref(), Some("https://x"));
+        assert_eq!(view.0.code, None);
+        assert!(serde_json::from_str::<JsonObject<super::DeskLogin>>(r#"{"page":42}"#).is_err());
+        let view =
+            super::desk_service_status(r#"{"installed":true,"site":"s","program":null}"#).unwrap();
+        assert_eq!(view.installed, Some(true));
+        assert_eq!(view.site.as_deref(), Some("s"));
+        assert_eq!(view.program, None);
+        assert_eq!(view.at, None);
         for raw in [
             "null",
             "[]",
-            "{}",
-            r#"{"page":42,"code":null}"#,
-            r#"{"page":"https://x","code":null}"#,
-            r#"{"page":"old","page":"https://x","code":[1]}"#,
+            r#"{"at":7}"#,
+            r#"{"installed":false,"installed":true}"#,
         ] {
-            let value: Value = serde_json::from_str(raw).unwrap();
-            let view = JsonObject::<super::DeskLogin>::deserialize(&value)
-                .ok()
-                .map(|v| v.0);
-            assert_eq!(
-                view.as_ref().and_then(|v| v.page.as_deref()),
-                value.get("page").and_then(Value::as_str)
-            );
-            assert_eq!(
-                view.as_ref().and_then(|v| v.code.as_ref()),
-                value.get("code")
-            );
-        }
-        for raw in [
-            "null",
-            "[]",
-            "{}",
-            r#"{"installed":true,"site":"s","program":null,"at":7}"#,
-            r#"{"installed":false,"installed":true,"site":"s"}"#,
-        ] {
-            let value: Value = serde_json::from_str(raw).unwrap();
-            let view = super::desk_service_status(raw).unwrap();
-            assert_eq!(
-                view.installed,
-                value.get("installed").and_then(Value::as_bool)
-            );
-            assert_eq!(
-                view.site.as_deref(),
-                value.get("site").and_then(Value::as_str)
-            );
-            assert_eq!(
-                view.program.as_deref(),
-                value.get("program").and_then(Value::as_str)
-            );
-            assert_eq!(view.at.as_deref(), value.get("at").and_then(Value::as_str));
+            assert!(super::desk_service_status(raw).is_err());
         }
     }
 
@@ -2387,7 +2330,7 @@ else exit 94; fi"#;
         )
         .await
         .unwrap();
-        let script = "printf '%s\\n' 'null' '{\"page\":\"https://old\",\"code\":123}' '{\"page\":\"old\",\"page\":\"https://new\",\"code\":null}'";
+        let script = "printf '%s\\n' 'null' '{\"page\":\"https://old\",\"code\":\"123\"}' '{\"page\":\"https://new\",\"code\":null}'";
         run_login_job(
             id.clone(),
             "fixture".into(),
@@ -2400,7 +2343,7 @@ else exit 94; fi"#;
             .unwrap()
             .unwrap();
         assert_eq!(job["page"], "https://new");
-        assert_eq!(job["code"], "null");
+        assert_eq!(job["code"], "");
         assert_eq!(job["state"], "done");
         owner.shutdown().await.unwrap();
     }

@@ -165,14 +165,7 @@ impl SchedulerRepository {
              FROM account_usage LEFT JOIN candidate_usage ON 1=1 \
              ORDER BY candidate_usage.thread_id"
         );
-        let encoded_threads = serde_json::Value::Array(
-            threads
-                .iter()
-                .cloned()
-                .map(serde_json::Value::String)
-                .collect(),
-        )
-        .to_string();
+        let encoded_threads = serde_json::to_string(threads)?;
         let mut statement = connection.prepare_cached(&sql)?;
         let rows = statement.query_map([account, &encoded_threads], |row| {
             Ok((
@@ -208,14 +201,7 @@ impl SchedulerRepository {
         account: &str,
         threads: &std::collections::BTreeSet<String>,
     ) -> StoreResult<std::collections::BTreeSet<String>> {
-        let encoded_threads = serde_json::Value::Array(
-            threads
-                .iter()
-                .cloned()
-                .map(serde_json::Value::String)
-                .collect(),
-        )
-        .to_string();
+        let encoded_threads = serde_json::to_string(threads)?;
         let finished = finished_worker_sql(connection)?;
         let mut statement = connection.prepare_cached(&format!(
             "SELECT c.value FROM json_each(?2) c WHERE NOT EXISTS(SELECT 1 FROM runtime_agents \
