@@ -558,7 +558,7 @@ async fn receipt_domain_opaque_send_replays_after_legacy_receipts() {
     );
     let old = json!({"id":"legacy-request","agent":context.agent,"threadId":context.thread,"turnId":context.turn,"callId":"old-call","tool":"orchestration_send","arguments":old_args,"signature":signature,"epoch":context.epoch,"accountKey":context.account,"connectionId":context.connection,"stage":"completed","outcome":"applied","created":1.0,"updated":1.0});
     store.transaction(move |tx| {
-        tx.execute_batch("DELETE FROM runtime_tool_requests; DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_tool_results(id TEXT PRIMARY KEY,result TEXT NOT NULL); CREATE TABLE runtime_tool_request_aliases(agent TEXT,alias TEXT,request TEXT,PRIMARY KEY(agent,alias,request));")?;
+        tx.execute_batch("DELETE FROM runtime_tool_requests; DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL); CREATE TABLE runtime_tool_results(id TEXT PRIMARY KEY,result TEXT NOT NULL); CREATE TABLE runtime_tool_request_aliases(agent TEXT,alias TEXT,request TEXT,PRIMARY KEY(agent,alias,request));")?;
         tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES('legacy-request',?1)", [old.to_string()])?;
         tx.execute("INSERT INTO runtime_tool_request_aliases VALUES(?1,'legacy-opaque','legacy-request')", [&actor_id])?;
         tx.execute("INSERT INTO runtime_tool_results VALUES('legacy-request',?1)", [json!({"success":true,"contentItems":[{"type":"inputText","text":"legacy reply"}]}).to_string()])?;
@@ -995,7 +995,7 @@ async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name()
         .transaction(move |tx| {
             for record in watches {
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(record)?)?;
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(record)?)?;
             }
             Ok(())
         })

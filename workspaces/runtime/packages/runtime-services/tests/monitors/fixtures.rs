@@ -16,7 +16,7 @@ pub fn corpus(root: &Path) -> Vec<Value> {
         "livenessCommand":"","activityAt":2000.0,"activityGeneration":0,"stallWakeGeneration":-1,
         "wakeOn":"exit","successExitCodes":[0,2],"outputPatterns":[],"outputEventSequence":0,
         "outputEventCount":0,"outputEventIds":[],"status":"running","created":2000.0,
-        "exitCode":null,"tail":"","bytes":0,"interactive":false,"ruleId":null,"log":log,
+        "tail":"","bytes":0,"interactive":false,"log":log,
         "operation":operation,"cancelRequested":false});
     let actor = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":2,"autoWake":true,"status":"idle",
         "cwd":cwd,"accountKey":"default"});
@@ -28,7 +28,6 @@ pub fn corpus(root: &Path) -> Vec<Value> {
     after["status"] = json!("completed");
     after["exitCode"] = json!(0);
     after["outputUtf8Pending"] = json!({});
-    after["error"] = Value::Null;
     after["finished"] = json!(2000.0);
     after["configurationPending"] = json!(false);
     vec![
@@ -59,7 +58,7 @@ pub async fn seed(store: &RuntimeStore, case: &Value) {
                 }
             }
             AgentRepository::put(tx, &AgentRecord::from_value(case["actor"].clone())?)?;
-            Table::new(tx).put(&MonitorRecord::from_value(case["before"].clone())?)
+            Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(case["before"].clone())?)
         })
         .await
         .expect("monitor fixture");
@@ -83,4 +82,11 @@ pub fn tempdir() -> tempfile::TempDir {
             .expect("isolated monitor fixture root"),
         None => tempfile::tempdir().expect("monitor fixture"),
     }
+}
+
+/// Decode a legacy-shaped test input before invoking the typed snapshot.
+pub fn checked(record: Value, actor: Value) -> Result<studio_runtime_services::monitor_policy::MonitorSnapshot, studio_runtime_services::monitor_policy::MonitorError> {
+    let id = record["id"].as_str().unwrap_or("?").to_owned();
+    let typed = serde_path_to_error::deserialize(record).map_err(|error| studio_runtime_services::monitor_policy::MonitorError::InvalidStored { id, location: format!("/{}", error.path()) })?;
+    studio_runtime_services::monitor_policy::MonitorSnapshot::checked_stored(&typed, actor)
 }

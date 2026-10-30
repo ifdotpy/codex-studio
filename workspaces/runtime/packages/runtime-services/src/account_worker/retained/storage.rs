@@ -210,7 +210,7 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
         && !crate::shell_policy::monitor_cleanup_allowed(
             tx,
             &agent_record.value(),
-            &monitor.value(),
+            &monitor,
             crate::idle_compaction::wall_now(),
         )?
     {
@@ -422,52 +422,33 @@ fn authorize_retained_monitor_control(
     let Some(record) = studio_runtime_store::MonitorsRepository::get(tx, id)? else {
         return Ok(false);
     };
-    let record = record.value();
-    let Some(operation) = record
-        .get("operation")
-        .cloned()
-        .and_then(|value| serde_json::from_value::<crate::monitor_policy::Operation>(value).ok())
-    else {
-        return Ok(false);
-    };
-    if record["status"] != "running"
-        || record["agent"] != actor.agent
-        || record["epoch"].as_i64() != Some(actor.epoch)
-        || operation.agent != actor.agent
-        || operation.epoch != actor.epoch
-        || operation.account_key != call.scope.account
-        || vm_actor(tx, &actor.agent)?
-    {
-        return Ok(false);
-    }
-    let Some(original) = monitor_command_scope(tx, id, &operation)? else {
-        return Ok(false);
-    };
-    if original.account != call.scope.account || original.generation != call.scope.generation {
-        return Ok(false);
-    }
+    let Some(operation) = record.operation.as_ref() else { return Ok(false); };
+    if record.status != crate::monitor_policy::MonitorStatus::Running || record.agent != actor.agent
+        || record.epoch.get() != actor.epoch || operation.agent.as_str() != actor.agent
+        || operation.epoch.get() != actor.epoch || operation.account_key.as_str() != call.scope.account
+        || vm_actor(tx, &actor.agent)? { return Ok(false); }
+    let Some(original) = monitor_command_scope(tx, id, operation)? else { return Ok(false); };
+    if original.account != call.scope.account || original.generation != call.scope.generation { return Ok(false); }
     if call.method == Method::CommandExecTerminate {
-        return Ok(record["cancelRequested"] == true
-            && call.operation == format!("monitor-cancel:{id}")
+        return Ok(record.cancel_requested == Some(true) && call.operation == format!("monitor-cancel:{id}")
             && call.params == json!({"processId":id}));
     }
-    let attempt = &record["inputAttempt"];
-    let ticket = attempt["id"].as_str().unwrap_or_default();
-    let exact_operation = ["agent", "epoch", "accountKey", "connectionId"]
-        .iter()
-        .all(|field| attempt.get(*field) == record["operation"].get(*field));
-    Ok(current.epoch == actor.epoch
-        && current.auto_wake == Some(true)
+    let Some(attempt) = record.input_attempt.as_ref() else { return Ok(false); };
+    let params_match = match (&attempt.method, call.method) {
+        (studio_runtime_schema::monitor_record::MonitorInputMethod::Write(expected), Method::CommandExecWrite) =>
+            <studio_runtime_schema::monitor_record::MonitorWriteParams as serde::Deserialize>::deserialize(&call.params).is_ok_and(|actual| actual == *expected),
+        (studio_runtime_schema::monitor_record::MonitorInputMethod::Resize(expected), Method::CommandExecResize) =>
+            <studio_runtime_schema::monitor_record::MonitorResizeParams as serde::Deserialize>::deserialize(&call.params).is_ok_and(|actual| actual == *expected),
+        _ => false,
+    };
+    Ok(current.epoch == actor.epoch && current.auto_wake == Some(true)
         && !current.is_deleted()
-        && current.extra.get("deleted") != Some(&json!(true))
-        && record["interactive"] == true
-        && record["cancelRequested"] != true
-        && !ticket.is_empty()
-        && attempt["status"] == "submitted"
-        && exact_operation
-        && attempt["method"] == call.method.as_str()
-        && attempt["params"] == call.params
-        && call.operation == format!("monitor-input:{id}:{ticket}"))
+        && current.extra.get("deleted") != Some(&json!(true)) && record.interactive
+        && record.cancel_requested != Some(true) && !attempt.id.is_empty()
+        && attempt.status == studio_runtime_schema::monitor_record::MonitorInputStatus::Submitted
+        && attempt.operation.agent == operation.agent && attempt.operation.epoch == operation.epoch
+        && attempt.operation.account_key == operation.account_key && attempt.operation.connection_id == operation.connection_id && params_match
+        && call.operation == format!("monitor-input:{id}:{}", attempt.id))
 }
 
 /// No orphan processes after owner deletion across restart: only a latched
@@ -500,27 +481,13 @@ fn authorize_recovered_monitor_cancel(
     else {
         return Ok(false);
     };
-    #[derive(serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct RecoveredCancelMonitor {
-        agent: String,
-        epoch: i64,
-        operation: crate::monitor_policy::Operation,
-        status: crate::monitor_policy::MonitorStatus,
-        cancel_requested: bool,
-        reattached_connection_id: String,
-    }
-    let Ok(monitor) = serde_json::from_value::<RecoveredCancelMonitor>(record.value()) else {
-        return Ok(false);
-    };
-    Ok(monitor.agent == actor.agent
-        && monitor.epoch == actor.epoch
-        && monitor.operation.agent == actor.agent
-        && monitor.operation.epoch == actor.epoch
-        && monitor.operation.account_key == call.scope.account
-        && monitor.status == crate::monitor_policy::MonitorStatus::Running
-        && monitor.cancel_requested
-        && monitor.reattached_connection_id == call.scope.connection)
+    let Some(operation) = record.operation.as_ref() else { return Ok(false); };
+    Ok(record.agent == actor.agent && record.epoch.get() == actor.epoch
+        && operation.agent.as_str() == actor.agent && operation.epoch.get() == actor.epoch
+        && operation.account_key.as_str() == call.scope.account
+        && record.status == crate::monitor_policy::MonitorStatus::Running
+        && record.cancel_requested == Some(true)
+        && record.reattached_connection_id.as_deref() == Some(call.scope.connection.as_str()))
 }
 
 fn authorize_deleted_voice_stop(
@@ -1383,10 +1350,10 @@ mod replay_identity_tests {
             .expect("bootstrap");
         let request_root = RequestIdentity::issue_root();
         let operation = crate::monitor_policy::Operation {
-            agent: "agent-1".into(),
-            epoch: 7,
-            account_key: "default".into(),
-            connection_id: "old-connection".into(),
+            agent: "agent-1".to_owned().try_into().unwrap(),
+            epoch: 7_i64.try_into().unwrap(),
+            account_key: "default".to_owned().try_into().unwrap(),
+            connection_id: "old-connection".to_owned().try_into().unwrap(),
             evidence: crate::monitor_policy::OperationEvidence {
                 thread_id: None,
                 root_request_id: Some(request_root.clone()),
@@ -1412,7 +1379,7 @@ mod replay_identity_tests {
             account_key: "default",
             provider: "codex",
         });
-        let watch = studio_runtime_store::projection_value(&Monitor {
+        let watch_fields = studio_runtime_store::projection_value(&Monitor {
             id: "watch",
             agent: "agent-1",
             epoch: 7,
@@ -1420,11 +1387,16 @@ mod replay_identity_tests {
             cwd: root.path(),
             operation,
         });
+        let mut watch = json!({"activityAt":1.0,"activityGeneration":0,"bytes":0,"command":"true",
+            "created":1.0,"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),
+            "requestId":"watch","turnId":null,"stallTimeoutSeconds":0,"stallWakeGeneration":-1,
+            "successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit"});
+        watch.as_object_mut().unwrap().extend(watch_fields.as_object().unwrap().clone());
         store
             .transaction(move |tx| {
                 AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(agent)?)?;
                 studio_runtime_store::Table::new(tx)
-                    .put(&studio_runtime_store::MonitorRecord::from_value(watch)?)
+                    .put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(watch)?)
             })
             .await
             .expect("owners");
@@ -1813,7 +1785,7 @@ mod replay_identity_tests {
         let store = database(root.path()).await;
         store.transaction(|tx| {
             AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default","id":"agent-1","rootId":"agent-1","epoch":9,"deletedAt":1,"status":"interrupted","autoWake":false,"provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
-            studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","cancelRequested":true,"reattachedConnectionId":"new-connection","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old"}}))?)?;
+            studio_runtime_store::Table::new(tx).put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","cancelRequested":true,"reattachedConnectionId":"new-connection","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old"}})))?)?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.expect("seed deleted owner and proved handle");
         store
@@ -1912,7 +1884,7 @@ mod replay_identity_tests {
             let key=original.key();
             let request=RecoveredRequest{ticket:RequestTicket{id:RequestId::String(key.clone()),generation:4,method:Method::CommandExec},operation_id:OperationId(key),thread_id:None,lightweight:true,deadline_ms:60000,unknown:true,remote_id:None};
             seed(tx,original,&request,false,None)?;
-            studio_runtime_store::Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","interactive":true,"cancelRequested":true,"reattachedConnectionId":"reconnected-source","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old-connection"}})).expect("monitor"))?;
+            studio_runtime_store::Table::new(tx).put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"agent-1","epoch":7,"status":"running","interactive":true,"cancelRequested":true,"reattachedConnectionId":"reconnected-source","operation":{"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old-connection"}}))).expect("monitor"))?;
             Ok::<_,WorkerError>(())
         }).await.expect("original command and transferred owner");
         store.transaction_with(|tx| {

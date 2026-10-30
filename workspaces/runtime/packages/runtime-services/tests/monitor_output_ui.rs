@@ -13,8 +13,6 @@ fn monitor_budget_and_task_file_survive_renderer_projections() {
     let projected = sync_views::project_persisted_record("monitor", &raw).unwrap();
     assert_eq!(projected["outputWakeBudget"], budget);
     assert_eq!(projected["outputPatterns"], json!(["ready"]));
-    let process = process_controls::project("monitor", &raw, &json!({"id":"owner"}), None);
-    assert_eq!(process["outputWakeBudget"], budget);
     for collection in ["task", "taskDetail"] {
         let task = sync_views::project_persisted_record(
             collection,
@@ -255,10 +253,10 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
             .map_err(studio_runtime_store::StoreError::from)?;
         AgentRepository::put(tx, &owner)?;
         monitor_runtime::create_in_transaction(tx, &monitor_runtime::MonitorAdmission {
-            actor_id:"owner", epoch:2, request_id:"first", request:&json!({"command":"printf test","output_patterns":["test"]}), log_root:"/logs"
+            actor_id:"owner", epoch:2, request_id:"first", request:&serde::Deserialize::deserialize(&json!({"command":"printf test","output_patterns":["test"]})).unwrap(), log_root:"/logs"
         }, &Workspace, 1.0)
     }).await.unwrap();
-    let original = first["id"].as_str().unwrap().to_owned();
+    let original = first.id.clone();
     let old = original.clone();
     store.transaction(move |tx| {
         tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','running') WHERE id=?", [&old])?;
@@ -273,11 +271,11 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
         .await
         .unwrap();
     assert_eq!(
-        new["restartSignature"],
-        studio_runtime_services::process_controls::digest(&body)
+        new.restart_signature.as_deref(),
+        Some(studio_runtime_services::process_controls::digest(&body).as_str())
     );
-    assert_eq!(new["command"], "printf test");
-    assert_eq!(new["outputPatterns"], json!(["test complete"]));
+    assert_eq!(new.command.as_str(), "printf test");
+    assert_eq!(new.output_patterns.as_deref(), Some(["test complete".to_owned()].as_slice()));
     let db = store.test_reader().unwrap();
     assert!(!monitor_runtime::restart_ready(&db, &new).unwrap());
     assert!(
@@ -330,7 +328,7 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
         studio_runtime_services::monitor_driver::pending_start_ids(&store)
             .await
             .unwrap(),
-        vec![new["id"].as_str().unwrap()]
+        vec![new.id.as_str()]
     );
     let old = original;
     store

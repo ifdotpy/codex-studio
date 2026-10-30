@@ -1,7 +1,8 @@
 //! A loss decided at the command deadline, and the command's late real answer.
+use crate::TestJson;
 use crate::monitor_fixtures as fixtures;
 use serde_json::{Value, json};
-use studio_runtime_services::monitor_policy::{self, Effect, MonitorSnapshot, Operation};
+use studio_runtime_services::monitor_policy::{self, Effect, Operation};
 
 /// A command lost with `proof` after its reattach; `rule` makes it a rule check.
 fn lost(proof: &str, rule: bool) -> (Value, Value, Operation) {
@@ -22,10 +23,10 @@ fn lost(proof: &str, rule: bool) -> (Value, Value, Operation) {
 }
 
 fn finish(record: &Value, actor: &Value, operation: &Operation, now: f64) -> (Value, Vec<Effect>) {
-    let snapshot = MonitorSnapshot::checked(record.clone(), actor.clone()).expect("snapshot");
+    let snapshot = fixtures::checked(record.clone(), actor.clone()).expect("snapshot");
     let decision =
         monitor_policy::finish(&snapshot, Some(operation), Some(0), None, now).expect("finish");
-    (decision.record, decision.effects)
+    (decision.record.value(), decision.effects)
 }
 
 #[test]
@@ -171,7 +172,7 @@ async fn an_unanswered_command_commits_only_its_loss_and_replays_without_changes
         );
     }
     let mut wrong_operation = operation.clone();
-    wrong_operation.connection_id = "different-command".into();
+    wrong_operation.connection_id = "different-command".to_owned().try_into().unwrap();
     assert!(
         monitor_runtime::settle_unanswered(
             &store,

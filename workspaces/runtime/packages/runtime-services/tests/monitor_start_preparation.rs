@@ -1,4 +1,5 @@
 //! Monitor admission uses current ownership while retaining prepared permissions.
+use crate::TestJson;
 use crate::monitor_fixtures as fixtures;
 use serde_json::{Value, json};
 use std::sync::Mutex;
@@ -41,7 +42,7 @@ async fn fixture() -> (tempfile::TempDir, RuntimeStore, PreparedStart) {
     let store = fixtures::store(root.path(), "start").await;
     fixtures::seed(&store, &case).await;
     let prepared = PreparedStart {
-        monitor: case["before"].clone(),
+        monitor: serde_json::from_value(case["before"].clone()).unwrap(),
         actor: case["actor"].clone(),
         operation,
         params: json!({"processId":case["before"]["id"], "cwd":case["before"]["cwd"],
@@ -68,7 +69,7 @@ async fn change_actor(store: &RuntimeStore, patch: Value) {
 #[tokio::test]
 async fn monitor_start_survives_actor_progress_and_submits_once() {
     let (_root, store, prepared) = fixture().await;
-    let id = prepared.monitor["id"].as_str().expect("monitor id");
+    let id = prepared.monitor.id.as_str();
     change_actor(
         &store,
         json!({
@@ -115,7 +116,7 @@ async fn monitor_start_survives_actor_progress_and_submits_once() {
 #[tokio::test]
 async fn monitor_start_refuses_changed_ownership_permissions_or_monitor() {
     let (_root, store, prepared) = fixture().await;
-    let id = prepared.monitor["id"].as_str().expect("monitor id");
+    let id = prepared.monitor.id.as_str();
     let baseline = json!({"actor": prepared.actor, "before": prepared.monitor, "priorEvents": []});
     let baseline_actor =
         AgentRepository::get(&store.test_reader().expect("reader"), &"agent".into())

@@ -74,9 +74,7 @@ pub fn visible_rules(
     let mut visible = Vec::with_capacity(rules.len());
     for rule in rules {
         let id = rule.id().as_str().to_owned();
-        let Some(agent_id) = rule.agent.as_deref() else {
-            return Err(invalid_object("rules", id));
-        };
+        let agent_id = rule.agent.as_str();
         let Some(deleted) = deleted_agents.get(agent_id) else {
             return Err(invalid_object("rules", id));
         };
@@ -134,7 +132,7 @@ mod tests {
     }
 
     fn rule(id: &str, agent: &str) -> RuleRecord {
-        RuleRecord::from_value(json!({"id": id, "agent": agent})).expect("rule record has an id")
+        serde_json::from_value::<RuleRecord>(json!({"id":id,"agent":agent,"epoch":0,"name":"rule","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""})).expect("rule record")
     }
 
     #[test]
@@ -425,4 +423,61 @@ impl CheckedRuleSave {
     pub fn fields(&self) -> &RuleSaveFields {
         &self.fields
     }
+}
+
+/// Inputs owned by a single rule save, after ingress validation.
+pub struct RuleRecordContext<'a> {
+    pub id: &'a str,
+    pub actor: &'a AgentRecord,
+    pub previous: Option<&'a RuleRecord>,
+    pub path: Option<&'a str>,
+    pub fingerprint: Option<(i64, u64, u64)>,
+    pub now: f64,
+}
+
+/// Construct the persisted record shared by HTTP and managed rule saves.
+pub fn persisted_rule(checked: &CheckedRuleSave, context: RuleRecordContext<'_>) -> Result<RuleRecord, RuleSaveError> {
+    use studio_runtime_schema::rule_record::{RuleKind as StoredKind, RuleStatus};
+    let fields = checked.fields();
+    let kind = match &fields.kind {
+        RuleKind::Interval => StoredKind::Interval,
+        RuleKind::Once => StoredKind::Once,
+        RuleKind::Event => StoredKind::Event,
+        RuleKind::File { .. } => StoredKind::File { path: context.path.ok_or(RuleSaveError::InputText)?.to_owned() },
+        RuleKind::LowWorkers { minimum, duration } => StoredKind::LowWorkers {
+            minimum_workers: rule_bound(minimum.as_ref(), RuleSaveError::Minimum)?,
+            duration_minutes: rule_bound(duration.as_ref(), RuleSaveError::Duration)?,
+        },
+    };
+    let low_workers = matches!(kind, StoredKind::LowWorkers { .. });
+    let now = serde_json::Number::from_f64(context.now).ok_or(RuleSaveError::At)?;
+    let previous = context.previous;
+    Ok(RuleRecord {
+        id: context.id.to_owned(), agent: context.actor.id.0.clone(), root_id: Some(context.actor.root_id.0.clone()),
+        epoch: context.actor.epoch.try_into().map_err(|_| RuleSaveError::Integer)?,
+        name: fields.name.clone().try_into().map_err(|_| RuleSaveError::Name)?, kind,
+        interval_seconds: fields.interval.try_into().map_err(|_| RuleSaveError::Interval)?,
+        next_at: serde_json::Number::from_f64(fields.at).ok_or(RuleSaveError::At)?,
+        at: Some(serde_json::Number::from_f64(fields.at).ok_or(RuleSaveError::At)?),
+        event: fields.event.as_str().to_owned(), command: fields.command.clone().try_into().map_err(|_| RuleSaveError::Command)?,
+        stall_timeout_seconds: fields.kind.stall().try_into().map_err(|_| RuleSaveError::Stall)?,
+        liveness_command: fields.kind.liveness().to_owned().try_into().map_err(|_| RuleSaveError::Liveness)?,
+        file_activity_at: Some(previous.and_then(|r| r.file_activity_at.clone()).unwrap_or(now.clone())),
+        file_generation: previous.map(|r| r.file_generation).unwrap_or(0_i64.try_into().map_err(|_| RuleSaveError::Integer)?),
+        stall_wake_generation: previous.map(|r| r.stall_wake_generation).unwrap_or((-1_i64).try_into().map_err(|_| RuleSaveError::Integer)?),
+        text: fields.text.clone(), status: if context.actor.auto_wake == Some(true) { RuleStatus::Active } else { RuleStatus::Paused },
+        created: previous.map(|r| r.created.clone()).unwrap_or(now), in_flight: false,
+        checks: previous.map(|r| r.checks).unwrap_or(0_i64.try_into().map_err(|_| RuleSaveError::Integer)?),
+        wakes: previous.map(|r| r.wakes).unwrap_or(0_i64.try_into().map_err(|_| RuleSaveError::Integer)?),
+        fingerprint: if matches!(&fields.kind, RuleKind::File { .. }) { context.fingerprint } else { None },
+        low_since: None, alerted: low_workers.then_some(false), active_workers: None,
+        error: None, event_text: None, last_at: None, last_event: None, last_exit_code: None,
+        last_finished: None, last_output: None, last_stall_error: None, last_stall_exit_code: None,
+        last_stall_finished: None, launch_intent: None, owner_hold: None, restart_check: None,
+        stall_event_key: None, stall_probe: None, stall_text: None,
+    })
+}
+fn rule_bound<const MIN: i64, const MAX: u64>(value: Option<&serde_json::Number>, error: RuleSaveError) -> Result<studio_runtime_schema::bounded_integer::BoundedInteger<MIN, MAX>, RuleSaveError> {
+    let value = value.and_then(serde_json::Number::as_f64).filter(|v| v.fract() == 0.0).ok_or(error)?;
+    (value as i64).try_into().map_err(|_| error)
 }

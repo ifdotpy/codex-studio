@@ -1,5 +1,6 @@
 //! Fake clocks and pressure sources exercise durable monitor admission and I/O.
 #![allow(clippy::unwrap_used)]
+use crate::TestJson;
 use crate::monitor_fixtures as fixtures;
 use serde_json::{Value, json};
 use std::sync::{
@@ -64,7 +65,7 @@ async fn maintain(
                 now,
             )?;
             monitor_runtime::apply(tx, &before, &actor, &decision, now)?;
-            Ok::<_, MonitorError>(decision.record)
+            Ok::<_, MonitorError>(decision.record.value())
         })
         .await
         .unwrap()
@@ -230,7 +231,7 @@ async fn cleanup_records_intent_before_native_stop_and_never_repeats_unknown_io(
     let monitor = MonitorsRepository::get(&conn, &id).unwrap().unwrap();
     let mut active = actor.value();
     active["inFlight"] = json!(true);
-    assert!(!policy::monitor_cleanup_allowed(&conn, &active, &monitor.value(), 3600.0).unwrap());
+    assert!(!policy::monitor_cleanup_allowed(&conn, &active, &monitor, 3600.0).unwrap());
 }
 
 #[tokio::test]
@@ -243,7 +244,7 @@ async fn an_explicit_owner_stop_does_not_inherit_the_pressure_guard() {
             let (_, operation) = monitor_driver::reserve_cancel(tx, &id, Some("agent"), 1801.0)?;
             assert!(operation.is_some());
             let (snapshot, actor) = monitor_runtime::snapshot(tx, &id)?;
-            assert!(snapshot.record().get("shellPressureCleanup").is_none());
+            assert!(snapshot.record().shell_pressure_cleanup.is_none());
             let mut active = actor.value();
             active["inFlight"] = json!(true);
             assert!(policy::monitor_cleanup_allowed(
@@ -268,11 +269,11 @@ async fn new_output_or_an_expired_decision_blocks_pressure_termination() {
         .unwrap()
         .unwrap()
         .value();
-    assert!(policy::monitor_cleanup_allowed(&conn, &actor, &monitor, 1801.0).unwrap());
-    assert!(!policy::monitor_cleanup_allowed(&conn, &actor, &monitor, 1803.0).unwrap());
+    assert!(policy::monitor_cleanup_allowed(&conn, &actor, &serde_json::from_value::<studio_runtime_store::MonitorRecord>(monitor.clone()).unwrap(), 1801.0).unwrap());
+    assert!(!policy::monitor_cleanup_allowed(&conn, &actor, &serde_json::from_value::<studio_runtime_store::MonitorRecord>(monitor.clone()).unwrap(), 1803.0).unwrap());
     let mut output = monitor;
     output["activityGeneration"] = json!(1);
-    assert!(!policy::monitor_cleanup_allowed(&conn, &actor, &output, 1801.0).unwrap());
+    assert!(!policy::monitor_cleanup_allowed(&conn, &actor, &serde_json::from_value::<studio_runtime_store::MonitorRecord>(output).unwrap(), 1801.0).unwrap());
 }
 
 struct NotSent;

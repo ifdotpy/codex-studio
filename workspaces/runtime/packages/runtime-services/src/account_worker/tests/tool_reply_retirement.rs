@@ -44,7 +44,7 @@ impl crate::provider_callbacks::tools::StatusWatchPort for ImmediateStatus {
     > {
         Box::pin(async {
             Ok(crate::provider_callbacks::tools::RulesActionResult {
-                value: Value::Null,
+                value: studio_runtime_schema::raw_json::RawJson(serde_json::value::to_raw_value(&Value::Null).expect("JSON")),
                 cancel_monitor_ids: Vec::new(),
             })
         })

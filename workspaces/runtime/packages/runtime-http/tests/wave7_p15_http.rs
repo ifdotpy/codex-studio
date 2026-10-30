@@ -302,11 +302,9 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
         );
     }
 
-    let saved = MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
+    let saved = serde_json::to_value(MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
         .expect("read monitor record")
-        .expect("monitor record")
-        .value()
-        .clone();
+        .expect("monitor record")).unwrap();
     assert_eq!(saved["lastInputAttempt"]["status"], "acknowledged");
     assert_eq!(saved["lastInputAttempt"]["method"], "command/exec/write");
     assert_eq!(
@@ -484,11 +482,9 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
             .expect("approval request");
         assert_eq!(request.value()["status"], "answered");
         assert_eq!(request.value()["answerDecision"], decision);
-        let monitor = MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
+        let monitor = serde_json::to_value(MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
             .expect("get monitor")
-            .expect("monitor")
-            .value()
-            .clone();
+            .expect("monitor")).unwrap();
         if decision == "accept" {
             assert_eq!(monitor["status"], "starting");
             runtime

@@ -1,4 +1,5 @@
 //! P15 checks frozen monitor effects and durable HTTP input replay.
+use crate::TestJson;
 use crate::monitor_runtime_fixtures as fixtures;
 
 use base64::Engine;
@@ -90,10 +91,10 @@ async fn migrated_monitor_inputs_remain_visible_through_process_receipt() {
         let receipt = LegacyReceipt {
             monitor: "f8fc5c50-e4e4-50bc-8ff5-885105058c9d".into(),
             operation: studio_runtime_store::MonitorOperation {
-                agent: "agent".into(),
-                epoch: 2,
-                account_key: "default".into(),
-                connection_id: "connection".into(),
+                agent: "agent".to_owned().try_into().unwrap(),
+                epoch: 2.try_into().unwrap(),
+                account_key: "default".to_owned().try_into().unwrap(),
+                connection_id: "connection".to_owned().try_into().unwrap(),
                 evidence: Default::default(),
             },
             status,
@@ -202,7 +203,7 @@ async fn oversized_provider_delta_is_persisted_in_order_and_replayed_exactly() {
                 &account,
                 7,
                 11,
-                &params
+                &serde_json::from_value(params.clone()).unwrap()
             )?);
             Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
         })
@@ -276,7 +277,7 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
                 &account_for_enqueue,
                 7,
                 11,
-                &first,
+                &serde_json::from_value(first.clone()).unwrap(),
             )?;
             monitor_event_queue::enqueue_output_in_transaction(
                 tx,
@@ -284,7 +285,7 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
                 &account_for_enqueue,
                 7,
                 12,
-                &second,
+                &serde_json::from_value(second.clone()).unwrap(),
             )?;
             Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
         })
@@ -344,7 +345,7 @@ async fn account_worker_monitor_output_is_durable_ordered_and_exactly_acknowledg
     monitor_event_queue::enqueue_exit(&store, id, &operation, "result:monitor", Some(0), None, 9.0)
         .await
         .expect("replay acknowledged result without duplicating it");
-    let probe_result = json!({"exitCode":1,"output":"still responsive"});
+    let probe_result = studio_runtime_schema::monitor_record::MonitorProbeResult::Completed { exit_code: 1, output: "still responsive".into() };
     monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &probe_result)
         .await
         .expect("enqueue completed liveness probe");
@@ -385,7 +386,7 @@ async fn transient_rule_submit_failure_reconciles_the_saved_launch_identity() {
     store
         .transaction(move |tx| {
             AgentRepository::put(tx, &owner)?;
-            RulesRepository::put(tx, &RuleRecord::from_value(rule)?)
+            RulesRepository::put(tx, &serde_json::from_value::<RuleRecord>(rule)?)
         })
         .await
         .expect("seed due rule and owner");
@@ -456,7 +457,7 @@ async fn event_submission_failure_recovers_the_committed_launch_intent() {
     let mut event_rule = event_case["rule"].clone();
     event_rule["event"] = event["kind"].clone();
     event_rule["command"] = json!("printf marker");
-    let rule = RuleRecord::from_value(event_rule).expect("event rule");
+    let rule = serde_json::from_value::<RuleRecord>(event_rule).expect("event rule");
     let check = store
         .transaction_with::<_, rules_tick::RulesTickError>(move |tx| {
             AgentRepository::put(tx, &owner)?;
@@ -518,7 +519,7 @@ async fn durable_results_win_over_stalls_across_every_write_failure_and_restart(
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = running(&cases);
-    case["before"]["activityAt"] = json!(1);
+    case["before"]["activityAt"] = json!(1.0);
     let full = std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some();
     let tables = if full {
         vec![
@@ -779,6 +780,16 @@ async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically()
     // These Python monitor completions belong to the historical Codex actor.
     for case in &mut cases {
         case["actor"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        for field in ["rule", "afterRule"] {
+            if !case[field].is_null() {
+                let rule: RuleRecord = serde_json::from_value(case[field].clone()).expect("stored rule");
+                case[field] = json!(rule);
+            }
+        }
+        for field in ["before", "after"] {
+            let monitor: studio_runtime_store::MonitorRecord = serde_json::from_value(case[field].clone()).expect("stored monitor");
+            case[field] = json!(monitor);
+        }
     }
     for (number, case) in cases.iter().enumerate() {
         let store = Arc::new(fixtures::store(root.path(), &format!("rule-{number}")).await);
@@ -786,7 +797,7 @@ async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically()
         if !case["rule"].is_null() {
             let rule = case["rule"].clone();
             store
-                .transaction(move |tx| RulesRepository::put(tx, &RuleRecord::from_value(rule)?))
+                .transaction(move |tx| RulesRepository::put(tx, &serde_json::from_value::<RuleRecord>(rule)?))
                 .await
                 .expect("rule");
         }
@@ -871,7 +882,7 @@ async fn foreign_exit_cannot_poison_the_first_result_journal() {
         },
     );
     let mut foreign = exit.clone();
-    foreign.operation.connection_id = "foreign".into();
+    foreign.operation.connection_id = "foreign".to_owned().try_into().unwrap();
     assert!(matches!(
         runtime.deliver(&foreign, 2000.0).await,
         Err(studio_runtime_services::monitor_policy::MonitorError::InvalidDeliveryIdentity(_))
@@ -884,7 +895,7 @@ async fn foreign_exit_cannot_poison_the_first_result_journal() {
             outcome: studio_runtime_services::monitor_policy::InputOutcome::Acknowledged,
         },
     );
-    foreign_input.operation.connection_id = "foreign".into();
+    foreign_input.operation.connection_id = "foreign".to_owned().try_into().unwrap();
     assert!(matches!(
         runtime.deliver(&foreign_input, 2000.0).await,
         Err(studio_runtime_services::monitor_policy::MonitorError::InvalidDeliveryIdentity(_))
@@ -1140,7 +1151,7 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
     let healthy_case_for_seed = healthy_case.clone();
     store
         .transaction(move |tx| {
-            Table::new(tx).put(&MonitorRecord::from_value(
+            Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(
                 healthy_case_for_seed["before"].clone(),
             )?)
         })
@@ -1157,7 +1168,7 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
             finished: 2001.0,
         },
     );
-    foreign.operation.connection_id = "foreign-connection".into();
+    foreign.operation.connection_id = "foreign-connection".to_owned().try_into().unwrap();
     port.deliveries
         .lock()
         .expect("deliveries")
@@ -1173,7 +1184,7 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
     healthy_output.operation.connection_id = healthy_case["before"]["operation"]["connectionId"]
         .as_str()
         .expect("connection id")
-        .into();
+        .to_owned().try_into().unwrap();
     healthy_case["before"]["log"] = json!(
         store
             .root()
@@ -1183,7 +1194,7 @@ async fn quarantined_delivery_does_not_stop_other_monitors_or_timer() {
     let healthy_case_for_log = healthy_case.clone();
     store
         .transaction(move |tx| {
-            Table::new(tx).put(&MonitorRecord::from_value(
+            Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(
                 healthy_case_for_log["before"].clone(),
             )?)
         })
@@ -1243,7 +1254,7 @@ async fn http_input_retry_after_ack_replays_one_logical_input() {
     let mut monitor = record(&store, id);
     monitor["interactive"] = json!(true);
     store
-        .transaction(move |tx| Table::new(tx).put(&MonitorRecord::from_value(monitor.clone())?))
+        .transaction(move |tx| Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(monitor.clone())?))
         .await
         .expect("mark seeded watch interactive");
 
@@ -1572,7 +1583,7 @@ async fn committed_managed_start_is_dispatched_after_admission() {
     monitor["status"] = json!("starting");
     monitor["operation"] = Value::Null;
     store
-        .transaction(move |tx| Table::new(tx).put(&MonitorRecord::from_value(monitor.clone())?))
+        .transaction(move |tx| Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(monitor.clone())?))
         .await
         .expect("persist admitted monitor start");
 
@@ -1613,7 +1624,7 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
                     &enqueue_account,
                     7,
                     cursor,
-                    &enqueue_chunk,
+                    &serde_json::from_value(enqueue_chunk.clone()).unwrap(),
                 )?;
             }
             Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
@@ -1635,7 +1646,7 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
         .transaction_with::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(move |tx| {
             studio_runtime_services::account_worker::put_notification(tx,&rejected_identity,studio_runtime_services::notification_dispatch::NotificationSettlement {signature:"same-notification".into(),outcome:studio_runtime_services::notification_dispatch::DispatchOutcome::Written})?;
             monitor_event_queue::enqueue_output_in_transaction(
-                tx, &rejected_id, &rejected_account, 7, 126, &rejected_chunk,
+                tx, &rejected_id, &rejected_account, 7, 126, &serde_json::from_value(rejected_chunk.clone()).unwrap(),
             )?;
             Ok(())
         })
@@ -1657,7 +1668,7 @@ async fn output_queue_enforces_capacity_and_preserves_terminal_reserve_atomicall
     );
 
     let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
-    monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &json!({"ok":true}))
+    monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &studio_runtime_schema::monitor_record::MonitorProbeResult::Completed { exit_code: 0, output: String::new() })
         .await
         .expect("probe fits reserved event slot");
     monitor_event_queue::enqueue_exit(&store, id, &operation, "exit:count", Some(0), None, 9.0)
@@ -1700,7 +1711,7 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
                     &enqueue_account,
                     7,
                     cursor,
-                    &enqueue_chunk,
+                    &serde_json::from_value(enqueue_chunk.clone()).unwrap(),
                 )?;
             }
             Ok::<_, studio_runtime_services::notification_dispatch::NotificationDispatchError>(())
@@ -1722,7 +1733,7 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
                 &rejected_account,
                 7,
                 30,
-                &rejected_chunk,
+                &serde_json::from_value(rejected_chunk.clone()).unwrap(),
             )
         })
         .await
@@ -1733,7 +1744,7 @@ async fn output_queue_enforces_byte_limit_and_keeps_room_for_terminal_receipts()
     ));
     let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
     assert!(
-        monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &json!({"ok":true}))
+        monitor_event_queue::enqueue_probe(&store, id, &operation, 8, &studio_runtime_schema::monitor_record::MonitorProbeResult::Completed { exit_code: 0, output: String::new() })
             .await
             .expect_err("probe cannot consume terminal reserve")
             .to_string()
@@ -1770,7 +1781,7 @@ async fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
                 .value();
             value["streamQueue"] = json!([]);
             Table::<MonitorRecord>::new(tx).put(
-                &MonitorRecord::from_value(value)
+                &serde_json::from_value::<MonitorRecord>(value)
                     .map_err(studio_runtime_store::StoreError::from)?,
             )
         })
@@ -1787,7 +1798,7 @@ async fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
         } else {
             remainder
         };
-        let result = Value::String("x".repeat(result_bytes - 2));
+        let result = studio_runtime_schema::monitor_record::MonitorProbeResult::Failed { error: "x".repeat(result_bytes - 12) };
         monitor_event_queue::enqueue_probe(&store, id, &operation, generation as i64, &result)
             .await
             .expect("probe fills bounded admission budget");
@@ -1804,7 +1815,7 @@ async fn bounded_probes_preserve_room_for_the_largest_exit_receipt() {
         "probes exactly fill their admission budget"
     );
     assert!(
-        monitor_event_queue::enqueue_probe(&store, id, &operation, probe_count as i64, &json!("x"))
+        monitor_event_queue::enqueue_probe(&store, id, &operation, probe_count as i64, &studio_runtime_schema::monitor_record::MonitorProbeResult::Failed { error: "x".into() })
             .await
             .expect_err("additional probe exceeds its budget")
             .to_string()

@@ -1,3 +1,4 @@
+use crate::TestJson;
 use crate::monitor_fixtures as fixtures;
 
 use serde_json::{Value, json};
@@ -236,7 +237,7 @@ async fn unreadable_receipt_is_skipped_and_other_receipts_are_recovered() {
     lost_monitor["id"] = json!(lost_id);
     store
         .transaction(move |tx| {
-            Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(
+            Table::new(tx).put(&serde_json::from_value::<studio_runtime_store::MonitorRecord>(
                 lost_monitor,
             )?)
         })

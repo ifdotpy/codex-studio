@@ -186,7 +186,7 @@ async fn auth_repair_regression_post_login_allows_only_fresh_safe_continuation()
                 monitor["operation"]["accountKey"] = key.clone();
                 let operation: Operation = serde_json::from_value(monitor["operation"].clone())
                     .map_err(studio_runtime_store::StoreError::from)?;
-                let monitor = MonitorRecord::from_value(monitor)
+                let monitor = serde_json::from_value::<MonitorRecord>(monitor)
                     .map_err(studio_runtime_store::StoreError::from)?;
                 Table::new(tx).put(&monitor)?;
                 monitor_runtime::finish_in_transaction(

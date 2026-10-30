@@ -125,3 +125,18 @@ pub(crate) use callback_fixtures::frozen as recovery_fixtures;
 
 #[path = "test_support/agent_views.rs"]
 pub(crate) mod agent_view_fixtures;
+
+trait TestJson {
+    fn value(&self) -> serde_json::Value;
+}
+impl<T: serde::Serialize> TestJson for T {
+    fn value(&self) -> serde_json::Value {
+        serde_json::to_value(self).expect("test JSON")
+    }
+}
+
+fn rule_snapshot(rule: serde_json::Value, owner: serde_json::Value) -> Result<studio_runtime_services::rules_engine::RuleSnapshot, studio_runtime_services::rules_engine::RuleError> {
+    let id = rule["id"].as_str().unwrap_or("?").to_owned();
+    let record = serde_path_to_error::deserialize(&rule).map_err(|error| studio_runtime_services::rules_engine::RuleError::Invalid { object: format!("rules/{id}"), location: format!("/{}", error.path()) })?;
+    studio_runtime_services::rules_engine::RuleSnapshot::from_stored(&record, owner)
+}

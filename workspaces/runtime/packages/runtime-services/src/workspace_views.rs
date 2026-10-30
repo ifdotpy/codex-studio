@@ -27,28 +27,41 @@ pub enum AgentScopeError {
     MissingRoot,
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceViewData {
     pub work: Vec<Value>,
     pub annotations: Vec<Value>,
     pub checkpoints: Vec<Value>,
     pub plans: Vec<Value>,
-    pub rules: Vec<Value>,
-    pub inbox: Vec<Value>,
+    pub rules: Vec<studio_runtime_store::RuleRecord>,
+    pub inbox: Vec<WorkspaceInboxItem>,
     pub tasks: Vec<Value>,
-    pub monitors: Vec<Value>,
+    pub monitors: Vec<crate::sync_policy::MonitorProjection>,
 }
 
-pub fn workspace_view_response(view: &str, data: WorkspaceViewData) -> Value {
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub enum WorkspaceInboxItem {
+    Other(Value),
+    Monitor { id: String, kind: &'static str, agent: String, title: String, text: String, monitor: crate::sync_policy::MonitorProjection },
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged, rename_all = "camelCase")]
+pub enum WorkspaceViewResponse {
+    Work { work: Vec<Value> },
+    Inbox { inbox: Vec<WorkspaceInboxItem> },
+    Annotations { annotations: Vec<Value> },
+    Full { #[serde(flatten)] data: WorkspaceViewData, #[serde(rename = "tasksHistoryLimit")] tasks_history_limit: u32 },
+}
+
+pub fn workspace_view_response(view: &str, data: WorkspaceViewData) -> WorkspaceViewResponse {
     match view {
-        "work" => json!({"work":data.work}),
-        "inbox" => json!({"inbox":data.inbox}),
-        "annotations" => json!({"annotations":data.annotations}),
-        _ => json!({
-            "work":data.work, "annotations":data.annotations, "checkpoints":data.checkpoints,
-            "plans":data.plans, "rules":data.rules, "inbox":data.inbox, "tasks":data.tasks,
-            "tasksHistoryLimit":100, "monitors":data.monitors,
-        }),
+        "work" => WorkspaceViewResponse::Work { work: data.work },
+        "inbox" => WorkspaceViewResponse::Inbox { inbox: data.inbox },
+        "annotations" => WorkspaceViewResponse::Annotations { annotations: data.annotations },
+        _ => WorkspaceViewResponse::Full { data, tasks_history_limit: 100 },
     }
 }
 
@@ -430,13 +443,13 @@ pub struct WorkspaceInboxData<'a> {
     pub complaints: &'a [Value],
     pub work: &'a [studio_runtime_store::WorkItemRecord],
     pub statuses: &'a BTreeMap<String, studio_runtime_store::WorkStatus>,
-    pub monitors: &'a [Value],
-    pub rules: &'a [Value],
+    pub monitors: &'a [crate::sync_policy::MonitorProjection],
+    pub rules: &'a [studio_runtime_store::RuleRecord],
 }
 
 pub fn workspace_inbox(
     data: WorkspaceInboxData<'_>,
-) -> studio_runtime_store::StoreResult<Vec<Value>> {
+) -> studio_runtime_store::StoreResult<Vec<WorkspaceInboxItem>> {
     let WorkspaceInboxData {
         agents,
         all_agents,
@@ -450,10 +463,10 @@ pub fn workspace_inbox(
     let mut inbox = Vec::new();
     for request in requests {
         if request["status"] == "pending" && !crate::event_write::truthy(request.get("deferred")) {
-            inbox.push(json!({
+            inbox.push(WorkspaceInboxItem::Other(json!({
                 "id":request["id"],"kind":"request","agent":request["agent"],
                 "title":"Answer required","text":request["method"],"request":request,
-            }));
+            })));
         }
     }
     let mut complaints = complaints.to_vec();
@@ -506,47 +519,39 @@ pub fn workspace_inbox(
                 .unwrap_or(false)
         );
         projection["leadDeleted"] = json!(lead.is_some_and(deleted_agent));
-        inbox.push(json!({
+        inbox.push(WorkspaceInboxItem::Other(json!({
             "id":id,"kind":"complaint","agent":lead_id,"title":text.chars().take(140).collect::<String>(),
             "text":"The lead must read and respond","complaint":projection,
-        }));
+        })));
     }
     for item in work
         .iter()
         .filter(|item| item.status() == studio_runtime_store::WorkStatus::Review)
     {
-        inbox.push(json!({
+        inbox.push(WorkspaceInboxItem::Other(json!({
             "id":item.id(),"kind":"work","agent":item.value()["rootId"],"title":item.title(),
             "text":"Result awaits acceptance","work":crate::work_policy::work_item_view(item, statuses),
-        }));
+        })));
     }
     for agent in agents
         .iter()
         .filter(|agent| matches!(agent["status"].as_str(), Some("failed" | "interrupted")))
     {
-        inbox.push(json!({
+        inbox.push(WorkspaceInboxItem::Other(json!({
             "id":agent["id"],"kind":"agent","agent":agent["id"],"title":agent["name"],
             "text":agent.get("error").and_then(Value::as_str).filter(|text| !text.is_empty()).unwrap_or(agent["status"].as_str().unwrap_or("")),
-        }));
+        })));
     }
     for monitor in monitors.iter().filter(|monitor| {
-        matches!(monitor["status"].as_str(), Some("failed" | "lost"))
-            && monitor.get("ruleId").is_none_or(Value::is_null)
+        matches!(monitor.status, studio_runtime_schema::studio_errors::MonitorStatus::Failed | studio_runtime_schema::studio_errors::MonitorStatus::Lost)
+            && monitor.rule_id.is_none()
     }) {
-        inbox.push(json!({
-            "id":monitor["id"],"kind":"monitor","agent":monitor["agent"],"title":monitor["command"],
-            "text":monitor.get("error").and_then(Value::as_str).filter(|text| !text.is_empty())
-                .map(str::to_owned).unwrap_or_else(|| format!("Exit {}", monitor.get("exitCode").and_then(Value::as_i64).map_or_else(|| "None".into(), |code| code.to_string()))),
-            "monitor":monitor,
-        }));
+        let text = monitor.error.as_deref().filter(|text| !text.is_empty()).map(str::to_owned)
+            .unwrap_or_else(|| format!("Exit {}", monitor.exit_code.map_or_else(|| "None".into(), |code| code.to_string())));
+        inbox.push(WorkspaceInboxItem::Monitor { id: monitor.id.clone(), kind: "monitor", agent: monitor.agent.clone(), title: monitor.command.clone(), text, monitor: monitor.clone() });
     }
-    for rule in rules
-        .iter()
-        .filter(|rule| crate::event_write::truthy(rule.get("error")))
-    {
-        inbox.push(json!({
-            "id":rule["id"],"kind":"rule","agent":rule["agent"],"title":rule["name"],"text":rule["error"],
-        }));
+    for rule in rules.iter().filter(|rule| rule.error.as_ref().is_some_and(|error| !error.is_empty())) {
+        inbox.push(WorkspaceInboxItem::Other(json!({"id":rule.id,"kind":"rule","agent":rule.agent,"title":rule.name,"text":rule.error})));
     }
     Ok(inbox)
 }

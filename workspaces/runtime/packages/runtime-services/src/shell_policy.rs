@@ -110,19 +110,17 @@ fn eligible_view(db: &Connection, agent: &ShellPolicyAgent) -> Result<bool, Stor
 pub fn monitor_cleanup_allowed(
     db: &Connection,
     agent: &Value,
-    monitor: &Value,
+    monitor: &studio_runtime_store::MonitorRecord,
     now: f64,
 ) -> Result<bool, StoreError> {
-    let Some(marker) = monitor.get("shellPressureCleanup") else {
+    let Some(marker) = &monitor.shell_pressure_cleanup else {
         return Ok(true);
     };
     let settings = OrchestrationSettingsRepository::shell_policy(db)?;
     Ok(settings.pressure_cleanup
         && eligible(db, agent)?
-        && monitor["activityGeneration"] == marker["generation"]
-        && marker["at"]
-            .as_f64()
-            .is_some_and(|at| now >= at && (now - at) * 1000.0 <= TICK_MS as f64)
+        && monitor.activity_generation.get() == marker.generation
+        && now >= marker.at && (now - marker.at) * 1000.0 <= TICK_MS as f64
         && now - agent["shellPolicyLastActiveAt"].as_f64().unwrap_or(now)
             >= PRESSURE_IDLE_MS as f64 / 1000.0)
 }
@@ -141,49 +139,26 @@ pub fn maintain_monitor(
     use crate::monitor_policy::{Effect, MonitorError};
     let agent = actor.value();
     let monitor = before.record();
-    if monitor["epoch"]
-        .as_i64()
-        .or_else(|| monitor["operation"]["epoch"].as_i64())
-        != Some(actor.epoch)
-    {
-        return Ok(());
+    use studio_runtime_schema::{monitor_record::{MonitorCancelStatus, MonitorCancelDispatch, ShellPressureCleanup}, studio_errors::MonitorStatus};
+    if monitor.epoch.get() != actor.epoch { return Ok(()); }
+    if let Some(cleanup) = &monitor.shell_pressure_cleanup
+        && monitor.cancel_dispatch.as_ref().is_some_and(|dispatch| dispatch.status == MonitorCancelStatus::Unknown) {
+        let report = json!({"id":format!("monitor:{}:{}:cleanup_unknown", before.id(), cleanup.generation),"kind":"cleanup_unknown","message":format!("Critical memory pressure: the stop outcome for monitor {} is unknown. Inspect the monitor before another stop.",before.id())});
+        observe(tx, &agent, &report, now).map_err(|_| MonitorError::Refused("Could not record the shell cleanup outcome"))?;
     }
-    if monitor["shellPressureCleanup"].is_object()
-        && monitor["cancelDispatch"]["status"] == "unknown"
-    {
-        let report = json!({"id":format!("monitor:{}:{}:cleanup_unknown",before.id(),monitor["shellPressureCleanup"]["generation"]),"kind":"cleanup_unknown","message":format!("Critical memory pressure: the stop outcome for monitor {} is unknown. Inspect the monitor before another stop.",before.id())});
-        observe(tx, &agent, &report, now)
-            .map_err(|_| MonitorError::Refused("Could not record the shell cleanup outcome"))?;
-    }
-    if monitor["status"] != "running"
-        || monitor["cancelRequested"] == true
-        || monitor["ruleId"].as_str().is_some()
-        || monitor["epoch"]
-            .as_i64()
-            .or_else(|| monitor["operation"]["epoch"].as_i64())
-            != Some(actor.epoch)
-        || monitor["reattachRecovery"].is_object()
-        || monitor["operation"].is_null()
-        || !eligible(tx, &agent)?
-    {
-        return Ok(());
-    }
-    let generation = monitor["activityGeneration"].as_i64().unwrap_or(0);
-    let activity = monitor["activityAt"]
-        .as_f64()
-        .or_else(|| monitor["created"].as_f64())
-        .unwrap_or(now);
+    if monitor.status != MonitorStatus::Running || monitor.cancel_requested == Some(true)
+        || monitor.rule_id.is_some() || monitor.reattach_recovery.is_some()
+        || monitor.operation.is_none() || !eligible(tx, &agent)? { return Ok(()); }
+    let generation = monitor.activity_generation.get();
+    let activity = monitor.activity_at.seconds();
     let quiet_ms = (now - activity).max(0.0) * 1000.0;
     let session_idle_ms =
         (now - agent["shellPolicyLastActiveAt"].as_f64().unwrap_or(now)).max(0.0) * 1000.0;
     let last_reap = agent["shellPolicyLastReapAt"].as_f64();
     let restart_guard = last_reap.is_some_and(|last| {
         last > agent["shellPolicyLastActiveAt"].as_f64().unwrap_or(now)
-            && monitor["created"].as_f64().is_some_and(|created| {
-                created > last
-                    && (created - last) * 1000.0
-                        < studio_runtime_schema::shell_policy::PRESSURE_RESTART_GUARD_MS as f64
-            })
+            && monitor.created.seconds() > last
+            && (monitor.created.seconds() - last) * 1000.0 < studio_runtime_schema::shell_policy::PRESSURE_RESTART_GUARD_MS as f64
     });
     let reap = critical
         && settings.pressure_cleanup
@@ -194,7 +169,7 @@ pub fn maintain_monitor(
     if !reap
         && (settings.quiet_threshold_ms == 0
             || quiet_ms < settings.quiet_threshold_ms as f64
-            || monitor["stallWakeGeneration"].as_i64().unwrap_or(-1) >= generation)
+            || monitor.stall_wake_generation.get() >= generation)
     {
         return Ok(());
     }
@@ -235,11 +210,11 @@ pub fn maintain_monitor(
     decision
         .effects
         .retain(|effect| !matches!(effect, Effect::StallEvent { .. } | Effect::Probe { .. }));
-    decision.record["stallWakeGeneration"] = json!(generation);
+    decision.record.stall_wake_generation = generation.try_into().map_err(|_| MonitorError::Refused("Invalid monitor generation"))?;
     if reap {
-        decision.record["cancelRequested"] = json!(true);
-        decision.record["cancelDispatch"] = json!({"status":"pending","attempts":0});
-        decision.record["shellPressureCleanup"] = json!({"at":now,"generation":generation});
+        decision.record.cancel_requested = Some(true);
+        decision.record.cancel_dispatch = Some(MonitorCancelDispatch { status: MonitorCancelStatus::Pending, attempts: Some(0), updated_at: None, next_attempt_at: None, error: None });
+        decision.record.shell_pressure_cleanup = Some(ShellPressureCleanup { at: now, generation });
         actor
             .extra
             .insert("shellPolicyLastReapAt".into(), json!(now));

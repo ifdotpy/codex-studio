@@ -271,10 +271,10 @@ impl studio_runtime_services::monitor_driver::MonitorNative for Port {
     ) -> futures_util::future::BoxFuture<'a, studio_runtime_services::monitor_driver::Submission>
     {
         Box::pin(async move {
-            assert_eq!(operation.agent, "owner");
-            assert_eq!(operation.epoch, 1);
-            assert_eq!(operation.account_key, self.scope.account);
-            assert_eq!(operation.connection_id, self.scope.connection);
+            assert_eq!(operation.agent.as_str(), "owner");
+            assert_eq!(operation.epoch.get(), 1);
+            assert_eq!(operation.account_key.as_str(), self.scope.account);
+            assert_eq!(operation.connection_id.as_str(), self.scope.connection);
             let studio_runtime_services::monitor_policy::Effect::Native { method, params, .. } =
                 effect
             else {

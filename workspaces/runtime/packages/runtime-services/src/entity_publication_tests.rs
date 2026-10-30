@@ -1124,9 +1124,9 @@ async fn conversation_detail_entities_remove_private_answers_and_hard_deleted_so
 
 /// A lost monitor of `agent`, created and finished at `at`.
 fn lost_monitor(id: &str, agent: &str, at: f64) -> String {
-    json!({"id":id,"agent":agent,"status":"lost","exitCode":null,
+    crate::monitor_policy::complete_test_monitor(json!({"id":id,"agent":agent,"status":"lost","exitCode":null,
         "error":"Command outcome unknown after losing the provider result; not rerun.",
-        "command":format!("run {id}"),"created":at,"finished":at})
+        "command":format!("run {id}"),"created":at,"finished":at}))
     .to_string()
 }
 
@@ -1210,7 +1210,7 @@ async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
     );
     let before = full_publications(&store).await;
 
-    let running = json!({"id":"running","agent":CHAT,"status":"running","created":now,"tail":""});
+    let running = crate::monitor_policy::complete_test_monitor(json!({"id":"running","agent":CHAT,"status":"running","created":now,"tail":""}));
     write(
         &store,
         "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",

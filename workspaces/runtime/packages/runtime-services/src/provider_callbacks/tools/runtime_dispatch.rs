@@ -197,7 +197,7 @@ fn worker_model_provider(model: &str) -> Option<&'static str> {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RulesActionResult {
-    pub(crate) value: Value,
+    pub(crate) value: studio_runtime_schema::raw_json::RawJson,
     pub(crate) cancel_monitor_ids: Vec<String>,
 }
 
@@ -249,7 +249,7 @@ pub(crate) trait MonitorCreatePort: Send + Sync {
         args: &'a Value,
         request_id: &'a str,
         now: f64,
-    ) -> BoxFuture<'a, Result<Value, Error>>;
+    ) -> BoxFuture<'a, Result<Box<serde_json::value::RawValue>, Error>>;
 }
 
 pub(crate) trait InterruptPort: Send + Sync {
@@ -559,7 +559,7 @@ pub(super) async fn dispatch(
                 .await
                 .map_err(super::runtime_ports::rules_error)?;
             }
-            written(&result.value, Vec::new())
+            DispatchedOperation::Applied(OperationResult::raw(result.value.0))
         }
         "orchestration_spawn" | "orchestration_review" => {
             let Some(port) = ports.child_creation.as_ref() else {
@@ -608,10 +608,9 @@ pub(super) async fn dispatch(
                     "workspace-state/monitor-admission",
                 ))));
             };
-            written(
-                &port.create(store_ref, actor, args, request_id, now).await?,
-                Vec::new(),
-            )
+            DispatchedOperation::Applied(OperationResult::raw(
+                port.create(store_ref, actor, args, request_id, now).await?,
+            ))
         }
         "orchestration_monitor_input" => {
             let Some(port) = ports.monitor_input.as_ref() else {
@@ -642,7 +641,7 @@ pub(super) async fn dispatch(
             match result {
                 Ok(value) => written(&value, Vec::new()),
                 Err(error) => match input_attempt(store_ref, monitor_id, request_id).await {
-                    Ok(Some(record)) => managed_input_receipt(&record, request_id)?,
+                    Ok(Some(attempt)) => managed_input_receipt(&attempt),
                     Ok(None) => not_sent(error),
                     Err(_) => unknown_input(),
                 },
@@ -977,27 +976,12 @@ async fn input_attempt(
     store: &RuntimeStore,
     monitor_id: &str,
     request_id: &str,
-) -> Result<Option<Value>, Error> {
+) -> Result<Option<studio_runtime_schema::monitor_record::MonitorInputAttempt>, Error> {
     let (monitor_id, request_id) = (monitor_id.to_owned(), request_id.to_owned());
-    store
-        .read_async(
-            "runtime-services/provider_callbacks/runtime_dispatch",
-            move |connection| {
-                let record =
-                    studio_runtime_store::MonitorsRepository::get(connection, &monitor_id)?;
-                Ok(record.and_then(|record| {
-                    let value = record.value();
-                    [&value["lastInputAttempt"], &value["inputAttempt"]]
-                        .into_iter()
-                        .any(|receipt| {
-                            receipt.get("id").and_then(Value::as_str) == Some(request_id.as_str())
-                        })
-                        .then(|| value.clone())
-                }))
-            },
-        )
-        .await
-        .map_err(Error::Store)
+    store.read_async("runtime-services/provider_callbacks/runtime_dispatch", move |connection| {
+        let record = studio_runtime_store::MonitorsRepository::get(connection, &monitor_id)?;
+        Ok(record.and_then(|record| [record.last_input_attempt, record.input_attempt].into_iter().flatten().find(|attempt| attempt.id == request_id)))
+    }).await.map_err(Error::Store)
 }
 
 pub(crate) async fn authorize_monitor_input(
@@ -1033,7 +1017,7 @@ pub(crate) fn authorize_monitor_input_in_transaction(
     }
     let (snapshot, owner) = crate::monitor_runtime::snapshot(tx, monitor_id)
         .map_err(|_| Error::Invalid("Unknown monitor in this caller's scope"))?;
-    let monitor_epoch = snapshot.record().get("epoch").and_then(Value::as_i64);
+    let monitor_epoch = Some(snapshot.record().epoch.get());
     if snapshot.agent() != caller.record().id.0
         || monitor_epoch != Some(caller.record().epoch)
         || owner.epoch != caller.record().epoch
@@ -1047,26 +1031,14 @@ pub(crate) fn authorize_monitor_input_in_transaction(
     Ok(())
 }
 
-pub(crate) fn managed_input_receipt(
-    record: &Value,
-    request_id: &str,
-) -> Result<DispatchedOperation, Error> {
-    let receipt = [&record["lastInputAttempt"], &record["inputAttempt"]]
-        .into_iter()
-        .find(|receipt| receipt.get("id").and_then(Value::as_str) == Some(request_id));
-    let result = |value: Value| OperationResult::reply(&value);
-    Ok(match receipt {
-        Some(receipt) if receipt["status"] == "acknowledged" => DispatchedOperation::Applied(
-            result(receipt.get("response").cloned().unwrap_or(Value::Null)),
-        ),
-        Some(receipt) if receipt["status"] == "failed" => {
-            DispatchedOperation::NotSent(result(json!("Monitor input was rejected")))
-        }
-        Some(_) => DispatchedOperation::Unknown(result(json!(
-            "Monitor input outcome unknown; do not repeat it"
-        ))),
-        None => DispatchedOperation::NotSent(result(json!("Monitor input was not submitted"))),
-    })
+pub(crate) fn managed_input_receipt(attempt: &studio_runtime_schema::monitor_record::MonitorInputAttempt) -> DispatchedOperation {
+    use studio_runtime_schema::monitor_record::MonitorInputStatus;
+    match attempt.status {
+        MonitorInputStatus::Acknowledged => DispatchedOperation::Applied(
+            attempt.response.as_ref().map_or_else(|| OperationResult::reply(&()), |response| OperationResult::raw(response.0.clone()))),
+        MonitorInputStatus::Failed => DispatchedOperation::NotSent(OperationResult::reply(&"Monitor input was rejected")),
+        MonitorInputStatus::Submitted | MonitorInputStatus::Uncertain => DispatchedOperation::Unknown(OperationResult::reply(&"Monitor input outcome unknown; do not repeat it")),
+    }
 }
 
 /// A store failure may hide a committed write; every other refusal raised by a
@@ -1312,14 +1284,15 @@ mod tests {
 
     #[test]
     fn managed_input_receipts_preserve_written_not_sent_and_unknown() {
-        for status in ["acknowledged", "failed", "pending"] {
-            let record = json!({"lastInputAttempt":{"id":"stable-input","status":status,"response":{"ok":true}}});
-            let result = managed_input_receipt(&record, "stable-input").expect("known receipt");
+        for status in ["acknowledged", "failed", "submitted"] {
+            let wire = format!(r#"{{"id":"stable-input","agent":"owner","epoch":1,"accountKey":"default","connectionId":"connection","created":0,"method":"command/exec/write","params":{{"processId":"watch","deltaBase64":"eA==","closeStdin":false}},"status":"{status}","response":{{"ok":true}}}}"#);
+            let attempt = serde_json::from_str(&wire).unwrap();
+            let result = managed_input_receipt(&attempt);
             assert!(matches!(
                 (status, result),
                 ("acknowledged", DispatchedOperation::Applied(_))
                     | ("failed", DispatchedOperation::NotSent(_))
-                    | ("pending", DispatchedOperation::Unknown(_))
+                    | ("submitted", DispatchedOperation::Unknown(_))
             ));
         }
     }

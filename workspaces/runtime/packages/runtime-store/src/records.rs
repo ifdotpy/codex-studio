@@ -918,7 +918,7 @@ mod duplicate_stored_record_tests {
     }
     #[test]
     fn duplicate_stored_record_monitor() {
-        check::<MonitorRecord>(r#"{"id":"other","id":"m","future":null}"#, "m");
+        assert!(serde_json::from_str::<MonitorRecord>(r#"{"id":"other","id":"m","future":null}"#).is_err());
     }
     #[test]
     fn duplicate_stored_record_asset() {
@@ -1289,6 +1289,7 @@ impl JsonRecord for MonitorRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
     const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1552,6 +1553,7 @@ impl JsonRecord for RuleRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }

@@ -11,7 +11,17 @@ pub const CHUNK_BYTES: usize = 65_536;
 pub const PROBE_LEASE_SECONDS: f64 = 90.0;
 pub const DEFAULT_MONITOR_STALL_SECONDS: u64 = 1800;
 
-use studio_runtime_schema::studio_errors::MonitorRecoveryStatus as RecoveryStatus;
+fn monitor_time(value: f64) -> Result<studio_runtime_schema::monitor_record::MonitorTime, MonitorError> {
+    value.try_into().map_err(|_| MonitorError::Refused("Invalid monitor time"))
+}
+fn monitor_integer<const MIN: i64, const MAX: u64>(value: i64) -> Result<studio_runtime_schema::monitor_record::MonitorInteger<MIN, MAX>, MonitorError> {
+    value.try_into().map_err(|_| MonitorError::Refused("Monitor counter exhausted"))
+}
+fn monitor_text(value: &str) -> Result<studio_runtime_schema::monitor_record::MonitorText<0, 12000>, MonitorError> {
+    value.to_owned().try_into().map_err(|_| MonitorError::Refused("Monitor text exceeds bound"))
+}
+
+use studio_runtime_schema::monitor_record::{ReattachRecovery, ReattachState};
 pub use studio_runtime_schema::studio_errors::MonitorStatus;
 
 pub use studio_runtime_store::{
@@ -189,265 +199,6 @@ fn fatal_store_error(error: &studio_runtime_store::StoreError) -> bool {
     )
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ReattachRecovery {
-    account_key: String,
-    epoch: i64,
-    pub(crate) status: RecoveryStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) started_at: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) proof: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    finished: Option<f64>,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProbeFields {
-    #[serde(default)]
-    stall_probe_generation: Option<i64>,
-    #[serde(default)]
-    stall_probe_started: Option<f64>,
-}
-
-#[derive(Clone)]
-struct ProbeLease {
-    generation: i64,
-    started: f64,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(try_from = "ProbeFields")]
-struct ProbeState(Option<ProbeLease>);
-
-impl TryFrom<ProbeFields> for ProbeState {
-    type Error = &'static str;
-
-    fn try_from(fields: ProbeFields) -> Result<Self, Self::Error> {
-        match fields.stall_probe_generation {
-            Some(generation) => Ok(Self(Some(ProbeLease {
-                generation,
-                started: fields.stall_probe_started.ok_or("probe start missing")?,
-            }))),
-            None => Ok(Self(None)),
-        }
-    }
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct InputAttempt {
-    id: String,
-    agent: String,
-    epoch: i64,
-    account_key: String,
-    connection_id: String,
-    #[serde(rename = "method")]
-    _method: String,
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Fields {
-    id: String,
-    agent: String,
-    #[serde(default)]
-    epoch: Option<i64>,
-    pub(crate) status: MonitorStatus,
-    #[serde(default)]
-    reattach_recovery: Option<ReattachRecovery>,
-    #[serde(default)]
-    rule_id: Option<String>,
-    #[serde(default)]
-    operation: Option<Operation>,
-    #[serde(default)]
-    cancel_requested: bool,
-    #[serde(default)]
-    interactive: bool,
-    #[serde(default, rename = "tail")]
-    _tail: String,
-    #[serde(default)]
-    pub(crate) bytes: u64,
-    #[serde(default)]
-    pub(crate) log: Option<String>,
-    #[serde(default)]
-    activity_generation: i64,
-    #[serde(default = "minus_one")]
-    stall_wake_generation: i64,
-    #[serde(flatten)]
-    probe: ProbeState,
-    #[serde(default)]
-    activity_at: Option<f64>,
-    #[serde(default)]
-    created: Option<f64>,
-    #[serde(default = "stall_default")]
-    stall_timeout_seconds: u64,
-    #[serde(default)]
-    liveness_command: String,
-    #[serde(default = "success_default")]
-    success_exit_codes: Vec<i64>,
-    #[serde(default)]
-    stdin_closed: bool,
-    #[serde(default)]
-    stdin_close_requested: Option<String>,
-    #[serde(default)]
-    input_attempt: Option<InputAttempt>,
-}
-impl Fields {
-    fn from_monitor(row: &studio_runtime_store::MonitorRecord) -> Result<Self, ()> {
-        fn optional<T: serde::de::DeserializeOwned>(
-            value: Option<&Value>,
-        ) -> Result<Option<T>, ()> {
-            value
-                .map(|v| serde_json::from_value(v.clone()).map_err(|_| ()))
-                .transpose()
-                .map(Option::flatten)
-        }
-        fn signed(number: Option<&serde_json::Number>) -> Result<Option<i64>, ()> {
-            number.map(|n| n.as_i64().ok_or(())).transpose()
-        }
-        fn unsigned(number: Option<&serde_json::Number>) -> Result<Option<u64>, ()> {
-            number.map(|n| n.as_u64().ok_or(())).transpose()
-        }
-        let operation = row
-            .operation
-            .value()
-            .map(|value| {
-                let evidence = OperationEvidence::deserialize(serde::de::value::MapDeserializer::<
-                    _,
-                    serde_json::Error,
-                >::new(
-                    value.extra.clone().into_iter()
-                ))
-                .map_err(|_| ())?;
-                Ok(Operation {
-                    agent: value.agent.as_str().to_owned(),
-                    epoch: value.epoch.number().as_i64().ok_or(())?,
-                    account_key: value.account_key.as_str().to_owned(),
-                    connection_id: value.connection_id.as_str().to_owned(),
-                    evidence,
-                })
-            })
-            .transpose()?;
-        let input_attempt =
-            row.input_attempt
-                .value()
-                .map(|value| {
-                    InputAttempt::deserialize(serde::de::value::MapDeserializer::<
-                        _,
-                        serde_json::Error,
-                    >::new(value.clone().into_iter()))
-                    .map_err(|_| ())
-                })
-                .transpose()?;
-        let probe_generation = signed(row.stall_probe_generation.value().map(|v| v.number()))?;
-        let probe_started = row
-            .stall_probe_started
-            .value()
-            .and_then(|v| v.number().as_f64());
-        let probe = ProbeState::try_from(ProbeFields {
-            stall_probe_generation: probe_generation,
-            stall_probe_started: probe_started,
-        })
-        .map_err(|_| ())?;
-        let success_exit_codes = match &row.success_exit_codes {
-            Some(values) => values
-                .values()
-                .iter()
-                .map(|n| n.number().as_i64().ok_or(()))
-                .collect::<Result<Vec<_>, _>>()?,
-            None => success_default(),
-        };
-        Ok(Self {
-            id: row.id.clone(),
-            agent: row.agent().ok_or(())?.to_owned(),
-            epoch: signed(row.epoch.value().map(|v| v.number()))?,
-            status: row.status().ok_or(())?,
-            reattach_recovery: optional(row.extra.get("reattachRecovery"))?,
-            rule_id: row.rule_id.value().cloned(),
-            operation,
-            cancel_requested: row.cancel_requested.unwrap_or(false),
-            interactive: row.interactive.unwrap_or(false),
-            _tail: row
-                .tail
-                .as_ref()
-                .map(|v| v.as_str().to_owned())
-                .unwrap_or_default(),
-            bytes: unsigned(row.bytes.as_ref().map(|v| v.number()))?.unwrap_or(0),
-            log: row.log.clone(),
-            activity_generation: signed(row.activity_generation.as_ref().map(|v| v.number()))?
-                .unwrap_or(0),
-            stall_wake_generation: signed(row.stall_wake_generation.as_ref().map(|v| v.number()))?
-                .unwrap_or(-1),
-            probe,
-            activity_at: row.activity_at.as_ref().and_then(|v| v.number().as_f64()),
-            created: row.created.as_ref().and_then(|v| v.number().as_f64()),
-            stall_timeout_seconds: unsigned(
-                row.stall_timeout_seconds.as_ref().map(|v| v.number()),
-            )?
-            .unwrap_or(DEFAULT_MONITOR_STALL_SECONDS),
-            liveness_command: row
-                .liveness_command
-                .as_ref()
-                .map(|v| v.as_str().to_owned())
-                .unwrap_or_default(),
-            success_exit_codes,
-            stdin_closed: row.stdin_closed.unwrap_or(false),
-            stdin_close_requested: row.stdin_close_requested.value().cloned(),
-            input_attempt,
-        })
-    }
-}
-
-#[cfg(test)]
-mod typed_conversion_tests {
-    use super::*;
-
-    #[test]
-    fn operation_rejects_fractional_integer_and_unknown_evidence() {
-        let base = json!({"id":"m", "agent":"a", "status":"running", "operation": {
-            "agent":"a", "epoch":1, "accountKey":"account", "connectionId":"connection"
-        }});
-        for (key, value) in [("epoch", json!(1.0)), ("future", json!(true))] {
-            let mut raw = base.clone();
-            raw["operation"][key] = value;
-            let record = studio_runtime_store::MonitorRecord::deserialize(raw).unwrap();
-            assert!(Fields::from_monitor(&record).is_err(), "{key}");
-        }
-        let record = studio_runtime_store::MonitorRecord::deserialize(base).unwrap();
-        assert!(Fields::from_monitor(&record).is_ok());
-    }
-
-    #[test]
-    fn input_attempt_uses_strict_epoch_and_keeps_raw_extensions() {
-        let raw = json!({"id":"m", "agent":"a", "status":"running", "inputAttempt": {
-            "id":"ticket", "agent":"a", "epoch":1, "accountKey":"account",
-            "connectionId":"connection", "method":"input", "future":{"data":true}
-        }});
-        let record = studio_runtime_store::MonitorRecord::deserialize(raw.clone()).unwrap();
-        assert!(Fields::from_monitor(&record).is_ok());
-        assert_eq!(record.value(), raw);
-        let mut invalid = raw;
-        invalid["inputAttempt"]["epoch"] = json!(1.0);
-        let record = studio_runtime_store::MonitorRecord::deserialize(invalid).unwrap();
-        assert!(Fields::from_monitor(&record).is_err());
-    }
-}
-
-fn minus_one() -> i64 {
-    -1
-}
-fn stall_default() -> u64 {
-    DEFAULT_MONITOR_STALL_SECONDS
-}
-fn success_default() -> Vec<i64> {
-    vec![0]
-}
-
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Actor {
@@ -465,12 +216,12 @@ fn default_account() -> String {
 
 #[derive(Clone)]
 pub struct MonitorSnapshot {
-    record: Value,
-    pub(crate) fields: Fields,
+    record: studio_runtime_store::MonitorRecord,
     actor: Actor,
 }
 
 impl MonitorSnapshot {
+    #[cfg(test)]
     pub fn checked(record: Value, actor: Value) -> Result<Self, MonitorError> {
         let id = record
             .get("id")
@@ -490,12 +241,7 @@ impl MonitorSnapshot {
         typed: &studio_runtime_store::MonitorRecord,
         actor: Value,
     ) -> Result<Self, MonitorError> {
-        let record = typed.value();
-        let id = record
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or("?")
-            .to_owned();
+        let id = typed.id.clone();
         let invalid = |location: &str| MonitorError::InvalidStored {
             id: id.clone(),
             location: location.into(),
@@ -505,87 +251,80 @@ impl MonitorSnapshot {
         {
             return Err(invalid("agent"));
         }
-        crate::monitor_matches::validate(&record).map_err(invalid)?;
-        let fields = Fields::from_monitor(typed).map_err(|_| invalid("record"))?;
-        if fields.reattach_recovery.as_ref().is_some_and(|recovery| {
-            recovery.status == RecoveryStatus::Running && recovery.started_at.is_none()
-        }) {
-            return Err(invalid("reattachRecovery/startedAt"));
-        }
+        crate::monitor_matches::validate(typed).map_err(invalid)?;
         let actor: Actor = serde_json::from_value(actor).map_err(|_| invalid("agent"))?;
-        if fields.agent != actor.id {
+        if typed.agent != actor.id {
             return Err(invalid("agent/id"));
         }
-        if let Some(operation) = &fields.operation
-            && (operation.agent != fields.agent
-                || fields.epoch.is_some_and(|epoch| operation.epoch != epoch))
+        if let Some(operation) = &typed.operation
+            && (operation.agent.as_str() != typed.agent
+                || operation.epoch.get() != typed.epoch.get())
         {
             return Err(invalid("operation"));
         }
         Ok(Self {
-            record,
-            fields,
+            record: typed.clone(),
             actor,
         })
     }
-    pub fn record(&self) -> &Value {
+    pub fn record(&self) -> &studio_runtime_store::MonitorRecord {
         &self.record
     }
     pub fn id(&self) -> &str {
-        &self.fields.id
+        &self.record.id
     }
     pub fn status(&self) -> MonitorStatus {
-        self.fields.status
+        self.record.status
     }
     pub fn rule_id(&self) -> Option<&str> {
-        self.fields.rule_id.as_deref()
+        self.record.rule_id.as_deref()
     }
     pub fn agent(&self) -> &str {
-        &self.fields.agent
+        &self.record.agent
     }
     /// Only these fields can change selection in the canonical monitor window.
     pub(crate) fn same_window_position(&self, other: &Self) -> bool {
-        self.fields.id == other.fields.id
-            && self.fields.agent == other.fields.agent
-            && self.fields.status == other.fields.status
-            && self.fields.created == other.fields.created
+        self.record.id == other.record.id
+            && self.record.agent == other.record.agent
+            && self.record.status == other.record.status
+            && self.record.created == other.record.created
     }
     pub(crate) fn live_window_owner(&self) -> bool {
         self.actor.deleted_at.is_none()
     }
     pub(crate) fn active(&self) -> bool {
         matches!(
-            self.fields.status,
+            self.record.status,
             MonitorStatus::Running | MonitorStatus::Starting | MonitorStatus::Approval
         )
     }
     /// No command bytes can be sent until reserve_start commits an operation.
     pub(crate) fn unsubmitted_intent(&self) -> bool {
-        self.fields.operation.is_none()
+        self.record.operation.is_none()
             && matches!(
-                self.fields.status,
+                self.record.status,
                 MonitorStatus::Starting | MonitorStatus::Approval
             )
     }
     pub(crate) fn retains_approval_for(&self, agent: &str) -> bool {
-        self.fields.status == MonitorStatus::Approval
+        self.record.status == MonitorStatus::Approval
             && self.unsubmitted_intent()
             && self.agent() == agent
             && self.active_owner()
     }
     pub(crate) fn recovering(&self) -> bool {
-        self.fields
+        self.record
             .reattach_recovery
             .as_ref()
-            .is_some_and(|recovery| recovery.status == RecoveryStatus::Running)
+            .is_some_and(|recovery| matches!(recovery.state, ReattachState::Running { .. }))
     }
     /// A loss decided at the command deadline. The provider process may still
     /// send the command's real answer, which then completes it once.
     pub(crate) fn deadline_lost(&self) -> bool {
-        self.fields.status == MonitorStatus::Lost
-            && self.fields.rule_id.as_deref().is_none_or(str::is_empty)
+        self.record.status == MonitorStatus::Lost
+            && self.record.rule_id.as_deref().is_none_or(str::is_empty)
             && self
-                .fields
+                .record
                 .reattach_recovery
                 .as_ref()
                 .is_some_and(|recovery| recovery.proof.as_deref() == Some(DEADLINE_PASSED))
@@ -593,25 +332,22 @@ impl MonitorSnapshot {
     /// A deadline loss whose late answer is still awaited at `now`.
     pub(crate) fn awaits_late_answer(&self, now: f64) -> bool {
         self.deadline_lost()
-            && self
-                .record
-                .get("finished")
-                .and_then(Value::as_f64)
-                .is_some_and(|finished| now < finished + MONITOR_LATE_ANSWER_SECONDS)
+            && self.record.finished.as_ref().is_some_and(|finished| now < finished.seconds() + MONITOR_LATE_ANSWER_SECONDS)
     }
     pub(crate) fn reconciliation_deadline(&self) -> Option<f64> {
-        self.fields
+        self.record
             .reattach_recovery
             .as_ref()
-            .filter(|recovery| recovery.status == RecoveryStatus::Running)
-            .and_then(|recovery| {
-                recovery
-                    .started_at
-                    .map(|started| started + MONITOR_REATTACH_WINDOW_SECONDS)
+            .filter(|recovery| matches!(recovery.state, ReattachState::Running { .. }))
+            .and_then(|recovery| match recovery.state {
+                ReattachState::Running { started_at } => {
+                    Some(started_at + MONITOR_REATTACH_WINDOW_SECONDS)
+                }
+                ReattachState::NotReattachable { .. } => None,
             })
     }
     pub fn operation(&self) -> Option<&Operation> {
-        self.fields.operation.as_ref()
+        self.record.operation.as_ref()
     }
     /// The native process stays on its submitted account after a model-account move.
     fn command_account(&self) -> &str {
@@ -622,11 +358,7 @@ impl MonitorSnapshot {
     pub(crate) fn active_owner(&self) -> bool {
         self.actor.deleted_at.is_none_or(|at| at == 0.0)
             && self.actor.auto_wake
-            && Some(self.actor.epoch)
-                == self
-                    .fields
-                    .epoch
-                    .or_else(|| self.operation().map(|operation| operation.epoch))
+            && self.actor.epoch == self.record.epoch.get()
     }
     pub(crate) fn decision(&self) -> Decision {
         Decision {
@@ -636,7 +368,10 @@ impl MonitorSnapshot {
         }
     }
     fn check_operation(&self, operation: &Operation) -> Result<(), MonitorError> {
-        if self.operation() != Some(operation) {
+        if self
+            .operation()
+            .is_none_or(|current| !current.same_identity(operation))
+        {
             return Err(MonitorError::Refused("Monitor operation identity changed"));
         }
         Ok(())
@@ -647,7 +382,7 @@ impl MonitorSnapshot {
 pub enum Effect {
     OutputEvent {
         id: String,
-        payload: Value,
+        payload: crate::monitor_matches::OutputEvent,
     },
     ExitEvent,
     StallEvent {
@@ -670,7 +405,7 @@ pub enum Effect {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Decision {
-    pub record: Value,
+    pub record: studio_runtime_store::MonitorRecord,
     pub effects: Vec<Effect>,
     pub response: Value,
 }
@@ -685,7 +420,7 @@ pub fn cancel(
             "This command belongs to another agent",
         ));
     }
-    let f = &snapshot.fields;
+    let f = &snapshot.record;
     let mut decision = snapshot.decision();
     decision.response = json!({"id": f.id, "status": f.status});
     if !matches!(
@@ -696,16 +431,16 @@ pub fn cancel(
     }
     let running = f.status == MonitorStatus::Running;
     decision.response["cancelRequested"] = json!(running);
-    if running && f.cancel_requested {
+    if running && f.cancel_requested == Some(true) {
         return Ok(decision);
     }
     if running {
-        decision.record["cancelRequested"] = json!(true);
+        decision.record.cancel_requested = Some(true);
         decision.effects.push(Effect::Terminate);
     } else {
-        decision.record["status"] = json!("cancelled");
-        decision.record["finished"] = json!(now);
-        decision.record["configurationPending"] = json!(false);
+        decision.record.status = MonitorStatus::Cancelled;
+        decision.record.finished = Some(monitor_time(now)?);
+        decision.record.configuration_pending = Some(false);
         decision.response["status"] = json!("cancelled");
         decision
             .effects
@@ -737,29 +472,21 @@ pub fn output_stream(
 ) -> Result<Decision, MonitorError> {
     snapshot.check_operation(operation)?;
     let mut decision = snapshot.decision();
-    if snapshot.fields.status != MonitorStatus::Running {
+    if snapshot.record.status != MonitorStatus::Running {
         return Ok(decision);
     }
     if chunk.len() > CHUNK_BYTES {
         return Err(MonitorError::Refused("Monitor output chunk exceeds bound"));
     }
-    let bytes = snapshot
-        .fields
-        .bytes
+    let bytes = (snapshot.record.bytes.get() as u64)
         .checked_add(chunk.len() as u64)
         .ok_or(MonitorError::Refused("Monitor output counter exhausted"))?;
     crate::monitor_matches::append(&mut decision.record, stream, chunk, snapshot.active_owner())?;
     output_effect(snapshot, &mut decision, now, false);
-    decision.record["bytes"] = json!(bytes);
+    decision.record.bytes = monitor_integer(i64::try_from(bytes).map_err(|_| MonitorError::Refused("Monitor output counter exhausted"))?)?;
     if !chunk.is_empty() {
-        decision.record["activityAt"] = json!(now);
-        decision.record["activityGeneration"] = json!(
-            snapshot
-                .fields
-                .activity_generation
-                .checked_add(1)
-                .ok_or(MonitorError::Refused("Monitor activity counter exhausted"))?
-        );
+        decision.record.activity_at = monitor_time(now)?;
+        decision.record.activity_generation = monitor_integer(snapshot.record.activity_generation.get().checked_add(1).ok_or(MonitorError::Refused("Monitor activity counter exhausted"))?)?;
     }
     Ok(decision)
 }
@@ -771,7 +498,11 @@ pub fn finish(
     error: Option<&str>,
     now: f64,
 ) -> Result<Decision, MonitorError> {
-    if snapshot.operation() != operation {
+    if match (snapshot.operation(), operation) {
+        (Some(current), Some(expected)) => !current.same_identity(expected),
+        (None, None) => false,
+        _ => true,
+    } {
         return Err(MonitorError::Refused(
             "Monitor result belongs to a different command operation",
         ));
@@ -781,7 +512,7 @@ pub fn finish(
             "Monitor result has no definitive outcome",
         ));
     }
-    if operation.is_none() && snapshot.fields.status == MonitorStatus::Running {
+    if operation.is_none() && snapshot.record.status == MonitorStatus::Running {
         return Err(MonitorError::Refused(
             "A submitted command requires a native operation identity",
         ));
@@ -789,33 +520,33 @@ pub fn finish(
     let mut decision = snapshot.decision();
     // The real answer of a command lost at its deadline completes it once.
     let late = snapshot.deadline_lost();
-    if !snapshot.fields.status.terminal() || late {
-        remove(&mut decision.record, "reattachRecovery");
+    if !snapshot.record.status.terminal() || late {
+        decision.record.reattach_recovery = None;
         crate::monitor_matches::flush(&mut decision.record)?;
         output_effect(snapshot, &mut decision, now, true);
-        decision.record["status"] = json!(if snapshot.fields.cancel_requested {
+        decision.record.status = if snapshot.record.cancel_requested == Some(true) {
             MonitorStatus::Cancelled
         } else if error.is_some_and(|e| !e.is_empty())
-            || !code.is_some_and(|c| snapshot.fields.success_exit_codes.contains(&c))
+            || !code.is_some_and(|c| snapshot.record.success_exit_codes.values().iter().any(|value| value.get() == c))
         {
             MonitorStatus::Failed
         } else {
             MonitorStatus::Completed
-        });
-        decision.record["exitCode"] = json!(code);
-        decision.record["error"] = json!(error);
-        decision.record["finished"] = json!(now);
-        decision.record["configurationPending"] = json!(false);
-        if snapshot.fields.cancel_requested && snapshot.record().get("cancelDispatch").is_some() {
-            decision.record["cancelDispatch"] = json!({"status":"done","updatedAt":now});
+        };
+        decision.record.exit_code = code;
+        decision.record.error = error.map(monitor_text).transpose()?;
+        decision.record.finished = Some(monitor_time(now)?);
+        decision.record.configuration_pending = Some(false);
+        if snapshot.record.cancel_requested == Some(true) && snapshot.record().cancel_dispatch.is_some() {
+            decision.record.cancel_dispatch = Some(studio_runtime_schema::monitor_record::MonitorCancelDispatch { status: studio_runtime_schema::monitor_record::MonitorCancelStatus::Done, attempts: None, updated_at: Some(now), next_attempt_at: None, error: None });
         }
         if late {
-            decision.record["lateAnswerAt"] = json!(now);
+            decision.record.late_answer_at = Some(now);
         }
     }
     decision.effects.push(
         if snapshot
-            .fields
+            .record
             .rule_id
             .as_deref()
             .is_some_and(|id| !id.is_empty())
@@ -829,7 +560,7 @@ pub fn finish(
 }
 
 fn output_effect(snapshot: &MonitorSnapshot, decision: &mut Decision, now: f64, final_chunk: bool) {
-    if snapshot.fields.rule_id.is_none()
+    if snapshot.record.rule_id.is_none()
         && snapshot.active_owner()
         && let Some((id, payload)) =
             crate::monitor_matches::pending(&mut decision.record, now, final_chunk)
@@ -839,7 +570,7 @@ fn output_effect(snapshot: &MonitorSnapshot, decision: &mut Decision, now: f64, 
 }
 
 pub fn tick(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision, MonitorError> {
-    let f = &snapshot.fields;
+    let f = &snapshot.record;
     let mut decision = snapshot.decision();
     if snapshot.recovering() {
         return Ok(decision);
@@ -847,37 +578,36 @@ pub fn tick(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision, MonitorErr
     if f.status == MonitorStatus::Running {
         output_effect(snapshot, &mut decision, now, false);
     }
-    let quiet = (now - f.activity_at.or(f.created).unwrap_or(now)).max(0.0) as u64;
+    let quiet = (now - f.activity_at.seconds()).max(0.0) as u64;
     // A cancelled command waits only for its exit receipt; a stall notice would
     // wake an owner that already asked it to stop.
     if f.status != MonitorStatus::Running
-        || f.cancel_requested
+        || f.cancel_requested == Some(true)
         || !snapshot.active_owner()
-        || f.stall_timeout_seconds == 0
-        || quiet < f.stall_timeout_seconds
-        || f.activity_generation <= f.stall_wake_generation
+        || f.stall_timeout_seconds.get() == 0
+        || quiet < f.stall_timeout_seconds.get() as u64
+        || f.activity_generation.get() <= f.stall_wake_generation.get()
     {
         return Ok(decision);
     }
-    if f.probe.0.as_ref().is_some_and(|lease| {
-        lease.generation == f.activity_generation && now - lease.started < PROBE_LEASE_SECONDS
+    if f.stall_probe.0.as_ref().is_some_and(|lease| {
+        lease.stall_probe_generation.get() == f.activity_generation.get() && now - lease.stall_probe_started.seconds() < PROBE_LEASE_SECONDS
     }) {
         return Ok(decision);
     }
-    decision.record["lastStallAt"] = json!(now);
-    if f.liveness_command.is_empty() {
-        decision.record["stallWakeGeneration"] = json!(f.activity_generation);
-        remove(&mut decision.record, "stallProbeGeneration");
+    decision.record.last_stall_at = Some(now);
+    if f.liveness_command.as_str().is_empty() {
+        decision.record.stall_wake_generation = monitor_integer(f.activity_generation.get())?;
+        decision.record.stall_probe.0 = None;
         decision.effects.push(Effect::StallEvent {
-            generation: f.activity_generation,
+            generation: f.activity_generation.get(),
             payload: stall_payload(snapshot.id(), quiet),
         });
     } else {
-        decision.record["stallProbeGeneration"] = json!(f.activity_generation);
-        decision.record["stallProbeStarted"] = json!(now);
+        decision.record.stall_probe.0 = Some(studio_runtime_schema::monitor_record::MonitorProbeLease { stall_probe_generation: monitor_integer(f.activity_generation.get())?, stall_probe_started: monitor_time(now)? });
         decision.effects.push(Effect::Probe {
-            generation: f.activity_generation,
-            command: f.liveness_command.clone(),
+            generation: f.activity_generation.get(),
+            command: f.liveness_command.as_str().to_owned(),
         });
     }
     Ok(decision)
@@ -886,25 +616,25 @@ pub fn tick(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision, MonitorErr
 pub fn probe_result(
     snapshot: &MonitorSnapshot,
     generation: i64,
-    result: Value,
+    result: studio_runtime_schema::monitor_record::MonitorProbeResult,
     now: f64,
 ) -> Result<Decision, MonitorError> {
     let mut decision = snapshot.decision();
-    let f = &snapshot.fields;
+    let f = &snapshot.record;
     if f.status != MonitorStatus::Running
         || snapshot.actor.deleted_at.is_some_and(|at| at != 0.0)
-        || Some(snapshot.actor.epoch) != f.epoch
-        || f.probe.0.as_ref().map(|lease| lease.generation) != Some(generation)
-        || f.activity_generation != generation
+        || snapshot.actor.epoch != f.epoch.get()
+        || f.stall_probe.0.as_ref().map(|lease| lease.stall_probe_generation.get()) != Some(generation)
+        || f.activity_generation.get() != generation
     {
         return Ok(decision);
     }
-    let quiet = (now - f.activity_at.unwrap_or(now)).max(0.0) as u64;
+    let quiet = (now - f.activity_at.seconds()).max(0.0) as u64;
     let mut payload = stall_payload(snapshot.id(), quiet);
-    payload["livenessResult"] = result.clone();
-    decision.record["stallWakeGeneration"] = json!(generation);
-    decision.record["lastLivenessResult"] = result;
-    remove(&mut decision.record, "stallProbeGeneration");
+    payload["livenessResult"] = json!(result);
+    decision.record.stall_wake_generation = monitor_integer(generation)?;
+    decision.record.last_liveness_result = Some(result);
+    decision.record.stall_probe.0 = None;
     decision.effects.push(Effect::StallEvent {
         generation,
         payload,
@@ -965,10 +695,10 @@ pub fn begin_input(
     {
         return Err(MonitorError::Refused("Invalid monitor input"));
     }
-    let f = &snapshot.fields;
+    let f = &snapshot.record;
     if f.status != MonitorStatus::Running
         || !snapshot.active_owner()
-        || f.cancel_requested
+        || f.cancel_requested == Some(true)
         || !f.interactive
     {
         return Err(MonitorError::Refused(
@@ -980,24 +710,21 @@ pub fn begin_input(
             "The previous monitor input outcome is unknown; do not repeat it",
         ));
     }
-    if snapshot
-        .record
-        .pointer("/lastInputAttempt/id")
-        .and_then(Value::as_str)
-        == Some(attempt_id)
+    if snapshot.record.last_input_attempt.as_ref().is_some_and(|attempt| attempt.id == attempt_id)
     {
         return Err(MonitorError::Refused(
             "Monitor input ticket already settled",
         ));
     }
     let resize = input.rows.is_some() || input.cols.is_some();
-    let (method, params) = if resize {
+    let (method, params, input_method) = if resize {
         (
             "command/exec/resize",
             json!({"processId": f.id, "size": {"rows": input.rows.unwrap_or(24), "cols": input.cols.unwrap_or(80)}}),
+            studio_runtime_schema::monitor_record::MonitorInputMethod::Resize(studio_runtime_schema::monitor_record::MonitorResizeParams { process_id: f.id.clone(), size: studio_runtime_schema::monitor_record::MonitorSize { rows: input.rows.unwrap_or(24), cols: input.cols.unwrap_or(80) } }),
         )
     } else {
-        if f.stdin_closed || f.stdin_close_requested.is_some() {
+        if f.stdin_closed == Some(true) || f.stdin_close_requested.is_some() {
             return Err(MonitorError::Refused(
                 "This monitor stdin is closed or its close acknowledgement is pending",
             ));
@@ -1005,20 +732,18 @@ pub fn begin_input(
         (
             "command/exec/write",
             json!({"processId": f.id, "deltaBase64": base64::engine::general_purpose::STANDARD.encode(input.text.as_bytes()), "closeStdin": input.close_stdin}),
+            studio_runtime_schema::monitor_record::MonitorInputMethod::Write(studio_runtime_schema::monitor_record::MonitorWriteParams { process_id: f.id.clone(), delta_base64: base64::engine::general_purpose::STANDARD.encode(input.text.as_bytes()), close_stdin: input.close_stdin }),
         )
     };
-    let mut attempt = serde_json::to_value(operation)
-        .map_err(|_| MonitorError::Refused("Invalid monitor identity"))?;
-    attempt["id"] = json!(attempt_id);
-    attempt["method"] = json!(method);
-    attempt["params"] = params.clone();
-    attempt["status"] = json!("submitted");
-    attempt["created"] = json!(now);
     let mut decision = snapshot.decision();
-    decision.record["inputAttempt"] = attempt;
+    decision.record.input_attempt = Some(studio_runtime_schema::monitor_record::MonitorInputAttempt {
+        id: attempt_id.to_owned(), operation: operation.clone(), method: input_method,
+        status: studio_runtime_schema::monitor_record::MonitorInputStatus::Submitted,
+        created: now, finished: None, error: None, response: None,
+    });
     if !resize && input.close_stdin {
-        decision.record["stdinCloseRequested"] = json!(attempt_id);
-        remove(&mut decision.record, "stdinError");
+        decision.record.stdin_close_requested = Some(attempt_id.to_owned());
+        decision.record.stdin_error = None;
     }
     decision.effects.push(Effect::Native {
         identity: input_effect_identity(&f.id, attempt_id),
@@ -1046,58 +771,52 @@ pub fn settle_input(
     snapshot.check_operation(operation)?;
     let mut decision = snapshot.decision();
     if !snapshot.active_owner()
-        || snapshot.fields.status != MonitorStatus::Running
-        || snapshot.fields.cancel_requested
+        || snapshot.record.status != MonitorStatus::Running
+        || snapshot.record.cancel_requested == Some(true)
     {
         return Ok(decision);
     }
-    let Some(attempt) = &snapshot.fields.input_attempt else {
+    let Some(attempt) = &snapshot.record.input_attempt else {
         return Ok(decision);
     };
     if attempt.id != attempt_id
-        || attempt.agent != operation.agent
-        || attempt.epoch != operation.epoch
-        || attempt.account_key != operation.account_key
-        || attempt.connection_id != operation.connection_id
+        || attempt.operation.agent != operation.agent
+        || attempt.operation.epoch != operation.epoch
+        || attempt.operation.account_key != operation.account_key
+        || attempt.operation.connection_id != operation.connection_id
     {
         return Err(MonitorError::Refused(
             "Monitor input receipt identity changed",
         ));
     }
-    let mut receipt = snapshot.record["inputAttempt"].clone();
-    receipt["finished"] = json!(now);
-    receipt["status"] = json!(match outcome {
-        InputOutcome::Acknowledged => "acknowledged",
-        InputOutcome::Rejected(_) | InputOutcome::Expired => "failed",
-        InputOutcome::Unknown(_) => "uncertain",
-    });
+    let mut receipt = attempt.clone();
+    receipt.finished = Some(now);
+    receipt.status = match outcome {
+        InputOutcome::Acknowledged => studio_runtime_schema::monitor_record::MonitorInputStatus::Acknowledged,
+        InputOutcome::Rejected(_) | InputOutcome::Expired => studio_runtime_schema::monitor_record::MonitorInputStatus::Failed,
+        InputOutcome::Unknown(_) => studio_runtime_schema::monitor_record::MonitorInputStatus::Uncertain,
+    };
     let error = match &outcome {
         InputOutcome::Acknowledged => None,
         InputOutcome::Expired => Some("Request id expired"),
         InputOutcome::Rejected(error) | InputOutcome::Unknown(error) => Some(error.as_str()),
     };
     if let Some(error) = error {
-        if error.chars().count() > 12000 {
-            return Err(MonitorError::Refused("Monitor input error exceeds bound"));
-        }
-        receipt["error"] = json!(error);
+        if error.chars().count() > 12000 { return Err(MonitorError::Refused("Monitor input error exceeds bound")); }
+        receipt.error = Some(error.to_owned());
     }
     if matches!(outcome, InputOutcome::Unknown(_)) {
-        decision.record["inputAttempt"] = receipt;
+        decision.record.input_attempt = Some(receipt);
     } else {
-        remove(&mut decision.record, "inputAttempt");
-        decision.record["lastInputAttempt"] = receipt;
+        decision.record.input_attempt = None;
+        decision.record.last_input_attempt = Some(receipt);
     }
-    if snapshot.fields.stdin_close_requested.as_deref() == Some(attempt_id) {
-        if !matches!(outcome, InputOutcome::Unknown(_)) {
-            remove(&mut decision.record, "stdinCloseRequested");
-        }
-        if let Some(error) = error {
-            decision.record["stdinError"] = json!(error);
-        }
+    if snapshot.record.stdin_close_requested.as_deref() == Some(attempt_id) {
+        if !matches!(outcome, InputOutcome::Unknown(_)) { decision.record.stdin_close_requested = None; }
+        if let Some(error) = error { decision.record.stdin_error = Some(error.to_owned()); }
         if matches!(outcome, InputOutcome::Acknowledged) {
-            decision.record["stdinClosed"] = json!(true);
-            remove(&mut decision.record, "stdinError");
+            decision.record.stdin_closed = Some(true);
+            decision.record.stdin_error = None;
         }
     }
     Ok(decision)
@@ -1117,18 +836,17 @@ pub fn start(
     params: Value,
     now: f64,
 ) -> Result<Decision, MonitorError> {
-    if snapshot.fields.status != MonitorStatus::Starting
+    if snapshot.record.status != MonitorStatus::Starting
         || !snapshot.active_owner()
-        || operation.agent != snapshot.agent()
-        || operation.epoch != snapshot.actor.epoch
-        || operation.account_key != snapshot.actor.account_key
-        || operation.connection_id.is_empty()
+        || operation.agent.as_str() != snapshot.agent()
+        || operation.epoch.get() != snapshot.actor.epoch
+        || operation.account_key.as_str() != snapshot.actor.account_key
     {
         return Err(MonitorError::Refused("Monitor start ownership changed"));
     }
     if params.get("processId").and_then(Value::as_str) != Some(snapshot.id())
-        || params.get("cwd") != snapshot.record.get("cwd")
-        || params.get("timeoutMs") != snapshot.record.get("timeout_ms")
+        || params.get("cwd").and_then(Value::as_str) != Some(snapshot.record.cwd.as_str())
+        || params.get("timeoutMs").and_then(Value::as_i64) != Some(snapshot.record.timeout_ms.get())
         || !(params.get("sandboxPolicy").is_some_and(Value::is_object)
             || params
                 .get("permissionProfile")
@@ -1139,14 +857,13 @@ pub fn start(
         ));
     }
     let mut decision = snapshot.decision();
-    decision.record["operation"] =
-        serde_json::to_value(operation).map_err(studio_runtime_store::StoreError::from)?;
-    decision.record["status"] = json!("running");
-    decision.record["error"] = Value::Null;
-    decision.record["configurationPending"] = json!(false);
-    decision.record["activityAt"] = json!(now);
-    decision.record["activityGeneration"] = json!(0);
-    decision.record["stallWakeGeneration"] = json!(-1);
+    decision.record.operation = Some(operation.clone());
+    decision.record.status = MonitorStatus::Running;
+    decision.record.error = None;
+    decision.record.configuration_pending = Some(false);
+    decision.record.activity_at = monitor_time(now)?;
+    decision.record.activity_generation = monitor_integer(0)?;
+    decision.record.stall_wake_generation = monitor_integer(-1)?;
     decision.effects.push(Effect::Native {
         identity: format!("monitor:{}", snapshot.id()),
         method: "command/exec",
@@ -1196,7 +913,7 @@ pub enum ReattachOutcome {
 /// No completion is published until a native result or a failed reattach decides it.
 pub fn restart_recovery(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision, MonitorError> {
     if !matches!(
-        snapshot.fields.status,
+        snapshot.record.status,
         MonitorStatus::Running | MonitorStatus::Starting | MonitorStatus::Approval
     ) {
         return Err(MonitorError::Refused("Monitor is not active"));
@@ -1205,11 +922,10 @@ pub fn restart_recovery(snapshot: &MonitorSnapshot, now: f64) -> Result<Decision
     if snapshot.recovering() {
         return Ok(decision);
     }
-    decision.record["reattachRecovery"] = json!(ReattachRecovery {
+    decision.record.reattach_recovery = Some(ReattachRecovery {
         account_key: snapshot.command_account().to_owned(),
         epoch: snapshot.actor.epoch,
-        status: RecoveryStatus::Running,
-        started_at: Some(now),
+        state: ReattachState::Running { started_at: now },
         proof: None,
         error: None,
         finished: None,
@@ -1225,24 +941,29 @@ pub(crate) fn restart_lost(
 ) -> Result<Decision, MonitorError> {
     let mut decision = snapshot.decision();
     let Some(mut recovery) = snapshot
-        .fields
+        .record
         .reattach_recovery
         .clone()
-        .filter(|recovery| recovery.status == RecoveryStatus::Running)
+        .filter(|recovery| matches!(recovery.state, ReattachState::Running { .. }))
     else {
         return Ok(decision);
     };
-    recovery.status = RecoveryStatus::NotReattachable;
+    let ReattachState::Running { started_at } = recovery.state else {
+        return Ok(decision);
+    };
+    recovery.state = ReattachState::NotReattachable {
+        started_at: Some(started_at),
+    };
     recovery.proof = Some(reason.into());
-    decision.record["reattachRecovery"] = json!(recovery);
-    decision.record["status"] = json!(MonitorStatus::Lost);
-    decision.record["finished"] = json!(now);
-    decision.record["error"] = json!(if reason == DEADLINE_PASSED {
+    decision.record.reattach_recovery = Some(recovery);
+    decision.record.status = MonitorStatus::Lost;
+    decision.record.finished = Some(monitor_time(now)?);
+    decision.record.error = Some(monitor_text(if reason == DEADLINE_PASSED {
         DEADLINE_LOST_ERROR
     } else {
         "Command outcome unknown after losing the provider result; not rerun."
-    });
-    decision.effects.push(if snapshot.fields.rule_id.is_some() {
+    })?);
+    decision.effects.push(if snapshot.record.rule_id.is_some() {
         Effect::RuleFinished
     } else {
         Effect::ExitEvent
@@ -1255,15 +976,15 @@ pub fn reattach(
     proof: &ReattachProof,
 ) -> Result<Decision, MonitorError> {
     snapshot.check_operation(&proof.operation)?;
-    let recovery = snapshot.fields.reattach_recovery.as_ref();
+    let recovery = snapshot.record.reattach_recovery.as_ref();
     if !matches!(
-        snapshot.fields.status,
+        snapshot.record.status,
         MonitorStatus::Running | MonitorStatus::Starting | MonitorStatus::Approval
     ) || proof.operation_id != format!("monitor:{}", snapshot.id())
         || proof.current_connection.is_empty()
-        || proof.operation.account_key != snapshot.command_account()
+        || proof.operation.account_key.as_str() != snapshot.command_account()
         || recovery.is_none_or(|recovery| {
-            recovery.status != RecoveryStatus::Running
+            !matches!(recovery.state, ReattachState::Running { .. })
                 || recovery.epoch != snapshot.actor.epoch
                 || recovery.account_key != snapshot.command_account()
         })
@@ -1273,13 +994,13 @@ pub fn reattach(
         ));
     }
     let mut decision = snapshot.decision();
-    decision.record["status"] = json!("running");
-    decision.record["reattachedConnectionId"] = json!(proof.current_connection);
-    remove(&mut decision.record, "reattachRecovery");
+    decision.record.status = MonitorStatus::Running;
+    decision.record.reattached_connection_id = Some(proof.current_connection.clone());
+    decision.record.reattach_recovery = None;
     if !snapshot.active_owner() {
         // A verified survivor cannot resume an inactive owner. Latch the ordinary
         // cancellation path so deletion or an epoch change cannot orphan it.
-        decision.record["cancelRequested"] = json!(true);
+        decision.record.cancel_requested = Some(true);
         decision.effects.push(Effect::Terminate);
     }
     Ok(decision)
@@ -1292,74 +1013,80 @@ pub enum ReattachDisposition {
     Superseded,
 }
 
-/// Build the same initial row as Python. Identity, actor and time are server-owned;
-/// request fields are schema-checked by the resulting persisted projection.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct MonitorCreateInput {
+    pub command: String,
+    #[serde(default, deserialize_with = "present_input")]
+    pub timeout_ms: Option<i64>,
+    #[serde(default, deserialize_with = "present_input")]
+    pub stall_timeout_seconds: Option<i64>,
+    #[serde(default, deserialize_with = "present_input")]
+    pub liveness_command: Option<String>,
+    #[serde(default, deserialize_with = "present_input")]
+    pub wake_on: Option<studio_runtime_schema::monitor_record::MonitorWakeOn>,
+    #[serde(default, deserialize_with = "present_input")]
+    pub success_exit_codes: Option<Vec<i64>>,
+    #[serde(default, deserialize_with = "present_input")]
+    pub interactive: Option<bool>,
+    pub output_patterns: Option<Vec<String>>,
+}
+fn present_input<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MonitorCreateOwner {
+    id: String, epoch: i64, cwd: String, turn_id: Option<String>,
+    yolo_mode: Option<bool>, approval_policy: Option<String>,
+}
+/// Build the initial persisted row from checked owner and command input.
 pub fn create_record(
-    actor: &Value,
-    request: &Value,
-    request_id: &str,
-    log_root: &str,
-    now: f64,
-) -> Result<Value, MonitorError> {
+    actor: &Value, input: &MonitorCreateInput, request_id: &str, log_root: &str, now: f64,
+) -> Result<studio_runtime_store::MonitorRecord, MonitorError> {
+    use studio_runtime_schema::monitor_record::{MonitorExitCodes, MonitorProbeState, MonitorWakeOn};
+    let owner = MonitorCreateOwner::deserialize(actor).map_err(|_| MonitorError::Refused("Unknown agent"))?;
+    if input.command.trim().is_empty() { return Err(MonitorError::Refused("Supply a command")); }
+    let output_patterns = crate::monitor_matches::patterns(input.output_patterns.as_deref())?;
+    let approved = owner.yolo_mode.unwrap_or(owner.approval_policy.as_deref() == Some("never"));
     let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, request_id.as_bytes()).to_string();
-    let agent = actor
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or(MonitorError::Refused("Unknown agent"))?;
-    let command = request
-        .get("command")
-        .and_then(Value::as_str)
-        .ok_or(MonitorError::Refused("Supply a command"))?;
-    if command.trim().is_empty() {
-        return Err(MonitorError::Refused("Supply a command"));
-    }
-    let approved = actor.get("yoloMode").filter(|v| !v.is_null()).map_or_else(
-        || actor.get("approvalPolicy").and_then(Value::as_str) == Some("never"),
-        |v| v == &Value::Bool(true),
-    );
-    let success = request
-        .get("success_exit_codes")
-        .cloned()
-        .unwrap_or(json!([0]));
-
-    let output_patterns = crate::monitor_matches::patterns(request.get("output_patterns"))?;
-    let mut record = json!({
-        "outputPatterns": output_patterns,
-        "outputEventSequence": 0, "outputEventCount": 0, "outputEventIds": [],
-        "id": id, "agent": agent, "epoch": actor.get("epoch"), "turnId": actor.get("turnId"), "requestId": request_id,
-        "command": command, "cwd": actor.get("cwd"), "timeout_ms": request.get("timeout_ms").cloned().unwrap_or(json!(3600000)),
-        "stallTimeoutSeconds": request.get("stall_timeout_seconds").cloned().unwrap_or(json!(1800)),
-        "livenessCommand": request.get("liveness_command").cloned().unwrap_or(json!("")), "activityAt": now,
-        "activityGeneration": 0, "stallWakeGeneration": -1, "wakeOn": request.get("wake_on").cloned().unwrap_or(json!("exit")),
-        "successExitCodes": success, "status": if approved { "starting" } else { "approval" }, "created": now,
-        "exitCode": null, "tail": "", "bytes": 0, "interactive": request.get("interactive").cloned().unwrap_or(json!(false)),
-        "ruleId": null, "log": format!("{log_root}/{id}.log")
-    });
-    MonitorSnapshot::checked(record.clone(), actor.clone())?;
-    if let Some(codes) = record["successExitCodes"].as_array_mut() {
-        codes.sort_by_key(Value::as_i64);
-        codes.dedup();
-    }
-    if let Some(command) = record["livenessCommand"].as_str() {
-        record["livenessCommand"] = json!(command.trim());
-    }
-    MonitorSnapshot::checked(record.clone(), actor.clone())?;
+    let record = studio_runtime_store::MonitorRecord {
+        id: id.clone(), agent: owner.id, epoch: monitor_integer(owner.epoch)?, turn_id: owner.turn_id,
+        request_id: request_id.to_owned(), command: monitor_text(&input.command)?, cwd: owner.cwd,
+        timeout_ms: monitor_integer(input.timeout_ms.unwrap_or(3_600_000))?,
+        stall_timeout_seconds: monitor_integer(input.stall_timeout_seconds.unwrap_or(1800))?,
+        liveness_command: monitor_text(input.liveness_command.as_deref().unwrap_or("").trim())?,
+        activity_at: monitor_time(now)?, activity_generation: monitor_integer(0)?, stall_wake_generation: monitor_integer(-1)?,
+        wake_on: input.wake_on.unwrap_or(MonitorWakeOn::Exit),
+        success_exit_codes: MonitorExitCodes::try_from(input.success_exit_codes.clone().unwrap_or_else(|| vec![0])).map_err(|_| MonitorError::Refused("Invalid monitor exit codes"))?,
+        status: if approved { MonitorStatus::Starting } else { MonitorStatus::Approval }, created: monitor_time(now)?,
+        exit_code: None, tail: monitor_text("")?, bytes: monitor_integer(0)?, interactive: input.interactive.unwrap_or(false),
+        rule_id: None, log: format!("{log_root}/{id}.log"), output_patterns: Some(output_patterns), output_truncated: None,
+        output_event_sequence: Some(0), output_event_count: Some(0), output_event_ids: Some(vec![]),
+        cancel_requested: None, configuration_pending: None, error: None, finished: None, input_attempt: None,
+        last_input_attempt: None, reattach_recovery: None, stream_queue: None, stream_ack_cursor: None,
+        account_key: None, cancel_dispatch: None, cancel_provider_request: None, cancel_root_request_id: None,
+        root_request_id: None, reattached_connection_id: None, last_stall_at: None, late_answer_at: None,
+        liveness_probe: None, last_liveness_result: None, stdin_error: None, restart_after: None, restart_signature: None,
+        shell_pressure_cleanup: None, delivery_failure: None, task_gate: None, output_line_offsets: None,
+        output_line_tail: None, output_match_excerpts: None, output_matcher_tail: None, output_matches_pending: None,
+        output_matches_total: None, output_utf8_pending: None, output_wake_at: None, output_wake_budget: None,
+        last_exit_code: None, operation: None, stall_probe: MonitorProbeState(None), stdin_close_requested: None, stdin_closed: None,
+    };
+    MonitorSnapshot::checked_stored(&record, actor.clone())?;
     Ok(record)
 }
 
-pub fn same_request(previous: &Value, proposed: &Value) -> bool {
-    [
-        "agent",
-        "command",
-        "timeout_ms",
-        "interactive",
-        "wakeOn",
-        "successExitCodes",
-        "stallTimeoutSeconds",
-        "livenessCommand",
-    ]
-    .iter()
-    .all(|field| previous.get(*field) == proposed.get(*field))
-        && previous.get("outputPatterns").cloned().unwrap_or(json!([]))
-            == proposed.get("outputPatterns").cloned().unwrap_or(json!([]))
+pub fn same_request(previous: &studio_runtime_store::MonitorRecord, proposed: &studio_runtime_store::MonitorRecord) -> bool {
+    previous.agent == proposed.agent && previous.command == proposed.command && previous.timeout_ms == proposed.timeout_ms
+        && previous.interactive == proposed.interactive && previous.wake_on == proposed.wake_on
+        && previous.success_exit_codes == proposed.success_exit_codes && previous.stall_timeout_seconds == proposed.stall_timeout_seconds
+        && previous.liveness_command == proposed.liveness_command
+        && previous.output_patterns.as_deref().unwrap_or_default() == proposed.output_patterns.as_deref().unwrap_or_default()
+}
+
+#[cfg(test)]
+pub(crate) fn complete_test_monitor(record: Value) -> Value {
+    let mut complete = json!({"id":"watch","agent":"agent","epoch":0,"status":"running","requestId":"fixture","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
+    complete.as_object_mut().unwrap().extend(record.as_object().unwrap().clone());
+    complete
 }

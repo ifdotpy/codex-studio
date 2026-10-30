@@ -112,25 +112,22 @@ fn schema_projection_properties() -> &'static SchemaProjectionProperties {
     })
 }
 
+pub(crate) fn bound_sync_text(text: &str, field: &str, agent_short_strings: bool) -> String {
+    let limit = if agent_short_strings { 2_000 } else {
+        match field {
+            "overview" => 9_000,
+            "error" | "tail" | "description" | "command" | "query" => 2_000,
+            "lastAnswer" => AGENT_SYNC_LAST_ANSWER_CHARS,
+            "text" => 4_000,
+            _ => SYNC_TEXT_CHARS,
+        }
+    };
+    text.chars().take(limit).collect()
+}
 fn bound_sync_value(value: &Value, field: &str, agent_short_strings: bool) -> Value {
     match value {
-        Value::String(text) => {
-            let limit = if agent_short_strings {
-                2_000
-            } else {
-                match field {
-                    "overview" => 9_000,
-                    "error" | "tail" | "description" | "command" | "query" => 2_000,
-                    "lastAnswer" => AGENT_SYNC_LAST_ANSWER_CHARS,
-                    "text" => 4_000,
-                    _ => SYNC_TEXT_CHARS,
-                }
-            };
-            Value::String(text.chars().take(limit).collect())
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
-            value.clone()
-        }
+        Value::String(text) => Value::String(bound_sync_text(text, field, agent_short_strings)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => value.clone(),
     }
 }
 

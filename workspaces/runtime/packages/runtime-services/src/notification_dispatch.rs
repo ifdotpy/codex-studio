@@ -550,7 +550,7 @@ pub fn dispatch_notification_with_effects(
                     {
                         Table::<MonitorRecord>::new(transaction)
                             .get(&process_id.to_owned())?
-                            .is_some_and(|monitor| monitor.value()["status"] == "running")
+                            .is_some_and(|monitor| monitor.status == studio_runtime_schema::studio_errors::MonitorStatus::Running)
                     } else {
                         false
                     },

@@ -74,7 +74,7 @@ fn connections(
     state: &HttpState,
     tx: &studio_runtime_store::Transaction<'_>,
     owners: &[Value],
-    rows: &[(bool, &Value, Value)],
+    rows: &[(&Value, controls::ProcessSource)],
 ) -> Result<controls::Connections, controls::Error> {
     let mut connections = controls::Connections::default();
     for owner in owners {

@@ -167,7 +167,7 @@ async fn studio_errors_list_studio_caused_endings_and_hide_a_dismissed_row() {
                     now,
                 ),
             ] {
-                Table::new(tx).put(&MonitorRecord::from_value(record)?)?;
+                Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?)?;
             }
             Ok::<_, studio_runtime_store::StoreError>(())
         })
@@ -255,7 +255,7 @@ async fn repeated_failures_of_one_rule_or_command_are_one_row() {
             store
                 .transaction(move |tx| {
                     for record in records {
-                        Table::new(tx).put(&MonitorRecord::from_value(record)?)?;
+                        Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?)?;
                     }
                     Ok::<_, studio_runtime_store::StoreError>(())
                 })
@@ -627,7 +627,7 @@ async fn batch_fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, axum::Router)
                     now,
                 );
                 record["command"] = json!(format!("cargo test {id}"));
-                Table::new(tx).put(&MonitorRecord::from_value(record)?)?;
+                Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?)?;
             }
             Ok::<_, studio_runtime_store::StoreError>(())
         })
@@ -751,7 +751,7 @@ async fn actual_lost_monitor_settlement_preserves_identity_and_unknown_effects()
         json!({"accountKey":"default","epoch":0,"status":"running","startedAt":now});
     record["command"] = json!("password=command-canary");
     store
-        .transaction(move |tx| Table::new(tx).put(&MonitorRecord::from_value(record)?))
+        .transaction(move |tx| Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?))
         .await
         .unwrap();
     let mut stream = incident_stream(&app).await;
@@ -879,7 +879,7 @@ async fn a_malformed_source_timestamp_uses_observation_time_and_still_streams() 
     let now = studio_runtime_services::event_write::unix_time().unwrap();
     let record = monitor(root.path(), "bad-clock", "running", Value::Null, "", now);
     store
-        .transaction(move |tx| Table::new(tx).put(&MonitorRecord::from_value(record)?))
+        .transaction(move |tx| Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?))
         .await
         .unwrap();
     let mut stream = incident_stream(&app).await;
@@ -992,7 +992,7 @@ async fn malformed_failed_monitor_fields_remain_candidates_and_stream_after_a_he
                 "bad-created",
                 "own-exit",
             ] {
-                Table::new(tx).put(&MonitorRecord::from_value(monitor(
+                Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(monitor(
                     &path,
                     id,
                     "running",
@@ -1015,10 +1015,11 @@ async fn malformed_failed_monitor_fields_remain_candidates_and_stream_after_a_he
         tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','failed','$.exitCode',1) WHERE id='own-exit'",[])?;
         Ok(())
     }).await.expect("malformed monitor records do not roll back their source transaction");
-    store.transaction(|tx| {
+    let following = store.transaction(|tx| {
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.name','Healthy following source') WHERE id='owner'",[])?;
         Ok(())
-    }).await.expect("following healthy source commits");
+    }).await;
+    assert!(following.is_err(), "strict monitor projection rejects malformed retained rows");
     let (_, body) = call(&app, "GET", "/api/studio-errors", None).await;
     for id in [
         "bad-exit",

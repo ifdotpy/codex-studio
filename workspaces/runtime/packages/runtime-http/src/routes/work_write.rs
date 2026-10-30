@@ -1450,16 +1450,12 @@ mod managed_work_port_tests {
                 let monitor = studio_runtime_store::MonitorsRepository::get(tx, &id)?
                     .expect("gate monitor exists");
                 assert_eq!(
-                    std::path::Path::new(
-                        monitor.value()["log"]
-                            .as_str()
-                            .expect("monitor log path is text")
-                    )
+                    std::path::Path::new(&monitor.log)
                     .parent(),
                     Some(log_root.as_path())
                 );
-                assert_eq!(monitor.value()["timeout_ms"], 4321);
-                assert_eq!(monitor.value()["agent"], "worker");
+                assert_eq!(monitor.timeout_ms.get(), 4321);
+                assert_eq!(monitor.agent, "worker");
                 studio_runtime_services::monitor_runtime::finish_in_transaction(
                     tx,
                     &id,

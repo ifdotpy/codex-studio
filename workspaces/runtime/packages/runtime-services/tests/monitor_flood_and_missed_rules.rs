@@ -1,9 +1,10 @@
 //! Deterministic witnesses for bounded monitor wakes and missed one-shot rules.
+use crate::TestJson;
 use crate::monitor_fixtures as fixtures;
 use serde_json::{Value, json};
 use studio_runtime_services::{
-    monitor_policy::{self, Effect, MonitorSnapshot, Operation},
-    rules_engine::{RuleSnapshot, TickObservation},
+    monitor_policy::{self, Effect, Operation},
+    rules_engine::{TickObservation},
 };
 
 fn monitor() -> (Value, Value, Operation) {
@@ -23,15 +24,15 @@ fn output(
     bytes: &[u8],
     now: f64,
 ) -> Vec<Value> {
-    let snapshot = MonitorSnapshot::checked(record.clone(), actor.clone()).expect("snapshot");
+    let snapshot = fixtures::checked(record.clone(), actor.clone()).expect("snapshot");
     let decision =
         monitor_policy::output_stream(&snapshot, operation, stream, bytes, now).expect("output");
-    *record = decision.record;
+    *record = decision.record.value();
     decision
         .effects
         .into_iter()
         .filter_map(|effect| match effect {
-            Effect::OutputEvent { payload, .. } => Some(payload),
+            Effect::OutputEvent { payload, .. } => Some(json!(payload)),
             Effect::ExitEvent
             | Effect::StallEvent { .. }
             | Effect::Probe { .. }
@@ -124,7 +125,7 @@ fn sustained_monitor_flood_pauses_only_output_wakes_with_notice() {
         .is_empty(),
         "pause survives quiet time"
     );
-    let snapshot = MonitorSnapshot::checked(record, actor).expect("snapshot");
+    let snapshot = fixtures::checked(record, actor).expect("snapshot");
     let finished =
         monitor_policy::finish(&snapshot, Some(&operation), Some(0), None, 3001.0).expect("finish");
     assert!(
@@ -182,7 +183,7 @@ fn monitor_payload_has_first_line_excerpt_and_exact_log_offset_across_streams() 
 
 fn once() -> (Value, Value) {
     (
-        json!({"id":"once","agent":"owner","epoch":1,"name":"Once","kind":"once","status":"active","intervalSeconds":60,"nextAt":2000.0,"at":2000.0,"created":1900.0,"command":"echo should-run-only-on-time","text":"Check result"}),
+        json!({"id":"once","agent":"owner","epoch":1,"name":"Once","kind":"once","status":"active","intervalSeconds":60,"nextAt":2000.0,"at":2000.0,"created":1900.0,"command":"echo should-run-only-on-time","text":"Check result","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}),
         json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"owner","rootId":"owner","epoch":1,"status":"idle","autoWake":true,"isLead":true}),
     )
 }
@@ -190,7 +191,7 @@ fn once() -> (Value, Value) {
 #[test]
 fn overdue_once_rule_emits_missed_event_without_command_and_stays_pending() {
     let (rule, owner) = once();
-    let snapshot = RuleSnapshot::from_records(rule, owner.clone()).expect("rule");
+    let snapshot = crate::rule_snapshot(rule, owner.clone()).expect("rule");
     let decision = snapshot
         .tick(2061.0, TickObservation::default())
         .expect("tick");
@@ -201,10 +202,10 @@ fn overdue_once_rule_emits_missed_event_without_command_and_stays_pending() {
     assert_eq!(payload["rule"], "once");
     assert_eq!(payload["dueAt"], 2000.0);
     assert_eq!(payload["delaySeconds"], 61.0);
-    let record = decision.record.expect("pending rule");
+    let record = decision.record.expect("pending rule").value();
     assert_eq!(record["status"], "paused");
     assert_eq!(record["nextAt"], 2000.0);
-    let snapshot = RuleSnapshot::from_records(record, owner).expect("persisted rule");
+    let snapshot = crate::rule_snapshot(record, owner).expect("persisted rule");
     assert_eq!(
         snapshot
             .tick(3000.0, TickObservation::default())
@@ -220,7 +221,7 @@ fn overdue_once_rule_emits_missed_event_without_command_and_stays_pending() {
 #[test]
 fn once_rule_at_grace_boundary_still_runs() {
     let (rule, owner) = once();
-    let snapshot = RuleSnapshot::from_records(rule, owner).expect("rule");
+    let snapshot = crate::rule_snapshot(rule, owner).expect("rule");
     assert!(
         snapshot
             .tick(2060.0, TickObservation::default())
@@ -258,7 +259,7 @@ fn monitor_excerpt_is_bounded_and_invalid_budget_is_rejected() {
             > 0
     );
     record["outputWakeBudget"]["tokens"] = json!(OUTPUT_WAKE_CAPACITY + 1);
-    assert!(MonitorSnapshot::checked(record, actor).is_err());
+    assert!(fixtures::checked(record, actor).is_err());
 }
 
 #[tokio::test]
@@ -404,7 +405,7 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
     store
         .transaction(move |tx| {
             AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
-            RulesRepository::put(tx, &RuleRecord::from_value(rule)?)
+            RulesRepository::put(tx, &serde_json::from_value::<RuleRecord>(rule)?)
         })
         .await
         .expect("seed");
@@ -468,8 +469,9 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
     )
     .await
     .expect("owner resume");
-    assert_eq!(resumed.value["status"], "active");
-    let due = resumed.value["nextAt"].as_f64().expect("new due time");
+    let resumed: Value = serde_json::from_str(resumed.value.0.get()).unwrap();
+    assert_eq!(resumed["status"], "active");
+    let due = resumed["nextAt"].as_f64().expect("new due time");
     rules_tick::tick_batch(&store, 0, due, &LocalRuleFiles, &monitor)
         .await
         .expect("explicit catch-up");
@@ -485,7 +487,7 @@ async fn missed_once_rule_is_atomic_durable_and_owner_can_resume_or_delete() {
     )
     .await
     .expect("owner cancel");
-    assert_eq!(deleted.value["deleted"], "once");
+    assert_eq!(serde_json::from_str::<Value>(deleted.value.0.get()).unwrap()["deleted"], "once");
 }
 
 #[test]
@@ -505,7 +507,7 @@ fn legacy_matcher_context_never_invents_a_log_offset() {
     // The old stream prefix has no log location. The new fragment does.
     assert_eq!(events[0]["matches"][0]["excerpt"], "DY done");
     assert_eq!(events[0]["matches"][0]["logOffset"], 100);
-    MonitorSnapshot::checked(record, actor).expect("legacy context remains readable");
+    fixtures::checked(record, actor).expect("legacy context remains readable");
 }
 
 #[test]

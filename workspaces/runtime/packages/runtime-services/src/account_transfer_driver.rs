@@ -1582,7 +1582,7 @@ mod request_tests {
                 params:json!({"processId":"watch","cwd":cwd,"command":["true"]}),
             })?;
             tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
-                [json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original","rootRequestId":root,"providerRequest":admitted}}).to_string()])?;
+                [crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original","rootRequestId":root,"providerRequest":admitted}})).to_string()])?;
             let key=studio_runtime_schema::provider_call_contract::transport_key("source","monitor:watch");
             let prepared = studio_runtime_schema::provider_call_contract::TransportRequest {
                 id:studio_runtime_schema::provider_input::RequestId::String(key.clone()),generation:4,method,
@@ -1603,8 +1603,8 @@ mod request_tests {
         )
         .expect("read monitor")
         .expect("monitor remains");
-        assert_eq!(monitor.value()["status"], "running");
-        assert_eq!(monitor.value()["operation"]["accountKey"], "source");
+        assert_eq!(serde_json::to_value(&monitor).unwrap()["status"], "running");
+        assert_eq!(serde_json::to_value(&monitor).unwrap()["operation"]["accountKey"], "source");
     }
 
     #[test]
@@ -1634,7 +1634,7 @@ mod request_tests {
         }
         let (_root, store) = store_with_agents();
         run_async(store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",[json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}}).to_string()])?;
+            tx.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",[crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}})).to_string()])?;
             Ok(())
         })).expect("persist the unproven monitor");
         let transfer = "5a300f72-4ea6-4d30-8a0e-9b2c13c4a001";

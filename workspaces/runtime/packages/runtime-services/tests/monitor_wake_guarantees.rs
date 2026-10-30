@@ -1,4 +1,5 @@
 //! Every decided command outcome has one durable owner wake, across restarts.
+use crate::TestJson;
 use crate::monitor_fixtures as fixtures;
 use serde_json::{Value, json};
 use studio_runtime_services::{
@@ -467,7 +468,7 @@ async fn unknown_submission_enters_the_same_reconciliation_and_wakes_once() {
         monitor: snapshot.record().clone(),
         actor: actor.value(),
         operation,
-        params: json!({"command":["true"],"processId":snapshot.id(), "cwd":snapshot.record()["cwd"], "timeoutMs":snapshot.record()["timeout_ms"], "sandboxPolicy":{"type":"readOnly"}}),
+        params: json!({"command":["true"],"processId":snapshot.id(), "cwd":snapshot.record().cwd, "timeoutMs":snapshot.record().timeout_ms, "sandboxPolicy":{"type":"readOnly"}}),
     };
     assert!(matches!(
         monitor_driver::start(&store, &UnknownPort, snapshot.id(), &prepared, 2001.0)
@@ -551,7 +552,7 @@ async fn unknown_submission_reconciliation_is_retried_after_a_failed_write_and_w
         monitor: snapshot.record().clone(),
         actor: actor.value(),
         operation,
-        params: json!({"command":["true"],"processId":snapshot.id(), "cwd":snapshot.record()["cwd"], "timeoutMs":snapshot.record()["timeout_ms"], "sandboxPolicy":{"type":"readOnly"}}),
+        params: json!({"command":["true"],"processId":snapshot.id(), "cwd":snapshot.record().cwd, "timeoutMs":snapshot.record().timeout_ms, "sandboxPolicy":{"type":"readOnly"}}),
     };
     store
         .transaction(|tx| Ok(tx.execute_batch(FAIL_RECONCILE_WRITE)?))

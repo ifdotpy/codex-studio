@@ -3266,10 +3266,10 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
     let scope = port.scope().clone();
     let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let operation = crate::monitor_policy::Operation {
-        agent: actor.clone(),
-        epoch,
-        account_key: scope.account.clone(),
-        connection_id: scope.connection.clone(),
+        agent: actor.clone().try_into().unwrap(),
+        epoch: epoch.try_into().unwrap(),
+        account_key: scope.account.clone().try_into().unwrap(),
+        connection_id: scope.connection.clone().try_into().unwrap(),
         evidence: crate::monitor_policy::OperationEvidence {
             root_request_id: Some(root.clone()),
             provider_generation: Some(scope.generation),
@@ -3283,8 +3283,8 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
         let log=crate::monitor_output::log_root(store.root()).join("transfer-watch.log");
         store.transaction_with(move |tx| {
             tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('transfer-watch',?1)",
-                [json!({"id":"transfer-watch","agent":actor,"epoch":epoch,"status":"running",
-                    "cwd":seed_cwd,"command":"true","interactive":true,"log":log,"operation":saved_operation}).to_string()])?;
+                [crate::monitor_policy::complete_test_monitor(json!({"id":"transfer-watch","agent":actor,"epoch":epoch,"status":"running",
+                    "cwd":seed_cwd,"command":"true","interactive":true,"log":log,"operation":saved_operation})).to_string()])?;
             Ok(())
         }).await
     }).await.unwrap();
@@ -3329,14 +3329,14 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
                     let record =
                         studio_runtime_store::MonitorsRepository::get(tx, "transfer-watch")?
                             .unwrap();
-                    assert_eq!(record.value()["streamQueue"][0]["deltaBase64"], "aGVsbG8=");
+                    assert_eq!(serde_json::to_value(&record).unwrap()["streamQueue"][0]["deltaBase64"], "aGVsbG8=");
                     assert!(!crate::monitor_event_queue::enqueue_output_in_transaction(
                         tx,
                         "transfer-watch",
                         &output_scope.account,
                         output_scope.generation + 1,
                         output_cursor + 1,
-                        &json!({"processId":"transfer-watch","deltaBase64":"eA=="})
+                        &crate::monitor_event_queue::OutputDelta { delta_base64: "eA==".into(), stream: None }
                     )?);
                     Ok(())
                 })
@@ -3382,7 +3382,7 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
     )
     .await
     .unwrap();
-    assert_eq!(observed["tail"], "hello");
+    assert_eq!(observed.record.tail.as_str(), "hello");
     for (ticket, input) in [
         (
             "write-after-transfer",

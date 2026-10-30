@@ -1,3 +1,4 @@
+use crate::TestJson;
 use std::process::Command;
 use std::sync::Mutex;
 
@@ -59,7 +60,7 @@ async fn change(store: &RuntimeStore, fields: Value) {
             for (field, value_new) in fields.as_object().expect("changes") {
                 value[field] = value_new.clone();
             }
-            RulesRepository::put(tx, &RuleRecord::from_value(value)?)
+            RulesRepository::put(tx, &serde_json::from_value::<RuleRecord>(value)?)
         })
         .await
         .expect("change rule");
@@ -575,7 +576,7 @@ async fn cancelled_paused_check_settles_its_durable_launch_intent() {
             value["status"] = json!("paused");
             value["inFlight"] = json!(false);
             value["launchIntent"]["timeoutMs"] = json!(30_000);
-            RulesRepository::put(tx, &RuleRecord::from_value(value)?)
+            RulesRepository::put(tx, &serde_json::from_value::<RuleRecord>(value)?)
         })
         .await
         .expect("pause with the pending intent retained");
@@ -660,18 +661,13 @@ impl RuleMonitor for DurableMonitor<'_> {
             if self.unknown {
                 return CheckReconciliation::Unknown;
             }
-            let row = studio_runtime_store::MonitorsRepository::get(
-                &self.store.test_reader().expect("read monitor"),
-                &check.monitor_id,
-            )
-            .expect("monitor row");
+            let db = self.store.test_reader().expect("read monitor");
+            let mut query = db.prepare("SELECT record FROM runtime_monitors WHERE id=?").expect("query");
+            let mut rows = query.query([&check.monitor_id]).expect("monitor");
+            let row = rows.next().expect("row").map(|row| row.get::<_, String>(0).expect("record"));
             match row {
                 None => CheckReconciliation::NotSubmitted,
-                Some(row)
-                    if row.value()["check"] == serde_json::to_value(check).expect("check JSON") =>
-                {
-                    CheckReconciliation::Submitted
-                }
+                Some(row) if serde_json::from_str::<Value>(&row).unwrap()["check"] == serde_json::to_value(check).expect("check JSON") => CheckReconciliation::Submitted,
                 Some(_) => CheckReconciliation::Unknown,
             }
         })
@@ -682,7 +678,7 @@ impl RuleMonitor for DurableMonitor<'_> {
     ) -> futures_util::future::BoxFuture<'a, CheckSubmission> {
         Box::pin(async move {
             assert!(!self.unknown, "unknown outcome must never resend");
-            let record = json!({"id":check.monitor_id,"agent":check.agent_id,"ruleId":check.rule_id,"status":"running","check":check});
+            let record = json!({"id":check.monitor_id,"agent":check.agent_id,"epoch":check.epoch,"ruleId":check.rule_id,"status":"running","check":check,"requestId":"fixture","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
             let monitor_id = check.monitor_id.clone();
             let inserted = self
                 .store

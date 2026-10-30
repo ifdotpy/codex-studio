@@ -1206,13 +1206,13 @@ mod child_turn_parent_tests {
                     for key in ["first", "second"] {
                         let monitor = crate::monitor_policy::create_record(
                             &actor.value(),
-                            &json!({"command":"true"}),
+                            &serde::Deserialize::deserialize(&json!({"command":"true"})).unwrap(),
                             key,
                             &log_root,
                             2.0,
                         )
                         .expect("monitor admission");
-                        studio_runtime_store::monitor_runtime::put(tx, monitor)?;
+                        studio_runtime_store::monitor_runtime::put(tx, &monitor)?;
                     }
                     Ok(())
                 })
@@ -1266,13 +1266,13 @@ mod child_turn_parent_tests {
                         AgentRepository::get(tx, &AgentId::from("child"))?.expect("child");
                     let monitor = crate::monitor_policy::create_record(
                         &agent.value(),
-                        &json!({"command":"true"}),
+                        &serde::Deserialize::deserialize(&json!({"command":"true"})).unwrap(),
                         "recovery-monitor",
                         &log_root,
                         2.0,
                     )
                     .expect("monitor");
-                    studio_runtime_store::monitor_runtime::put(tx, monitor)?;
+                    studio_runtime_store::monitor_runtime::put(tx, &monitor)?;
                     agent.status = AgentStatus::Completed;
                     agent.turn_id = None;
                     agent.in_flight = Some(false);

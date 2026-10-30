@@ -67,6 +67,41 @@ struct InputIntent<'a, T: Serialize> {
     receipt: &'a T,
 }
 
+// The published receipts migration keeps its original operation shape.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FrozenMonitorOperation {
+    agent: String,
+    epoch: i64,
+    account_key: String,
+    connection_id: String,
+    #[serde(flatten)]
+    evidence: FrozenMonitorOperationEvidence,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FrozenMonitorOperationEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "frozen_present")]
+    root_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "frozen_present")]
+    provider_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "frozen_present")]
+    provider_request: Option<AdmittedRequest>,
+}
+impl PartialEq for FrozenMonitorOperationEvidence {
+    fn eq(&self, other: &Self) -> bool {
+        self.root_request_id == other.root_request_id
+            && self.provider_generation == other.provider_generation
+            && self.provider_request == other.provider_request
+    }
+}
+fn frozen_present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> std::result::Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LegacyMonitorOperation {
@@ -1171,7 +1206,7 @@ fn monitor_operation(
     id: &str,
     operation: LegacyMonitorOperation,
     cutover: i64,
-) -> Result<crate::MonitorOperation> {
+) -> Result<FrozenMonitorOperation> {
     let table = "runtime_monitors";
     let invalid = || unclassifiable(table, &row.id, &row.signature);
     let authority = retained(
@@ -1210,7 +1245,7 @@ fn monitor_operation(
         {
             return Err(invalid());
         }
-        crate::MonitorOperationEvidence {
+        FrozenMonitorOperationEvidence {
             thread_id: None,
             root_request_id: Some(call.root_request_id),
             provider_request: Some(token),
@@ -1251,14 +1286,14 @@ fn monitor_operation(
         } else {
             RequestIdentity::issue_root()
         };
-        crate::MonitorOperationEvidence {
+        FrozenMonitorOperationEvidence {
             thread_id: None,
             root_request_id: Some(root),
             provider_request: None,
             provider_generation: operation.provider_generation,
         }
     };
-    Ok(crate::MonitorOperation {
+    Ok(FrozenMonitorOperation {
         agent: operation.agent,
         epoch: operation.epoch,
         account_key: operation.account_key,
@@ -1752,7 +1787,7 @@ mod tests {
     use rusqlite::Connection;
     #[derive(Deserialize)]
     struct MonitorOperationView {
-        operation: crate::MonitorOperation,
+        operation: FrozenMonitorOperation,
     }
     fn fixture(db: &Connection) {
         db.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT); CREATE TABLE runtime_native_action_receipts(id TEXT PRIMARY KEY,signature TEXT,receipt TEXT,outcome TEXT); CREATE TABLE user_terminal_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT); CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);").expect("source");
@@ -2561,7 +2596,7 @@ mod tests {
     fn receipts_actions_monitor_input_preserves_unresolved_and_rejects_unrecognized() {
         #[derive(Deserialize)]
         struct Saved {
-            receipt: MonitorReceipt<crate::MonitorOperation>,
+            receipt: MonitorReceipt<FrozenMonitorOperation>,
         }
         for (status, recognized) in [("Pending", true), ("Unknown", true), ("future", false)] {
             let mut db = Connection::open_in_memory().expect("database");
