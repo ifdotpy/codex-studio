@@ -1,5 +1,9 @@
 # Native projections
 
+> Removed 2026-10-30 (#630): the `projection.getRows`, `rangeRows`, `putRows` and `pruneRows`
+> methods and `nativeProjections.ts`. The web client keeps a thin cache instead. This page
+> describes the removed design.
+
 In the desktop app, the native core stores the projection cache of the local
 server. The page does not open IndexedDB, RxDB, Web Locks or a BroadcastChannel
 for it. This removes the slow storage path that caused "Could not prepare or
