@@ -1,8 +1,8 @@
-//! Background Canvas maintenance: entity tombstone pruning in short writer
-//! transactions.
+//! Background Canvas maintenance: entity tombstone pruning and expired request
+//! receipt cleanup in short writer transactions.
 //!
 //! Studio keeps all user history. This pass never shortens or deletes task
-//! output, transcripts or any other record. Releases from 2026-10-17
+//! output or transcripts. Releases from 2026-10-17
 //! (`478b2e176`) up to its removal also trimmed the output of finished tasks
 //! older than seven days here; the `payload-v1:tasks` row that it left in
 //! `runtime_payload_migrations` is a historical marker only.
@@ -10,6 +10,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS;
+use studio_runtime_store::request_results::{REQUEST_RESULT_GC_BATCH_ROWS, RequestResults};
 use studio_runtime_store::{RuntimeStore, StoreResult, SyncDocumentsRepository};
 
 /// Pause between prune batches so interactive writers keep the actor.
@@ -37,9 +39,30 @@ pub async fn run(store: Arc<RuntimeStore>, mut shutdown: tokio::sync::watch::Rec
     }
 }
 
-/// One complete pass: once due, prune entity tombstones down to their limit,
-/// one batch at a time.
+/// Remove expired receipts and prune excess entity tombstones in batches.
 pub async fn run_pass(store: &Arc<RuntimeStore>) -> StoreResult<()> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let cutoff = now.saturating_sub(REQUEST_RESULT_TTL_MS);
+    let receipts_due = store
+        .read_async("runtime-services/storage_retention", move |connection| {
+            Ok::<_, studio_runtime_store::StoreError>(connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM request_results INDEXED BY request_results_created WHERE created<=?1)",
+                [cutoff],
+                |row| row.get::<_, bool>(0),
+            )?)
+        })
+        .await?;
+    if receipts_due {
+        loop {
+            let removed = store
+                .transaction(move |transaction| Ok(RequestResults::gc(transaction, now)?))
+                .await?;
+            if removed < REQUEST_RESULT_GC_BATCH_ROWS {
+                break;
+            }
+            tokio::time::sleep(RETENTION_BATCH_PAUSE).await;
+        }
+    }
     if !store
         .read_async("runtime-services/storage_retention", |connection| {
             SyncDocumentsRepository::entity_tombstone_prune_due(connection)
@@ -74,6 +97,28 @@ mod tests {
             .await
             .expect("open runtime store");
         (directory, Arc::new(store))
+    }
+
+    #[tokio::test]
+    async fn maintenance_deletes_expired_request_results_in_batches() {
+        use studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS;
+        use studio_runtime_store::request_results::REQUEST_RESULT_GC_BATCH_ROWS;
+
+        let (_directory, store) = store().await;
+        let now = chrono::Utc::now().timestamp_millis();
+        store.transaction(move |tx| {
+            for index in 0..=REQUEST_RESULT_GC_BATCH_ROWS {
+                tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES(?1,'sig','{}',?2)", params![format!("expired-{index}"), now - REQUEST_RESULT_TTL_MS - 1])?;
+            }
+            tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES('fresh','sig','{}',?1)", [now])?;
+            Ok(())
+        }).await.expect("seed receipts");
+        run_pass(&store).await.expect("retention pass");
+        let (expired, fresh): (i64, i64) = store.read_async("runtime-services/storage_retention", |connection| {
+            Ok::<_, studio_runtime_store::StoreError>(connection.query_row("SELECT count(*) FILTER (WHERE id LIKE 'expired-%'), count(*) FILTER (WHERE id='fresh') FROM request_results", [], |row| Ok((row.get(0)?, row.get(1)?)))?)
+        }).await.expect("read receipts");
+        assert_eq!(expired, 0);
+        assert_eq!(fresh, 1);
     }
 
     #[tokio::test]
