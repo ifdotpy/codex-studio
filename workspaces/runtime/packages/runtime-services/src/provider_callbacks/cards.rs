@@ -1181,79 +1181,10 @@ pub async fn prepare_delete(
     let id = id.to_owned();
     store
         .transaction_with(move |tx| {
-<<<<<<< head
             let mut card = get_row(tx, &id)?.ok_or(CallbackError::Invalid("Unknown question"))?;
             let actor = records::get(tx, "runtime_agents", card.agent.as_str())?
                 .ok_or(CallbackError::Stale)?;
             if !delete_allowed(&card, studio_runtime_store::truthy(actor.get("deletedAt")))? {
-||||||| base
-            let mut card = records::get(tx, "runtime_requests", &id)?
-                .ok_or(CallbackError::Invalid("Unknown question"))?;
-            let actor = records::get(
-                tx,
-                "runtime_agents",
-                card["agent"].as_str().ok_or(CallbackError::Stale)?,
-            )?
-            .ok_or(CallbackError::Stale)?;
-            let allowed = crate::questions_write::state_only_delete_allowed(
-                &card,
-                studio_runtime_store::truthy(actor.get("deletedAt")),
-                false,
-            )
-            .map_err(|error| match error {
-                crate::questions_write::QuestionsWriteError::InvalidRequest(message) => {
-                    CallbackError::Invalid(message)
-                }
-                crate::questions_write::QuestionsWriteError::QuestionAnswerUnavailable => {
-                    CallbackError::Dependency("provider-session/question-answer")
-                }
-                crate::questions_write::QuestionsWriteError::Conflict(_)
-                | crate::questions_write::QuestionsWriteError::InvalidStoredObject { .. }
-                | crate::questions_write::QuestionsWriteError::Event(_)
-                | crate::questions_write::QuestionsWriteError::Store(_)
-                | crate::questions_write::QuestionsWriteError::Json(_)
-                | crate::questions_write::QuestionsWriteError::Clock
-                | crate::questions_write::QuestionsWriteError::Coordination(_)
-                | crate::questions_write::QuestionsWriteError::Projects(_) => {
-                    CallbackError::Invalid("Unable to delete question")
-                }
-            })?;
-            if !allowed {
-=======
-            let mut card = records::get(tx, "runtime_requests", &id)?
-                .ok_or(CallbackError::Invalid("Unknown question"))?;
-            let actor = records::get(
-                tx,
-                "runtime_agents",
-                card["agent"].as_str().ok_or(CallbackError::Stale)?,
-            )?
-            .ok_or(CallbackError::Stale)?;
-            let allowed = crate::questions_write::state_only_delete_allowed(
-                &card,
-                studio_runtime_store::truthy(actor.get("deletedAt")),
-                false,
-            )
-            .map_err(|error| match error {
-                crate::questions_write::QuestionsWriteError::InvalidRequest(message) => {
-                    CallbackError::Invalid(message)
-                }
-                crate::questions_write::QuestionsWriteError::QuestionAnswerUnavailable => {
-                    CallbackError::Dependency("provider-session/question-answer")
-                }
-                crate::questions_write::QuestionsWriteError::Conflict(_)
-                | crate::questions_write::QuestionsWriteError::InvalidStoredObject { .. }
-                | crate::questions_write::QuestionsWriteError::Event(_)
-                | crate::questions_write::QuestionsWriteError::Store(_)
-                | crate::questions_write::QuestionsWriteError::Approval(_)
-                | crate::questions_write::QuestionsWriteError::Json(_)
-                | crate::questions_write::QuestionsWriteError::Clock
-                | crate::questions_write::QuestionsWriteError::Coordination(_)
-                | crate::questions_write::QuestionsWriteError::Projects(_) => {
-                    CallbackError::Invalid("Unable to delete question")
-                }
-            })?;
-            if !allowed {
->>>>>>> origin/feat/approval-entity
                 return Ok(None);
             }
             if matches!(card.state, ApprovalState::Pending)
