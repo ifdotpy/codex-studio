@@ -37,8 +37,8 @@ type Answer =
 /** A fake network: each origin answers a nonce challenge, or fails. */
 function network(answers: Record<string, Answer>) {
   const calls: Array<{ url: string; nonce: string; init?: RequestInit }> = [];
-  const request = vi.fn(
-    async (url: string | URL | Request, init?: RequestInit) => {
+  const request: typeof fetch = vi.fn(
+    async (url: RequestInfo | URL, init?: RequestInit) => {
       const href = new URL(String(url));
       const nonce = href.searchParams.get("nonce") ?? "";
       calls.push({ url: href.href, nonce, ...(init ? { init } : {}) });
@@ -59,7 +59,7 @@ function network(answers: Record<string, Answer>) {
       });
     },
   );
-  return { answers, calls, request: request as unknown as typeof fetch };
+  return { answers, calls, request };
 }
 
 function routesWith(net: ReturnType<typeof network>, learned: string[] = []) {
@@ -157,13 +157,13 @@ describe("identity proof before credentials (rule 2)", () => {
       keys.privateKey,
       new TextEncoder().encode(identityProofInput("srv", "A".repeat(32))),
     );
-    net.request = (async (url: string) => {
+    net.request = async (url: RequestInfo | URL) => {
       if (String(url).startsWith(PAIRED)) throw new TypeError("network down");
       return Response.json({
         serverId: "srv",
         proof: btoa(String.fromCharCode(...new Uint8Array(stale))),
       });
-    }) as unknown as typeof fetch;
+    };
     const { routes } = routesWith(net, [LAN]);
     await expect(routes.resolve()).rejects.toBeInstanceOf(RouteIdentityError);
   });

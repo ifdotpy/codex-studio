@@ -38,7 +38,7 @@ class Source {
   static instances: Source[] = [];
   static skipNextAutoHandshake = false;
   listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
-  onerror: (() => void) | null = null;
+  onerror: ((event?: { status?: number }) => void) | null = null;
   onopen: (() => void) | null = null;
   status = 200;
   closed = false;
@@ -2989,7 +2989,7 @@ describe("connection owner: retries, wakeups and stream probes", () => {
     const { windowListeners, details, goLive } = await open();
     await goLive();
     const refused = Source.instances.at(-1)!;
-    (refused.onerror as unknown as (event: unknown) => void)({ status: 403 });
+    refused.onerror?.({ status: 403 });
     expect(details.at(-1)).toEqual(
       expect.objectContaining({ failure: "auth-rejected" }),
     );

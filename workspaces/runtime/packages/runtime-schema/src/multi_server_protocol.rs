@@ -175,7 +175,9 @@ mod tests {
         );
         let mut constraints = Value::Object(fields.clone());
         for field in constraints.as_object_mut().unwrap().values_mut() {
-            field.as_object_mut().unwrap().remove("title");
+            let field = field.as_object_mut().unwrap();
+            field.remove("title");
+            field.remove("description");
         }
         assert_eq!(
             constraints,
@@ -185,12 +187,19 @@ mod tests {
                 "publicKey":{"type":"string"},
                 "tailscaleUser":{"anyOf":[{"type":"null"},{"type":"string"}]},
                 "protocol":{"type":"integer","const":1,"minimum":1,"maximum":1},
-                "autoPair":{"type":"boolean"}
+                "autoPair":{"type":"boolean"},
+                "proof":{"type":"string"}
             })
         );
+        // `proof` is optional: only an answer to a nonce carries it.
         let required = schema["required"].as_array().unwrap();
-        assert_eq!(required.len(), expected.len());
-        assert!(expected.iter().all(|name| required.contains(&json!(name))));
+        assert_eq!(required.len(), expected.len() - 1);
+        assert!(
+            expected
+                .iter()
+                .filter(|name| **name != "proof")
+                .all(|name| required.contains(&json!(name)))
+        );
         assert_eq!(schema["additionalProperties"], false);
         let valid = json!({"serverId":"s", "label":"l", "origin":null, "publicKey":"k", "tailscaleUser":null, "protocol":1, "autoPair":true});
         for (field, replacement) in [
