@@ -69,6 +69,8 @@ pub enum Grant {
 pub struct QuestionOption {
     pub label: String,
     pub description: Option<String>,
+    /// Markdown shown next to the option.
+    pub preview: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -78,6 +80,9 @@ pub struct Question {
     pub header: Option<String>,
     pub options: Vec<QuestionOption>,
     pub is_secret: bool,
+    /// Absent when the provider did not send the flag.
+    pub multi_select: Option<bool>,
+    pub is_other: Option<bool>,
 }
 
 /// Fixed at creation. Decides which answers are allowed.
@@ -210,6 +215,66 @@ pub enum ApprovalState {
     },
 }
 
+/// JSON-RPC id of a provider request. The reply must use the same form.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RpcId {
+    Number { value: i64 },
+    Text { value: String },
+}
+
+/// The provider process generation that owns a request, under the supervisor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Supervisor {
+    pub generation: u64,
+    pub state_dir: Option<String>,
+    pub handle: Option<String>,
+}
+
+/// What the server needs to send the answer back to the provider.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Delivery {
+    pub rpc_id: RpcId,
+    pub account: String,
+    pub connection: String,
+    /// Absent on rows written before supervisor generations were recorded.
+    pub supervisor: Option<Supervisor>,
+}
+
+/// Provider-owned content that Studio stores and shows as is (tolerant at the
+/// provider boundary). Typed request fields are removed from `params`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct ProviderObject(pub serde_json::Map<String, serde_json::Value>);
+
+/// Display content and provider fields that no logic reads by name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Detail {
+    /// Provider request params without the fields typed in `Request`.
+    pub params: ProviderObject,
+    /// Item body shown on the card (command run, file changes).
+    pub preview: Option<ProviderObject>,
+    /// Human text of a lost delivery.
+    pub answer_error: Option<String>,
+    /// Text the browser host gave when it closed a browser request.
+    pub host_close_reason: Option<String>,
+}
+
+/// The user moved the question aside. `active` is false after it came back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Deferral {
+    pub active: bool,
+    pub at: Timestamp,
+    pub by: Principal,
+}
+
+/// History stays: a hidden row is not shown in the default list.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Hidden {
+    pub at: Timestamp,
+    pub by: Principal,
+}
+
 /// A row. `fire_at` is the durable expiry timer of a pending approval.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Approval {
@@ -219,11 +284,16 @@ pub struct Approval {
     /// agent itself (not of a provider turn).
     pub turn: Option<TurnId>,
     pub created: Timestamp,
+    /// Agent epoch when the request was made. Absent on old rows.
+    pub epoch: Option<u64>,
     pub request: Request,
+    /// Present for provider requests that Studio answers over a connection.
+    pub delivery: Option<Delivery>,
+    pub detail: Detail,
     pub state: ApprovalState,
+    pub deferral: Option<Deferral>,
     pub fire_at: Option<Timestamp>,
-    /// History stays. Hidden rows are not shown in the default list.
-    pub hidden: bool,
+    pub hidden: Option<Hidden>,
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]

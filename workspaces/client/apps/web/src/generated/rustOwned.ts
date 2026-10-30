@@ -31,14 +31,24 @@ export interface components {
     Approval: {
       agent: components["schemas"]["AgentId"];
       created: components["schemas"]["Timestamp"];
+      deferral: components["schemas"]["Deferral"] | null;
+      /** @description Present for provider requests that Studio answers over a connection. */
+      delivery: components["schemas"]["Delivery"] | null;
+      detail: components["schemas"]["Detail"];
+      /**
+       * Format: uint64
+       * @description Agent epoch when the request was made. Absent on old rows.
+       */
+      epoch: number | null;
       fire_at: components["schemas"]["Timestamp"] | null;
-      /** @description History stays. Hidden rows are not shown in the default list. */
-      hidden: boolean;
+      hidden: components["schemas"]["Hidden"] | null;
       id: components["schemas"]["ApprovalId"];
       request: components["schemas"]["Request"];
       state: components["schemas"]["ApprovalState"];
-      /** @description None only for kinds in `RequestKind::TURN_OPTIONAL`: requests of the
-       *     agent itself (not of a provider turn). */
+      /**
+       * @description None only for kinds in `RequestKind::TURN_OPTIONAL`: requests of the
+       *     agent itself (not of a provider turn).
+       */
       turn: components["schemas"]["TurnId"] | null;
     };
     /** @description Identity of one approval. Equals the legacy request id after migration. */
@@ -93,6 +103,20 @@ export interface components {
     CommandId: string;
     /** @enum {string} */
     Decision: "accept" | "accept_for_session" | "decline" | "cancel";
+    /** @description The user moved the question aside. `active` is false after it came back. */
+    Deferral: {
+      active: boolean;
+      at: components["schemas"]["Timestamp"];
+      by: components["schemas"]["Principal"];
+    };
+    /** @description What the server needs to send the answer back to the provider. */
+    Delivery: {
+      account: string;
+      connection: string;
+      rpc_id: components["schemas"]["RpcId"];
+      /** @description Absent on rows written before supervisor generations were recorded. */
+      supervisor: components["schemas"]["Supervisor"] | null;
+    };
     /** @enum {string} */
     DeliveryStatus:
       | "queued"
@@ -104,6 +128,17 @@ export interface components {
       | "delivered"
       | "failed"
       | "uncertain";
+    /** @description Display content and provider fields that no logic reads by name. */
+    Detail: {
+      /** @description Human text of a lost delivery. */
+      answer_error: string | null;
+      /** @description Text the browser host gave when it closed a browser request. */
+      host_close_reason: string | null;
+      /** @description Provider request params without the fields typed in `Request`. */
+      params: components["schemas"]["ProviderObject"];
+      /** @description Item body shown on the card (command run, file changes). */
+      preview: components["schemas"]["ProviderObject"] | null;
+    };
     /** @description Committed draft view and its native workspace metadata. */
     DraftSnapshot: {
       conflicts: components["schemas"]["DraftVersion"][];
@@ -179,6 +214,11 @@ export interface components {
       stateDir: string;
     } & {
       [key: string]: unknown;
+    };
+    /** @description History stays: a hidden row is not shown in the default list. */
+    Hidden: {
+      at: components["schemas"]["Timestamp"];
+      by: components["schemas"]["Principal"];
     };
     MarkdownBlock:
       | components["schemas"]["MarkdownTree"]
@@ -272,10 +312,20 @@ export interface components {
           /** @constant */
           kind: "policy";
         };
+    /**
+     * @description Provider-owned content that Studio stores and shows as is (tolerant at the
+     *     provider boundary). Typed request fields are removed from `params`.
+     */
+    ProviderObject: {
+      [key: string]: unknown;
+    };
     Question: {
       header: string | null;
       id: string;
+      is_other: boolean | null;
       is_secret: boolean;
+      /** @description Absent when the provider did not send the flag. */
+      multi_select: boolean | null;
       options: components["schemas"]["QuestionOption"][];
       question: string;
     };
@@ -286,6 +336,8 @@ export interface components {
     QuestionOption: {
       description: string | null;
       label: string;
+      /** @description Markdown shown next to the option. */
+      preview: string | null;
     };
     /** @description One recipient's delivery state. Error text is separate from the closed status. */
     RecipientDelivery: {
@@ -378,6 +430,19 @@ export interface components {
       id: string;
       result?: unknown | undefined;
     };
+    /** @description JSON-RPC id of a provider request. The reply must use the same form. */
+    RpcId:
+      | {
+          /** @constant */
+          kind: "number";
+          /** Format: int64 */
+          value: number;
+        }
+      | {
+          /** @constant */
+          kind: "text";
+          value: string;
+        };
     StdinTimingDiagnostic: {
       /** Format: uint64 */
       generation: number;
@@ -387,6 +452,13 @@ export interface components {
       requestId: components["schemas"]["RequestId"];
       /** Format: uint128 */
       stdinFlushedAtNs: number;
+    };
+    /** @description The provider process generation that owns a request, under the supervisor. */
+    Supervisor: {
+      /** Format: uint64 */
+      generation: number;
+      handle: string | null;
+      state_dir: string | null;
     };
     /** SupervisorHandshakeV2Result */
     SupervisorHandshakeV2Result: {
@@ -454,17 +526,22 @@ export type ApprovalState = components["schemas"]["ApprovalState"];
 export type CloseReason = components["schemas"]["CloseReason"];
 export type CommandError = components["schemas"]["CommandError"];
 export type CommandId = components["schemas"]["CommandId"];
+export type Deferral = components["schemas"]["Deferral"];
+export type Delivery = components["schemas"]["Delivery"];
+export type Detail = components["schemas"]["Detail"];
 export type DraftSnapshot = components["schemas"]["DraftSnapshot"];
 export type DraftVersion = components["schemas"]["DraftVersion"];
 export type DraftView = components["schemas"]["DraftView"];
 export type HealthHandle = components["schemas"]["HealthHandle"];
 export type HealthResult = components["schemas"]["HealthResult"];
+export type Hidden = components["schemas"]["Hidden"];
 export type MarkdownBlock = components["schemas"]["MarkdownBlock"];
 export type MarkdownNode = components["schemas"]["MarkdownNode"];
 export type MarkdownSentence = components["schemas"]["MarkdownSentence"];
 export type MarkdownTree = components["schemas"]["MarkdownTree"];
 export type NativeVoiceEvent = components["schemas"]["NativeVoiceEvent"];
 export type Principal = components["schemas"]["Principal"];
+export type ProviderObject = components["schemas"]["ProviderObject"];
 export type Question = components["schemas"]["Question"];
 export type QuestionAnswer = components["schemas"]["QuestionAnswer"];
 export type QuestionOption = components["schemas"]["QuestionOption"];
@@ -476,8 +553,10 @@ export type Request = components["schemas"]["Request"];
 export type Request2 = components["schemas"]["Request2"];
 export type RequestId = components["schemas"]["RequestId"];
 export type Response = components["schemas"]["Response"];
+export type RpcId = components["schemas"]["RpcId"];
 export type StdinTimingDiagnostic =
   components["schemas"]["StdinTimingDiagnostic"];
+export type Supervisor = components["schemas"]["Supervisor"];
 export type SupervisorHandshakeV2Result =
   components["schemas"]["SupervisorHandshakeV2Result"];
 export type Timestamp = components["schemas"]["Timestamp"];

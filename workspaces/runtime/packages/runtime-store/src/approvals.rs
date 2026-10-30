@@ -11,7 +11,8 @@ use rusqlite::{OptionalExtension, Row, Transaction, params};
 use strum::VariantNames;
 use studio_runtime_schema::approvals::{
     AgentId, Answer, AnswerMismatch, Approval, ApprovalId, ApprovalState, ApprovalStateKind,
-    CloseReason, CommandId, Decision, Principal, Request, RequestKind, Timestamp, TurnId,
+    CloseReason, CommandId, Decision, Deferral, Delivery, Detail, Hidden, Principal, Request,
+    RequestKind, Timestamp, TurnId,
 };
 
 pub const TABLE: &str = "approvals";
@@ -66,7 +67,10 @@ fn invalid_row(row: &str) -> String {
          AND ({row}.state = 'unknown') = ({row}.since IS NOT NULL) \
          AND ({row}.state = 'closed') = ({row}.reason IS NOT NULL) \
          AND ({row}.reason IS NULL OR {row}.reason IN ({reasons})) \
-         AND ({row}.fire_at IS NULL OR {row}.state = 'pending'))"
+         AND ({row}.fire_at IS NULL OR {row}.state = 'pending') \
+         AND ({row}.deferral_active IS NULL) = ({row}.deferral_at IS NULL) \
+         AND ({row}.deferral_by IS NULL) = ({row}.deferral_at IS NULL) \
+         AND ({row}.hidden_by IS NULL) = ({row}.hidden_at IS NULL))"
     )
 }
 
@@ -74,10 +78,12 @@ fn invalid_row(row: &str) -> String {
 pub fn create_schema(tx: &Transaction<'_>) -> rusqlite::Result<()> {
     let mut sql = String::from(
         "CREATE TABLE IF NOT EXISTS approvals (
-            id TEXT PRIMARY KEY, agent TEXT NOT NULL, turn TEXT, created REAL NOT NULL,
-            kind TEXT NOT NULL, request TEXT NOT NULL, state TEXT NOT NULL,
+            id TEXT PRIMARY KEY, agent TEXT NOT NULL, turn TEXT, created REAL NOT NULL, epoch INTEGER,
+            kind TEXT NOT NULL, request TEXT NOT NULL, delivery TEXT, detail TEXT NOT NULL,
+            state TEXT NOT NULL,
             answer TEXT, command TEXT, answered_by TEXT, at REAL, since REAL, reason TEXT,
-            fire_at REAL, hidden INTEGER NOT NULL DEFAULT 0 CHECK(hidden IN (0,1)));
+            deferral_active INTEGER, deferral_at REAL, deferral_by TEXT,
+            fire_at REAL, hidden_at REAL, hidden_by TEXT);
          CREATE INDEX IF NOT EXISTS approvals_turn ON approvals(turn,state);
          CREATE INDEX IF NOT EXISTS approvals_agent_open ON approvals(agent) WHERE state IN ('pending','answering');
          CREATE INDEX IF NOT EXISTS approvals_fire_at ON approvals(fire_at) WHERE fire_at IS NOT NULL;",
@@ -102,13 +108,15 @@ pub struct NewApproval {
     pub agent: AgentId,
     /// None only for agent-level kinds (`RequestKind::TURN_OPTIONAL`).
     pub turn: Option<TurnId>,
+    pub epoch: Option<u64>,
     pub request: Request,
+    pub delivery: Option<Delivery>,
+    pub detail: Detail,
     /// Expiry of a pending approval (Claude full access mode), or none.
     pub fire_at: Option<Timestamp>,
 }
 
-const COLUMNS: &str =
-    "id,agent,turn,created,request,state,answer,command,answered_by,at,since,reason,fire_at,hidden";
+const COLUMNS: &str = "id,agent,turn,created,request,state,answer,command,answered_by,at,since,reason,fire_at,hidden_at,epoch,delivery,detail,deferral_active,deferral_at,deferral_by,hidden_by";
 
 fn stored(id: &str, reason: impl ToString) -> ApprovalError {
     ApprovalError::Stored {
@@ -154,15 +162,45 @@ fn decode(row: &Row<'_>) -> ApprovalResult<Approval> {
         },
         other => return Err(stored(&id, format!("unknown state {other}"))),
     };
-    let hidden: i64 = row.get(13)?;
+    let optional_json = |index: usize| -> rusqlite::Result<Option<String>> { row.get(index) };
+    let who = |index: usize, name: &str| -> ApprovalResult<Principal> {
+        Ok(serde_json::from_str(&need(optional_json(index)?, name)?)?)
+    };
+    let stamp = |index: usize, name: &str| -> ApprovalResult<Timestamp> {
+        Ok(Timestamp(
+            row.get::<_, Option<f64>>(index)?
+                .ok_or_else(|| stored(&id, name))?,
+        ))
+    };
+    let deferral = match row.get::<_, Option<i64>>(17)? {
+        None => None,
+        Some(active) => Some(Deferral {
+            active: active == 1,
+            at: stamp(18, "deferral_at")?,
+            by: who(19, "deferral_by")?,
+        }),
+    };
+    let hidden = match row.get::<_, Option<f64>>(13)? {
+        None => None,
+        Some(at) => Some(Hidden {
+            at: Timestamp(at),
+            by: who(20, "hidden_by")?,
+        }),
+    };
     Ok(Approval {
         agent: AgentId(row.get(1)?),
         turn: row.get::<_, Option<String>>(2)?.map(TurnId),
         created: Timestamp(row.get(3)?),
         request: serde_json::from_str(&row.get::<_, String>(4)?)?,
+        epoch: row.get::<_, Option<i64>>(14)?.map(|epoch| epoch as u64),
+        delivery: optional_json(15)?
+            .map(|text| serde_json::from_str::<Delivery>(&text))
+            .transpose()?,
+        detail: serde_json::from_str(&need(optional_json(16)?, "detail")?)?,
         state,
+        deferral,
         fire_at: row.get::<_, Option<f64>>(12)?.map(Timestamp),
-        hidden: hidden == 1,
+        hidden,
         id: ApprovalId(id),
     })
 }
@@ -191,14 +229,14 @@ fn select(
 
 /// Visible approvals of a turn. Hidden rows stay in the table.
 pub fn for_turn(tx: &Transaction<'_>, turn: &TurnId) -> ApprovalResult<Vec<Approval>> {
-    select(tx, "turn=?1 AND hidden=0", [turn.as_str()])
+    select(tx, "turn=?1 AND hidden_at IS NULL", [turn.as_str()])
 }
 
 pub(crate) fn insert(tx: &Transaction<'_>, row: &Approval) -> ApprovalResult<()> {
     let (answer, command, by, at, since, reason) = columns(&row.state)?;
     tx.execute(
-        "INSERT INTO approvals(id,agent,turn,created,kind,request,state,answer,command,answered_by,at,since,reason,fire_at,hidden)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+        "INSERT INTO approvals(id,agent,turn,created,kind,request,state,answer,command,answered_by,at,since,reason,fire_at,hidden_at,epoch,delivery,detail,deferral_active,deferral_at,deferral_by,hidden_by)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
         params![
             row.id.as_str(),
             row.agent.as_str(),
@@ -214,7 +252,14 @@ pub(crate) fn insert(tx: &Transaction<'_>, row: &Approval) -> ApprovalResult<()>
             since,
             reason,
             row.fire_at.map(|t| t.0),
-            row.hidden
+            row.hidden.as_ref().map(|h| h.at.0),
+            row.epoch.map(|epoch| epoch as i64),
+            row.delivery.as_ref().map(serde_json::to_string).transpose()?,
+            serde_json::to_string(&row.detail)?,
+            row.deferral.as_ref().map(|d| d.active),
+            row.deferral.as_ref().map(|d| d.at.0),
+            row.deferral.as_ref().map(|d| serde_json::to_string(&d.by)).transpose()?,
+            row.hidden.as_ref().map(|h| serde_json::to_string(&h.by)).transpose()?
         ],
     )?;
     Ok(())
@@ -301,10 +346,14 @@ pub fn create(tx: &Transaction<'_>, new: NewApproval, now: Timestamp) -> Approva
         agent: new.agent,
         turn: new.turn,
         created: now,
+        epoch: new.epoch,
         request: new.request,
+        delivery: new.delivery,
+        detail: new.detail,
         state: ApprovalState::Pending,
+        deferral: None,
         fire_at: new.fire_at,
-        hidden: false,
+        hidden: None,
     };
     insert(tx, &row)?;
     Ok(row)
@@ -327,14 +376,18 @@ pub fn create_policy_answered(
         agent: new.agent,
         turn: new.turn,
         created: now,
+        epoch: new.epoch,
         request: new.request,
+        delivery: new.delivery,
+        detail: new.detail,
         state: ApprovalState::Answered {
             answer,
             by: Principal::Policy,
             at: now,
         },
+        deferral: None,
         fire_at: None,
-        hidden: false,
+        hidden: None,
     };
     insert(tx, &row)?;
     Ok(row)
@@ -520,10 +573,21 @@ pub fn expire_due(tx: &Transaction<'_>, now: Timestamp) -> ApprovalResult<Vec<Ex
 }
 
 /// History stays. A hidden row is not shown in the default list.
-pub fn set_hidden(tx: &Transaction<'_>, id: &ApprovalId, hidden: bool) -> ApprovalResult<()> {
+pub fn set_hidden(
+    tx: &Transaction<'_>,
+    id: &ApprovalId,
+    hidden: Option<Hidden>,
+) -> ApprovalResult<()> {
     let changed = tx.execute(
-        "UPDATE approvals SET hidden=?2 WHERE id=?1",
-        params![id.as_str(), hidden],
+        "UPDATE approvals SET hidden_at=?2,hidden_by=?3 WHERE id=?1",
+        params![
+            id.as_str(),
+            hidden.as_ref().map(|h| h.at.0),
+            hidden
+                .as_ref()
+                .map(|h| serde_json::to_string(&h.by))
+                .transpose()?
+        ],
     )?;
     if changed == 0 {
         return Err(ApprovalError::NotFound(id.0.clone()));
@@ -535,7 +599,7 @@ pub fn set_hidden(tx: &Transaction<'_>, id: &ApprovalId, hidden: bool) -> Approv
 mod tests {
     use super::*;
     use rusqlite::Connection;
-    use studio_runtime_schema::approvals::{Question, QuestionAnswer};
+    use studio_runtime_schema::approvals::{ProviderObject, Question, QuestionAnswer};
 
     fn db() -> Connection {
         let mut db = Connection::open_in_memory().unwrap();
@@ -559,6 +623,8 @@ mod tests {
                 header: None,
                 options: vec![],
                 is_secret: false,
+                multi_select: None,
+                is_other: None,
             }],
         }
     }
@@ -573,7 +639,15 @@ mod tests {
             id: ApprovalId(id.into()),
             agent: AgentId(agent.into()),
             turn: Some(TurnId(turn.into())),
+            epoch: None,
             request,
+            delivery: None,
+            detail: Detail {
+                params: ProviderObject(Default::default()),
+                preview: None,
+                answer_error: None,
+                host_close_reason: None,
+            },
             fire_at: fire_at.map(Timestamp),
         }
     }
@@ -882,9 +956,23 @@ mod tests {
         let mut db = db();
         let tx = db.transaction().unwrap();
         create(&tx, new("a", "A", "t", exec(), None), Timestamp(1.0)).unwrap();
-        set_hidden(&tx, &ApprovalId("a".into()), true).unwrap();
+        set_hidden(
+            &tx,
+            &ApprovalId("a".into()),
+            Some(Hidden {
+                at: Timestamp(2.0),
+                by: Principal::Owner,
+            }),
+        )
+        .unwrap();
         assert!(for_turn(&tx, &TurnId("t".into())).unwrap().is_empty());
-        assert!(get(&tx, &ApprovalId("a".into())).unwrap().unwrap().hidden);
+        assert!(
+            get(&tx, &ApprovalId("a".into()))
+                .unwrap()
+                .unwrap()
+                .hidden
+                .is_some()
+        );
     }
 
     #[test]
@@ -907,7 +995,7 @@ mod tests {
         let insert = |state: &str, extra: &str| {
             db.execute(
                 &format!(
-                    "INSERT INTO approvals(id,agent,turn,created,kind,request,state{}) VALUES (lower(hex(randomblob(4))),'a','t',1,'exec','{{\"kind\":\"exec\",\"command\":\"\",\"cwd\":\"\",\"reason\":null}}','{state}'{})",
+                    "INSERT INTO approvals(id,agent,turn,created,kind,request,detail,state{}) VALUES (lower(hex(randomblob(4))),'a','t',1,'exec','{{\"kind\":\"exec\",\"command\":\"\",\"cwd\":\"\",\"reason\":null}}','{{}}','{state}'{})",
                     if extra.is_empty() { "" } else { ",answer" },
                     if extra.is_empty() { String::new() } else { format!(",'{extra}'") }
                 ),
@@ -934,7 +1022,7 @@ mod tests {
     #[test]
     fn unknown_stored_values_are_errors() {
         let mut db = db();
-        db.execute_batch("DROP TRIGGER approvals_check_insert; INSERT INTO approvals(id,agent,turn,created,kind,request,state) VALUES ('x','a','t',1,'exec','{\"kind\":\"nope\"}','pending');").unwrap();
+        db.execute_batch("DROP TRIGGER approvals_check_insert; INSERT INTO approvals(id,agent,turn,created,kind,request,detail,state) VALUES ('x','a','t',1,'exec','{\"kind\":\"nope\"}','{}','pending');").unwrap();
         let tx = db.transaction().unwrap();
         assert!(get(&tx, &ApprovalId("x".into())).is_err());
     }
