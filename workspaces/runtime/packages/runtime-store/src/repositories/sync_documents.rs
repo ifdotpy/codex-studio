@@ -507,13 +507,25 @@ impl SyncDocumentsRepository {
         deleted: bool,
     ) -> StoreResult<bool> {
         #[derive(serde::Serialize)]
-        struct Entity<'a, T> { collection: &'a str, id: &'a str, value: T }
+        struct Entity<'a, T> {
+            collection: &'a str,
+            id: &'a str,
+            value: T,
+        }
         #[derive(serde::Serialize)]
         struct Empty {}
         let payload = if deleted {
-            serde_json::to_string(&Entity { collection, id, value: Empty {} })?
+            serde_json::to_string(&Entity {
+                collection,
+                id,
+                value: Empty {},
+            })?
         } else {
-            serde_json::to_string(&Entity { collection, id, value })?
+            serde_json::to_string(&Entity {
+                collection,
+                id,
+                value,
+            })?
         };
         Self::put_entity_payload(transaction, collection, id, &payload, deleted)
     }
@@ -828,10 +840,22 @@ fn read_entity_page(
     } else {
         "seq"
     };
+    // View collections (agents, requests, work) are found through `durable_view_log`,
+    // which lists the changed view ids by the shared sequence; their payloads still come
+    // from `sync_entities`. Other collections are read by sequence as before.
+    let views = crate::durable_seq::view_collection_list();
     let mut statement = transaction.prepare_cached(&format!(
-        "SELECT collection,id,seq,payload,deleted FROM sync_entities \
-         WHERE collection NOT LIKE 'transcript:%' AND (?7 IS NULL OR collection IN (SELECT value FROM json_each(?7))) AND seq>?1 \
-           AND (deleted=0 OR seq>?2) AND (?3=0 OR deleted=0 OR seq>?4) \
+        "SELECT collection,id,seq,payload,deleted FROM ( \
+           SELECT collection,id,seq,payload,deleted FROM sync_entities \
+            WHERE collection NOT LIKE 'transcript:%' AND collection NOT IN ({views}) \
+              AND (?7 IS NULL OR collection IN (SELECT value FROM json_each(?7))) AND seq>?1 \
+              AND (deleted=0 OR seq>?2) AND (?3=0 OR deleted=0 OR seq>?4) \
+           UNION ALL \
+           SELECT e.collection,e.id,e.seq,e.payload,e.deleted FROM durable_view_log v \
+            JOIN sync_entities e ON e.collection=v.collection AND e.id=v.id \
+            WHERE v.seq>?1 AND e.seq>?1 \
+              AND (?7 IS NULL OR v.collection IN (SELECT value FROM json_each(?7))) \
+              AND (e.deleted=0 OR e.seq>?2) AND (?3=0 OR e.deleted=0 OR e.seq>?4)) \
          ORDER BY {order} LIMIT ?6",
     ))?;
     statement
@@ -904,6 +928,8 @@ mod tests {
             WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<2000)
             INSERT INTO sync_entities SELECT 'other',printf('other-%d',x),x,'{}',0 FROM n;
             INSERT INTO sync_entities VALUES('task','selected',2001,'{}',0);").expect("page fixture");
+        db.execute_batch(&crate::durable_seq::view_log_sql())
+            .expect("view log");
         db
     }
 
@@ -1346,6 +1372,9 @@ mod tests {
              INSERT INTO sync_entities VALUES('agent','a',2,'a','{}',0),('agent','b',4,'b','{}',0),('agent','gone',5,'g','{}',1),('transcript:a','item:x',6,'x',NULL,0);
              INSERT INTO sync_entity_meta VALUES('entity_tombstone_floor','1');",
         ).expect("fixture");
+        connection
+            .execute_batch(&crate::durable_seq::view_log_sql())
+            .expect("view log");
         let transaction = connection.transaction().expect("snapshot");
         let current =
             SyncDocumentsRepository::resume_entities(&transaction, Some(5), None, None, 100)

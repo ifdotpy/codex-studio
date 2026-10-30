@@ -77,12 +77,18 @@ pub const VIEW_COLLECTIONS: &[&str] = &[
     "workRelease",
 ];
 
-fn view_log_sql() -> String {
-    let list = VIEW_COLLECTIONS
+/// `VIEW_COLLECTIONS` as an SQL list: `'agent','agentSummary',...`.
+pub(crate) fn view_collection_list() -> String {
+    VIEW_COLLECTIONS
         .iter()
         .map(|collection| format!("'{collection}'"))
         .collect::<Vec<_>>()
-        .join(",");
+        .join(",")
+}
+
+/// DDL, backfill and mirror triggers of `durable_view_log`; needs `sync_entities`.
+pub(crate) fn view_log_sql() -> String {
+    let list = view_collection_list();
     let mirror = "INSERT INTO durable_view_log(collection,id,seq,deleted)
          VALUES(NEW.collection,NEW.id,NEW.seq,NEW.deleted)
          ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,deleted=excluded.deleted;";
