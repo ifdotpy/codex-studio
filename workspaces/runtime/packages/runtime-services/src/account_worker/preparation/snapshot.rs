@@ -1517,7 +1517,8 @@ pub(super) fn submission_snapshot(
         Vec::new()
     };
     for (_, raw) in team {
-        let v: Value = serde_json::from_str(&raw).map_err(|_| invalid("worker"))?;
+        let worker: AgentRecord = serde_json::from_str(&raw).map_err(|_| invalid("worker"))?;
+        let v = worker.value();
         let status = match v["status"].as_str() {
             Some("completed") => turn::WorkerStatus::Completed,
             Some("failed") => turn::WorkerStatus::Failed,
@@ -1536,7 +1537,7 @@ pub(super) fn submission_snapshot(
                 .get("deletedAt")
                 .is_some_and(|v| !v.is_null() && v != &json!(0)),
             status,
-            auto_wake: flag(&v, "autoWake")?,
+            auto_wake: worker.auto_wake.unwrap_or(false),
         });
     }
     let mut assets = Vec::new();
