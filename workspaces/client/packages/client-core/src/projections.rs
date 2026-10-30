@@ -1,14 +1,12 @@
 //! Durable server projections. Sequence numbers include deletion tombstones.
-use crate::{
-    protocol::{Request, Response},
-    sync::optional_field,
-};
+use crate::protocol::{Request, Response};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use studio_client_domain::{
     MAX_SAFE_INTEGER,
+    json_object::optional_field,
     sync_entity::{EntityChange, MAX_ENTITY_SCOPE_BYTES},
 };
 

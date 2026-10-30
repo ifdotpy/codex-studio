@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, time::Duration};
 use studio_client_domain::{
-    json_object::JsonObject,
+    json_object::{JsonObject, LenientField},
     sync_entity::{EntityChange, SYNC_ENTITY_PAGE_LIMIT},
 };
 
@@ -80,27 +80,6 @@ pub async fn open(backend: &Backend, sender: &StoreSender) -> Result<Value, Comm
         Ok(Err(failure)) => Err(failure),
         Err(_) => Err(error("timeout", "The server did not respond in time.")),
     }
-}
-
-// Historical payload fields may have types that must be ignored.
-#[derive(Deserialize)]
-#[serde(untagged)]
-pub(crate) enum LenientField<T> {
-    Value(T),
-    Other(serde::de::IgnoredAny),
-}
-
-pub(crate) fn optional_field<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
-{
-    Ok(
-        match Option::<LenientField<T>>::deserialize(deserializer)? {
-            Some(LenientField::Value(value)) => Some(value),
-            _ => None,
-        },
-    )
 }
 
 #[derive(Deserialize)]

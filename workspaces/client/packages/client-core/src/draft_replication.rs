@@ -10,6 +10,7 @@ use crate::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+use studio_client_domain::json_object::optional_field;
 
 // DraftDocumentInput uses `deleted`; local projections use `_deleted`.
 #[derive(serde::Serialize)]
@@ -49,11 +50,11 @@ fn wire_rows(rows: &[DraftRow]) -> Vec<WireRow<'_>> {
 #[derive(Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PullPage {
-    #[serde(default, deserialize_with = "sync::optional_field")]
+    #[serde(default, deserialize_with = "optional_field")]
     workspace_id: Option<String>,
-    #[serde(default, deserialize_with = "sync::optional_field")]
+    #[serde(default, deserialize_with = "optional_field")]
     checkpoint: Option<studio_client_domain::json_object::JsonObject<PullCheckpoint>>,
-    #[serde(default, deserialize_with = "sync::optional_field")]
+    #[serde(default, deserialize_with = "optional_field")]
     documents: Option<Vec<Value>>,
 }
 #[derive(serde::Deserialize)]
@@ -73,7 +74,7 @@ struct PendingCheckpoint {
 }
 #[derive(serde::Deserialize)]
 struct PullCheckpoint {
-    #[serde(default, deserialize_with = "sync::optional_field")]
+    #[serde(default, deserialize_with = "optional_field")]
     seq: Option<u64>,
 }
 impl PullPage {
