@@ -96,7 +96,11 @@ fn optional_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>
 }
 
 #[derive(Default, Deserialize)]
-struct RowCommand {
+struct ProjectionInput {
+    #[serde(default, deserialize_with = "optional_text")]
+    workspace: Option<String>,
+    #[serde(default, deserialize_with = "optional_text")]
+    scope: Option<String>,
     #[serde(default, deserialize_with = "optional_text")]
     prefix: Option<String>,
     #[serde(default, deserialize_with = "optional_text")]
@@ -115,7 +119,7 @@ struct RowIdentity {
     #[serde(default, deserialize_with = "optional_number")]
     seq: Option<u64>,
 }
-fn row_prefix(params: &RowCommand) -> Result<&str, String> {
+fn row_prefix(params: &ProjectionInput) -> Result<&str, String> {
     let prefix = params.prefix.as_deref().ok_or("Missing row prefix.")?;
     if prefix.is_empty()
         || prefix.len() > MAX_ROW_PREFIX_BYTES
@@ -134,16 +138,6 @@ struct IdentityInput {
     workspace_id: Option<String>,
     #[serde(default, rename = "chatState", deserialize_with = "optional_bool")]
     chat_state: bool,
-}
-#[derive(Default, Deserialize)]
-struct ProjectionWorkspace {
-    #[serde(default, deserialize_with = "optional_text")]
-    workspace: Option<String>,
-}
-#[derive(Default, Deserialize)]
-struct ProjectionScope {
-    #[serde(default, deserialize_with = "optional_text")]
-    scope: Option<String>,
 }
 fn optional_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
     Ok(Value::deserialize(d)?.as_bool().unwrap_or(false))
@@ -166,7 +160,7 @@ fn row_scope(prefix: &str, id: &str) -> Result<String, String> {
 fn get_rows(
     connection: &Connection,
     workspace: &str,
-    params: &RowCommand,
+    params: &ProjectionInput,
     raw: &Value,
 ) -> Result<Value, String> {
     let prefix = row_prefix(params)?;
@@ -189,7 +183,7 @@ fn get_rows(
 fn range_rows(
     connection: &Connection,
     workspace: &str,
-    params: &RowCommand,
+    params: &ProjectionInput,
 ) -> Result<Value, String> {
     let prefix = row_prefix(params)?;
     let base = format!("{ROW_NAMESPACE}{prefix}/");
@@ -232,7 +226,7 @@ fn range_rows(
 fn put_rows(
     connection: &Connection,
     workspace: &str,
-    params: &RowCommand,
+    params: &ProjectionInput,
     raw: &Value,
 ) -> Result<Value, String> {
     let prefix = row_prefix(params)?;
@@ -272,7 +266,7 @@ fn put_rows(
 fn prune_rows(
     connection: &Connection,
     workspace: &str,
-    params: &RowCommand,
+    params: &ProjectionInput,
 ) -> Result<Value, String> {
     let prefix = row_prefix(params)?;
     // ';' follows ':' and '0' follows '/': the bounds enclose the namespace and the kept prefix.
@@ -673,7 +667,7 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
         }
         return Ok(identity);
     }
-    let input: ProjectionWorkspace = projection(&request.params);
+    let input: ProjectionInput = projection(&request.params);
     let workspace = input
         .workspace
         .as_deref()
@@ -688,16 +682,11 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
             | "projection.putRows"
             | "projection.pruneRows"
     ) {
-        let command: RowCommand = if request.params.is_object() {
-            RowCommand::deserialize(&request.params).unwrap_or_default()
-        } else {
-            RowCommand::default()
-        };
         return match request.method.as_str() {
-            "projection.getRows" => get_rows(connection, workspace, &command, &request.params),
-            "projection.rangeRows" => range_rows(connection, workspace, &command),
-            "projection.putRows" => put_rows(connection, workspace, &command, &request.params),
-            "projection.pruneRows" => prune_rows(connection, workspace, &command),
+            "projection.getRows" => get_rows(connection, workspace, &input, &request.params),
+            "projection.rangeRows" => range_rows(connection, workspace, &input),
+            "projection.putRows" => put_rows(connection, workspace, &input, &request.params),
+            "projection.pruneRows" => prune_rows(connection, workspace, &input),
             _ => unreachable!(),
         };
     }
@@ -724,7 +713,6 @@ fn execute(connection: &Connection, request: &Request) -> Result<Value, String> 
             .map_err(|error| error.to_string())?;
         return Ok(Value::Bool(changed != 0));
     }
-    let input: ProjectionScope = projection(&request.params);
     let scope = input.scope.as_deref().ok_or("Missing projection scope.")?;
     if scope.is_empty() || scope.len() > MAX_PROJECTION_SCOPE_BYTES {
         return Err("Invalid projection identity.".into());
