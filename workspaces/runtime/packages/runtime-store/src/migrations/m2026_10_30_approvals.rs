@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 use studio_runtime_schema::approvals::{
     AgentId, Answer, Approval, ApprovalId, ApprovalState, CloseReason, CommandId, Decision,
     Deferral, Delivery, Detail, Hidden, Principal, ProviderObject, Question, QuestionAnswer,
-    QuestionOption, Request, RequestKind, RpcId, Supervisor, Timestamp, TurnId,
+    Request, RequestKind, RpcId, Supervisor, Timestamp, TurnId,
 };
 
 use crate::approvals;
@@ -45,26 +45,6 @@ struct LegacyHistory {
     #[allow(dead_code)]
     is_secret: Option<bool>,
     answer: Vec<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyOption {
-    label: String,
-    description: Option<String>,
-    preview: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LegacyQuestion {
-    id: Option<String>,
-    question: Option<String>,
-    header: Option<String>,
-    options: Option<Vec<LegacyOption>>,
-    is_secret: Option<bool>,
-    multi_select: Option<bool>,
-    is_other: Option<bool>,
 }
 
 /// Every key a `runtime_requests` record has. An unknown key fails the migration.
@@ -117,30 +97,7 @@ fn questions(id: &str, params: &mut Map<String, Value>) -> StoreResult<Vec<Quest
     let Some(list) = params.remove("questions") else {
         return Ok(Vec::new());
     };
-    let list: Vec<LegacyQuestion> =
-        serde_json::from_value(list).map_err(|e| bad(id, &format!("questions: {e}")))?;
-    Ok(list
-        .into_iter()
-        .enumerate()
-        .map(|(index, q)| Question {
-            id: q.id.unwrap_or_else(|| index.to_string()),
-            question: q.question.unwrap_or_default(),
-            header: q.header,
-            options: q
-                .options
-                .unwrap_or_default()
-                .into_iter()
-                .map(|o| QuestionOption {
-                    label: o.label,
-                    description: o.description,
-                    preview: o.preview,
-                })
-                .collect(),
-            is_secret: q.is_secret.unwrap_or(false),
-            multi_select: q.multi_select,
-            is_other: q.is_other,
-        })
-        .collect())
+    approvals::questions_from_provider(list, true).map_err(|e| bad(id, &format!("questions: {e}")))
 }
 
 fn take_text(params: &mut Map<String, Value>, key: &str) -> Option<String> {

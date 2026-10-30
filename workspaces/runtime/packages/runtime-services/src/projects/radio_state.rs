@@ -343,7 +343,7 @@ pub(super) fn pending_question(
     agent: &str,
     turn: &str,
 ) -> Result<bool, ProjectsError> {
-    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_requests WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.turnId')=?2 AND json_extract(record,'$.method')='agent/asyncQuestion' AND json_extract(record,'$.status')='pending')",params![agent,turn],|r|r.get(0))?)
+    Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM approvals WHERE agent=?1 AND turn=?2 AND kind='agent_question' AND state='pending')",params![agent,turn],|r|r.get(0))?)
 }
 pub(super) fn unsent_cancelled(db: &Connection, active: &Active) -> Result<bool, ProjectsError> {
     let Some(event) = event(db, active)? else {
