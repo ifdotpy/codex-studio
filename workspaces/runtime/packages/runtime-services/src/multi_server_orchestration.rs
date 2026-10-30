@@ -698,21 +698,6 @@ impl RuntimeOrchestrationEffects {
         }
     }
 
-    pub fn with_browser_callback(
-        store: Arc<RuntimeStore>,
-        browser_callback: Arc<dyn BrowserCallbackEffect>,
-    ) -> Self {
-        Self {
-            store,
-            browser_callback,
-            default_account: "default".to_owned(),
-            known_accounts: Vec::new(),
-            lifecycle_ports: None,
-            update_offer: Arc::new(crate::peer_updates::Offer::installed()),
-            projects_changed: None,
-        }
-    }
-
     pub fn with_project_accounts(
         store: Arc<RuntimeStore>,
         browser_callback: Arc<dyn BrowserCallbackEffect>,
