@@ -1243,7 +1243,7 @@ mod replay_identity_tests {
     use super::*;
 
     fn monitor_fixture() -> studio_runtime_store::MonitorRecord {
-        serde_json::from_str(r#"{"id":"watch","agent":"agent-1","epoch":7,"status":"running","requestId":"watch","created":1.0,"activityAt":1.0,"activityGeneration":0,"bytes":0,"command":"true","cwd":"/tmp","interactive":false,"livenessCommand":"","log":"/tmp/watch.log","stallTimeoutSeconds":0,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit"}"#).expect("monitor fixture")
+        serde_json::from_str(r#"{"id":"watch","agent":"agent-1","epoch":7,"status":"running","requestId":"watch","created":1.0,"activityAt":1.0,"activityGeneration":0,"bytes":0,"command":"true","cwd":"/fixture","interactive":false,"livenessCommand":"","log":"/fixture/watch.log","stallTimeoutSeconds":0,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit"}"#).expect("monitor fixture")
     }
 
     #[tokio::test]
