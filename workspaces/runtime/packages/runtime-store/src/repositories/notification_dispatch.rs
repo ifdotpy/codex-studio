@@ -276,11 +276,10 @@ impl NotificationDispatchRepository {
             )
             .optional()?;
         if let Some(meta) = meta {
-            let parsed: Value = serde_json::from_str(&meta)
-                .map_err(|_| invalid_record("runtime_event_meta", event_id))?;
-            if !parsed.is_object() {
-                return Err(invalid_record("runtime_event_meta", event_id));
-            }
+            serde_json::from_str::<
+                studio_runtime_schema::json_object::JsonObject<serde::de::IgnoredAny>,
+            >(&meta)
+            .map_err(|_| invalid_record("runtime_event_meta", event_id))?;
             transaction.execute_cached(
                 "UPDATE runtime_event_meta SET record=json_set(record,'$.transcriptItemId',?1,'$.modelEventProjection',1) WHERE id=?2",
                 params![item_id, event_id],
