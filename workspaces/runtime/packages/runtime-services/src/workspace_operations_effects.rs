@@ -6,9 +6,7 @@ use crate::workspace_operations::{
 use serde_json::Value;
 use std::sync::Arc;
 use studio_runtime_store::workspace_operations::WorkspaceOperationsRepository as Repository;
-use studio_runtime_store::{
-    CaptureKind, CheckpointsRepository, Connection, RuntimeStore, StoreError,
-};
+use studio_runtime_store::{CaptureKind, CheckpointsRepository, RuntimeStore, StoreError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceEffectsError {
@@ -150,19 +148,6 @@ pub async fn recover_operations(
             Ok(count)
         })
         .await
-}
-
-/// Inspect an exact restore/branch retry without dispatching or modifying its journal.
-pub fn inspect_retry(
-    db: &Connection,
-    operation_id: &str,
-    signature: &str,
-) -> Result<crate::workspace_operations::RetryDecision, WorkspaceEffectsError> {
-    let operation = Repository::operation(db, operation_id)?
-        .ok_or(WorkspaceOperationError::RecoveryRequired)?;
-    let agent = operation.agent.as_str();
-    let actor = CheckpointsRepository::agent(db, agent)?.ok_or(CheckpointsError::UnknownAgent)?;
-    Ok(OperationSnapshot::from_checked(operation, &actor.record)?.retry(signature)?)
 }
 
 /// The account worker delivers a known response using the ticket stored before dispatch.

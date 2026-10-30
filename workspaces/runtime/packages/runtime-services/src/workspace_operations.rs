@@ -167,11 +167,6 @@ pub struct RecoveryWrites {
 }
 
 impl OperationSnapshot {
-    pub fn from_records(operation: &Value, agent: &Value) -> Result<Self> {
-        let typed: WorkspaceOperationRecord =
-            decode("PersistedWorkspaceOperationRecord", operation)?;
-        Self::from_checked(typed, agent)
-    }
     pub fn from_checked(operation: WorkspaceOperationRecord, agent: &Value) -> Result<Self> {
         let actor: CompletionIdentity = decode("WorkspaceCheckpointAgentRecord", agent)?;
         if operation.agent != actor.id {

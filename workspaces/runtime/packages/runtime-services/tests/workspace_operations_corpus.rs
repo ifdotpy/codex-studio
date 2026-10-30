@@ -60,9 +60,12 @@ fn complete_python_outputs_match_checked_snapshots() {
                 json!({"actor":case["actor"],"eligible":snapshot.eligible(&request)})
             }
             "recovery" => {
-                let snapshot =
-                    OperationSnapshot::from_records(&stored["operations"][0], &stored["actor"])
-                        .expect("operation");
+                let snapshot = OperationSnapshot::from_checked(
+                    serde::Deserialize::deserialize(&stored["operations"][0])
+                        .expect("typed operation"),
+                    &stored["actor"],
+                )
+                .expect("operation");
                 let writes = snapshot.recover(10.0);
                 if matches!(
                     case["operations"][0]["phase"].as_str(),
@@ -145,7 +148,11 @@ fn receipt_identity_and_unknown_provider_outcomes_never_allow_redispatch() {
     for kind in ["branch", "restore"] {
         for phase in ["provider_pending", "local_mutation", "recovery_required"] {
             let op = json!({"id":"operation","kind":kind,"agent":"agent","phase":phase,"signature":"signature","source":{"accountKey":"default","threadId":null,"cwd":"/workspace"}});
-            let snapshot = OperationSnapshot::from_records(&op, &actor).expect("snapshot");
+            let snapshot = OperationSnapshot::from_checked(
+                serde::Deserialize::deserialize(&op).expect("typed operation"),
+                &actor,
+            )
+            .expect("snapshot");
             assert_eq!(
                 snapshot.retry("signature").expect("decision"),
                 RetryDecision::InspectWorkspace
@@ -685,14 +692,5 @@ async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_
         )
         .expect("read"),
         accepted
-    );
-    assert_eq!(
-        inspect_retry(
-            &f.store.test_reader().expect("test reader"),
-            &expected.operation,
-            "signature",
-        )
-        .expect("retry"),
-        RetryDecision::ResumeLocal(response)
     );
 }
