@@ -3856,7 +3856,7 @@ mod tests {
                 .query_row("SELECT count(*) FROM request_results", [], |row| row
                     .get::<_, i64>(0))
                 .expect("result count"),
-            2
+            0
         );
         assert_eq!(
             write(&mut connection, &retry, true).expect("identical replay"),
@@ -3987,6 +3987,11 @@ mod tests {
             DispatchOutcome::Written
         );
         transaction.commit().expect("submission commits");
+        let receipts: i64 = connection.query_row(
+            "SELECT count(*) FROM request_results WHERE id LIKE '%provider-submission%'",
+            [], |row| row.get(0),
+        ).expect("submission receipts");
+        assert_eq!(receipts, 0, "the typed submission owner holds the outcome");
         let item = TranscriptRepository::item(&connection, "agent", "agent:e1")
             .expect("user item reads")
             .expect("batch row exists");
@@ -4037,16 +4042,8 @@ mod tests {
         transaction.commit().expect("deleted-agent replay commits");
         let now = chrono::Utc::now().timestamp_millis();
         let expired = now - studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS - 1;
-        connection
-            .execute("UPDATE request_results SET created=?1", [expired])
-            .expect("age response");
         connection.execute("UPDATE runtime_event_meta SET record=json_set(record,'$.providerSubmission.admission.created',?1)", [expired]).expect("age admitted owner");
-        let tx = connection.transaction().expect("GC transaction");
-        assert_eq!(
-            studio_runtime_store::request_results::RequestResults::gc(&tx, now)
-                .expect("bounded GC"),
-            1
-        );
+        let tx = connection.transaction().expect("expired replay transaction");
         assert!(matches!(
             record_user_submission(&tx, "agent", &submission),
             Err(super::NotificationDispatchError::RequestResult(
@@ -4122,7 +4119,7 @@ mod tests {
             tx.query_row("SELECT count(*) FROM request_results", [], |row| row
                 .get::<_, i64>(0))
                 .expect("exact result count"),
-            1
+            0
         );
     }
 
