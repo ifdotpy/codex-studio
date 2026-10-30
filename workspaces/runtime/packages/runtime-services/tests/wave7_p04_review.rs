@@ -615,7 +615,7 @@ async fn deferring_a_question_publishes_the_request_entity() {
     let request = id.clone();
     store
         .transaction_with_error(move |tx| {
-            studio_runtime_services::questions_write::defer_question(tx, &request, true, |_| true)
+            studio_runtime_services::questions_write::defer_question(tx, &request, true)
         })
         .await
         .expect("defer the question");
@@ -674,7 +674,6 @@ for (key, value) in [
             let data = json!({"answers":{"q":{"answers":["yes"]},"secret":{"answers":["private"]},"legacy":{"answers":null}},"decision":null});
             let input = |data, now| AsyncQuestionAnswerInput {
                 id: "question", data, admission: &Allow, prepared: &prepared, now,
-                validate: |_: &serde_json::Value| true,
             };
             let mut malformed = data.clone();
             malformed["answers"]["q"]["answers"] = json!(["yes", 7]);
@@ -687,7 +686,6 @@ for (key, value) in [
                     admission: &Allow,
                     prepared: &prepared,
                     now: 30.0,
-                    validate: |_: &serde_json::Value| true,
                 },
             )?;
             assert!(!answer_async_question(tx, input(&data, 30.5))?.event_inserted);

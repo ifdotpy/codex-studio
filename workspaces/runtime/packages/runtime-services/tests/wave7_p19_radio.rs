@@ -420,7 +420,10 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             radio_runtime::route_question_answer(
                 db,
                 &prepared,
-                &case["body"]["question"],
+                &studio_runtime_store::approvals::from_legacy_record(
+                    "q",
+                    &case["body"]["question"],
+                )?,
                 case["body"]["text"].as_str().unwrap_or("answer"),
                 None,
                 1000.0,
@@ -724,7 +727,7 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
     let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
     let question = case["body"]["question"].clone();
     store.transaction_with(move |db|->Result<(),ProjectsError> {
-        assert_eq!(radio_runtime::route_question_answer(db,&prepared,&question,"answer",None,1000.0)?, radio_runtime::QuestionAnswerRoute::ConsumedByRadio);
+        assert_eq!(radio_runtime::route_question_answer(db,&prepared,&studio_runtime_store::approvals::from_legacy_record("q",&question)?,"answer",None,1000.0)?, radio_runtime::QuestionAnswerRoute::ConsumedByRadio);
         db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;
         Ok(())
     }).await.expect("P04 caller commits both writes");
