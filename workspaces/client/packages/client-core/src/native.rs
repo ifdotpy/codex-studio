@@ -174,7 +174,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 DraftSync(Request),
                 Speech(Request),
                 Media(Request),
-                Notify(Request),
                 Voice(Request),
                 Stored(String, tokio::sync::oneshot::Receiver<Response>),
                 Immediate(Response),
@@ -192,7 +191,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 Ok(request) if pure(&request.method) => Work::Immediate(compute(&request)),
                 Ok(request) if request.method.starts_with("speech.") => Work::Speech(request),
                 Ok(request) if request.method.starts_with("media.") => Work::Media(request),
-                Ok(request) if request.method == "notifications.show" => Work::Notify(request),
                 Ok(request) if request.method.starts_with("voice.") => Work::Voice(request),
                 Ok(request) if request.method.starts_with("desktop.") => Work::Desktop(request),
                 Ok(request) if request.method == "system.start" => Work::Startup(request),
@@ -260,12 +258,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                     Work::Speech(request) => crate::speech::dispatch(request).await,
                     Work::Media(request) => crate::media::dispatch(request).await,
                     Work::Voice(request) => crate::voice::dispatch(request).await,
-                    Work::Notify(request) => {
-                        match crate::notifications::notify(&request.params["value"]).await {
-                            Ok(value) => Response::success(request.id, value),
-                            Err(error) => Response::failure(request.id, "notification", error),
-                        }
-                    }
                     Work::Action(request) => match backend.as_ref() {
                         Ok(backend) => crate::actions::submit(backend, &sender, request).await,
                         Err(error) => Response::failure(request.id, "backend_config", error),
