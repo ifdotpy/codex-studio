@@ -1140,8 +1140,10 @@ exit 0"#;
             &extract_body("mkdir \"$4/__MACOSX\"; "),
         );
         f.puller.pull().await.unwrap();
-        assert_eq!(status_of(&f)["lastPull"]["reason"],
-            "The update archive does not hold only the app: 'Codex Studio.app', '__MACOSX'");
+        assert_eq!(
+            status_of(&f)["lastPull"]["reason"],
+            "The update archive does not hold only the app: 'Codex Studio.app', '__MACOSX'"
+        );
         assert!(read_pending(&f.state()).is_none());
         assert!(read_names(&f.state().join("updates")).is_empty());
     }
@@ -1181,7 +1183,10 @@ exit 0"#;
         let f = fixture().await;
         f.link.corrupt_chunks.store(1, Ordering::SeqCst);
         f.puller.pull().await.unwrap();
-        assert_eq!(status_of(&f)["lastPull"]["reason"], "Invalid update archive chunk");
+        assert_eq!(
+            status_of(&f)["lastPull"]["reason"],
+            "Invalid update archive chunk"
+        );
         assert!(read_pending(&f.state()).is_none());
         assert!(read_names(&f.state().join("updates")).is_empty());
         let status = status_of(&f);
@@ -1220,7 +1225,10 @@ exit 0"#;
         let f = fixture().await;
         std::fs::write(f.peer_app.join("Contents/CERTIFICATE"), "Another Signing").unwrap();
         f.puller.pull().await.unwrap();
-        assert_eq!(status_of(&f)["lastPull"]["reason"], "Another certificate signed the build");
+        assert_eq!(
+            status_of(&f)["lastPull"]["reason"],
+            "Another certificate signed the build"
+        );
         assert!(read_pending(&f.state()).is_none());
         assert!(!f.state().join("updates").join("1791980000.25").exists());
     }

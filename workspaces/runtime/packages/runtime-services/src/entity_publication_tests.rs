@@ -859,7 +859,9 @@ async fn synced_agent_values_recompute_the_view_and_create_a_missing_entity() {
             let mut agent = AgentRepository::get(tx, &"sync-worker".into())?.expect("worker");
             agent.status = studio_runtime_store::AgentStatus::Completed;
             agent.last_answer = Some("The work is done.".into());
-            agent.extra.insert("lastCompletedTurn".into(), json!("turn-1"));
+            agent
+                .extra
+                .insert("lastCompletedTurn".into(), json!("turn-1"));
             AgentRepository::put(tx, &agent)?;
             studio_runtime_store::EventWriteRepository::set_agent_sync_values(
                 tx,
@@ -1120,9 +1122,11 @@ async fn conversation_detail_entities_remove_private_answers_and_hard_deleted_so
 
 /// A lost monitor of `agent`, created and finished at `at`.
 fn lost_monitor(id: &str, agent: &str, at: f64) -> String {
-    crate::monitor_policy::complete_test_monitor(json!({"id":id,"agent":agent,"status":"lost","exitCode":null,
+    crate::monitor_policy::complete_test_monitor(
+        json!({"id":id,"agent":agent,"status":"lost","exitCode":null,
         "error":"Command outcome unknown after losing the provider result; not rerun.",
-        "command":format!("run {id}"),"created":at,"finished":at}))
+        "command":format!("run {id}"),"created":at,"finished":at}),
+    )
     .to_string()
 }
 
@@ -1206,7 +1210,9 @@ async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
     );
     let before = full_publications(&store).await;
 
-    let running = crate::monitor_policy::complete_test_monitor(json!({"id":"running","agent":CHAT,"status":"running","created":now,"tail":""}));
+    let running = crate::monitor_policy::complete_test_monitor(
+        json!({"id":"running","agent":CHAT,"status":"running","created":now,"tail":""}),
+    );
     write(
         &store,
         "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",

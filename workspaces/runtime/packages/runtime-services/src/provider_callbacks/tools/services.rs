@@ -159,7 +159,8 @@ fn monitor_cancel_owner(
     caller: &str,
     monitor_id: &str,
 ) -> Result<String, crate::managed_host_tools::Error> {
-    let owner = studio_runtime_store::MonitorsRepository::get(tx, monitor_id)?.map(|monitor| monitor.agent);
+    let owner =
+        studio_runtime_store::MonitorsRepository::get(tx, monitor_id)?.map(|monitor| monitor.agent);
     match owner {
         Some(owner) if owner != caller && is_descendant(tx, caller, &owner)? => Ok(owner),
         _ => Ok(caller.to_owned()),
@@ -326,17 +327,35 @@ impl crate::managed_host_tools::ContextPort for ProductionPorts {
     ) -> Result<crate::managed_host_tools::OperationResult, crate::managed_host_tools::Error> {
         let topic = args["topic"].as_str().unwrap_or_default();
         if topic == "monitor" {
-            let id = args["id"].as_str().ok_or(crate::managed_host_tools::Error::Invalid("Missing monitor id"))?;
-            let (snapshot, monitor_actor) = crate::monitor_runtime::snapshot(tx, id).map_err(monitor_context_error)?;
+            let id = args["id"]
+                .as_str()
+                .ok_or(crate::managed_host_tools::Error::Invalid(
+                    "Missing monitor id",
+                ))?;
+            let (snapshot, monitor_actor) =
+                crate::monitor_runtime::snapshot(tx, id).map_err(monitor_context_error)?;
             if monitor_actor.root_id != actor.record().root_id {
-                return Err(crate::managed_host_tools::Error::Invalid("Unknown monitor in this team"));
+                return Err(crate::managed_host_tools::Error::Invalid(
+                    "Unknown monitor in this team",
+                ));
             }
             let content = snapshot.record();
-            let bytes = serde_json::to_vec(content).map_err(studio_runtime_store::StoreError::from)?;
+            let bytes =
+                serde_json::to_vec(content).map_err(studio_runtime_store::StoreError::from)?;
             let version = studio_runtime_store::sha256_hex(&bytes)[..24].to_owned();
             #[derive(serde::Serialize)]
-            struct Context<'a> { topic: &'a str, version: String, content: &'a studio_runtime_store::MonitorRecord }
-            return Ok(crate::managed_host_tools::OperationResult::reply(&Context { topic, version, content }));
+            struct Context<'a> {
+                topic: &'a str,
+                version: String,
+                content: &'a studio_runtime_store::MonitorRecord,
+            }
+            return Ok(crate::managed_host_tools::OperationResult::reply(
+                &Context {
+                    topic,
+                    version,
+                    content,
+                },
+            ));
         }
         let content = context::topic(tx, actor, topic, self.preparation.as_deref())?;
         let version = studio_runtime_store::sha256_hex(
@@ -494,11 +513,14 @@ impl crate::managed_host_tools::ReviewPort for ProductionPorts {
         let root =
             studio_runtime_store::ContextRepairRepository::agent(tx, &actor.record().root_id.0)?
                 .ok_or(crate::managed_host_tools::Error::Stale)?;
-        let directory = actor
-            .record().cwd.as_deref()
-            .ok_or(crate::managed_host_tools::Error::Unavailable(
-                "agent-create/worker-driver",
-            ))?;
+        let directory =
+            actor
+                .record()
+                .cwd
+                .as_deref()
+                .ok_or(crate::managed_host_tools::Error::Unavailable(
+                    "agent-create/worker-driver",
+                ))?;
         let key = args
             .get("request_id")
             .and_then(Value::as_str)

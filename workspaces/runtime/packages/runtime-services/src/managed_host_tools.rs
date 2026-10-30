@@ -108,11 +108,9 @@ impl Actor {
         }
         Ok(Self {
             id: record.id.0.clone(),
-            name: record.name.as_deref()
-                .map(str::to_owned),
+            name: record.name.as_deref().map(str::to_owned),
             root_id: record.root_id.0.clone(),
-            parent_id: record.parent_id.as_deref()
-                .map(str::to_owned),
+            parent_id: record.parent_id.as_deref().map(str::to_owned),
             is_lead: record.is_lead == Some(true),
             reviewer: record.extra.get("role").and_then(Value::as_str) == Some("reviewer"),
             provider: record

@@ -362,7 +362,10 @@ pub async fn settle_submission(
                     if snapshot.launch_allowed(&check_for_tx) {
                         let mut decision = snapshot.recover(now)?;
                         if let Some(record) = &mut decision.record {
-                            record.error = Some("Monitor submission outcome unknown; check was not repeated.".into());
+                            record.error = Some(
+                                "Monitor submission outcome unknown; check was not repeated."
+                                    .into(),
+                            );
                         }
                         apply(tx, &owner(tx, snapshot.owner_id())?, &decision, now)?;
                     }
@@ -546,12 +549,29 @@ fn apply(
     let mut record = record.clone();
     if let Some(check) = &decision.check {
         record.launch_intent = Some(studio_runtime_schema::rule_record::LaunchIntent {
-            rule_id: check.rule_id.clone(), agent_id: check.agent_id.clone(), monitor_id: check.monitor_id.clone(),
-            check_number: i64::try_from(check.check_number).map_err(|_| RuleError::Schema)?.try_into().map_err(|_| RuleError::Schema)?,
-            epoch: i64::try_from(check.epoch).map_err(|_| RuleError::Schema)?.try_into().map_err(|_| RuleError::Schema)?,
-            timeout_ms: i64::try_from(check.timeout_ms).map_err(|_| RuleError::Schema)?.try_into().map_err(|_| RuleError::Schema)?,
-            command: check.command.clone().try_into().map_err(|_| RuleError::Schema)?,
-            account_key: check.account_key.clone(), thread_id: check.thread_id.clone(), liveness: check.liveness,
+            rule_id: check.rule_id.clone(),
+            agent_id: check.agent_id.clone(),
+            monitor_id: check.monitor_id.clone(),
+            check_number: i64::try_from(check.check_number)
+                .map_err(|_| RuleError::Schema)?
+                .try_into()
+                .map_err(|_| RuleError::Schema)?,
+            epoch: i64::try_from(check.epoch)
+                .map_err(|_| RuleError::Schema)?
+                .try_into()
+                .map_err(|_| RuleError::Schema)?,
+            timeout_ms: i64::try_from(check.timeout_ms)
+                .map_err(|_| RuleError::Schema)?
+                .try_into()
+                .map_err(|_| RuleError::Schema)?,
+            command: check
+                .command
+                .clone()
+                .try_into()
+                .map_err(|_| RuleError::Schema)?,
+            account_key: check.account_key.clone(),
+            thread_id: check.thread_id.clone(),
+            liveness: check.liveness,
         });
     }
     RulesRepository::put(transaction, &record)?;
@@ -582,10 +602,15 @@ impl crate::monitor_runtime::RuleFinish for MonitorRuleFinish {
         use crate::monitor_policy::MonitorError;
         use studio_runtime_schema::studio_errors::MonitorStatus;
         // Replayed terminal receipts have already committed the rule alongside it.
-        if matches!(before.status, MonitorStatus::Completed | MonitorStatus::Failed | MonitorStatus::Cancelled) {
+        if matches!(
+            before.status,
+            MonitorStatus::Completed | MonitorStatus::Failed | MonitorStatus::Cancelled
+        ) {
             return Ok(());
         }
-        let rule_id = before.rule_id.as_deref()
+        let rule_id = before
+            .rule_id
+            .as_deref()
             .ok_or(MonitorError::Refused("Missing monitor rule identity"))?;
         // Python's rule_finished is a no-op after the rule row has been deleted.
         // Commit the monitor so its durable result receipt can be acknowledged.
@@ -598,7 +623,10 @@ impl crate::monitor_runtime::RuleFinish for MonitorRuleFinish {
             || before.agent.as_str() != check.agent_id
             || u64::try_from(before.epoch.get()).ok() != Some(check.epoch)
             || before.command.as_str() != check.command
-            || before.operation.as_ref().map(|operation| operation.account_key.as_str())
+            || before
+                .operation
+                .as_ref()
+                .map(|operation| operation.account_key.as_str())
                 .is_some_and(|account| account != check.account_key.as_deref().unwrap_or("default"))
         {
             return Err(MonitorError::Refused("Monitor rule identity changed"));

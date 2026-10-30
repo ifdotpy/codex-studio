@@ -94,7 +94,9 @@ pub fn checkpoint_list(
 }
 
 fn deleted_value(value: Option<&Value>) -> bool {
-    value.and_then(Value::as_f64).is_some_and(|number| number != 0.0)
+    value
+        .and_then(Value::as_f64)
+        .is_some_and(|number| number != 0.0)
 }
 
 fn string_member<'a>(record: &'a Map<String, Value>, name: &str) -> Option<&'a str> {

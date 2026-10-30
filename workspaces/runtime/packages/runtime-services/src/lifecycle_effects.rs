@@ -1511,7 +1511,12 @@ fn enqueue_turn_result(
                 .or(error.as_str())
                 .map_or_else(|| error.to_string(), str::to_owned)
         ),
-        None => json!(agent.last_answer.as_deref().unwrap_or("No final text returned")),
+        None => json!(
+            agent
+                .last_answer
+                .as_deref()
+                .unwrap_or("No final text returned")
+        ),
     };
     let assignments = crate::agent_progress::assignments(tx, &agent.id.0)?;
     let progress = crate::agent_progress::derive(tx, value, &assignments)?;

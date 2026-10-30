@@ -222,10 +222,9 @@ pub async fn speak(request: SpeakRequest) -> Result<Value, provider::VoiceProvid
             move |connection| -> Result<Option<String>, VoiceError> {
                 let agent =
                     AgentRepository::get(connection, &AgentId::from(agent_for_check.as_str()))?;
-                let Some(agent) = agent.filter(|agent| {
-                    agent.is_lead == Some(true)
-                        && !agent.is_deleted()
-                }) else {
+                let Some(agent) =
+                    agent.filter(|agent| agent.is_lead == Some(true) && !agent.is_deleted())
+                else {
                     return Err(VoiceError::InvalidRequest(
                         "Voice is available in an orchestrator chat only",
                     ));

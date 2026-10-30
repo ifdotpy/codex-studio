@@ -69,13 +69,24 @@ impl RulesTickRepository {
         let mut rows = query.query(params![root_id, MAX_TEAM_RECORDS as i64 + 1])?;
         let mut monitors = Vec::new();
         while let Some(row) = rows.next()? {
-            if monitors.len() == MAX_TEAM_RECORDS { return Err(StoreError::SchemaMismatch("rule activity snapshot exceeds its bound".into())); }
+            if monitors.len() == MAX_TEAM_RECORDS {
+                return Err(StoreError::SchemaMismatch(
+                    "rule activity snapshot exceeds its bound".into(),
+                ));
+            }
             let id: String = row.get(0)?;
             let raw: String = row.get(1)?;
-            let invalid = || StoreError::InvalidStoredRecord { object: "monitors", id: id.clone() };
-            if raw.len() > MAX_RECORD_BYTES { return Err(invalid()); }
+            let invalid = || StoreError::InvalidStoredRecord {
+                object: "monitors",
+                id: id.clone(),
+            };
+            if raw.len() > MAX_RECORD_BYTES {
+                return Err(invalid());
+            }
             let monitor: MonitorRecord = serde_json::from_str(&raw).map_err(|_| invalid())?;
-            if monitor.id != id { return Err(invalid()); }
+            if monitor.id != id {
+                return Err(invalid());
+            }
             monitors.push(monitor);
         }
         Ok(RuleActivity { agents, monitors })
@@ -135,13 +146,23 @@ mod typed_tests {
     #[test]
     fn page_checks_typed_rule_and_physical_identity() {
         let db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE runtime_rules(id TEXT PRIMARY KEY, record TEXT NOT NULL)").unwrap();
+        db.execute_batch("CREATE TABLE runtime_rules(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
         let raw = r#"{"id":"r","agent":"a","epoch":1,"name":"name","kind":"file","path":"fixture-file","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}"#;
-        db.execute("INSERT INTO runtime_rules VALUES ('r',?1)", [raw]).unwrap();
+        db.execute("INSERT INTO runtime_rules VALUES ('r',?1)", [raw])
+            .unwrap();
         assert_eq!(RulesTickRepository::page(&db, 0).unwrap()[0].rule.id, "r");
-        db.execute("UPDATE runtime_rules SET record=?1", [raw.replace("\"id\":\"r\"", "\"id\":\"other\"")]).unwrap();
+        db.execute(
+            "UPDATE runtime_rules SET record=?1",
+            [raw.replace("\"id\":\"r\"", "\"id\":\"other\"")],
+        )
+        .unwrap();
         assert!(RulesTickRepository::page(&db, 0).is_err());
-        db.execute("UPDATE runtime_rules SET record=?1", [raw.replace("\"path\":\"fixture-file\",", "")]).unwrap();
+        db.execute(
+            "UPDATE runtime_rules SET record=?1",
+            [raw.replace("\"path\":\"fixture-file\",", "")],
+        )
+        .unwrap();
         assert!(RulesTickRepository::page(&db, 0).is_err());
     }
 }

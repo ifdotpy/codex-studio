@@ -1013,7 +1013,8 @@ fn stored_parent_defaults(
     parent_id: &str,
     ignore_stored_worker_account: bool,
 ) -> studio_runtime_store::StoreResult<Option<StoredParentDefaults>> {
-    let Some(parent) = studio_runtime_store::WorkspaceViewsRepository::agent(connection, parent_id)?
+    let Some(parent) =
+        studio_runtime_store::WorkspaceViewsRepository::agent(connection, parent_id)?
     else {
         return Ok(None);
     };
@@ -1021,8 +1022,9 @@ fn stored_parent_defaults(
         parent_account: Some(parent.account_key.clone()),
         ..StoredParentDefaults::default()
     };
-    let root = studio_runtime_store::system_reads::get(connection, "runtime_agents", &parent.root_id.0)?
-        .unwrap_or_else(|| parent.value());
+    let root =
+        studio_runtime_store::system_reads::get(connection, "runtime_agents", &parent.root_id.0)?
+            .unwrap_or_else(|| parent.value());
     if !ignore_stored_worker_account {
         defaults.selected_account = root
             .pointer("/workerDefaults/accountKey")

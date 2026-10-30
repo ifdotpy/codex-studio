@@ -80,7 +80,6 @@ impl<'de> Deserialize<'de> for NonnegativeNumber {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use serde::{Deserialize, Serialize};

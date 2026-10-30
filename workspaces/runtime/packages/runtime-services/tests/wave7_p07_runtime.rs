@@ -65,7 +65,20 @@ fn normalize_agent_records(value: &mut Value) {
                 fields
                     .entry("accountKey")
                     .or_insert_with(|| json!("default"));
-                for key in ["threadId", "turnId", "parentId", "events", "lastEvent", "activity", "activeTools", "tail", "lastAnswer", "contextUsage", "tokensUsed", "tokenUsageAccounting"] {
+                for key in [
+                    "threadId",
+                    "turnId",
+                    "parentId",
+                    "events",
+                    "lastEvent",
+                    "activity",
+                    "activeTools",
+                    "tail",
+                    "lastAnswer",
+                    "contextUsage",
+                    "tokensUsed",
+                    "tokenUsageAccounting",
+                ] {
                     if fields.get(key).is_some_and(Value::is_null) {
                         fields.remove(key);
                     }
@@ -1115,10 +1128,16 @@ async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
         owner["events"] = json!(0);
         seed(&store, &owner).await;
         if bad == "agent" {
-            store.transaction(|tx| {
-                tx.execute("UPDATE runtime_agent_volatile SET events='-1' WHERE id='agent'", [])?;
-                Ok(())
-            }).await.expect("inject corrupt counter");
+            store
+                .transaction(|tx| {
+                    tx.execute(
+                        "UPDATE runtime_agent_volatile SET events='-1' WHERE id='agent'",
+                        [],
+                    )?;
+                    Ok(())
+                })
+                .await
+                .expect("inject corrupt counter");
         }
         let mut task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","kind":"tool","status":"running","created":1.0});
         if bad == "task" {

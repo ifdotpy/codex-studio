@@ -375,7 +375,11 @@ pub fn recheck(
             return Err(CreateError::IdentityChanged);
         }
     }
-    let cwd = drafts[0].cwd.as_deref().filter(|cwd| !cwd.is_empty()).ok_or(CreateError::InvalidCreation("cwd"))?;
+    let cwd = drafts[0]
+        .cwd
+        .as_deref()
+        .filter(|cwd| !cwd.is_empty())
+        .ok_or(CreateError::InvalidCreation("cwd"))?;
     if let Some((_, project)) = ProjectsRepository::get(transaction, cwd)?
         && project
             .get("accountKey")
@@ -411,7 +415,9 @@ pub fn recheck_worker(
         return Err(CreateError::IdentityChanged);
     }
     recheck_parent_epoch(transaction, draft, parent_epoch)?;
-    let parent_id = draft.parent_id.as_deref()
+    let parent_id = draft
+        .parent_id
+        .as_deref()
         .ok_or(CreateError::IdentityChanged)?;
     let parent =
         studio_runtime_store::AgentRepository::get(transaction, &AgentId::from(parent_id))?
@@ -560,9 +566,19 @@ fn validate_agent(record: &AgentRecord) -> Result<(), CreateError> {
         });
     }
     required_string(record, "provider")?;
-    record.cwd.as_deref().filter(|value| !value.is_empty()).ok_or(CreateError::InvalidCreation("cwd"))?;
-    record.workspace_mode.ok_or(CreateError::InvalidCreation("workspaceMode"))?;
-    record.model.as_deref().filter(|value| !value.is_empty()).ok_or(CreateError::InvalidCreation("model"))?;
+    record
+        .cwd
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or(CreateError::InvalidCreation("cwd"))?;
+    record
+        .workspace_mode
+        .ok_or(CreateError::InvalidCreation("workspaceMode"))?;
+    record
+        .model
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or(CreateError::InvalidCreation("model"))?;
     if record.epoch < 0 {
         return Err(CreateError::InvalidStoredObject {
             table: "runtime_agents",
@@ -863,10 +879,7 @@ mod tests {
             false,
         )
         .expect("review uses its validated target directory");
-        assert_eq!(
-            draft.cwd.as_deref(),
-            canonical_target.to_str()
-        );
+        assert_eq!(draft.cwd.as_deref(), canonical_target.to_str());
         assert_eq!(
             field(&draft, "_p02ParentCwd").and_then(Value::as_str),
             Some(fixture.cwd.as_str())
@@ -1007,10 +1020,7 @@ mod tests {
     fn rust_trim_keeps_python_strip_only_edge_controls() {
         let value = "\u{1c}edge\u{1c}";
         let fixture = worker_draft_fixture(value, value);
-        assert_eq!(
-            fixture.draft.name.as_deref(),
-            Some(value)
-        );
+        assert_eq!(fixture.draft.name.as_deref(), Some(value));
         assert_eq!(
             field(&fixture.draft, "prompt").and_then(Value::as_str),
             Some(value)
@@ -1138,8 +1148,7 @@ mod tests {
             &Catalog,
         )
         .expect("checked drafts");
-        let path = drafts[0].cwd.as_deref()
-            .expect("draft cwd");
+        let path = drafts[0].cwd.as_deref().expect("draft cwd");
         database
             .execute(
                 "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",

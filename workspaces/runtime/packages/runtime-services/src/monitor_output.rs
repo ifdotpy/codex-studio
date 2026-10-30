@@ -99,7 +99,10 @@ impl MonitorOutput {
             .transaction_with(move |tx| monitor_runtime::snapshot(tx, &id_owned))
             .await?;
         let count = before.record().bytes.get() as u64;
-        if before.operation().is_none_or(|current| !current.same_identity(operation)) {
+        if before
+            .operation()
+            .is_none_or(|current| !current.same_identity(operation))
+        {
             return Err(MonitorError::InvalidOutputReceipt(
                 "operation identity changed",
             ));
@@ -131,7 +134,10 @@ impl MonitorOutput {
         }
         let path = root.join(format!("{id}.log"));
         // The record can name the log through a link to the state root.
-        if !studio_runtime_store::path_identity::same(std::path::Path::new(&before.record().log), &path) {
+        if !studio_runtime_store::path_identity::same(
+            std::path::Path::new(&before.record().log),
+            &path,
+        ) {
             return Err(MonitorError::InvalidOutputReceipt(
                 "log path differs from state directory",
             ));

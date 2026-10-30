@@ -905,10 +905,13 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
         crate::managed_host_tools::DeliveryCertainty::Unknown,
     ] {
         let (_root, store, context) = fixture_arc().await;
-        store.read_async("test/monitor-snapshot", |tx| {
-            crate::monitor_runtime::snapshot(tx, &managed_monitor_id())?;
-            Ok::<_, crate::monitor_policy::MonitorError>(())
-        }).await.expect("fixture monitor snapshot");
+        store
+            .read_async("test/monitor-snapshot", |tx| {
+                crate::monitor_runtime::snapshot(tx, &managed_monitor_id())?;
+                Ok::<_, crate::monitor_policy::MonitorError>(())
+            })
+            .await
+            .expect("fixture monitor snapshot");
         let fake = Arc::new(ScriptedMonitorPort {
             certainty,
             calls: AtomicUsize::new(0),
@@ -1202,7 +1205,8 @@ fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)
                         ValueRef::Integer(value) => format!("i:{value}"),
                         ValueRef::Real(value) => format!("r:{value:?}"),
                         ValueRef::Text(value) if name == "runtime_monitors" && column == 1 => {
-                            let monitor: studio_runtime_store::MonitorRecord = serde_json::from_slice(value).unwrap();
+                            let monitor: studio_runtime_store::MonitorRecord =
+                                serde_json::from_slice(value).unwrap();
                             format!("t:{}", serde_json::to_string(&monitor).unwrap())
                         }
                         ValueRef::Text(value) => format!("t:{}", String::from_utf8_lossy(value)),
@@ -1375,7 +1379,10 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
     .await
     .unwrap();
     FAIL_MANAGED_WORKSPACE_PREPARATION.with(|fail| fail.set(false));
-    assert_eq!(serde_json::from_str::<Value>(adapter_replay.get()).unwrap(), saved);
+    assert_eq!(
+        serde_json::from_str::<Value>(adapter_replay.get()).unwrap(),
+        saved
+    );
 
     let replay =
         dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports.clone())

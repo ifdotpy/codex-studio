@@ -1226,10 +1226,9 @@ fn monitor_call(
         || call.scope.connection != operation.connection_id.as_str()
         || call.method != Method::CommandExec
         || call.params.get("processId").and_then(Value::as_str) != Some(id)
-        || call
-            .actor
-            .as_ref()
-            .is_none_or(|actor| actor.agent != operation.agent.as_str() || actor.epoch != operation.epoch.get())
+        || call.actor.as_ref().is_none_or(|actor| {
+            actor.agent != operation.agent.as_str() || actor.epoch != operation.epoch.get()
+        })
     {
         return Err(WorkerError::PreparationRefused(
             "monitor retained receipt identity changed".into(),
@@ -1287,10 +1286,16 @@ pub(crate) fn monitor_survives_account_transfer(
     let Some(actor) = AgentRepository::get(tx, &AgentId::from(agent))? else {
         return Ok(false);
     };
-    let Some(operation) = record.operation.as_ref() else { return Ok(false); };
+    let Some(operation) = record.operation.as_ref() else {
+        return Ok(false);
+    };
     if record.status != crate::monitor_policy::MonitorStatus::Running
-        || record.agent != agent || record.epoch.get() != actor.epoch
-        || operation.agent.as_str() != agent || operation.epoch.get() != actor.epoch || vm_actor(tx, agent)? {
+        || record.agent != agent
+        || record.epoch.get() != actor.epoch
+        || operation.agent.as_str() != agent
+        || operation.epoch.get() != actor.epoch
+        || vm_actor(tx, agent)?
+    {
         return Ok(false);
     }
     Ok(monitor_command_scope(tx, id, operation)?.is_some())

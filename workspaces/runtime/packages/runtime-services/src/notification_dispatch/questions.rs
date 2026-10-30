@@ -50,9 +50,7 @@ pub(crate) fn submit_agent_complaint(
         .ok_or_else(|| stored("runtime_agents", agent_id))?;
     let lead = AgentRepository::get(tx, &AgentId::from(lead_id))?
         .ok_or_else(|| stored("runtime_agents", lead_id))?;
-    if lead.is_lead != Some(true)
-        || lead.is_deleted()
-    {
+    if lead.is_lead != Some(true) || lead.is_deleted() {
         return Err(NotificationDispatchError::invalid());
     }
     let text = text.trim();
@@ -156,9 +154,7 @@ pub(crate) fn agent_complaint_action(
         .ok_or_else(|| stored("runtime_agents", actor_id))?;
     let root = AgentRepository::get(tx, &AgentId::from(root_id))?
         .ok_or_else(|| stored("runtime_agents", root_id))?;
-    if root.is_lead != Some(true)
-        || root.deleted_at.is_some()
-    {
+    if root.is_lead != Some(true) || root.deleted_at.is_some() {
         return Err(NotificationDispatchError::invalid());
     }
     match args["action"].as_str() {

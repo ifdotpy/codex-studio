@@ -84,11 +84,23 @@ struct FrozenMonitorOperation {
 struct FrozenMonitorOperationEvidence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     thread_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "frozen_present")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "frozen_present"
+    )]
     root_request_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "frozen_present")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "frozen_present"
+    )]
     provider_generation: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "frozen_present")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "frozen_present"
+    )]
     provider_request: Option<AdmittedRequest>,
 }
 impl PartialEq for FrozenMonitorOperationEvidence {
@@ -98,7 +110,9 @@ impl PartialEq for FrozenMonitorOperationEvidence {
             && self.provider_request == other.provider_request
     }
 }
-fn frozen_present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> std::result::Result<Option<T>, D::Error> {
+fn frozen_present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> std::result::Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
 

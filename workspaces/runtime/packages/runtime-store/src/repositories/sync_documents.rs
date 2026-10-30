@@ -503,13 +503,25 @@ impl SyncDocumentsRepository {
         deleted: bool,
     ) -> StoreResult<bool> {
         #[derive(serde::Serialize)]
-        struct Entity<'a, T> { collection: &'a str, id: &'a str, value: T }
+        struct Entity<'a, T> {
+            collection: &'a str,
+            id: &'a str,
+            value: T,
+        }
         #[derive(serde::Serialize)]
         struct Empty {}
         let payload = if deleted {
-            serde_json::to_string(&Entity { collection, id, value: Empty {} })?
+            serde_json::to_string(&Entity {
+                collection,
+                id,
+                value: Empty {},
+            })?
         } else {
-            serde_json::to_string(&Entity { collection, id, value })?
+            serde_json::to_string(&Entity {
+                collection,
+                id,
+                value,
+            })?
         };
         Self::put_entity_payload(transaction, collection, id, &payload, deleted)
     }

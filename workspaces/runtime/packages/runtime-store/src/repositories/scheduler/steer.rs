@@ -428,8 +428,8 @@ fn pending_steer_events(
 fn release(tx: &Transaction<'_>, id: &str, receipt: &SteerPayload) -> StoreResult<bool> {
     let agent_id = receipt.agent.as_str();
     let epoch = receipt.epoch;
-    let agent = load_agent(tx, agent_id)?
-        .filter(|agent| agent.epoch == epoch && !agent.is_deleted());
+    let agent =
+        load_agent(tx, agent_id)?.filter(|agent| agent.epoch == epoch && !agent.is_deleted());
     let returned = tx.execute_cached(
         "UPDATE runtime_events SET status=?1,turn_id=NULL,error=NULL \
          WHERE agent=?2 AND epoch=?3 AND id IN (SELECT value FROM json_each(?4)) \

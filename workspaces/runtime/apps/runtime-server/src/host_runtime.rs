@@ -2516,13 +2516,11 @@ mod voice_composition_tests {
                         execution_mode: None,
                         turn_epoch: None,
                         turn_id: None,
-                        extra: [
-                            (
-                                "provider".into(),
-                                serde_json::to_value(studio_runtime_schema::ProviderKind::Codex)
-                                    .unwrap(),
-                            ),
-                        ]
+                        extra: [(
+                            "provider".into(),
+                            serde_json::to_value(studio_runtime_schema::ProviderKind::Codex)
+                                .unwrap(),
+                        )]
                         .into(),
                         ..AgentRecord::test_defaults()
                     },

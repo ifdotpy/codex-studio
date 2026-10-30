@@ -62,7 +62,10 @@ async fn complete_python_answer_and_delete_corpus() {
             case["replay"]
         );
         assert_eq!(stored(&store, id), case["after"]);
-        assert_eq!(actor(&store, &context), normalized_actor(&case["afterActor"]));
+        assert_eq!(
+            actor(&store, &context),
+            normalized_actor(&case["afterActor"])
+        );
         assert_writes(&before_rows, &store, &case["writes"]);
         assert_eq!(
             frame_value(&port.calls.lock().unwrap().last().unwrap().frame()),
@@ -82,7 +85,10 @@ async fn complete_python_answer_and_delete_corpus() {
             assert_eq!(result.unwrap(), case["expected"]["result"]);
         }
         assert_eq!(stored(&store, id), case["after"], "{id}");
-        assert_eq!(actor(&store, &context), normalized_actor(&case["afterActor"]));
+        assert_eq!(
+            actor(&store, &context),
+            normalized_actor(&case["afterActor"])
+        );
         assert_writes(&before_rows, &store, &case["writes"]);
         let frames: Vec<_> = port.calls.lock().unwrap()[before..]
             .iter()
@@ -205,7 +211,10 @@ async fn python_resolution_rows_match_after_completed_or_cleared_turn() {
         .await
         .unwrap();
         assert_eq!(stored(&store, "resolve-card"), case["expected"]);
-        assert_eq!(actor(&store, &context), normalized_actor(&case["expectedActor"]));
+        assert_eq!(
+            actor(&store, &context),
+            normalized_actor(&case["expectedActor"])
+        );
         assert_writes(&before, &store, &case["writes"]);
     }
 }

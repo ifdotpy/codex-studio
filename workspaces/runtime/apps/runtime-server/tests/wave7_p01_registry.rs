@@ -62,14 +62,12 @@ fn claude_launch(
     account: &str,
     environment: BTreeMap<String, String>,
 ) -> Result<ProviderLaunchSpec, WorkerError> {
-    let profile =
-        studio_runtime_services::claude_bridge::ClaudeLaunchProfile::from_record(profile)
-            .map_err(|_| {
-                WorkerError::PreparationRefused(
-                    studio_runtime_services::provider_adapter::CLAUDE_ACCOUNT_IDENTITY_REFUSAL
-                        .into(),
-                )
-            })?;
+    let profile = studio_runtime_services::claude_bridge::ClaudeLaunchProfile::from_record(profile)
+        .map_err(|_| {
+            WorkerError::PreparationRefused(
+                studio_runtime_services::provider_adapter::CLAUDE_ACCOUNT_IDENTITY_REFUSAL.into(),
+            )
+        })?;
     adapter(ProviderKind::Claude)
         .host_launch(HostLaunch {
             profile: Some(&profile),
@@ -1958,10 +1956,20 @@ async fn recovery_selection_matches_frozen_scheduler_roster_without_changing_sto
         })
         .collect::<BTreeMap<_, _>>();
     let mut expected = fixture.agents["stored"].clone();
-    for record in expected.as_object_mut().expect("agent records").values_mut().chain(stored.values_mut()) {
+    for record in expected
+        .as_object_mut()
+        .expect("agent records")
+        .values_mut()
+        .chain(stored.values_mut())
+    {
         let fields = record.as_object_mut().expect("agent record");
-        for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS.into_iter().chain(["parentId", "threadId", "turnId"]) {
-            if fields.get(key).is_some_and(Value::is_null) { fields.remove(key); }
+        for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
+            .into_iter()
+            .chain(["parentId", "threadId", "turnId"])
+        {
+            if fields.get(key).is_some_and(Value::is_null) {
+                fields.remove(key);
+            }
         }
     }
     assert_eq!(json!(stored), expected);

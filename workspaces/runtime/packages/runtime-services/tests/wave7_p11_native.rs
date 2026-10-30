@@ -64,9 +64,28 @@ fn corpus() -> &'static Value {
         fn normalize_agents(value: &mut Value) {
             match value {
                 Value::Object(fields) => {
-                    if fields.contains_key("id") && fields.contains_key("rootId") && fields.contains_key("epoch") && fields.contains_key("status") {
-                        for key in ["parentId", "threadId", "turnId", "events", "lastEvent", "activity", "activeTools", "tail", "lastAnswer", "contextUsage", "tokensUsed", "tokenUsageAccounting"] {
-                            if fields.get(key).is_some_and(Value::is_null) { fields.remove(key); }
+                    if fields.contains_key("id")
+                        && fields.contains_key("rootId")
+                        && fields.contains_key("epoch")
+                        && fields.contains_key("status")
+                    {
+                        for key in [
+                            "parentId",
+                            "threadId",
+                            "turnId",
+                            "events",
+                            "lastEvent",
+                            "activity",
+                            "activeTools",
+                            "tail",
+                            "lastAnswer",
+                            "contextUsage",
+                            "tokensUsed",
+                            "tokenUsageAccounting",
+                        ] {
+                            if fields.get(key).is_some_and(Value::is_null) {
+                                fields.remove(key);
+                            }
                         }
                     }
                     fields.values_mut().for_each(normalize_agents);
@@ -175,8 +194,13 @@ fn db(case: &Value) -> Connection {
     studio_runtime_store::receipt_schema::create(&db).expect("receipt target schema");
     db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
-    studio_runtime_store::agent_volatile::put(&db, case["agent"]["id"].as_str().expect("agent id"), &case["agent"], false)
-        .expect("Python-written agent");
+    studio_runtime_store::agent_volatile::put(
+        &db,
+        case["agent"]["id"].as_str().expect("agent id"),
+        &case["agent"],
+        false,
+    )
+    .expect("Python-written agent");
     db
 }
 fn row(db: &Connection) -> Value {
@@ -203,7 +227,15 @@ fn row(db: &Connection) -> Value {
     .expect("saved row")
 }
 fn actor(db: &Connection) -> Value {
-    serde_json::from_str(&studio_runtime_store::AgentRepository::get_raw(db, &studio_runtime_store::AgentId::from("lead")).expect("agent").expect("row")).expect("agent JSON")
+    serde_json::from_str(
+        &studio_runtime_store::AgentRepository::get_raw(
+            db,
+            &studio_runtime_store::AgentId::from("lead"),
+        )
+        .expect("agent")
+        .expect("row"),
+    )
+    .expect("agent JSON")
 }
 fn ticket() -> ProviderTicket {
     ProviderTicket {
@@ -852,7 +884,8 @@ fn review_reservation_accepts_provider_progress_after_preparation() {
             "tokenUsageAccounting" => json!("total"),
             _ => unreachable!(),
         };
-        studio_runtime_store::agent_volatile::put(&db, "lead", &current, false).expect("provider progress");
+        studio_runtime_store::agent_volatile::put(&db, "lead", &current, false)
+            .expect("provider progress");
         let tx = db.transaction().expect("begin");
         native_review::reserve(&tx, &plan, &Creator(case["child"].clone()))
             .unwrap_or_else(|error| panic!("progress field {field} refused the review: {error}"));
