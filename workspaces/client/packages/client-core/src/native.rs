@@ -94,7 +94,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         let writer = Arc::new(tokio::sync::Mutex::new(writer));
         let permits = Arc::new(tokio::sync::Semaphore::new(64));
         let mut requests = tokio::task::JoinSet::new();
-        let startup = Arc::new(tokio::sync::Mutex::new(None::<serde_json::Value>));
         let active = Arc::new(AtomicBool::new(false));
         let mut background = tokio::task::JoinSet::new();
         let (events, mut event_receiver) = tokio::sync::mpsc::channel::<serde_json::Value>(64);
@@ -168,7 +167,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 Network(Request),
                 Action(Request),
                 Desktop(Request),
-                Startup(Request),
                 Delivery(Request),
                 Sync(Request),
                 DraftSync(Request),
@@ -193,7 +191,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 Ok(request) if request.method.starts_with("media.") => Work::Media(request),
                 Ok(request) if request.method.starts_with("voice.") => Work::Voice(request),
                 Ok(request) if request.method.starts_with("desktop.") => Work::Desktop(request),
-                Ok(request) if request.method == "system.start" => Work::Startup(request),
                 Ok(request) if request.method.starts_with("view.") => {
                     Work::Immediate(views.command(&request))
                 }
@@ -225,29 +222,9 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             let (writer, backend, sender) = (writer.clone(), backend.clone(), store_sender.clone());
             // Completed tasks must leave the set; the permit bounds active work.
             while requests.try_join_next().is_some() {}
-            let startup = startup.clone();
             requests.spawn(async move {
                 let _permit = permit;
                 let response = match work {
-                    Work::Startup(request) => {
-                        let mut ready = startup.lock().await;
-                        let result = if let Some(value) = ready.as_ref() {
-                            Ok(value.clone())
-                        } else {
-                            backend
-                                .as_ref()
-                                .as_ref()
-                                .map(|_| serde_json::json!({"ready": true}))
-                                .map_err(Clone::clone)
-                        };
-                        match result {
-                            Ok(value) => {
-                                *ready = Some(value.clone());
-                                Response::success(request.id, value)
-                            }
-                            Err(error) => Response::failure(request.id, "backend_startup", error),
-                        }
-                    }
                     Work::Desktop(request) => {
                         crate::desktop::dispatch(
                             request,
