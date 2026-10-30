@@ -1650,10 +1650,6 @@ fn table_exists(db: &Connection, name: &str) -> Result<bool, rusqlite::Error> {
         |r| r.get(0),
     )
 }
-#[derive(serde::Serialize)]
-struct TurnErrors {
-    turns: Vec<Value>,
-}
 pub fn require_agent(db: &Connection, agent: &str) -> Result<(), AnalyticsError> {
     let known: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM analytics_agents WHERE id=?1) OR EXISTS(SELECT 1 FROM canvas.runtime_agents WHERE id=?1)",[agent],|r|r.get(0))?;
     if known {
@@ -1666,12 +1662,36 @@ pub fn turn_errors(db: &Connection, keys: Vec<String>) -> Result<Value, Analytic
     let rows = ScopeFilter::new(db)
         .members("id", keys)
         .page("analytics_turns", "id", (-1, 0))?;
-    Ok(serde_json::to_value(TurnErrors {
-        turns: rows
-            .iter()
-            .map(|row| project(row, &["agentId", "threadId", "turnId", "status", "error"]))
+    let turns = rows
+        .iter()
+        .map(|row| project(row, &["agentId", "threadId", "turnId", "status", "error"]))
+        .collect();
+    Ok(Value::Object(
+        [("turns".into(), Value::Array(turns))]
+            .into_iter()
             .collect(),
-    })?)
+    ))
+}
+
+#[cfg(test)]
+mod turn_errors_tests {
+    use super::*;
+
+    #[test]
+    fn projects_only_requested_turn_error_fields() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE analytics_turns(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute("INSERT INTO analytics_turns VALUES(?1,?2)", rusqlite::params!["key", r#"{"agentId":"a","threadId":"t","turnId":"u","status":"failed","error":{"message":"no"},"private":"omit"}"#]).unwrap();
+        assert_eq!(
+            turn_errors(&db, vec!["key".into()]).unwrap(),
+            json!({"turns":[{"agentId":"a","threadId":"t","turnId":"u","status":"failed","error":{"message":"no"}}]})
+        );
+        assert_eq!(
+            turn_errors(&db, vec!["other".into()]).unwrap(),
+            json!({"turns":[]})
+        );
+    }
 }
 
 #[cfg(test)]

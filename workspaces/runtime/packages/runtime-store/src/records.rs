@@ -1358,6 +1358,14 @@ impl JsonRecord for MonitorRecord {
     fn monitor_status(&self) -> Option<&str> {
         Some(self.status.as_str())
     }
+    fn monitor_error_candidate(&self) -> bool {
+        use studio_runtime_schema::studio_errors::MonitorStatus;
+        self.status == MonitorStatus::Lost
+            || (self.status == MonitorStatus::Failed && self.exit_code.is_none())
+    }
+    fn monitor_created(&self) -> f64 {
+        self.created.seconds()
+    }
 }
 pub use studio_runtime_schema::terminal_record::TerminalRecord;
 
@@ -1826,6 +1834,14 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
         None
     }
 
+    fn monitor_error_candidate(&self) -> bool {
+        false
+    }
+
+    fn monitor_created(&self) -> f64 {
+        0.0
+    }
+
     fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
         decode_record::<Self>(connection, row_id, encoded)
     }
@@ -2139,8 +2155,8 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         let encoded = encode_record(record, id)?;
         if R::TABLE == MonitorRecord::TABLE {
             let changed = self.connection.execute(
-                "UPDATE runtime_monitors SET record=?1,stream_pending=?2,monitor_status=?3 WHERE id=?4",
-                params![encoded, record.monitor_stream_pending(), record.monitor_status(), id],
+                "UPDATE runtime_monitors SET record=?1,stream_pending=?2,monitor_status=?3,monitor_error_candidate=?4,monitor_created=?5 WHERE id=?6",
+                params![encoded, record.monitor_stream_pending(), record.monitor_status(), record.monitor_error_candidate(), record.monitor_created(), id],
             )?;
             return Ok(changed == 1);
         }
@@ -2159,12 +2175,12 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
         let encoded = encode_record(record, id)?;
         if R::TABLE == MonitorRecord::TABLE {
             let conflict = if update {
-                "DO UPDATE SET record=excluded.record,stream_pending=excluded.stream_pending,monitor_status=excluded.monitor_status"
+                "DO UPDATE SET record=excluded.record,stream_pending=excluded.stream_pending,monitor_status=excluded.monitor_status,monitor_error_candidate=excluded.monitor_error_candidate,monitor_created=excluded.monitor_created"
             } else {
                 "DO NOTHING"
             };
             let sql = format!(
-                "INSERT INTO runtime_monitors(id,record,stream_pending,monitor_status) VALUES (?1,?2,?3,?4) ON CONFLICT(id) {conflict}"
+                "INSERT INTO runtime_monitors(id,record,stream_pending,monitor_status,monitor_error_candidate,monitor_created) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(id) {conflict}"
             );
             let changed = self.connection.execute(
                 &sql,
@@ -2172,7 +2188,9 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
                     id,
                     encoded,
                     record.monitor_stream_pending(),
-                    record.monitor_status()
+                    record.monitor_status(),
+                    record.monitor_error_candidate(),
+                    record.monitor_created()
                 ],
             )?;
             return Ok(changed == 1);

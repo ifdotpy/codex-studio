@@ -1229,7 +1229,7 @@ async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
         "error":"","ruleId":"rule","created":now,"finished":now});
     write(
         &store,
-        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+        "INSERT INTO runtime_monitors(id,record,monitor_status,monitor_error_candidate) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'),0)",
         vec!["own-exit".into(), own_exit.to_string()],
     )
     .await;
