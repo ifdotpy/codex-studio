@@ -127,7 +127,7 @@ pnpm install --frozen-lockfile
 git config --local core.hooksPath .githooks
 just install
 pnpm --filter codex-agents-web run build
-pnpm --filter codex-agents-desktop run start
+just package-native /tmp/studio-package
 ```
 
 The root `pnpm install --frozen-lockfile` installs Oxlint and Oxfmt. Set `core.hooksPath` once per clone

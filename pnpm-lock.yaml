@@ -203,9 +203,6 @@ importers:
 
   workspaces/client/apps/desktop:
     devDependencies:
-      '@electron/packager':
-        specifier: 20.3.0
-        version: 20.3.0(supports-color@10.2.2)
       '@types/node':
         specifier: 26.6.5
         version: 26.6.5
