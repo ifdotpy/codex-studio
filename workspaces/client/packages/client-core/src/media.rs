@@ -1,4 +1,4 @@
-//! Microphone capture and recording playback for the Attar UI.
+//! Microphone capture for the Attar UI.
 //! Audio stays on native threads. The UI receives 16-bit PCM chunks as data.
 // The native paths here run only on macOS; other targets build the module for checks.
 #![cfg_attr(
@@ -138,10 +138,6 @@ struct CaptureParams {
     capture: CaptureId,
 }
 #[derive(Deserialize)]
-struct RecordingParams {
-    recording: CaptureId,
-}
-#[derive(Deserialize)]
 struct ReservationParams {
     reservation: String,
 }
@@ -150,8 +146,6 @@ enum Command {
     RequestMicrophone(String),
     CaptureStart(CaptureId),
     CaptureStop(CaptureId),
-    PlayRecording(CaptureId),
-    StopPlayback,
 }
 
 fn command(method: &str, params: Value) -> Result<Command, String> {
@@ -167,10 +161,6 @@ fn command(method: &str, params: Value) -> Result<Command, String> {
         "media.captureStop" => serde_json::from_value::<JsonObject<CaptureParams>>(params)
             .map(|JsonObject(p)| Command::CaptureStop(p.capture))
             .map_err(|_| "Invalid capture identity.".into()),
-        "media.playRecording" => serde_json::from_value::<JsonObject<RecordingParams>>(params)
-            .map(|JsonObject(p)| Command::PlayRecording(p.recording))
-            .map_err(|_| "Invalid capture identity.".into()),
-        "media.stopPlayback" => Ok(Command::StopPlayback),
         _ => Err("Unknown audio command.".into()),
     }
 }
@@ -239,10 +229,7 @@ pub async fn request_microphone() -> Result<Value, String> {
     }
 }
 
-pub async fn dispatch(
-    request: crate::protocol::Request,
-    store: &crate::delivery::StoreSender,
-) -> crate::protocol::Response {
+pub async fn dispatch(request: crate::protocol::Request) -> crate::protocol::Response {
     use crate::protocol::Response;
     let result = async {
         match command(&request.method, request.params)? {
@@ -283,44 +270,6 @@ pub async fn dispatch(
                     Ok(Value::Bool(false))
                 }
             }
-            Command::PlayRecording(CaptureId(recording)) => {
-                if crate::platform::hidden_check() {
-                    return Err("Hidden checks do not play audio.".to_owned());
-                }
-                let directory = tempfile::Builder::new()
-                    .prefix("codex-studio-playback-")
-                    .tempdir()
-                    .map_err(|e| e.to_string())?;
-                let exported = crate::delivery::state(
-                    store,
-                    "dictation.wav",
-                    json!({"id":recording,"directory":directory.path()}),
-                )
-                .await?;
-                let JsonObject(exported) =
-                    serde_json::from_value::<JsonObject<crate::dictation::WavExport>>(exported)
-                        .map_err(|_| "The recording was not exported.")?;
-                let path = exported.path;
-                #[cfg(target_os = "macos")]
-                {
-                    let duration = mac::on_main(move || mac::play(&path, directory)).await?;
-                    Ok(json!({"duration":duration}))
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let _ = (path, directory);
-                    Err("Playback requires macOS.".to_owned())
-                }
-            }
-            Command::StopPlayback => {
-                #[cfg(target_os = "macos")]
-                mac::on_main(|| {
-                    mac::stop_playback();
-                    Ok(())
-                })
-                .await?;
-                Ok(Value::Null)
-            }
         }
     }
     .await;
@@ -330,7 +279,7 @@ pub async fn dispatch(
     }
 }
 
-/// Stops every capture and playback when the UI disconnects.
+/// Stops every capture when the UI disconnects.
 pub fn close_all() {
     if let Ok(mut service) = service().lock() {
         service.subscribers.clear();
@@ -340,7 +289,6 @@ pub fn close_all() {
     #[cfg(target_os = "macos")]
     dispatch2::DispatchQueue::main().exec_async(|| {
         mac::stop_all();
-        mac::stop_playback();
     });
 }
 
@@ -352,8 +300,7 @@ pub(crate) mod mac {
     use block2::RcBlock;
     use objc2::{AnyThread, rc::Retained, runtime::Bool};
     use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
-    use objc2_avf_audio::{AVAudioEngine, AVAudioPCMBuffer, AVAudioPlayer, AVAudioTime};
-    use objc2_foundation::{NSString, NSURL};
+    use objc2_avf_audio::{AVAudioEngine, AVAudioPCMBuffer, AVAudioTime};
     use std::{cell::RefCell, ptr::NonNull, sync::Arc};
 
     pub async fn on_main<T: Send + 'static>(
@@ -414,7 +361,6 @@ pub(crate) mod mac {
     }
     thread_local! {
         static SESSIONS: RefCell<HashMap<String, Session>> = RefCell::new(HashMap::new());
-        static PLAYER: RefCell<Option<(Retained<AVAudioPlayer>, tempfile::TempDir)>> = const { RefCell::new(None) };
     }
 
     pub fn start(id: String, sender: mpsc::Sender<Value>) -> Result<(), String> {
@@ -516,26 +462,6 @@ pub(crate) mod mac {
             stop(&id, false);
         }
     }
-
-    pub fn play(path: &str, directory: tempfile::TempDir) -> Result<f64, String> {
-        stop_playback();
-        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-        let player =
-            unsafe { AVAudioPlayer::initWithContentsOfURL_error(AVAudioPlayer::alloc(), &url) }
-                .map_err(|e| e.localizedDescription().to_string())?;
-        if !unsafe { player.play() } {
-            return Err("The recording could not be played.".into());
-        }
-        let duration = unsafe { player.duration() };
-        PLAYER.with_borrow_mut(|current| *current = Some((player, directory)));
-        Ok(duration)
-    }
-
-    pub fn stop_playback() {
-        if let Some((player, _directory)) = PLAYER.with_borrow_mut(Option::take) {
-            unsafe { player.stop() };
-        }
-    }
 }
 
 #[cfg(test)]
@@ -562,7 +488,6 @@ mod tests {
             "media.requestMicrophone",
             "media.captureStart",
             "media.captureStop",
-            "media.playRecording",
         ] {
             assert!(command(method, json!(["capture"])).is_err());
         }
@@ -570,20 +495,12 @@ mod tests {
             command("media.unknown", json!([])).err().unwrap(),
             "Unknown audio command."
         );
-        assert!(
-            serde_json::from_value::<JsonObject<crate::dictation::WavExport>>(json!(["path"]))
-                .is_err()
-        );
         assert!(matches!(
             command(
                 "media.captureStart",
                 json!({"capture":"capture","extra":true})
             ),
             Ok(Command::CaptureStart(_))
-        ));
-        assert!(matches!(
-            command("media.stopPlayback", json!([1])),
-            Ok(Command::StopPlayback)
         ));
         assert!(
             service()
@@ -606,16 +523,12 @@ mod tests {
             .unwrap();
         close_all();
         let receiver = attach(&json!("capture")).unwrap();
-        let (store, mut requests) = mpsc::channel(1);
         for params in [json!({"capture": ""}), json!({"capture":"capture"})] {
-            let response = runtime.block_on(dispatch(
-                crate::protocol::Request {
-                    id: "request".into(),
-                    method: "media.captureStart".into(),
-                    params,
-                },
-                &store,
-            ));
+            let response = runtime.block_on(dispatch(crate::protocol::Request {
+                id: "request".into(),
+                method: "media.captureStart".into(),
+                params,
+            }));
             assert!(response.error.is_some());
             assert!(
                 service()
@@ -625,7 +538,6 @@ mod tests {
                     .contains_key("capture")
             );
         }
-        assert!(requests.try_recv().is_err());
         drop(receiver);
         close_all();
     }

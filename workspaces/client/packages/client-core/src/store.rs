@@ -88,7 +88,6 @@ impl Store {
         crate::projections::initialize(&connection)?;
         crate::draft_store::initialize(&connection)?;
         crate::uploads::initialize(&connection)?;
-        crate::dictation::initialize(&connection)?;
         Ok(Self { connection })
     }
 
@@ -107,9 +106,6 @@ impl Store {
         match request.method.as_str() {
             method if method.starts_with("uploads.") || method.starts_with("files.") => {
                 Ok(crate::uploads::stored(&mut self.connection, request))
-            }
-            method if method.starts_with("dictation.") => {
-                Ok(crate::dictation::stored(&mut self.connection, request))
             }
             method if method.starts_with("file_link.") => Ok(crate::file_links::dispatch(request)),
             "markdown.parse" => Ok(crate::markdown::dispatch(request)),
@@ -493,6 +489,41 @@ pub(crate) fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_dictation_commands_leave_existing_recordings_intact() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("client.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("CREATE TABLE client_dictation_recordings(id TEXT PRIMARY KEY, document TEXT NOT NULL); INSERT INTO client_dictation_recordings VALUES('old', 'saved'); CREATE TABLE client_dictation_chunks(id TEXT NOT NULL, position INTEGER NOT NULL, pcm BLOB NOT NULL, PRIMARY KEY(id, position)); INSERT INTO client_dictation_chunks VALUES('old', 0, X'0102');").unwrap();
+        drop(connection);
+        let mut store = Store::open(&path).unwrap();
+        let response = store.dispatch(Request {
+            id: "retired".into(),
+            method: "dictation.list".into(),
+            params: json!({"chatId":"chat"}),
+        });
+        assert_eq!(response.error.unwrap().code, "unknown_method");
+        let saved: String = store
+            .connection
+            .query_row(
+                "SELECT document FROM client_dictation_recordings WHERE id='old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let pcm: Vec<u8> = store
+            .connection
+            .query_row(
+                "SELECT pcm FROM client_dictation_chunks WHERE id='old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, "saved");
+        assert_eq!(pcm, [1, 2]);
+    }
+
     #[test]
     fn preference_inputs_preserve_shape_order_and_raw_remove_defaults() {
         let mut store = Store::open(Path::new(":memory:")).unwrap();

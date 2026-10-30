@@ -1,9 +1,6 @@
 //! On-device transcription of saved dictation. The native helper is the same
 //! Speech framework program that the Electron app packages.
-use crate::{
-    delivery::{StoreSender, state},
-    protocol::{Request, Response},
-};
+use crate::protocol::{Request, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -23,11 +20,6 @@ struct SpeechId<'a> {
 struct SpeechLocale<'a> {
     #[serde(borrow)]
     locale: Option<&'a str>,
-}
-#[derive(Default, Deserialize)]
-struct SpeechRecording<'a> {
-    #[serde(borrow)]
-    recording: Option<&'a str>,
 }
 #[derive(Default, Deserialize)]
 struct SpeechTransfer<'a> {
@@ -377,7 +369,7 @@ async fn run(
     }
 }
 
-async fn transcribe(store: &StoreSender, params: &Value) -> Result<Value, String> {
+async fn transcribe(params: &Value) -> Result<Value, String> {
     let id = project::<SpeechId<'_>>(params)
         .id
         .filter(|v| !v.is_empty() && v.len() <= 128)
@@ -387,10 +379,7 @@ async fn transcribe(store: &StoreSender, params: &Value) -> Result<Value, String
         .locale
         .filter(|v| valid_locale(v))
         .ok_or("Invalid speech language.")?;
-    let recording = project::<SpeechRecording<'_>>(params)
-        .recording
-        .filter(|v| !v.is_empty() && v.len() <= 128);
-    if recording.is_none() && project::<SpeechTransfer<'_>>(params).transfer.is_none() {
+    if project::<SpeechTransfer<'_>>(params).transfer.is_none() {
         return Err("Invalid recording.".into());
     }
     let (stop, stopped) = tokio::sync::watch::channel(false);
@@ -420,39 +409,21 @@ async fn transcribe(store: &StoreSender, params: &Value) -> Result<Value, String
         .prefix("codex-studio-speech-")
         .tempdir()
         .map_err(|e| e.to_string())?;
-    let file = if let Some(recording) = recording {
-        let exported = state(
-            store,
-            "dictation.wav",
-            json!({"id":recording,"directory":directory.path()}),
-        )
-        .await?;
-        let file = PathBuf::from(
-            exported["path"]
-                .as_str()
-                .ok_or("The recording was not exported.")?,
-        );
-        let bytes = tokio::fs::read(&file).await.map_err(|e| e.to_string())?;
-        validate_wav(&bytes)?;
-        file
-    } else {
-        let (_, bytes) = uploads()
-            .lock()
-            .map_err(|_| "The speech upload stopped.")?
-            .take(params, Instant::now())?;
-        validate_wav(&bytes)?;
-        let file = directory.path().join("recording.wav");
-        tokio::fs::write(&file, bytes)
-            .await
-            .map_err(|e| e.to_string())?;
-        file
-    };
+    let (_, bytes) = uploads()
+        .lock()
+        .map_err(|_| "The speech upload stopped.")?
+        .take(params, Instant::now())?;
+    validate_wav(&bytes)?;
+    let file = directory.path().join("recording.wav");
+    tokio::fs::write(&file, bytes)
+        .await
+        .map_err(|e| e.to_string())?;
     run(&helper()?, &file, locale, &id, stopped).await
 }
 
-pub async fn dispatch(store: &StoreSender, request: Request) -> Response {
+pub async fn dispatch(request: Request) -> Response {
     let result = match request.method.as_str() {
-        "speech.transcribe" => transcribe(store, &request.params).await,
+        "speech.transcribe" => transcribe(&request.params).await,
         "speech.cancel" => cancel_id(project::<SpeechId<'_>>(&request.params).id),
         "speech.uploadBegin" | "speech.uploadChunk" | "speech.uploadCancel" => {
             upload(&request.method, &request.params)
@@ -470,7 +441,6 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn speech_command_validation_keeps_permit_until_cancelled_attempt() {
-        let (store, mut receiver) = tokio::sync::mpsc::channel(1);
         let permit = prepare(Instant::now()).unwrap();
         let id = "speech-input-order-fixture";
         let request = |params| Request {
@@ -491,13 +461,13 @@ mod tests {
                 json!({"id":id,"locale":"en","recording":null,"transfer":null,"permit":permit}),
                 "Invalid recording.",
             ),
+            (
+                json!({"id":id,"locale":"en","recording":"old","permit":permit}),
+                "Invalid recording.",
+            ),
         ] {
             assert_eq!(
-                dispatch(&store, request(params))
-                    .await
-                    .error
-                    .unwrap()
-                    .message,
+                dispatch(request(params)).await.error.unwrap().message,
                 expected
             );
         }
@@ -505,14 +475,13 @@ mod tests {
         assert_eq!(bad.unwrap_err(), "Use the Transcribe button again.");
         cancel(&json!(id)).unwrap();
         let params = json!({"id":id,"locale":"en","recording":null,"transfer":"","permit":permit});
-        let first = dispatch(&store, request(params.clone())).await;
+        let first = dispatch(request(params.clone())).await;
         assert_eq!(first.error.unwrap().message, CANCELLED);
-        let replay = dispatch(&store, request(params)).await;
+        let replay = dispatch(request(params)).await;
         assert_eq!(
             replay.error.unwrap().message,
             "Use the Transcribe button again."
         );
-        assert!(receiver.try_recv().is_err());
     }
     #[test]
     fn speech_uploads_require_permission_preserve_bytes_and_cannot_authorize_saves() {
@@ -554,18 +523,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_before_dispatch_never_reads_the_saved_recording() {
+    async fn cancellation_before_dispatch_never_reads_the_upload() {
         let id = "cancel-before-worker";
         let permit = prepare(Instant::now()).unwrap();
         assert_eq!(cancel(&json!(id)).unwrap(), false);
-        let (store, mut receiver) = tokio::sync::mpsc::channel(1);
-        let result = transcribe(
-            &store,
-            &json!({"id":id,"permit":permit,"locale":"en-US","recording":"saved"}),
-        )
-        .await;
+        let result =
+            transcribe(&json!({"id":id,"permit":permit,"locale":"en-US","transfer":"saved"})).await;
         assert_eq!(result.unwrap_err(), CANCELLED);
-        assert!(receiver.try_recv().is_err());
     }
 
     #[test]
@@ -584,7 +548,7 @@ mod tests {
         ] {
             assert!(!valid_locale(bad), "{bad}");
         }
-        let mut wav = crate::dictation::wav_header(2, 16000).to_vec();
+        let mut wav = b"RIFF\x28\0\0\0WAVEfmt \x10\0\0\0\x01\0\x01\0\x80\x3e\0\0\0\x7d\0\0\x02\0\x10\0data\x04\0\0\0".to_vec();
         wav.extend([1, 0, 2, 0]);
         validate_wav(&wav).unwrap();
         let mut odd = wav.clone();
