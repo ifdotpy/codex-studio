@@ -90,6 +90,19 @@ pub(crate) enum LenientField<T> {
     Other(serde::de::IgnoredAny),
 }
 
+pub(crate) fn optional_field<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    Ok(
+        match Option::<LenientField<T>>::deserialize(deserializer)? {
+            Some(LenientField::Value(value)) => Some(value),
+            _ => None,
+        },
+    )
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum TranscriptPayload {

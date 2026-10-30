@@ -49,11 +49,11 @@ fn wire_rows(rows: &[DraftRow]) -> Vec<WireRow<'_>> {
 #[derive(Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PullPage {
-    #[serde(default, deserialize_with = "optional_field")]
+    #[serde(default, deserialize_with = "sync::optional_field")]
     workspace_id: Option<String>,
-    #[serde(default, deserialize_with = "optional_field")]
+    #[serde(default, deserialize_with = "sync::optional_field")]
     checkpoint: Option<studio_client_domain::json_object::JsonObject<PullCheckpoint>>,
-    #[serde(default, deserialize_with = "optional_field")]
+    #[serde(default, deserialize_with = "sync::optional_field")]
     documents: Option<Vec<Value>>,
 }
 #[derive(serde::Deserialize)]
@@ -73,20 +73,8 @@ struct PendingCheckpoint {
 }
 #[derive(serde::Deserialize)]
 struct PullCheckpoint {
-    #[serde(default, deserialize_with = "optional_field")]
+    #[serde(default, deserialize_with = "sync::optional_field")]
     seq: Option<u64>,
-}
-fn optional_field<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::de::DeserializeOwned,
-{
-    Ok(
-        match Option::<sync::LenientField<T>>::deserialize(deserializer)? {
-            Some(sync::LenientField::Value(value)) => Some(value),
-            _ => None,
-        },
-    )
 }
 impl PullPage {
     fn checked(self, workspace: &str, after: u64) -> Result<(u64, Vec<Value>), String> {

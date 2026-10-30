@@ -1,5 +1,8 @@
 //! Durable server projections. Sequence numbers include deletion tombstones.
-use crate::protocol::{Request, Response};
+use crate::{
+    protocol::{Request, Response},
+    sync::optional_field,
+};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize, de::IgnoredAny};
 use serde_json::{Value, json};
@@ -87,36 +90,28 @@ const MAX_ROW_BATCH: usize = 500;
 // Largest `rangeRows` reply in bytes of row JSON. One native message holds it.
 const MAX_ROWS_REPLY_BYTES: usize = crate::protocol::MAX_MESSAGE / 4;
 
-// Invalid field types retain the historical missing-field behavior at each access.
-fn optional_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
-}
-fn optional_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
-    Ok(Value::deserialize(d)?.as_u64())
-}
-
 #[derive(Default, Deserialize)]
 struct ProjectionInput {
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     workspace: Option<String>,
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     scope: Option<String>,
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     prefix: Option<String>,
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     gte: Option<String>,
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     gt: Option<String>,
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     lt: Option<String>,
-    #[serde(default, deserialize_with = "optional_number")]
+    #[serde(default, deserialize_with = "optional_field")]
     limit: Option<u64>,
 }
 #[derive(Default, Deserialize)]
 struct RowIdentity {
-    #[serde(default, deserialize_with = "optional_text")]
+    #[serde(default, deserialize_with = "optional_field")]
     id: Option<String>,
-    #[serde(default, deserialize_with = "optional_number")]
+    #[serde(default, deserialize_with = "optional_field")]
     seq: Option<u64>,
 }
 fn row_prefix(params: &ProjectionInput) -> Result<&str, String> {
@@ -134,13 +129,13 @@ fn row_prefix(params: &ProjectionInput) -> Result<&str, String> {
 
 #[derive(Default, Deserialize)]
 struct IdentityInput {
-    #[serde(default, rename = "workspaceId", deserialize_with = "optional_text")]
+    #[serde(default, rename = "workspaceId", deserialize_with = "optional_field")]
     workspace_id: Option<String>,
     #[serde(default, rename = "chatState", deserialize_with = "optional_bool")]
     chat_state: bool,
 }
 fn optional_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
-    Ok(Value::deserialize(d)?.as_bool().unwrap_or(false))
+    Ok(optional_field(d)?.unwrap_or(false))
 }
 fn projection<'de, T: Deserialize<'de> + Default>(value: &'de Value) -> T {
     if value.is_object() {
@@ -419,9 +414,7 @@ impl CursorArgument {
 
 impl<'de> Deserialize<'de> for CursorArgument {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Ok(Value::deserialize(d)?
-            .as_u64()
-            .map_or(Self::Invalid, Self::Value))
+        Ok(optional_field(d)?.map_or(Self::Invalid, Self::Value))
     }
 }
 #[derive(Default, Deserialize)]
@@ -832,6 +825,31 @@ mod tests {
             let old = serde_json::from_value::<Document>(value.clone()).map_err(|e| e.to_string());
             let new = Document::deserialize(&value).map_err(|e| e.to_string());
             assert_eq!(old.err(), new.err(), "{value}");
+        }
+    }
+    #[test]
+    fn projection_option_types_keep_legacy_missing_and_invalid_behavior() {
+        for value in [
+            json!(null),
+            json!(true),
+            json!(1),
+            json!(1.0),
+            json!("1"),
+            json!([]),
+            json!({}),
+        ] {
+            let params =
+                json!({"workspace":value,"limit":value,"chatState":value,"checkpoint":value});
+            let input: ProjectionInput = projection(&params);
+            assert_eq!(input.workspace.as_deref(), value.as_str());
+            assert_eq!(input.limit, value.as_u64());
+            let identity: IdentityInput = projection(&params);
+            assert_eq!(identity.chat_state, value.as_bool().unwrap_or(false));
+            let options: EntityOptions = projection(&params);
+            assert_eq!(
+                matches!(options.checkpoint, CursorArgument::Value(_)),
+                value.as_u64().is_some()
+            );
         }
     }
     #[test]
