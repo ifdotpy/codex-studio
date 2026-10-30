@@ -49,6 +49,13 @@ fn limits_observation_keeps_its_own_validation() {
 }
 
 #[test]
+fn continuation_ignores_unread_agent_details() {
+    let input = json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"running",
+        "provider":"codex","accountKey":"default","startAttempt":{"unrelated":true},"isLead":true}});
+    assert!(Snapshot::from_records(input).is_ok());
+}
+
+#[test]
 fn enable_reschedules_a_current_cancelled_resume() {
     let cases = cases();
     let mut input = cases

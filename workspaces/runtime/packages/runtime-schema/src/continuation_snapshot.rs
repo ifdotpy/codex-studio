@@ -224,8 +224,6 @@ pub struct ContinuationAgent {
     pub id: BoundedString<1, 4096>,
     #[serde(default, deserialize_with = "optional_nonnull")]
     pub in_flight: Option<bool>,
-    #[serde(default, deserialize_with = "optional_nonnull")]
-    pub is_lead: Option<bool>,
     pub last_completed_turn: Option<BoundedString<1, 4096>>,
     pub last_completed_turn_status: Option<String>,
     #[serde(default, deserialize_with = "optional_nonnull")]
@@ -234,7 +232,6 @@ pub struct ContinuationAgent {
     #[serde(deserialize_with = "crate::string_enum::deserialize")]
     pub provider: ProviderKind,
     pub root_id: BoundedString<1, 4096>,
-    pub start_attempt: Option<ContinuationAttempt>,
     pub status: BoundedString<1, 4096>,
     pub thread_id: Option<BoundedString<1, 4096>>,
     pub turn_epoch: Option<SafeInteger>,
@@ -423,7 +420,7 @@ mod tests {
         let text = include_str!("schemas/persisted-continuation-snapshot.schema.json");
         assert_eq!(
             data_encoding::HEXLOWER.encode(&Sha256::digest(text.as_bytes())),
-            "4d1d0741289425c28684d543f7c20a70f61da8dd4f6324eb49f17267b0b6863c",
+            "a553ffcd35f8ec1f0dd3017237f96639315a259cbd87f67d4bfc454374f98fd3",
             "schema changed: review continuation_snapshot typed owner"
         );
         let schema: Value = serde_json::from_str(text).expect("schema");

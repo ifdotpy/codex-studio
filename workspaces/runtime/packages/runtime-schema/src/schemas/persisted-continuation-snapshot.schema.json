@@ -368,10 +368,6 @@
           "title": "Inflight",
           "type": "boolean"
         },
-        "isLead": {
-          "title": "Islead",
-          "type": "boolean"
-        },
         "lastCompletedTurn": {
           "anyOf": [
             {
@@ -421,16 +417,6 @@
           "minLength": 1,
           "title": "Rootid",
           "type": "string"
-        },
-        "startAttempt": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ContinuationAttempt"
-            },
-            {
-              "type": "null"
-            }
-          ]
         },
         "status": {
           "maxLength": 4096,
