@@ -410,10 +410,6 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/studio_errors.rs",
-      "fingerprint": "da3e1ab71064b66d262539f4ba7f4b5ab4dcd2a8ae0b5e5d2e63a23f95aee0d8:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/studio_errors.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {

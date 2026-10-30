@@ -694,11 +694,9 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         };
         let decoded = match encoded {
             rusqlite::types::Value::Text(encoded) => {
-                match serde_json::from_str::<Value>(&encoded).and_then(|value| {
-                    serde_json::from_value::<StudioError>(value).map(|mut incident| {
-                        incident.level = incident.kind.level();
-                        incident
-                    })
+                match serde_json::from_str::<StudioError>(&encoded).map(|mut incident| {
+                    incident.level = incident.kind.level();
+                    incident
                 }) {
                     Ok(incident) => Ok(incident),
                     Err(error) => Err(vec![source.clone(), json_cause(&error)]),
