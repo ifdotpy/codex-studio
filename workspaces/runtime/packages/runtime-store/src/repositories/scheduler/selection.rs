@@ -415,13 +415,9 @@ impl SchedulerRepository {
             || original.workspace_mode != agent.workspace_mode
             || original.cwd != agent.cwd
             || original.parent_id != agent.parent_id
-            || [
-                "provider",
-                "role",
-                "realCwd",
-            ]
-            .iter()
-            .any(|key| original.extra.get(*key) != agent.extra.get(*key))
+            || ["provider", "role", "realCwd"]
+                .iter()
+                .any(|key| original.extra.get(*key) != agent.extra.get(*key))
             || original
                 .start_attempt()
                 .ok()
@@ -849,8 +845,7 @@ impl SchedulerRepository {
         let Some(mut agent) = load_agent(transaction, agent_id)? else {
             return Ok(None);
         };
-        if agent.deleted_at.is_some()
-        {
+        if agent.deleted_at.is_some() {
             return Ok(None);
         }
         if let Some(saved) = crate::ExecutionHistoryRepository::attempt(transaction, attempt_id)? {
@@ -1140,35 +1135,23 @@ impl SchedulerRepository {
         let Some(mut agent) = AgentRepository::get(transaction, &AgentId::from(agent_id))? else {
             return Err(invalid_agent(agent_id));
         };
-        if agent.deleted_at.is_some()
-        {
+        if agent.deleted_at.is_some() {
             return Err(invalid_agent(agent_id));
         }
-        let Some(attempt) = agent.extra.get("startAttempt").and_then(Value::as_object) else {
+        let Some(attempt) = agent.start_attempt().map_err(|_| invalid_agent(agent_id))? else {
             return Ok(false);
         };
-        if attempt.get("id").and_then(Value::as_str) != Some(attempt_id)
-            || attempt.get("epoch").and_then(Value::as_i64) != Some(epoch)
-            || attempt.get("submitted").and_then(Value::as_bool) != Some(false)
-            || attempt.get("turnId").is_some_and(|value| !value.is_null())
-            || attempt
-                .get("observedTurnId")
-                .is_some_and(|value| !value.is_null())
+        if attempt.id.as_deref() != Some(attempt_id)
+            || attempt.epoch != Some(epoch)
+            || attempt.submitted != Some(false)
+            || attempt.turn_id.is_some()
+            || attempt.observed_turn_id.is_some()
             || agent.epoch != epoch
         {
             return Ok(false);
         }
-        let saved = attempt
-            .get("events")
-            .and_then(Value::as_array)
-            .ok_or_else(|| invalid_agent(agent_id))?;
-        let mut event_ids = Vec::with_capacity(saved.len());
-        for id in saved {
-            let Some(id) = id.as_str() else {
-                return Err(invalid_agent(agent_id));
-            };
-            event_ids.push(id.to_owned());
-        }
+        let active = attempt.active_at_reservation.unwrap_or(false);
+        let event_ids = attempt.events.ok_or_else(|| invalid_agent(agent_id))?;
         if event_ids.is_empty() || event_ids.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(invalid_agent(agent_id));
         }
@@ -1234,20 +1217,10 @@ impl SchedulerRepository {
                 "scheduler reservation changed during submission reconciliation".to_owned(),
             ));
         }
-        let attempt = agent
-            .extra
-            .get_mut("startAttempt")
-            .and_then(Value::as_object_mut)
-            .ok_or_else(|| invalid_agent(agent_id))?;
-        attempt.insert(
-            "notSubmittedReason".to_owned(),
-            json!("Notifications resolved before native submission"),
-        );
-        attempt.insert("retiredEvents".to_owned(), json!(retired));
-        let active = attempt
-            .get("activeAtReservation")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        agent.set_start_attempt_not_submitted_reason(
+            "Notifications resolved before native submission",
+        )?;
+        agent.set_start_attempt_retired_events(&retired)?;
         if !active {
             let pending = transaction.query_row_cached(
                 "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 AND status='pending')",
