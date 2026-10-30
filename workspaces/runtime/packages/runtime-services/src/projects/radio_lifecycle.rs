@@ -277,21 +277,14 @@ fn reconcile(
         .active
         .as_ref()
         .ok_or_else(|| invalid(room.id()))?;
-    let mut query=db.prepare_cached("SELECT id,record,created FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.turnId')=?2 AND json_extract(record,'$.role')='assistant' ORDER BY created,id")?;
+    let mut query=db.prepare_cached("SELECT id,created FROM runtime_items WHERE agent=?1 AND json_extract(record,'$.turnId')=?2 AND json_extract(record,'$.role')='assistant' ORDER BY created,id")?;
     let rows = query
         .query_map(
             params![agent["id"].as_str().unwrap_or_default(), turn],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, f64>(2)?,
-                ))
-            },
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
         )?
         .collect::<Result<Vec<_>, _>>()?;
-    for (id, raw, created) in rows {
-        let item: Value = serde_json::from_str(&raw).map_err(|_| invalid(&id))?;
+    for (id, created) in rows {
         let stored =
             studio_runtime_store::TranscriptRepository::resolve_item(db, &active.agent_id, &id)
                 .map_err(|_| invalid(&id))?
@@ -299,7 +292,7 @@ fn reconcile(
         let text = studio_runtime_store::TranscriptRepository::full_text(db, &stored)
             .map_err(|_| invalid(&id))?
             .unwrap_or_default();
-        if truthy(item.get("truncated")) && text.is_empty() {
+        if truthy(stored.record.extra("truncated")) && text.is_empty() {
             return Err(ProjectsError::Invalid(
                 "The full shared reply is unavailable. No truncated reply was forwarded.",
             ));
