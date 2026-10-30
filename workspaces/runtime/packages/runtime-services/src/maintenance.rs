@@ -192,7 +192,7 @@ mod tests {
                     deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT,id TEXT,payload TEXT,
                     deleted INTEGER,UNIQUE(scope,id));
-                 CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT UNIQUE,hash TEXT,
+                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT UNIQUE,hash TEXT,
                     deleted INTEGER,updated REAL);
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                  CREATE TABLE runtime_agent_record_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL);

@@ -15,7 +15,6 @@ pub(super) fn preflight(db: &rusqlite::Connection) -> StoreResult<()> {
         if name != "id"
             && name != "record"
             && name != "start_attempt_capacity_retry_id"
-            && name != crate::durable_seq::SEQ_COLUMN
             && !crate::agent_columns::AGENT_COLUMNS
                 .iter()
                 .any(|column| column.name == name)

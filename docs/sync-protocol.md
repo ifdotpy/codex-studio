@@ -152,24 +152,33 @@ epoch, revision, and ordering checks.
 ### Durable change source
 
 The [durable source](../workspaces/runtime/packages/runtime-store/src/durable_seq.rs)
-numbers every insert, update and delete of the main tables from the counter that also numbers
-`sync_entities`, `sync_documents` and `sync_versions` (next number: the highest of the three, plus one).
-The latest durable number sits in the reserved `sync_versions` row `$durable`, so the existing
-allocators see it. A cursor from any of these sources is valid for all of them.
-`DURABLE_TABLES` lists the opted-in tables (`runtime_agents`, `runtime_requests`,
-`runtime_work`); a new table opts in with one line there. The installer adds a `seq`
-column and three triggers. A delete writes a tombstone `(table, id, seq)`.
+gives each row of the main tables a change number. `durable_rows` holds
+`(table, id, seq, deleted)`; a trigger on each opted-in table sets `seq` on insert and
+update, and a delete turns the entry into a tombstone. The main tables get no new column,
+so writers, fixtures and migrations do not change. `DURABLE_TABLES` lists the opted-in
+tables (`runtime_agents`, `runtime_requests`, `runtime_work`); a new table opts in with
+one line there.
+
+The numbers are the counter of `sync_entities`, `sync_documents` and `sync_versions`:
+the next number is one above the highest of those three and `durable_rows`. Every
+allocator uses that rule, so there is one cursor space and a cursor from any of these
+sources is valid for all of them.
 
 `changes_since(table, cursor)` returns the rows with `seq` above the cursor and the
 tombstones above it, or a snapshot when the cursor is absent, in the future, or below
 `durable_floor.floor`. The floor is the highest `seq` of a pruned tombstone.
 Tombstones live `TOMBSTONE_RETENTION_SECONDS` (90 days); a delete prunes older ones.
 
-Status: the source and its checks exist. The stream still reads `sync_entities`, and
-entity publication still writes it. Moving the stream to this source and then stopping
-the publication of agents, requests and work is the next step. Before that step removes
-the transcript copy in `sync_entities`, `transcript_copy_missing_from_owner` must return
-nothing for the live store. Old `sync_entities` rows are deleted by a later migration.
+`durable_view_log` mirrors, without payload, the `sync_entities` rows of the derived
+view collections (`VIEW_COLLECTIONS`: agent, agentSummary, agentDetail, retainedWorktree,
+questionHistory, request, work, workDetail, workResult, workDecision, workRelease).
+`view_changes_since(cursor)` lists the view ids that changed after a cursor. A parity
+test compares it with the published views.
+
+Status: the source, the shared cursor space and the view log exist. The stream still
+reads `sync_entities`, and entity publication still writes it. Before the transcript copy
+in `sync_entities` is removed, `transcript_copy_missing_from_owner` must return nothing
+for the live store. Old `sync_entities` rows are deleted by a later migration.
 
 ### Entity publication
 

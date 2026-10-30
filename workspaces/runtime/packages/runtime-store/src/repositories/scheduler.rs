@@ -198,7 +198,7 @@ mod tests {
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                    PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER);"),
+                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER);"),
             )
             .expect("scheduler tables create");
         connection

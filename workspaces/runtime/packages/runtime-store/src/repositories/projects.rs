@@ -473,7 +473,7 @@ mod tests {
         db.execute_batch("CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);
             CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
             CREATE TABLE sync_documents(seq INTEGER);
-            CREATE TABLE sync_versions(seq INTEGER);
+            CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER);
             CREATE TABLE runtime_orchestration_settings(id TEXT,record TEXT);").expect("schema");
         crate::receipt_schema::create(&db).expect("request schema");
         let tx = db.transaction().expect("transaction");

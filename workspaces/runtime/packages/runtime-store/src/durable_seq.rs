@@ -1,29 +1,30 @@
-//! Durable change source: a `seq` column on each main table, tombstones for deletes.
+//! Durable change source: a change number for each row of the main tables, tombstones for
+//! deletes.
 //!
-//! One counter numbers every insert, update and delete of every opted-in table, and it is
-//! the same counter that numbers `sync_entities`, `sync_documents` and `sync_versions`
-//! rows: a new number is `MAX(seq of those three tables)+1`. The latest durable number is
-//! kept in the reserved `sync_versions` row [`COUNTER_SCOPE`], so the existing allocators
-//! of the three tables already see it and need no change. One cursor space follows. A trigger sets the row's `seq` to the next number; a delete
-//! writes a tombstone `(table, id, seq)` instead. A reader keeps the highest `seq` it
-//! applied (its cursor) and asks [`changes_since`] for what is newer. This replaces the
-//! copy of the main rows in `sync_entities`; see docs/sync-protocol.md "Durable stream".
+//! `durable_rows` holds one entry per row `(table, id, seq, deleted)`. A trigger on each
+//! opted-in table sets the entry's `seq` to the next number on every insert and update;
+//! a delete turns the entry into a tombstone. The main tables keep their own columns, so
+//! no writer, fixture or migration changes.
+//!
+//! The numbers are the counter of `sync_entities`, `sync_documents` and `sync_versions`:
+//! a new number is [`NEXT`], one above the highest of those tables and `durable_rows`.
+//! Every allocator uses that rule, so there is one cursor space. A reader keeps the
+//! highest `seq` it applied and asks [`changes_since`] for what is newer. This replaces
+//! the copy of the main rows in `sync_entities`; see docs/sync-protocol.md.
 //!
 //! Opt in a new table with one line in [`DURABLE_TABLES`]. The table needs an `id`
-//! primary key and a text payload column; the installer adds `seq`, its index and the
-//! three triggers. Installation is idempotent.
+//! primary key and a text payload column. Installation is idempotent.
 //!
-//! Tombstones are service data and are kept long. A delete trigger prunes tombstones
-//! older than [`TOMBSTONE_RETENTION_SECONDS`] and raises `durable_floor.floor` to the
-//! highest pruned `seq`. A cursor below the floor cannot learn every delete, so it gets
-//! a snapshot.
+//! Tombstones are service data and are kept long. A delete prunes tombstones older than
+//! [`TOMBSTONE_RETENTION_SECONDS`] and raises `durable_floor.floor` to the highest pruned
+//! `seq`. A cursor below the floor cannot learn every delete, so it gets a snapshot.
+//!
+//! The DDL of `durable_rows` and `durable_floor` is in `sync_schema.sql` (section
+//! `common`), where the allocators that read `durable_rows` are.
 
 use rusqlite::{Connection, Transaction};
 
 use crate::{StoreError, StoreResult};
-
-/// The change-number column added to every durable table.
-pub const SEQ_COLUMN: &str = "seq";
 
 /// How long a tombstone stays, in seconds (90 days). A reconnect inside this window gets a
 /// delta; a longer absence gets a snapshot.
@@ -50,131 +51,106 @@ pub const DURABLE_TABLES: &[DurableTable] = &[
     DurableTable::new("runtime_work", "record"),
 ];
 
-/// The `sync_versions` row that holds the latest durable number. `sync_versions` exists
-/// only to carry such a high-water mark; no reader lists its scopes.
-pub const COUNTER_SCOPE: &str = "$durable";
-
-/// The next number of the shared counter. Owner of the allocation rule; the sync
-/// allocators in `sync_documents::next_sequence` and the event triggers use the same rule.
-const NEXT: &str = "(SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM (
+/// The next number of the shared counter. Owner of the allocation rule. The same text
+/// is in `sync_schema.sql`, `feature_schema.rs` and `sync_documents::next_sequence`.
+const NEXT: &str = "(SELECT MAX(entity_seq,document_seq,version_seq,durable_seq)+1 FROM (
     SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities),
     (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents),
-    (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions))";
+    (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions),
+    (SELECT COALESCE(MAX(seq),0) AS durable_seq FROM durable_rows))";
 
-const SHARED_SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS durable_floor(
-    id INTEGER PRIMARY KEY CHECK(id=1), floor INTEGER NOT NULL);
-INSERT OR IGNORE INTO durable_floor(id,floor) VALUES(1,0);
-CREATE TABLE IF NOT EXISTS durable_tombstones(
-    tbl TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL, at INTEGER NOT NULL,
-    PRIMARY KEY(tbl,id)) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS durable_tombstones_seq ON durable_tombstones(seq);
-CREATE INDEX IF NOT EXISTS durable_tombstones_at ON durable_tombstones(at);
-";
+/// Derived view collections that the publisher builds from `runtime_agents`,
+/// `runtime_requests` and `runtime_work`. Owner of the list. `durable_view_log` mirrors
+/// their `sync_entities` rows (collection, id, seq, deleted) without the payload, so a
+/// reader can learn which views changed after a cursor from the same cursor space.
+pub const VIEW_COLLECTIONS: &[&str] = &[
+    "agent",
+    "agentSummary",
+    "agentDetail",
+    "retainedWorktree",
+    "questionHistory",
+    "request",
+    "work",
+    "workDetail",
+    "workResult",
+    "workDecision",
+    "workRelease",
+];
+
+fn view_log_sql() -> String {
+    let list = VIEW_COLLECTIONS
+        .iter()
+        .map(|collection| format!("'{collection}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mirror = "INSERT INTO durable_view_log(collection,id,seq,deleted)
+         VALUES(NEW.collection,NEW.id,NEW.seq,NEW.deleted)
+         ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,deleted=excluded.deleted;";
+    format!(
+        "CREATE TABLE IF NOT EXISTS durable_view_log(
+             collection TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
+             deleted INTEGER NOT NULL, PRIMARY KEY(collection,id));
+         CREATE INDEX IF NOT EXISTS durable_view_log_seq ON durable_view_log(seq);
+         INSERT OR IGNORE INTO durable_view_log(collection,id,seq,deleted)
+             SELECT collection,id,seq,deleted FROM sync_entities WHERE collection IN ({list});
+         CREATE TRIGGER IF NOT EXISTS durable_view_log_insert AFTER INSERT ON sync_entities
+         WHEN NEW.collection IN ({list}) BEGIN {mirror} END;
+         CREATE TRIGGER IF NOT EXISTS durable_view_log_update AFTER UPDATE ON sync_entities
+         WHEN NEW.collection IN ({list}) BEGIN {mirror} END;
+         CREATE TRIGGER IF NOT EXISTS durable_view_log_delete AFTER DELETE ON sync_entities
+         WHEN OLD.collection IN ({list}) BEGIN
+             DELETE FROM durable_view_log WHERE collection=OLD.collection AND id=OLD.id; END;"
+    )
+}
 
 /// The generator: SQL for the three triggers of one table.
 fn trigger_sql(table: &str) -> String {
-    let next = format!(
-        "INSERT INTO sync_versions(seq,scope,hash,deleted,updated)
-         SELECT {NEXT},'{COUNTER_SCOPE}','',0,0.0
-         ON CONFLICT(scope) DO UPDATE SET seq=excluded.seq;"
-    );
-    let current = format!("(SELECT seq FROM sync_versions WHERE scope='{COUNTER_SCOPE}')");
     let now = "CAST(strftime('%s','now') AS INTEGER)";
     let cutoff = format!("{now}-{TOMBSTONE_RETENTION_SECONDS}");
+    let put = |id: &str, deleted: u8, at: &str| {
+        format!(
+            "INSERT INTO durable_rows(tbl,id,seq,deleted,at) VALUES('{table}',{id},{NEXT},{deleted},{at})
+             ON CONFLICT(tbl,id) DO UPDATE SET seq=excluded.seq,deleted=excluded.deleted,at=excluded.at;"
+        )
+    };
+    let live = put("NEW.id", 0, "0");
+    let tombstone = put("OLD.id", 1, now);
     format!(
         "
 CREATE TRIGGER IF NOT EXISTS durable_{table}_insert AFTER INSERT ON {table} BEGIN
-  DELETE FROM durable_tombstones WHERE tbl='{table}' AND id=NEW.id;
-  {next}
-  UPDATE {table} SET seq={current} WHERE rowid=NEW.rowid;
+  {live}
 END;
-CREATE TRIGGER IF NOT EXISTS durable_{table}_update AFTER UPDATE ON {table}
-WHEN NEW.seq IS OLD.seq BEGIN
-  {next}
-  UPDATE {table} SET seq={current} WHERE rowid=NEW.rowid;
-  INSERT INTO durable_tombstones(tbl,id,seq,at)
-    SELECT '{table}',OLD.id,{current},{now} WHERE OLD.id IS NOT NEW.id
-    ON CONFLICT(tbl,id) DO UPDATE SET seq=excluded.seq,at=excluded.at;
+CREATE TRIGGER IF NOT EXISTS durable_{table}_update AFTER UPDATE ON {table} BEGIN
+  {live}
+  INSERT INTO durable_rows(tbl,id,seq,deleted,at)
+    SELECT '{table}',OLD.id,{NEXT},1,{now} WHERE OLD.id IS NOT NEW.id
+    ON CONFLICT(tbl,id) DO UPDATE SET seq=excluded.seq,deleted=1,at=excluded.at;
 END;
 CREATE TRIGGER IF NOT EXISTS durable_{table}_delete AFTER DELETE ON {table} BEGIN
   UPDATE durable_floor SET floor=MAX(floor,
-    (SELECT MAX(seq) FROM durable_tombstones WHERE at<{cutoff}))
-  WHERE id=1 AND EXISTS(SELECT 1 FROM durable_tombstones WHERE at<{cutoff});
-  DELETE FROM durable_tombstones WHERE at<{cutoff};
-  {next}
-  INSERT INTO durable_tombstones(tbl,id,seq,at)
-    VALUES('{table}',OLD.id,{current},{now})
-    ON CONFLICT(tbl,id) DO UPDATE SET seq=excluded.seq,at=excluded.at;
+    (SELECT MAX(seq) FROM durable_rows WHERE deleted=1 AND at<{cutoff}))
+  WHERE id=1 AND EXISTS(SELECT 1 FROM durable_rows WHERE deleted=1 AND at<{cutoff});
+  DELETE FROM durable_rows WHERE deleted=1 AND at<{cutoff};
+  {tombstone}
 END;
 "
     )
 }
 
-/// Add `seq` to every opted-in table, number the existing rows once, and install the
-/// triggers. Runs as a migration and on a fresh state.
+/// Number the rows of every opted-in table that have no entry yet (rows that predate
+/// the source) and install the triggers. Runs as a migration and on a fresh state.
 pub(crate) fn install(tx: &Transaction<'_>) -> StoreResult<()> {
-    tx.execute_batch(SHARED_SCHEMA)?;
+    tx.execute_batch(&view_log_sql())?;
     for table in DURABLE_TABLES {
         let name = table.name;
-        let has_seq: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name='seq')",
-            [name],
-            |row| row.get(0),
-        )?;
-        if !has_seq {
-            tx.execute_batch(&format!(
-                "ALTER TABLE {name} ADD COLUMN seq INTEGER NOT NULL DEFAULT 0;"
-            ))?;
-            number_existing_rows(tx, name)?;
-        }
+        let base: i64 = tx.query_row(&format!("SELECT {NEXT}-1"), [], |r| r.get(0))?;
         tx.execute_batch(&format!(
-            "CREATE INDEX IF NOT EXISTS durable_{name}_seq ON {name}(seq);{}",
+            "INSERT INTO durable_rows(tbl,id,seq,deleted,at)
+               SELECT '{name}',id,{base}+ROW_NUMBER() OVER (ORDER BY rowid),0,0 FROM {name} t
+               WHERE NOT EXISTS (SELECT 1 FROM durable_rows d WHERE d.tbl='{name}' AND d.id=t.id);
+             {}",
             trigger_sql(name)
         ))?;
-    }
-    Ok(())
-}
-
-/// Give rows that predate the column increasing numbers, before the triggers exist.
-/// Numbering is not a content change: the journals that agent writes feed are restored,
-/// as the 2026-10-20 agent migration does.
-fn number_existing_rows(tx: &Transaction<'_>, table: &str) -> StoreResult<()> {
-    use crate::migrations::m2026_10_20_agents::MIGRATION_PRESERVED_TABLES;
-    let mut preserved = Vec::new();
-    for journal in MIGRATION_PRESERVED_TABLES {
-        if crate::schema::table_exists(tx, journal)? {
-            tx.execute_batch(&format!(
-                "CREATE TEMP TABLE durable_keep_{journal} AS SELECT * FROM main.{journal};"
-            ))?;
-            preserved.push(journal);
-        }
-    }
-    let mut value: i64 = tx.query_row(&format!("SELECT {NEXT}-1"), [], |r| r.get(0))?;
-    let rowids = tx
-        .prepare(&format!("SELECT rowid FROM {table} ORDER BY rowid"))?
-        .query_map([], |row| row.get::<_, i64>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    for rowid in rowids {
-        value += 1;
-        tx.execute(
-            &format!("UPDATE {table} SET seq=?1 WHERE rowid=?2"),
-            [value, rowid],
-        )?;
-    }
-    for journal in preserved {
-        tx.execute_batch(&format!(
-            "DELETE FROM main.{journal};
-             INSERT INTO main.{journal} SELECT * FROM temp.durable_keep_{journal};
-             DROP TABLE temp.durable_keep_{journal};"
-        ))?;
-    }
-    if value > 0 {
-        tx.execute(
-            "INSERT INTO sync_versions(seq,scope,hash,deleted,updated)
-             VALUES(?1,?2,'',0,0.0) ON CONFLICT(scope) DO UPDATE SET seq=excluded.seq",
-            rusqlite::params![value, COUNTER_SCOPE],
-        )?;
     }
     Ok(())
 }
@@ -231,12 +207,13 @@ pub fn changes_since(
     let after = cursor.filter(|cursor| (floor..=high).contains(cursor));
     let rows = |after: i64| -> StoreResult<Vec<DurableRow>> {
         let sql = format!(
-            "SELECT id,seq,{} FROM {} WHERE seq>?1 AND seq<=?2 ORDER BY seq",
+            "SELECT t.id,d.seq,t.{} FROM durable_rows d JOIN {} t ON t.id=d.id
+             WHERE d.tbl=?1 AND d.deleted=0 AND d.seq>?2 AND d.seq<=?3 ORDER BY d.seq",
             table.payload, table.name
         );
         let rows = connection
             .prepare(&sql)?
-            .query_map([after, high], |row| {
+            .query_map(rusqlite::params![table.name, after, high], |row| {
                 Ok(DurableRow {
                     id: row.get(0)?,
                     seq: row.get(1)?,
@@ -254,10 +231,14 @@ pub fn changes_since(
     };
     let tombstones = connection
         .prepare(
-            "SELECT id,seq FROM durable_tombstones WHERE tbl=?1 AND seq>?2 AND seq<=?3 ORDER BY seq",
+            "SELECT id,seq FROM durable_rows WHERE tbl=?1 AND deleted=1 AND seq>?2 AND seq<=?3
+             ORDER BY seq",
         )?
         .query_map(rusqlite::params![table.name, after, high], |row| {
-            Ok(DurableTombstone { id: row.get(0)?, seq: row.get(1)? })
+            Ok(DurableTombstone {
+                id: row.get(0)?,
+                seq: row.get(1)?,
+            })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(DurableChanges::Delta {
@@ -265,6 +246,34 @@ pub fn changes_since(
         tombstones,
         seq: high,
     })
+}
+
+/// A view that changed after a cursor. The payload stays in `sync_entities` until the
+/// stream builds views at read time.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ViewChange {
+    pub collection: String,
+    pub id: String,
+    pub seq: i64,
+    pub deleted: bool,
+}
+
+/// Views of [`VIEW_COLLECTIONS`] with `seq` above `cursor`, in `seq` order.
+pub fn view_changes_since(connection: &Connection, cursor: i64) -> StoreResult<Vec<ViewChange>> {
+    let changes = connection
+        .prepare(
+            "SELECT collection,id,seq,deleted FROM durable_view_log WHERE seq>?1 ORDER BY seq",
+        )?
+        .query_map([cursor], |row| {
+            Ok(ViewChange {
+                collection: row.get(0)?,
+                id: row.get(1)?,
+                seq: row.get(2)?,
+                deleted: row.get::<_, i64>(3)? != 0,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(changes)
 }
 
 /// Data-loss check for removing the transcript copy in `sync_entities`: ids of live
@@ -306,9 +315,11 @@ mod tests {
     }
 
     fn seq_of(db: &Connection, id: &str) -> i64 {
-        db.query_row("SELECT seq FROM runtime_work WHERE id=?1", [id], |r| {
-            r.get(0)
-        })
+        db.query_row(
+            "SELECT seq FROM durable_rows WHERE tbl='runtime_work' AND id=?1",
+            [id],
+            |r| r.get(0),
+        )
         .expect("seq")
     }
 
@@ -341,7 +352,7 @@ mod tests {
             .expect("delete");
         let tombstone: i64 = db
             .query_row(
-                "SELECT seq FROM durable_tombstones WHERE tbl='runtime_work' AND id='b'",
+                "SELECT seq FROM durable_rows WHERE tbl='runtime_work' AND id='b' AND deleted=1",
                 [],
                 |r| r.get(0),
             )
@@ -385,7 +396,7 @@ mod tests {
         db.execute("DELETE FROM runtime_work WHERE id='a'", [])
             .expect("delete");
         // Age the tombstone past the retention, then the next delete prunes it.
-        db.execute("UPDATE durable_tombstones SET at=0", [])
+        db.execute("UPDATE durable_rows SET at=0 WHERE deleted=1", [])
             .expect("age");
         db.execute("DELETE FROM runtime_work WHERE id='b'", [])
             .expect("delete");
@@ -443,12 +454,64 @@ mod tests {
     }
 
     #[test]
+    fn the_view_log_mirrors_view_collections_in_sync_entities() {
+        let db = canvas();
+        let entity = |collection: &str, id: &str, deleted: i64| {
+            db.execute(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                 VALUES(?1,?2,(SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM (
+                    SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities),
+                    (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents),
+                    (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions)),
+                    'h','{}',?3)
+                 ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,deleted=excluded.deleted",
+                rusqlite::params![collection, id, deleted],
+            )
+            .expect("entity");
+        };
+        entity("agentSummary", "a", 0);
+        entity("event", "e", 0);
+        entity("work", "w", 0);
+        entity("agentSummary", "a", 1);
+        let log = view_changes_since(&db, 0).expect("log");
+        assert_eq!(
+            log.iter()
+                .map(|c| (c.collection.as_str(), c.id.as_str(), c.deleted))
+                .collect::<Vec<_>>(),
+            vec![("work", "w", false), ("agentSummary", "a", true)],
+            "other collections are not logged; an update keeps one row at the new seq"
+        );
+        let cursor = log[0].seq;
+        assert_eq!(view_changes_since(&db, cursor).expect("log").len(), 1);
+        db.execute("DELETE FROM sync_entities WHERE collection='work'", [])
+            .expect("prune");
+        assert_eq!(view_changes_since(&db, 0).expect("log").len(), 1);
+    }
+
+    #[test]
+    fn install_backfills_the_view_log() {
+        let mut db = canvas();
+        db.execute_batch(
+            "DROP TRIGGER durable_view_log_insert; DROP TABLE durable_view_log;
+             INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+             VALUES('request','r',900,'h','{}',0),('event','e',901,'h','{}',0);",
+        )
+        .expect("old state");
+        let tx = db.transaction().expect("transaction");
+        install(&tx).expect("install");
+        tx.commit().expect("commit");
+        let log = view_changes_since(&db, 0).expect("log");
+        assert_eq!(log.len(), 1);
+        assert_eq!((log[0].collection.as_str(), log[0].seq), ("request", 900));
+    }
+
+    #[test]
     fn an_unknown_table_is_refused() {
         assert!(changes_since(&canvas(), "runtime_items", None).is_err());
     }
 
     #[test]
-    fn install_is_idempotent_and_numbers_rows_that_predate_the_column() {
+    fn install_is_idempotent_and_numbers_rows_that_predate_the_source() {
         let mut db = canvas();
         put(&db, "a", "{}");
         let before = seq_of(&db, "a");
@@ -456,14 +519,11 @@ mod tests {
         install(&tx).expect("second install");
         tx.commit().expect("commit");
         assert_eq!(seq_of(&db, "a"), before);
-        // Old format: a table without the column and triggers.
+        // Old format: rows without entries and without triggers.
         db.execute_batch(
             "DROP TRIGGER durable_runtime_work_insert;
-             DROP TRIGGER durable_runtime_work_update;
-             DROP TRIGGER durable_runtime_work_delete;
-             DROP INDEX durable_runtime_work_seq;
-             ALTER TABLE runtime_work DROP COLUMN seq;
-             INSERT INTO runtime_work(id,record) VALUES('old','{}');",
+             DELETE FROM durable_rows WHERE tbl='runtime_work';
+             INSERT INTO runtime_work(id,record) VALUES('old','{}'),('older','{}');",
         )
         .expect("old format");
         let tx = db.transaction().expect("transaction");
@@ -472,8 +532,8 @@ mod tests {
         let high: i64 = db
             .query_row(&format!("SELECT {NEXT}-1"), [], |r| r.get(0))
             .expect("counter");
-        assert!(seq_of(&db, "a") > 0 && seq_of(&db, "old") > 0);
-        assert!(seq_of(&db, "a") <= high && seq_of(&db, "old") <= high);
+        let (a, old, older) = (seq_of(&db, "a"), seq_of(&db, "old"), seq_of(&db, "older"));
+        assert!(a > 0 && old > a && older > old && older <= high);
     }
 
     #[test]

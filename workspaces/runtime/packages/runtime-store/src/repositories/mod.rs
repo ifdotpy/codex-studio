@@ -275,6 +275,9 @@ mod tests {
              CREATE TABLE sync_versions (
                  seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
                  hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL);
+             CREATE TABLE durable_rows (
+                 tbl TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
+                 deleted INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(tbl,id));
              INSERT INTO sync_identity(id) VALUES ('workspace-a');
              INSERT INTO sync_entity_meta(key,value) VALUES ('entity_tombstone_floor','0');",
         )

@@ -499,7 +499,7 @@ mod tests {
     fn legacy_table(tx: &crate::Transaction<'_>) -> Result<(), StoreError> {
         let triggers = tx
             .prepare(
-                "SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name='runtime_agents' AND name NOT LIKE 'durable_%'",
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name='runtime_agents'",
             )?
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;

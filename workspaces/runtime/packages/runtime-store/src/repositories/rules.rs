@@ -165,7 +165,7 @@ mod tests {
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                  PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-             CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
+             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
         )
         .expect("rule and sync tables create");
         {
@@ -228,7 +228,7 @@ mod tests {
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                  PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-             CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
              CREATE TRIGGER fail_rule_insert BEFORE INSERT ON runtime_rules
                  BEGIN SELECT RAISE(ABORT,'injected'); END;",
         )

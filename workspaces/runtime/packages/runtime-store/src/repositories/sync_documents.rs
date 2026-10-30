@@ -61,6 +61,10 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[
         name: "sync_versions",
         columns: &["seq", "scope", "hash", "deleted", "updated"],
     },
+    TableRequirement {
+        name: "durable_rows",
+        columns: &["tbl", "id", "seq", "deleted", "at"],
+    },
 ];
 const BOOTSTRAP_TRIGGERS: &[TriggerRequirement] = &[
     TriggerRequirement {
@@ -865,10 +869,11 @@ pub(crate) fn hash_payload(payload: &str) -> String {
 pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {
     connection
         .query_row_cached(
-            "SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM ( \
+            "SELECT MAX(entity_seq,document_seq,version_seq,durable_seq)+1 FROM ( \
              SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities), \
              (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents), \
-             (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions)",
+             (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions), \
+             (SELECT COALESCE(MAX(seq),0) AS durable_seq FROM durable_rows)",
             [],
             |row| row.get(0),
         )
@@ -1390,7 +1395,7 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-             CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
+             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
         ).expect("sync fixture creates");
         let transaction = connection.transaction().expect("transaction begins");
         let value = serde_json::json!({"b":2,"a":1});
@@ -1480,7 +1485,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
                  INSERT INTO sync_documents VALUES(9,'drafts','d','{}',0);",
             )
             .expect("sync fixture creates");

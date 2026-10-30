@@ -1359,3 +1359,74 @@ async fn every_studio_error_change_still_publishes_with_its_source_write() {
     );
     assert_published_list(&store);
 }
+
+/// The view log lists exactly the view ids that the publisher wrote, at the same numbers.
+/// A reader that learns changed view ids from the log after a cursor therefore sees what a
+/// reader of `sync_entities` sees.
+#[tokio::test]
+async fn the_view_log_matches_the_published_views_of_agents_requests_and_work() {
+    use std::collections::BTreeSet;
+    use studio_runtime_store::durable_seq::{VIEW_COLLECTIONS, view_changes_since};
+    type View = (String, String, i64, bool);
+
+    fn published(store: &studio_runtime_store::RuntimeStore) -> BTreeSet<View> {
+        store
+            .test_read_transaction(|tx| {
+                let mut views = BTreeSet::new();
+                let mut statement =
+                    tx.prepare("SELECT collection,id,seq,deleted FROM sync_entities")?;
+                for row in statement.query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get::<_, i64>(3)? != 0,
+                    ))
+                })? {
+                    let view: View = row?;
+                    if VIEW_COLLECTIONS.contains(&view.0.as_str()) {
+                        views.insert(view);
+                    }
+                }
+                Ok(views)
+            })
+            .expect("published views")
+    }
+    fn logged(store: &studio_runtime_store::RuntimeStore) -> BTreeSet<View> {
+        store
+            .test_read_transaction(|tx| {
+                Ok(view_changes_since(tx, 0)?
+                    .into_iter()
+                    .map(|c| (c.collection, c.id, c.seq, c.deleted))
+                    .collect())
+            })
+            .expect("logged views")
+    }
+
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    let card = json!({"id":"parity-card","agent":CHAT,"method":"agent/asyncQuestion",
+        "status":"pending","params":{"message":"Continue?"}});
+    write(
+        &store,
+        "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
+        vec!["parity-card".to_owned(), card.to_string()],
+    )
+    .await;
+    assert_eq!(logged(&store), published(&store), "after inserts");
+    write(
+        &store,
+        "UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id=?1",
+        vec!["parity-card".to_owned()],
+    )
+    .await;
+    write(
+        &store,
+        "UPDATE runtime_agents SET record=json_set(record,'$.name','Renamed') WHERE id=?1",
+        vec![CHAT.to_owned()],
+    )
+    .await;
+    let after = published(&store);
+    assert!(!after.is_empty());
+    assert_eq!(logged(&store), after, "after updates and a retired card");
+}
