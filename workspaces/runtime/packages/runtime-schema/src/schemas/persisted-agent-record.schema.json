@@ -162,6 +162,9 @@
   },
   "description": "Persisted agent identity plus the extensible state written by the runtime.",
   "properties": {
+    "startWait": {
+      "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/StartWaitRecordResponse"
+    },
     "workspaceMode": {
       "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/AgentRecordResponse/properties/workspaceMode"
     },

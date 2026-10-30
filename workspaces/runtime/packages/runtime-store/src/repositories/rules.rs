@@ -285,8 +285,8 @@ mod tests {
     fn active_check_lookup_is_filtered_and_ignores_unrelated_invalid_rows() {
         let db = Connection::open_in_memory().expect("in-memory database opens");
         db.execute_batch(
-            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             INSERT INTO runtime_monitors VALUES
+            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
+             INSERT INTO runtime_monitors(id,record) VALUES
                  ('m1','{\"id\":\"m1\",\"agent\":\"a1\",\"ruleId\":\"r1\",\"status\":\"running\",\"created\":1}'),
                  ('unrelated','{\"id\":\"unrelated\",\"status\":false}');",
         )

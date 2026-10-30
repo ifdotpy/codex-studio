@@ -715,7 +715,7 @@ mod room_preparation_tests {
         connection
             .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
-                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_events(agent TEXT NOT NULL);
                  CREATE TABLE runtime_items(agent TEXT NOT NULL);
@@ -790,12 +790,12 @@ mod room_preparation_tests {
         connection
             .execute_batch(
                 &studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
                  CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(
                      json_extract(record,'$.agent'),json_extract(record,'$.status'));
                  CREATE TABLE runtime_events(agent TEXT NOT NULL);
                  CREATE TABLE runtime_items(agent TEXT NOT NULL);
-                 INSERT INTO runtime_monitors VALUES
+                 INSERT INTO runtime_monitors(id,record) VALUES
                      ('old-monitor','{\"id\":\"old-monitor\",\"agent\":\"lead-busy\",\"status\":\"completed\"}');"),
             )
             .expect("context fixture");

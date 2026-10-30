@@ -1417,7 +1417,7 @@ mod tests {
                         fields.as_object().expect("object").clone(),
                     );
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
                         rusqlite::params![id, record.to_string()],
                     )?;
                 }

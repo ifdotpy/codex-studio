@@ -1508,7 +1508,7 @@ mod tests {
                     )?;
                 }
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES('m-done',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('m-done',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [json!({"id":"m-done","agent":"done","epoch":2,"status":"failed","exitCode":9,"error":"failed","requestId":"m-done-request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("m-done.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}).to_string()],
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
@@ -1633,67 +1633,6 @@ mod tests {
             status["capacity"]["queued"][0]["reasons"][0]["reason"],
             "dependency"
         );
-    }
-
-    #[tokio::test]
-    async fn legacy_incomplete_waits_keep_status_and_sync_available() {
-        let (_directory, store) = fixture().await;
-        for wait in [
-            json!({"reason":"slot","epoch":4}),
-            json!({"reason":"pause","epoch":4,"until":null}),
-            json!({"reason":"slot","epoch":3,"runningTurns":"invalid"}),
-            json!({"reason":"slot","epoch":3}),
-            json!({"reason":"pause","epoch":3,"until":null}),
-        ] {
-            let saved = wait.clone();
-            store
-                .transaction_with(move |tx| {
-                    let mut agent = AgentRepository::get(tx, &"queued".into())?.expect("agent");
-                    agent.auto_wake = Some(true);
-                    agent.extra.insert("startWait".into(), saved);
-                    AgentRepository::put(tx, &agent)
-                })
-                .await
-                .expect("seed wait");
-            let view = store
-                .read_async("test/legacy-view", |tx| {
-                    let agent = AgentRepository::get(tx, &"queued".into())?.expect("agent");
-                    Ok::<_, StoreError>(crate::sync_views::agent_entity_view(
-                        &agent.value(),
-                        &Default::default(),
-                    ))
-                })
-                .await
-                .expect("read")
-                .expect("agent remains visible");
-            let expected = if wait["epoch"] == 4 {
-                json!(null)
-            } else {
-                json!({"reason":"dispatch_pending","epoch":4})
-            };
-            assert_eq!(view["startWait"], expected);
-            let status = model_directory(&store, "lead", 3, &json!({}), 103.0)
-                .await
-                .expect("status remains available");
-            let reasons = status["capacity"]["queued"][0]["reasons"].clone();
-            assert_eq!(
-                reasons,
-                if expected.is_null() {
-                    json!([])
-                } else {
-                    json!([expected])
-                }
-            );
-        }
-        let record = json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"starting","startWait":{"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3,"until":null}});
-        let view = crate::sync_views::agent_entity_view(&record, &Default::default())
-            .expect("valid legacy wait");
-        assert_eq!(
-            view["startWait"],
-            json!({"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3})
-        );
-        let record = json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"running","startWait":{"reason":"slot","epoch":4}});
-        assert!(crate::sync_views::agent_entity_view(&record, &Default::default()).is_some());
     }
 
     #[tokio::test]
@@ -1901,7 +1840,7 @@ mod tests {
         store
             .transaction_with(move |tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES('watch-monitor',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('watch-monitor',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [json!({
                         "id":"watch-monitor",
                         "agent":"lead",
@@ -2065,7 +2004,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES('m-live',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('m-live',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [json!({"id":"m-live","agent":"queued","epoch":4,"status":"running","requestId":"m-live-request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("m-live.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}).to_string()],
                 )?;
                 Ok::<_, StoreError>(())
@@ -2081,7 +2020,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES('m-stranger',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('m-stranger',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [
                         json!({"id":"m-stranger","agent":"stranger","status":"running"})
                             .to_string(),
@@ -2089,7 +2028,7 @@ mod tests {
                 )?;
                 // The payload id differs from the row id, so decoding fails.
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record) VALUES('m-corrupt',?1)",
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('m-corrupt',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                     [json!({"id":"other","agent":"stranger","status":"failed"}).to_string()],
                 )?;
                 Ok::<_, StoreError>(())

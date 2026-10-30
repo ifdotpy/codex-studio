@@ -4229,10 +4229,7 @@ fn pending_needs_record(
         return false;
     };
     let wait = owner.wait(epoch);
-    let recorded = row
-        .extra
-        .get(studio_runtime_schema::agent_progress::START_WAIT_FIELD)
-        == Some(&json!(wait))
+    let recorded = row.start_wait.as_ref() == Some(&wait)
         && attempt.get("prepareError").and_then(Value::as_str) == Some(reason)
         && (reason != preparation::WORKSPACE_PENDING_REASON
             || row
@@ -4267,10 +4264,7 @@ async fn record_pending(
                 .and_then(Value::as_object_mut)
         {
             attempt.insert("prepareError".into(), json!(reason));
-            row.extra.insert(
-                studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),
-                serde_json::to_value(owner.wait(epoch)).map_err(StoreError::from)?,
-            );
+            row.start_wait = Some(owner.wait(epoch));
             if reason == preparation::WORKSPACE_PENDING_REASON {
                 // Python's WorkspaceWaitRecord uses these fields
                 // (codex_workspace_delivery.py:43-46).

@@ -48893,85 +48893,256 @@
         "type": "string"
       },
       "StartWaitRecordResponse": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "description": "Older persisted and status waits may omit details and carry extensions.",
-        "properties": {
-          "epoch": {
-            "format": "int64",
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "maxRunningTurns": {
-            "anyOf": [
-              {
+        "description": "One epoch-scoped wait. `until` is a retry deadline in Unix seconds.\n\n```compile_fail\nuse studio_runtime_schema::agent_progress::AgentStartWait;\nlet _ = AgentStartWait::Slot { epoch: 1 };\n```\n```compile_fail\nuse studio_runtime_schema::agent_progress::AgentStartWait;\nlet _ = AgentStartWait::Pause { epoch: 1 };\n```",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxRunningTurns": {
                 "format": "uint64",
                 "maximum": 9007199254740991,
                 "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "type": "integer"
               },
-              {
-                "type": "null"
+              "reason": {
+                "const": "slot",
+                "type": "string"
+              },
+              "runningTurns": {
+                "format": "uint64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
               }
-            ]
-          },
-          "reason": {
-            "enum": [
-              "slot",
-              "pause",
-              "start_queue",
-              "disk",
-              "model_catalog",
-              "provider_session",
-              "dependency",
-              "dispatch_pending",
-              "paused",
-              "native_failure",
-              "account_transfer"
+            },
+            "required": [
+              "reason",
+              "epoch",
+              "runningTurns",
+              "maxRunningTurns"
             ],
-            "type": "string"
+            "type": "object"
           },
-          "runningTurns": {
-            "anyOf": [
-              {
-                "format": "uint64",
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
                 "maximum": 9007199254740991,
                 "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "type": "integer"
               },
-              {
-                "type": "null"
+              "reason": {
+                "const": "pause",
+                "type": "string"
+              },
+              "until": {
+                "format": "double",
+                "type": "number"
               }
-            ]
+            },
+            "required": [
+              "reason",
+              "epoch",
+              "until"
+            ],
+            "type": "object"
           },
-          "until": {
-            "anyOf": [
-              {
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "start_queue",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "disk",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "model_catalog",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "provider_session",
+                "type": "string"
+              },
+              "until": {
+                "description": "The registry knows a deadline during retry backoff, but not initial startup.",
                 "format": "double",
                 "type": [
                   "number",
                   "null"
                 ]
-              },
-              {
-                "type": "null"
               }
-            ]
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "dependency",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "dispatch_pending",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "paused",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "native_failure",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "account_transfer",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
           }
-        },
-        "required": [
-          "reason",
-          "epoch"
-        ],
-        "type": "object"
+        ]
       },
       "StateResource": {
         "additionalProperties": false,

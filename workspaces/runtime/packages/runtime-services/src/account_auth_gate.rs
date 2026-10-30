@@ -185,7 +185,7 @@ pub async fn hold_unstarted(
                 }
                 agent.status = AgentStatus::Failed;
                 agent.extra.insert("error".into(), json!(reason));
-                agent.extra.remove(crate::account_start_gate::WAIT_FIELD);
+                agent.start_wait = None;
                 AgentRepository::put(tx, &agent)?;
                 held.push(agent_id);
             }

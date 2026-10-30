@@ -18,6 +18,12 @@ pub(crate) mod validation_counts {
     }
 }
 
+fn present_start_wait<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<studio_runtime_schema::agent_progress::AgentStartWait>, D::Error> {
+    studio_runtime_schema::agent_progress::AgentStartWait::deserialize(d).map(Some)
+}
+
 macro_rules! string_id {
     ($name:ident) => {
         #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -348,6 +354,12 @@ pub struct AgentRecord {
     pub native_response_turn: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parked_event: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_start_wait"
+    )]
+    pub start_wait: Option<studio_runtime_schema::agent_progress::AgentStartWait>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional_safe_counter",
@@ -741,6 +753,7 @@ impl AgentRecord {
             approval_policy: None,
             native_response_turn: None,
             parked_event: None,
+            start_wait: None,
             events: None,
             last_event: None,
             activity: None,
@@ -1337,6 +1350,14 @@ impl JsonRecord for MonitorRecord {
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
+    fn monitor_stream_pending(&self) -> bool {
+        self.stream_queue
+            .as_ref()
+            .is_some_and(|queue| !queue.is_empty())
+    }
+    fn monitor_status(&self) -> Option<&str> {
+        Some(self.status.as_str())
+    }
 }
 pub use studio_runtime_schema::terminal_record::TerminalRecord;
 
@@ -1797,6 +1818,14 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
 
     fn record_key(&self) -> Option<&Self::Id>;
 
+    fn monitor_stream_pending(&self) -> bool {
+        false
+    }
+
+    fn monitor_status(&self) -> Option<&str> {
+        None
+    }
+
     fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
         decode_record::<Self>(connection, row_id, encoded)
     }
@@ -1993,7 +2022,10 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
 
     /// Upsert a record and related non-record columns in a hybrid table.
     pub fn put_with_columns(&self, record: &R, columns: &[(&str, SqlValue)]) -> StoreResult<()> {
-        if R::KEY_MODE != RecordKeyMode::PayloadId || R::TABLE == AgentRecord::TABLE {
+        if R::KEY_MODE != RecordKeyMode::PayloadId
+            || R::TABLE == AgentRecord::TABLE
+            || R::TABLE == MonitorRecord::TABLE
+        {
             return Err(crate::StoreError::RecordContract(
                 "external-key records must be written with put_at",
             ));
@@ -2105,6 +2137,13 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             return crate::agent_volatile::update(self.connection, id, &value);
         }
         let encoded = encode_record(record, id)?;
+        if R::TABLE == MonitorRecord::TABLE {
+            let changed = self.connection.execute(
+                "UPDATE runtime_monitors SET record=?1,stream_pending=?2,monitor_status=?3 WHERE id=?4",
+                params![encoded, record.monitor_stream_pending(), record.monitor_status(), id],
+            )?;
+            return Ok(changed == 1);
+        }
         let changed = self.connection.execute(
             &format!("UPDATE {} SET record=?1 WHERE id=?2", quoted_table::<R>()),
             params![encoded, id],
@@ -2118,6 +2157,26 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             return crate::agent_volatile::put(self.connection, id, &value, !update);
         }
         let encoded = encode_record(record, id)?;
+        if R::TABLE == MonitorRecord::TABLE {
+            let conflict = if update {
+                "DO UPDATE SET record=excluded.record,stream_pending=excluded.stream_pending,monitor_status=excluded.monitor_status"
+            } else {
+                "DO NOTHING"
+            };
+            let sql = format!(
+                "INSERT INTO runtime_monitors(id,record,stream_pending,monitor_status) VALUES (?1,?2,?3,?4) ON CONFLICT(id) {conflict}"
+            );
+            let changed = self.connection.execute(
+                &sql,
+                params![
+                    id,
+                    encoded,
+                    record.monitor_stream_pending(),
+                    record.monitor_status()
+                ],
+            )?;
+            return Ok(changed == 1);
+        }
         let conflict = if update {
             "DO UPDATE SET record=excluded.record"
         } else {
@@ -3205,6 +3264,16 @@ mod tests {
 mod agent_projection_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn stored_agent_rejects_legacy_start_wait_shapes() {
+        for wait in [r#"{"reason":"slot","epoch":1,"runningTurns":null}"#, "null"] {
+            let raw = format!(
+                r#"{{"id":"a","rootId":"a","epoch":1,"status":"queued","accountKey":"default","startWait":{wait}}}"#
+            );
+            assert!(super::parse_agent_record("a", &raw).is_err());
+        }
+    }
 
     #[test]
     fn stored_agent_reads_typed_volatile_columns() {

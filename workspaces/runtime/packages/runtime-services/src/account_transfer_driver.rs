@@ -1581,7 +1581,7 @@ mod request_tests {
                 transfer:None,deleted_actor_session:None,method,
                 params:json!({"processId":"watch","cwd":cwd,"command":["true"]}),
             })?;
-            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
+            tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                 [crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original","rootRequestId":root,"providerRequest":admitted}})).to_string()])?;
             let key=studio_runtime_schema::provider_call_contract::transport_key("source","monitor:watch");
             let prepared = studio_runtime_schema::provider_call_contract::TransportRequest {
@@ -1645,7 +1645,7 @@ mod request_tests {
         }
         let (_root, store) = store_with_agents();
         run_async(store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",[crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}})).to_string()])?;
+            tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",[crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}})).to_string()])?;
             Ok(())
         })).expect("persist the unproven monitor");
         let transfer = "5a300f72-4ea6-4d30-8a0e-9b2c13c4a001";

@@ -528,7 +528,7 @@ async fn lifecycle_effect_refusals_preserve_rows_and_projections() {
                 store
                     .transaction(move |tx| {
                         tx.execute(
-                            "INSERT INTO runtime_monitors(id,record) VALUES('live-monitor',?1)",
+                            "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('live-monitor',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                             [monitor_fixture(
                                 &json!({"id":"live-monitor","agent":"worker","status":status}),
                             )
@@ -793,7 +793,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
                 ])?;
             }
             let mut monitor =
-                tx.prepare("INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)")?;
+                tx.prepare("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))")?;
             let mut event = tx.prepare(
                 "INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) \
                  VALUES(?1,?2,'user','input','delivered',?3,1)",

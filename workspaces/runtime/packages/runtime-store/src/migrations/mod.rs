@@ -38,7 +38,10 @@ mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 mod m2026_10_30_agent_volatile;
+pub(crate) mod m2026_10_30_monitor_queue;
+pub(crate) mod m2026_10_30_monitor_status;
 mod m2026_10_30_rule_monitor_records;
+mod m2026_10_30_start_wait;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 
@@ -268,6 +271,16 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
+            id: "2026-10-30-start-wait",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records with legacy start waits",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_start_wait::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: CANVAS_PROVIDER_ID,
             introduced: OCTOBER_26,
             target: MigrationTarget::Canvas,
@@ -321,6 +334,26 @@ static CATALOG: &[&dyn Migration] = &[
             }
             crate::agent_volatile::prepare(c.transaction)
         },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-monitor-queue-column",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor rows with JSON queue index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_monitor_queue::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-monitor-status-column",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor rows with JSON status indexes",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_monitor_status::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -1157,7 +1190,7 @@ mod tests {
     #[test]
     fn migration_removes_unused_monitor_stall_index() {
         let mut db = Connection::open_in_memory().expect("database");
-        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE INDEX runtime_monitor_stall_due ON runtime_monitors(json_extract(record,'$.activityAt')) WHERE json_extract(record,'$.status')='running'; INSERT INTO runtime_monitors VALUES('m','{}');").expect("legacy monitor");
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE INDEX runtime_monitor_stall_due ON runtime_monitors(json_extract(record,'$.activityAt')) WHERE json_extract(record,'$.status')='running'; INSERT INTO runtime_monitors(id,record) VALUES('m','{}');").expect("legacy monitor");
         let tx = db.transaction().expect("transaction");
         let accounts = Accounts::new();
         let step = CATALOG

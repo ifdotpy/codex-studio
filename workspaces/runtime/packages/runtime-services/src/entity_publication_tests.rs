@@ -1198,7 +1198,7 @@ async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
     let now = crate::event_write::unix_time().expect("clock");
     write(
         &store,
-        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
         vec!["lost-watch".into(), lost_monitor("lost-watch", CHAT, now)],
     )
     .await;
@@ -1215,7 +1215,7 @@ async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
     );
     write(
         &store,
-        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
         vec!["running".into(), running.to_string()],
     )
     .await;
@@ -1229,7 +1229,7 @@ async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
         "error":"","ruleId":"rule","created":now,"finished":now});
     write(
         &store,
-        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
         vec!["own-exit".into(), own_exit.to_string()],
     )
     .await;
@@ -1272,7 +1272,7 @@ async fn every_studio_error_change_still_publishes_with_its_source_write() {
     for id in ["lost-a", "lost-b"] {
         write(
             &store,
-            "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+            "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
             vec![id.into(), lost_monitor(id, CHAT, now)],
         )
         .await;
