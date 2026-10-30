@@ -331,7 +331,7 @@ mod graph_agent_tests {
     use serde_json::json;
 
     #[test]
-    fn graph_agent_projection_preserves_last_duplicate_and_checks_row_identity() {
+    fn graph_agent_projection_rejects_duplicate_and_checks_row_identity() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL); CREATE TABLE graph_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);").unwrap();
         connection
@@ -341,6 +341,13 @@ mod graph_agent_tests {
                     "",
                     r#"{"id":"discarded","id":"","opaque":{"nested":[1,null]},"number":1.0}"#,
                 ],
+            )
+            .unwrap();
+        assert!(CoordinationRepository::agents(&connection).is_err());
+        connection
+            .execute(
+                "UPDATE graph_agents SET record=?1 WHERE id=''",
+                [r#"{"id":"","opaque":{"nested":[1,null]},"number":1.0}"#],
             )
             .unwrap();
         let agents = CoordinationRepository::agents(&connection).unwrap();
