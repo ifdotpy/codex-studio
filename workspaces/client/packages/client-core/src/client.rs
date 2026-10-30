@@ -314,7 +314,12 @@ mod tests {
     async fn retired_system_commands_are_rejected() {
         let directory = tempfile::tempdir().unwrap();
         let client = open(directory.path());
-        for method in ["system.start", "system.info"] {
+        for method in [
+            "system.start",
+            "system.info",
+            "sync.pull",
+            "sync.applyEntities",
+        ] {
             let response = client
                 .request(request("retired", method, Value::Null))
                 .await
@@ -323,6 +328,44 @@ mod tests {
                 matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "unknown_method")
             );
         }
+    }
+    #[tokio::test]
+    async fn sync_open_reaches_identity_backend() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let (headers, _) = crate::backend::tests::read_http(&mut stream).await;
+            assert!(headers.starts_with("GET /api/sync/identity"));
+            let body = json!({"workspaceId":"a".repeat(32),"chatState":true}).to_string();
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let client = Client::open(
+            ConnectionConfig {
+                state_directory: directory.path().into(),
+                backend_origin: origin,
+            },
+            |_| {},
+        )
+        .unwrap();
+        let response = client
+            .request(request("sync", "sync.open", json!({})))
+            .await
+            .unwrap();
+        assert!(
+            matches!(response.outcome, NativeOutcome::Success(value) if value["workspaceId"] == "a".repeat(32))
+        );
+        server.await.unwrap();
     }
     #[tokio::test]
     async fn reader_prioritizes_event_and_rejects_unknown_response_identity() {

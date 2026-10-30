@@ -195,7 +195,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                     Work::Immediate(views.command(&request))
                 }
                 Ok(request) if request.method == "drafts.refresh" => Work::DraftSync(request),
-                Ok(request) if request.method.starts_with("sync.") => Work::Sync(request),
+                Ok(request) if request.method == "sync.open" => Work::Sync(request),
                 Ok(request) if request.method == "actions.submit" => Work::Action(request),
                 Ok(request) if request.method == "api.request" => Work::Network(request),
                 Ok(request) if request.method == "outbox.deliver" => Work::Delivery(request),
@@ -250,7 +250,10 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                         Err(error) => Response::failure(request.id, "backend_config", error),
                     },
                     Work::Sync(request) => match backend.as_ref() {
-                        Ok(backend) => crate::sync::dispatch(backend, &sender, request).await,
+                        Ok(backend) => match crate::sync::open(backend, &sender).await {
+                            Ok(value) => Response::success(request.id, value),
+                            Err(error) => Response { id: request.id, result: None, error: Some(error) },
+                        },
                         Err(error) => Response::failure(request.id, "backend_config", error),
                     },
                     Work::Delivery(request) => match backend.as_ref() {

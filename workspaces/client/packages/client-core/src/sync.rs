@@ -3,7 +3,7 @@ use crate::{
     backend::Backend,
     delivery::{StoreSender, state},
     projections::Document,
-    protocol::{CommandError, Request, Response},
+    protocol::{CommandError, Request},
 };
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
@@ -567,24 +567,10 @@ fn projection_error_with_limit(payload: &str, limit: usize) -> Option<CommandErr
     })
 }
 
-pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request) -> Response {
-    let result = match request.method.as_str() {
-        "sync.open" => open(backend, sender).await,
-        _ => Err(error("unknown_method", "Unknown synchronization command.")),
-    };
-    match result {
-        Ok(value) => Response::success(request.id, value),
-        Err(error) => Response {
-            id: request.id,
-            result: None,
-            error: Some(error),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::Response;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -595,24 +581,6 @@ mod tests {
         match crate::delivery::apply_entities(sender, workspace, changes, false, None, None).await {
             Ok(value) => Response::success("apply".into(), value),
             Err(error) => Response::failure("apply".into(), "storage_error", error),
-        }
-    }
-    #[tokio::test]
-    async fn retired_sync_commands_are_rejected_without_network() {
-        let backend = Backend::new("http://127.0.0.1:1").unwrap();
-        let (sender, _receiver) = mpsc::channel(1);
-        for method in ["sync.pull", "sync.applyEntities"] {
-            let response = dispatch(
-                &backend,
-                &sender,
-                Request {
-                    id: "retired".into(),
-                    method: method.into(),
-                    params: Value::Null,
-                },
-            )
-            .await;
-            assert_eq!(response.error.unwrap().code, "unknown_method");
         }
     }
     #[test]
