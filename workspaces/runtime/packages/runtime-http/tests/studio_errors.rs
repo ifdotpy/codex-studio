@@ -887,7 +887,8 @@ async fn a_malformed_source_timestamp_uses_observation_time_and_still_streams() 
         .await
         .unwrap();
     let mut stream = incident_stream(&app).await;
-    store.transaction(|tx| {tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','lost','$.finished',-1) WHERE id='bad-clock'",[])?;Ok(())}).await.unwrap();
+    // Recreate legacy malformed evidence with the keys its migration would write.
+    store.transaction(|tx| {tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','lost','$.finished',-1),monitor_status='lost',monitor_error_candidate=1 WHERE id='bad-clock'",[])?;Ok(())}).await.unwrap();
     let (_, body) = call(&app, "GET", "/api/studio-errors", None).await;
     let row = body["items"]
         .as_array()
@@ -983,6 +984,15 @@ async fn malformed_failed_monitor_fields_remain_candidates_and_stream_after_a_he
         .unwrap();
     let now = studio_runtime_services::event_write::unix_time().unwrap();
     let path = root.path().to_path_buf();
+    for (field, invalid) in [
+        ("status", json!("unknown")),
+        ("created", json!(-1)),
+        ("exitCode", json!("invalid")),
+    ] {
+        let mut record = monitor(&path, "new-invalid", "running", Value::Null, "", now);
+        record[field] = invalid;
+        assert!(serde_json::from_value::<MonitorRecord>(record).is_err());
+    }
     store
         .transaction(move |tx| {
             for id in [
@@ -1007,13 +1017,14 @@ async fn malformed_failed_monitor_fields_remain_candidates_and_stream_after_a_he
         .await
         .unwrap();
     let mut stream = incident_stream(&app).await;
+    // These retained records and their keys match the legacy migration.
     store.transaction(|tx| {
-        tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','failed','$.exitCode','exit-private-canary') WHERE id='bad-exit'",[])?;
-        tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','failed','$.exitCode',json('{\"private\":\"exit-private-canary\"}')) WHERE id='object-exit'",[])?;
-        tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','status-private-canary') WHERE id='unknown-status'",[])?;
-        tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status',42) WHERE id='typed-status'",[])?;
-        tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','lost','$.created',-1) WHERE id='bad-created'",[])?;
-        tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','failed','$.exitCode',1) WHERE id='own-exit'",[])?;
+        tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','failed','$.exitCode','exit-private-canary'),monitor_status='failed',monitor_error_candidate=1 WHERE id='bad-exit'",[])?;
+        tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','failed','$.exitCode',json('{\"private\":\"exit-private-canary\"}')),monitor_status='failed',monitor_error_candidate=1 WHERE id='object-exit'",[])?;
+        tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','status-private-canary'),monitor_status='lost',monitor_error_candidate=1 WHERE id='unknown-status'",[])?;
+        tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status',42),monitor_status='lost',monitor_error_candidate=1 WHERE id='typed-status'",[])?;
+        tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','lost','$.created',-1),monitor_status='lost',monitor_error_candidate=1,monitor_created=0 WHERE id='bad-created'",[])?;
+        tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','failed','$.exitCode',1),monitor_status='failed',monitor_error_candidate=0 WHERE id='own-exit'",[])?;
         Ok(())
     }).await.expect("malformed monitor records do not roll back their source transaction");
     let following = store.transaction(|tx| {
