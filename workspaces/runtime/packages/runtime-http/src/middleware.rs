@@ -1023,7 +1023,6 @@ mod tests {
         assert_eq!(request_limit("/api/agents"), 256 * 1024);
         assert_eq!(request_limit("/api/assets"), 28 * 1024 * 1024);
         assert_eq!(request_limit("/api/projects"), 6 * 1024 * 1024);
-        assert_eq!(request_limit("/api/voice/audio"), 6 * 1024 * 1024);
         assert_eq!(request_limit("/api/federation/v1/pull"), 256 * 1024);
         assert_eq!(request_limit("/api/unknown"), 256 * 1024);
     }

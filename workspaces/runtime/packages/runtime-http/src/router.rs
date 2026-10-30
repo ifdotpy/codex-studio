@@ -746,7 +746,6 @@ pub fn router(mut state: HttpState) -> Result<Router, Box<dyn std::error::Error>
         })
         .collect();
 
-    let router = router.merge(routes::voice::fallback());
     Ok(with_boundary(router, state))
 }
 
@@ -943,11 +942,7 @@ async fn dispatch(request: Request<Body>) -> Response {
         )
         .is_some()
     });
-    let hidden_voice = method == "POST"
-        && path
-            .strip_prefix("/api/voice/")
-            .is_some_and(|action| !action.is_empty());
-    if documented || hidden_voice {
+    if documented {
         return error_response(StatusCode::NOT_IMPLEMENTED, "Not implemented");
     }
     let documented_path = operations().is_ok_and(|operations| {
@@ -1496,7 +1491,73 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn encoded_dynamic_voice_fallback_keeps_raw_route_and_request_identity() {
+    async fn uncalled_coordination_routes_are_not_exposed() {
+        let (state, _directory) = state();
+        let app = router(state).expect("router starts");
+        for path in ["/api/chats", "/api/connections"] {
+            let request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("host", "127.0.0.1:4620")
+                .header("x-canvas-token", "token")
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    12345,
+                )))
+                .body(Body::from("{}"))
+                .expect("request builds");
+            assert_eq!(
+                app.clone()
+                    .oneshot(request)
+                    .await
+                    .expect("response")
+                    .status(),
+                StatusCode::NOT_FOUND,
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn uncalled_voice_routes_are_not_exposed() {
+        let (state, _directory) = state();
+        let app = router(state).expect("router starts");
+        for path in [
+            "/api/voice/audio",
+            "/api/voice/record",
+            "/api/voice/approvals",
+            "/api/voice/approval_speech",
+            "/api/voice/speech",
+            "/api/voice/approve",
+            "/api/voice/submit",
+        ] {
+            let request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("host", "127.0.0.1:4620")
+                .header("x-canvas-token", "token")
+                .header("content-type", "application/json")
+                .extension(ConnectInfo(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    12345,
+                )))
+                .body(Body::from("{}"))
+                .expect("request builds");
+            assert_eq!(
+                app.clone()
+                    .oneshot(request)
+                    .await
+                    .expect("response")
+                    .status(),
+                StatusCode::NOT_FOUND,
+                "{path}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_encoded_voice_path_keeps_request_identity() {
         let (state, _directory) = state();
         let app = router(state).expect("router starts");
         let peer = ConnectInfo(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 12345));
@@ -1997,9 +2058,7 @@ mod tests {
 
     #[tokio::test]
     async fn boundary_accepts_each_route_body_limit_and_rejects_the_next_byte() {
-        use crate::http_body_limits::{
-            ASSET_BODY_LIMIT, DEFAULT_BODY_LIMIT, PROJECTS_BODY_LIMIT, VOICE_AUDIO_BODY_LIMIT,
-        };
+        use crate::http_body_limits::{ASSET_BODY_LIMIT, DEFAULT_BODY_LIMIT, PROJECTS_BODY_LIMIT};
         let cases = [
             ("/api/agents", r#"{"prompt":"x"}"#, DEFAULT_BODY_LIMIT),
             (
@@ -2011,11 +2070,6 @@ mod tests {
                 "/api/projects",
                 r#"{"action":"add_location","project":"x","request_id":"00000000-0000-4000-8000-000000000001","server":"x"}"#,
                 PROJECTS_BODY_LIMIT,
-            ),
-            (
-                "/api/voice/audio",
-                r#"{"agent":"x","audio":"x","chunk_id":"x","mime":"x","session_id":"x"}"#,
-                VOICE_AUDIO_BODY_LIMIT,
             ),
             (
                 "/api/federation",
