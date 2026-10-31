@@ -189,6 +189,27 @@ struct TransferCommon {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    #[serde(default)]
+    after_seq: i64,
+    #[serde(default)]
+    wait_seconds: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct ReadParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    area: ResultArea,
+    path: String,
+    #[serde(default)]
+    offset: u64,
+}
+
+#[derive(serde::Deserialize)]
 pub(crate) struct SyncPathParams {
     #[serde(flatten)]
     common: TransferCommon,
@@ -269,6 +290,10 @@ enum FrameParams {
     SyncClone(SyncCloneParams),
     Sync(SyncOperation),
     SyncBatch(SyncBatchParams),
+    Status(TransferCommon),
+    Cancel(TransferCommon),
+    Attach(AttachParams),
+    Read(ReadParams),
     ResultManifest(ResultManifestParams),
     // Existing dispatch until each remaining method has its own typed variant.
     Legacy(Map<String, Value>),
@@ -398,13 +423,6 @@ pub(crate) fn integer(value: Option<&Value>) -> Option<i64> {
 }
 
 /// A JSON number that is not a boolean.
-pub(crate) fn number(value: Option<&Value>) -> Option<f64> {
-    match value {
-        Some(Value::Number(number)) => number.as_f64(),
-        _ => None,
-    }
-}
-
 impl HostService {
     pub(crate) fn open(state: &Path, build_id: String) -> std::io::Result<Self> {
         Self::with_limits(state, build_id, DEFAULT_SLOTS, DEFAULT_BUDGET)
@@ -748,22 +766,15 @@ impl HostService {
             .and_then(Value::as_str)
             .ok_or_else(|| Failure::Unexpected("'operationId'".into()))?
             .to_owned();
-        let mut op = self.load(&identity)?;
+        let op = self.load(&identity)?;
         // The broker sets these fields; the host never accepts a slot path from the caller.
         require(
             params.get("agentId") == op.get("agentId"),
             "The command belongs to another agent",
             "forbidden",
         )?;
-        match method {
-            "status" => return Ok(Value::Object(op)),
-            "attach" => return self.attach(&identity, params).await,
-            "read" => return self.read_result(&identity, &op, params),
-            _ => {}
-        }
         let slot = self.slot(&op)?;
         match method {
-            "cancel" => self.cancel(&identity, &mut op).await.map(Value::Object),
             "release" => self
                 .release(&identity, op, &slot, params)
                 .map(Value::Object),
@@ -866,6 +877,49 @@ impl HostService {
                 let slot = self.slot(&op)?;
                 self.sync_batch(&op, &slot, &params.items)
             }
+            FrameParams::Status(params) => {
+                let op = self.load(&params.operation_id)?;
+                require(
+                    text(&op, "agentId") == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                Ok(Value::Object(op))
+            }
+            FrameParams::Cancel(params) => {
+                let mut op = self.load(&params.operation_id)?;
+                require(
+                    text(&op, "agentId") == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                self.cancel(&params.operation_id, &mut op)
+                    .await
+                    .map(Value::Object)
+            }
+            FrameParams::Attach(params) => {
+                let op = self.load(&params.common.operation_id)?;
+                require(
+                    text(&op, "agentId") == params.common.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                self.attach(
+                    &params.common.operation_id,
+                    params.after_seq,
+                    params.wait_seconds,
+                )
+                .await
+            }
+            FrameParams::Read(params) => {
+                let op = self.load(&params.common.operation_id)?;
+                require(
+                    text(&op, "agentId") == params.common.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                self.read_result(&params.common.operation_id, &op, params)
+            }
             FrameParams::ResultManifest(params) => {
                 let op = self.load(&params.operation_id)?;
                 require(
@@ -894,19 +948,8 @@ impl HostService {
         }
     }
 
-    async fn attach(&self, identity: &str, params: &Map<String, Value>) -> Outcome<Value> {
-        let after = match params.get("afterSeq") {
-            None => 0,
-            Some(value) => integer(Some(value))
-                .filter(|after| *after >= 0)
-                .ok_or_else(|| HostExecError::new(INVALID, "Invalid event cursor"))?,
-        };
-        let wait = match params.get("waitSeconds") {
-            None => 0.0,
-            Some(value) => {
-                number(Some(value)).ok_or_else(|| Failure::Unexpected("Invalid wait".into()))?
-            }
-        };
+    async fn attach(&self, identity: &str, after: i64, wait: f64) -> Outcome<Value> {
+        require(after >= 0, "Invalid event cursor", INVALID)?;
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs_f64(wait.clamp(0.0, ATTACH_MAX_SECONDS));
         while tokio::time::Instant::now() < deadline && self.inner().commands.contains(identity) {
@@ -919,31 +962,20 @@ impl HostService {
         Ok(json!({"events": events, "status": self.load(identity)?}))
     }
 
-    fn read_result(&self, identity: &str, op: &Op, params: &Map<String, Value>) -> Outcome<Value> {
+    fn read_result(&self, identity: &str, op: &Op, params: &ReadParams) -> Outcome<Value> {
         use std::io::{Read, Seek, SeekFrom};
         require(
             ["exited", "released"].contains(&text(op, "state")),
             "The command has no final files",
             "outcome_unknown",
         )?;
-        let area = params
-            .get("area")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        require(
-            ["changes", "artifacts"].contains(&area),
-            "Invalid result file area",
-            INVALID,
+        let path = protocol::inside(
+            &self.opdir(identity).join(params.area.as_str()),
+            Some(&protocol::text_value(&params.path)),
+            true,
         )?;
-        let path = protocol::inside(&self.opdir(identity).join(area), params.get("path"), true)?;
-        let offset = match params.get("offset") {
-            None => 0,
-            Some(value) => integer(Some(value))
-                .and_then(|offset| u64::try_from(offset).ok())
-                .ok_or_else(|| HostExecError::new(INVALID, "Invalid file offset"))?,
-        };
         let mut file = fs::File::open(&path)?;
-        file.seek(SeekFrom::Start(offset))?;
+        file.seek(SeekFrom::Start(params.offset))?;
         let mut data = Vec::with_capacity(protocol::CHUNK);
         file.take(protocol::CHUNK as u64).read_to_end(&mut data)?;
         use base64::Engine;
@@ -1046,6 +1078,22 @@ impl HostService {
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
             "result.manifest" => FrameParams::ResultManifest(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "status" => FrameParams::Status(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "cancel" => FrameParams::Cancel(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "attach" => FrameParams::Attach(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "read" => FrameParams::Read(
                 serde_json::from_str(raw)
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
