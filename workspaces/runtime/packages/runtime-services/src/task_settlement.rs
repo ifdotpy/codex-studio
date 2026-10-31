@@ -15,12 +15,20 @@
 //! backend start. [`absent_command_checks`] and [`close_absent_commands`] apply
 //! the second rule with a background terminal list that the account worker
 //! reads from the live provider.
+<<<<<<< head
 use rusqlite::{OptionalExtension, Transaction};
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
+||||||| base
+use rusqlite::{OptionalExtension, Transaction};
+use serde_json::{Value, json};
+=======
+use rusqlite::Transaction;
+use serde_json::{Value, json};
+>>>>>>> af1fc6047e4e4ebd475f27b87d699ebc423e7b6e
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, CachedSql, RuntimeStore, StoreError, StoreResult,
+    AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError, StoreResult,
     TaskId, TaskRecord, TaskRepository, truthy,
 };
 
@@ -81,14 +89,9 @@ fn owner_settles(agent: &Value) -> bool {
 }
 
 fn completed_turn(tx: &rusqlite::Connection, agent: &str, turn: &str) -> StoreResult<bool> {
-    Ok(tx
-        .query_row_cached(
-            "SELECT 1 FROM runtime_completed_turns WHERE id=?1",
-            [format!("{agent}:{turn}")],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
+    Ok(studio_runtime_store::domain::turn_completed(
+        tx, agent, turn,
+    )?)
 }
 
 fn stored_agent(tx: &rusqlite::Connection, id: &str) -> StoreResult<Option<Value>> {
