@@ -105,9 +105,9 @@ pub(crate) type Op = Map<String, Value>;
 
 #[derive(serde::Deserialize)]
 struct IncomingFrame {
-    id: Option<Value>,
-    token: Option<Value>,
-    method: Option<Value>,
+    id: Option<Box<serde_json::value::RawValue>>,
+    token: Option<Box<serde_json::value::RawValue>>,
+    method: Option<Box<serde_json::value::RawValue>>,
     params: Option<Box<serde_json::value::RawValue>>,
 }
 
@@ -987,8 +987,8 @@ impl HostService {
 
     async fn request_frame(self: &Arc<Self>, bytes: &[u8]) -> Option<Value> {
         let request: IncomingFrame = serde_json::from_slice(bytes).ok()?;
-        let identity = request.id.clone().unwrap_or(Value::Null);
-        Some(match self.answer(&identity, request).await {
+        let identity = request.id.clone();
+        Some(match self.answer(request).await {
             Ok(value) => value,
             Err(Failure::Refused(error)) => json!({"id": identity, "error": error.object()}),
             Err(Failure::Unexpected(_)) => {
@@ -997,14 +997,18 @@ impl HostService {
         })
     }
 
-    async fn answer(self: &Arc<Self>, identity: &Value, request: IncomingFrame) -> Outcome<Value> {
-        let id = identity
-            .as_str()
+    async fn answer(self: &Arc<Self>, request: IncomingFrame) -> Outcome<Value> {
+        let id = request
+            .id
+            .as_ref()
+            .and_then(|id| serde_json::from_str::<String>(id.get()).ok())
             .filter(|id| !id.is_empty() && id.chars().count() <= 128)
-            .ok_or_else(|| HostExecError::new(INVALID, "Invalid request ID"))?
-            .to_owned();
-        let token = request.token.unwrap_or(Value::String(String::new()));
-        let matches = token.as_str().is_some_and(|token| {
+            .ok_or_else(|| HostExecError::new(INVALID, "Invalid request ID"))?;
+        let token = request
+            .token
+            .as_ref()
+            .and_then(|token| serde_json::from_str::<String>(token.get()).ok());
+        let matches = token.as_deref().is_some_and(|token| {
             use subtle::ConstantTimeEq;
             bool::from(token.as_bytes().ct_eq(self.token.as_bytes()))
         });
@@ -1012,11 +1016,8 @@ impl HostService {
         let method = request
             .method
             .as_ref()
-            .ok_or_else(|| Failure::Unexpected("'method'".into()))?;
-        let method = method
-            .as_str()
-            .ok_or_else(|| HostExecError::new(INVALID, "Invalid request"))?
-            .to_owned();
+            .and_then(|method| serde_json::from_str::<String>(method.get()).ok())
+            .ok_or_else(|| HostExecError::new(INVALID, "Invalid request"))?;
         let raw = request
             .params
             .as_deref()
