@@ -3604,10 +3604,6 @@
       "fingerprint": "30c951a519de8b24758a9f9c2d334f4eb0fcda25e2c2f29d17ea27b8cd71f73a:0"
     },
     {
-      "file": "workspaces/client/apps/desktop/profile-export-test.ts",
-      "fingerprint": "f64c9b2d1735796952bb4bbc68d35f3586cf16328cec8bb452e1e226dc4dc7b1:0"
-    },
-    {
       "file": "workspaces/client/apps/desktop/restart-environment.ts",
       "fingerprint": "7b2e2faea7f4dfe66d482b7eb2e06d91a55ed917b960409bbf8a60a762f71532:0"
     },
