@@ -756,14 +756,13 @@ impl InterruptFixture {
                         if agent.deleted_at.is_none() {
                             continue;
                         }
-                        let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
+                        let attempt = agent.start_attempt.as_ref();
                         let needs_settlement = agent.in_flight == Some(true)
                             || agent
                                 .turn_id
                                 .as_deref()
                                 .is_some_and(|turn| !turn.is_empty())
-                            || attempt.get("activeAtReservation").and_then(Value::as_bool)
-                                == Some(true)
+                            || attempt.and_then(|value| value.active_at_reservation) == Some(true)
                             || matches!(
                                 agent.status,
                                 studio_runtime_store::AgentStatus::Running
@@ -777,10 +776,10 @@ impl InterruptFixture {
                         agent.turn_id = None;
                         agent.activity = None;
                         agent.active_tools = Some(Vec::new());
-                        if let Some(attempt) = agent.extra.get_mut("startAttempt")
-                            && attempt.get("activeAtReservation") == Some(&json!(true))
+                        if let Some(attempt) = agent.start_attempt.as_mut()
+                            && attempt.active_at_reservation == Some(true)
                         {
-                            attempt["activeAtReservation"] = json!(false);
+                            attempt.active_at_reservation = Some(false);
                         }
                         studio_runtime_store::AgentRepository::put(tx, &agent)?;
                     }

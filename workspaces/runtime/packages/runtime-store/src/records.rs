@@ -396,6 +396,12 @@ pub struct AgentRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_job: Option<StoredTitleJob>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_attempt: Option<Box<StartAttemptView>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disconnect_recovery: Option<Box<studio_runtime_schema::recovery_record::RecoveryFields>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_recovery: Option<Box<studio_runtime_schema::recovery_record::RecoveryFields>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_outcome_hold: Option<StoredStartOutcomeHold>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub fired_events: BTreeSet<String>,
@@ -657,9 +663,12 @@ pub struct ActiveExecutionView {
 }
 
 macro_rules! start_attempt_setters {
-    ($($name:ident: $ty:ty = $field:literal;)+) => {
+    ($($name:ident: $ty:ty => $field:ident = $convert:expr;)+) => {
         $(pub fn $name(&mut self, value: $ty) -> StoreResult<()> {
-            self.set_start_attempt_field($field, &value)
+            let attempt = self.start_attempt.as_mut()
+                .ok_or(crate::StoreError::RecordContract("missing start attempt"))?;
+            attempt.$field = ($convert)(value);
+            Ok(())
         })+
     };
 }
@@ -712,6 +721,9 @@ impl AgentRecord {
             thread_id: None,
             turn_id: None,
             title_job: None,
+            start_attempt: None,
+            disconnect_recovery: None,
+            restart_recovery: None,
             start_outcome_hold: None,
             fired_events: BTreeSet::new(),
             native_review_thread: None,
@@ -758,37 +770,19 @@ impl AgentRecord {
         self.set_active_execution_field("attemptId", &value)
     }
 
-    pub fn start_attempt(&self) -> Result<Option<StartAttemptView>, serde_json::Error> {
-        self.extra
-            .get("startAttempt")
-            .filter(|value| !value.is_null())
-            .map(StartAttemptView::deserialize)
-            .transpose()
-    }
-
-    fn set_start_attempt_field<T: Serialize>(&mut self, field: &str, value: &T) -> StoreResult<()> {
-        let attempt = self
-            .extra
-            .get_mut("startAttempt")
-            .and_then(|value| value.as_object_mut())
-            .ok_or(crate::StoreError::RecordContract("missing start attempt"))?;
-        attempt.insert(field.into(), crate::projection_value(value));
-        Ok(())
-    }
-
     start_attempt_setters! {
-        set_start_attempt_submitted: bool = "submitted";
-        set_start_attempt_account_key: &str = "accountKey";
-        set_start_attempt_thread_id: Option<&str> = "threadId";
-        set_start_attempt_connection_id: Option<&str> = "connectionId";
-        set_start_attempt_native_operation_id: &str = "nativeOperationId";
-        set_start_attempt_not_submitted_reason: &str = "notSubmittedReason";
-        set_start_attempt_retired_events: &[String] = "retiredEvents";
-        set_start_attempt_turn_id: Option<&str> = "turnId";
-        set_start_attempt_observed_turn_id: Option<&str> = "observedTurnId";
-        set_start_attempt_execution_outcome: studio_runtime_schema::persistence::ExecutionStatus = "executionOutcome";
-        set_start_attempt_request_ticket: &str = "requestTicket";
-        set_start_attempt_connection_generation: u64 = "connectionGeneration";
+        set_start_attempt_submitted: bool => submitted = Some;
+        set_start_attempt_account_key: &str => account_key = |v: &str| Some(v.to_owned());
+        set_start_attempt_thread_id: Option<&str> => thread_id = |v: Option<&str>| v.map(str::to_owned);
+        set_start_attempt_connection_id: Option<&str> => connection_id = |v: Option<&str>| v.map(str::to_owned);
+        set_start_attempt_native_operation_id: &str => native_operation_id = |v: &str| Some(v.to_owned());
+        set_start_attempt_not_submitted_reason: &str => not_submitted_reason = |v: &str| Some(v.to_owned());
+        set_start_attempt_retired_events: &[String] => retired_events = |v: &[String]| Some(v.to_vec());
+        set_start_attempt_turn_id: Option<&str> => turn_id = |v: Option<&str>| v.map(str::to_owned);
+        set_start_attempt_observed_turn_id: Option<&str> => observed_turn_id = |v: Option<&str>| v.map(str::to_owned);
+        set_start_attempt_execution_outcome: studio_runtime_schema::persistence::ExecutionStatus => execution_outcome = Some;
+        set_start_attempt_request_ticket: &str => request_ticket = |v: &str| Some(v.to_owned());
+        set_start_attempt_connection_generation: u64 => connection_generation = Some;
     }
 
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
@@ -2532,27 +2526,33 @@ mod tests {
     }
 
     #[test]
+    fn agent_rejects_malformed_start_attempt_on_decode() {
+        let raw = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"startAttempt":{"id":"attempt","submitted":"false"}}"#;
+        assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
+    }
+
+    #[test]
     fn start_attempt_view_and_field_writes_preserve_existing_payloads() {
         // Shapes from the execution migration and the scheduler's claim writer.
         for attempt in [
             json!({"id":"attempt-0"}),
             json!({"id":"attempt","epoch":1,"events":["event"],"submitted":false,
                 "activeAtReservation":false,"accountKey":"default","created":1.0,
-                "nativeRequest":{"params":{"vendorExtension":[1,2]}}}),
+                "nativeRequest":{"ticket":{"operation":"op","agent":"agent","epoch":1,"account":"default","connection":"c","generation":1,"request":"r"},"method":"m","params":{"vendorExtension":[1,2]}}}),
         ] {
             let mut record = agent(
                 json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":attempt}),
             );
-            let before = record.extra.get("startAttempt").cloned().expect("attempt");
-            let view = record.start_attempt().expect("view").expect("attempt");
+            let before = record.start_attempt.clone().expect("attempt");
+            let view = record.start_attempt.as_ref().expect("attempt");
             assert!(view.id.is_some());
-            assert_eq!(record.extra.get("startAttempt"), Some(&before));
+            assert_eq!(record.start_attempt.as_ref(), Some(&before));
             record
                 .set_start_attempt_submitted(false)
                 .expect("field write");
             let mut expected = before;
-            expected["submitted"] = json!(false);
-            assert_eq!(record.extra.get("startAttempt"), Some(&expected));
+            expected.submitted = Some(false);
+            assert_eq!(record.start_attempt.as_ref(), Some(&expected));
         }
     }
 
@@ -2564,37 +2564,12 @@ mod tests {
             );
             assert!(
                 record
-                    .start_attempt()
-                    .expect("valid view")
+                    .start_attempt
+                    .as_ref()
                     .expect("attempt")
                     .action
                     .is_some()
             );
-        }
-        for action in [
-            json!(null),
-            json!(false),
-            json!(0),
-            json!(""),
-            json!([]),
-            json!({}),
-        ] {
-            let record = agent(
-                json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
-            );
-            assert!(record.start_attempt().is_err());
-        }
-        for action in [
-            json!(true),
-            json!(1),
-            json!("other"),
-            json!([1]),
-            json!({"x":1}),
-        ] {
-            let record = agent(
-                json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
-            );
-            assert!(record.start_attempt().is_err());
         }
     }
 

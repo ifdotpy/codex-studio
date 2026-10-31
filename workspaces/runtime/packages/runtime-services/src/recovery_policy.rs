@@ -97,6 +97,16 @@ impl RecoverySnapshot {
             })
             .unwrap_or(&NULL_VALUE)
     }
+
+    pub(crate) fn typed_start_attempt(&self) -> Option<&StartAttemptView> {
+        self.typed.start_attempt.as_deref().or_else(|| {
+            self.typed
+                .restart_recovery
+                .as_deref()?
+                .start_attempt
+                .as_deref()
+        })
+    }
     pub(crate) fn restart_input_wait(&self) -> bool {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase")]

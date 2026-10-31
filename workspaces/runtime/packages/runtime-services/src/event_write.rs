@@ -615,7 +615,10 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
         AgentStatus::Running | AgentStatus::Starting => {
             agent.in_flight != Some(true)
                 && agent.turn_id.as_deref().is_none_or(str::is_empty)
-                && !truthy(agent.extra.get("startAttempt"))
+                && agent
+                    .start_attempt
+                    .as_ref()
+                    .is_none_or(|a| a == &Default::default())
         }
         AgentStatus::Approval => false,
         AgentStatus::Unknown
