@@ -36,6 +36,9 @@ it("removes retired draft and upload data without touching identities", async ()
     ["codex-chat-draft:workspace:chat", "draft"],
     [":server:remote:studio-session-cost:session", "cost"],
     ["studio-upload-cancelled:one", "true"],
+    ["studio-routes-v1:server", "old"],
+    ["studio-automatic-ui-removals-v1", "old"],
+    ["studio-automatic-ui-migration-v3", "old"],
     ["studio-sidebar-width:scope", "20"],
     ["codex-sidebar-order:scope", "cached"],
     ["codex-sidebar-order:scope:pending", "pending"],
@@ -80,6 +83,7 @@ it("removes retired draft and upload data without touching identities", async ()
     databases: async () => [
       { name: "codex-studio-dictation" },
       { name: "codex-studio-uploads:server:remote" },
+      { name: "studio-automatic-ui-access-v1" },
       { name: "studio-device-key-v1" },
       { name: "studio-monitor-input-journal-v1" },
     ],
@@ -107,5 +111,6 @@ it("removes retired draft and upload data without touching identities", async ()
   expect(deleted).toEqual([
     "codex-studio-dictation",
     "codex-studio-uploads:server:remote",
+    "studio-automatic-ui-access-v1",
   ]);
 });

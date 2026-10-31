@@ -135,6 +135,7 @@ export async function cleanupLegacyPersistence(
     "studio-sidebar-width:",
     "studio-removed-messages:",
     "studio-peer-conversion-dialog:",
+    "studio-routes-v1:",
   ];
   const keys = Array.from({ length: storage.length }, (_, index) =>
     storage.key(index),
@@ -144,6 +145,8 @@ export async function cleanupLegacyPersistence(
     const logical = key.replace(/^:server:[^:]+:/, "");
     if (
       retiredKeys.some((prefix) => logical.startsWith(prefix)) ||
+      logical === "studio-automatic-ui-removals-v1" ||
+      logical === "studio-automatic-ui-migration-v3" ||
       (logical.startsWith(outboxPrefixes.sidebarOrder) &&
         !logical.endsWith(":pending")) ||
       (logical.startsWith(outboxPrefixes.chatCreation) &&
@@ -155,7 +158,11 @@ export async function cleanupLegacyPersistence(
       storage.removeItem(key);
   }
   if (!factory) return;
-  const retiredDatabases = ["codex-studio-dictation", "codex-studio-uploads"];
+  const retiredDatabases = [
+    "codex-studio-dictation",
+    "codex-studio-uploads",
+    "studio-automatic-ui-access-v1",
+  ];
   for (const { name } of await factory.databases()) {
     if (
       !name ||
