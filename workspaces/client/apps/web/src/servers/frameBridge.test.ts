@@ -37,6 +37,8 @@ vi.mock("./transport", async (importOriginal) => ({
 const stopConnection = vi.hoisted(() => vi.fn());
 vi.mock("../sync/subscriptions/events", () => ({
   watchResourceConnection: () => stopConnection,
+  watchResourceChanges: vi.fn(),
+  replaceStream: vi.fn(),
   defaultSubscriptions: { watchResourceConnection: () => stopConnection },
 }));
 
