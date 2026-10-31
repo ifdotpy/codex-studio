@@ -1,560 +1,220 @@
-import { required } from "./performance-fixture.ts";
-import { installResponsivenessFixture } from "./ui-responsiveness.fixture.ts";
-import { cacheFixture } from "../cacheFixture.ts";
-import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
-import type { PerformanceTranscriptItem as Message } from "./performance-fixture.ts";
-import { transcriptFixtureAgent } from "./performance-fixture.ts";
-import {
-  readTestState,
-  readFixtureSyncContract,
-  entityPullFixtureForRequest,
-  stubEntityState,
-  test,
-  spawnFixture as spawn,
-  rustUiFixture,
-} from "../playwright.ts";
-// Production App at 4x CPU. Timings are evidence, correctness is asserted.
-import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile, cp } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
-test(
-  "Ui responsiveness browser",
-  { tag: "@performance" },
-  async ({ browser: testBrowser, context: runnerContext }) => {
-    test.setTimeout(300_000);
-    const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
-    const dir = await mkdtemp(join(tmpdir(), "studio-ui-responsiveness-"));
-    const staticDir = join(dir, "dist");
-    await cp(
-      process.env.RESPONSIVENESS_DIST ||
-        join(repo, "workspaces/client/apps/web/dist"),
-      staticDir,
-      {
-        recursive: true,
-      },
-    );
-    const index = await readFile(join(staticDir, "index.html"));
-    const identity = {
-      source: execFileSync("git", ["rev-parse", "HEAD"], {
-        cwd: repo,
-        encoding: "utf8",
-      }).trim(),
-      label: process.env.RESPONSIVENESS_LABEL || "measurement",
-      indexSha256: createHash("sha256").update(index).digest("hex"),
-      cpuSlowdown: 4,
-    };
-    const fixture = spawn(process.execPath, [rustUiFixture, dir], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, CODEX_BOARD_STATE_DIR: join(dir, "board") },
-    });
-    let fixtureLog = "";
-    required(fixture.stderr).on("data", (chunk) => {
-      fixtureLog += chunk;
-    });
-    const results = [];
-    try {
-      const port = await new Promise((resolve, reject) => {
-        required(fixture.stdout).once("data", (chunk) =>
-          resolve(Number(String(chunk).trim())),
-        );
-        fixture.once("exit", () => reject(new Error(fixtureLog)));
-      });
-      const origin = `http://127.0.0.1:${port}`;
-      const original = await readTestState(origin);
-      const a = original.threads.find(
-        (agent) => agent.name === "Other project",
-      )!;
-      const b = original.threads.find(
-        (agent) => agent.name === "Release lead",
-      )!;
-      const agents = [a, b].map(
-        (agent) =>
-          ({
-            ...transcriptFixtureAgent(agent),
-            status: "completed",
-            inFlight: false,
-            turnId: null,
-          }) satisfies Agent,
-      );
-      const state = {
-        ...original,
-        threads: agents,
-        nodes: agents,
-        chats: [],
-        edges: [],
-        runtime: {
-          ...original.runtime,
-          agents,
-          rooms: [],
-          requests: [],
-          events: [],
-          work: [],
-          tasks: [],
-          userTasks: [],
-          complaints: [],
-          monitors: [],
-        },
-      };
-      const history = (prefix: string): Message[] => {
-        const items: Message[] = [];
-        for (let turn = 0; turn < 30; turn++) {
-          const shared = {
-            turnId: `${prefix}-turn-${turn}`,
-            turnStatus: "completed",
-          };
-          items.push({
-            ...shared,
-            id: `${prefix}-user-${turn}`,
-            role: "user",
-            text: `Review component ${turn}.`,
-          });
-          for (let step = 0; step < 4; step++) {
-            items.push({
-              ...shared,
-              id: `${prefix}-text-${turn}-${step}`,
-              role: "assistant",
-              text: `Component ${turn}, step ${step}.\n\n${"The **test evidence** explains this behavior. ".repeat(6)}\n\n- Inspect the request\n- Check the response\n\n\`\`\`ts\nconst result = await check();\n\`\`\``,
-            });
-            items.push({
-              ...shared,
-              id: `${prefix}-tool-${turn}-${step}`,
-              role: "tool",
-              toolStatus: "completed",
-              title: "commandExecution",
-              text: JSON.stringify({
-                type: "commandExecution",
-                command: `python3 check_${step}.py`,
-                status: "completed",
-                aggregatedOutput: "check passed\n".repeat(30),
-                exitCode: 0,
-              }),
-            });
-          }
-          items.push({
-            ...shared,
-            id: `${prefix}-result-${turn}`,
-            role: "assistant",
-            phase: "final_answer",
-            text: `Component ${turn} checked. All evidence remains available.`,
-          });
-        }
-        items.push({
-          id: `${prefix}-live`,
-          role: "assistant",
-          turnId: `${prefix}-live-turn`,
-          turnStatus: "running",
-          text: "Stream revision 0.",
-        });
-        return items;
-      };
-      const histories = new Map([
-        [a.id, history("a")],
-        [b.id, history("b")],
-      ]);
-      let transcriptSequence = 1;
-      for (const [name, viewport] of [
-        ["desktop", { width: 1440, height: 960 }],
-        ["mobile", { width: 390, height: 844 }],
-      ] as const) {
-        const context = await testBrowser.newContext({
-          viewport,
-          serviceWorkers: "block",
-        });
-        const page = await context.newPage();
-        page.setDefaultTimeout(30000);
-        const errors: string[] = [];
-        page.on("pageerror", (error) => errors.push(error.message));
-        const cdp = await context.newCDPSession(page);
-        await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-        const initOptions: Parameters<typeof installResponsivenessFixture>[0] =
-          {
-            stateDir: required(original.stateDir),
-            id: a.id,
-            cachedId: cacheFixture(a.id),
-            rows: [...histories],
-            toolCaches: Object.fromEntries(
-              [...histories].map(([chat, items]) => [
-                chat,
-                cacheFixture(
-                  Object.fromEntries(
-                    items
-                      .filter((item) => item.role === "tool")
-                      .map((item) => [item.id, false]),
-                  ),
-                ),
-              ]),
-            ),
-          };
-        await page.addInitScript(installResponsivenessFixture, initOptions);
-        await page.route("**/*", async (route) => {
-          const url = new URL(route.request().url());
-          if (url.origin !== origin) return route.fallback();
-          if (!url.pathname.startsWith("/api/")) {
-            const path =
-              url.pathname === "/"
-                ? "index.html"
-                : decodeURIComponent(url.pathname).slice(1);
-            if (path.split("/").includes("..")) return route.abort();
-            const type = path.endsWith(".js")
-              ? "text/javascript"
-              : path.endsWith(".css")
-                ? "text/css"
-                : path.endsWith(".html")
-                  ? "text/html"
-                  : undefined;
-            return route
-              .fulfill({
-                path: join(staticDir, path),
-                ...(type === undefined ? {} : { contentType: type }),
-              })
-              .catch(() => route.fallback());
-          }
-          if (url.pathname === "/api/transcript") {
-            const id = url.searchParams.get("id");
-            return route.fulfill({
-              json: {
-                agent: agents.find((agent) => agent.id === id),
-                items: histories.get(id!) || [],
-                historyVersion: "fixed-history",
-              },
-            });
-          }
-          return route.fallback();
-        });
-        const syncContract = await readFixtureSyncContract(origin);
-        const { update } = await stubEntityState(page, state, syncContract);
-        await page.exposeFunction(
-          "__notifyTranscriptFixture",
-          async (id: string) => {
-            await update(state, {
-              origin,
-              token: original.token,
-              resources: [{ kind: "transcript", agentId: id }],
-            });
-          },
-        );
-        await page.route("**/api/sync/pull**", (route) => {
-          const requestUrl = new URL(route.request().url());
-          const scope = requestUrl.searchParams.get("scope") || "";
-          const id = scope.startsWith("transcript:")
-            ? scope.slice("transcript:".length)
-            : "";
-          if (!histories.has(id)) return route.fallback();
-          const transcript = {
-            agent: agents.find((agent) => agent.id === id),
-            items: histories.get(id) || [],
-            historyVersion: "fixed-history",
-            truncated: false,
-            nextAfterCursor: null,
-            nextCursor: null,
-            tail: null,
-            unavailable: null,
-          };
-          const pullUrl = new URL(requestUrl);
-          pullUrl.searchParams.set("after", "0");
-          const fixture = entityPullFixtureForRequest(state, pullUrl, {
-            transcript,
-          }) as Extract<
-            ReturnType<typeof entityPullFixtureForRequest>,
-            { documents: unknown }
-          >;
-          for (const document of fixture.documents)
-            document.seq = transcriptSequence;
-          fixture.checkpoint.seq = transcriptSequence;
-          return route.fulfill({
-            json: {
-              workspaceId: syncContract.identity.workspaceId,
-              ...fixture,
+import { standaloneCommand } from "../../src/commands.ts";
+import { cacheFixture } from "../cacheFixture.ts";
+import {
+  readTestState,
+  rustUiFixture,
+  queryFixtureDatabase,
+  spawnFixture,
+  test,
+  expect,
+} from "../playwright.ts";
+import { installResponsivenessFixture } from "./ui-responsiveness.fixture.ts";
+import { required } from "./performance-fixture.ts";
+
+test("composer latency with server history and streaming @performance", async ({
+  browser,
+}) => {
+  test.setTimeout(600_000);
+  const root = await mkdtemp(join(tmpdir(), "studio-composer-latency-"));
+  const fixture = spawnFixture(process.execPath, [rustUiFixture, root], {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      FIXTURE_WORKER_COUNT: "0",
+      FIXTURE_SCRIPT: JSON.stringify([
+        ...Array.from({ length: 300 }, (_, i) => ({
+          prompt: `Benchmark turn ${i} end`,
+          steps: [
+            {
+              say: `Benchmark result ${i} **evidence**\n\n\`\`\`ts\nconst result = await check();\n\`\`\``,
             },
-          });
-        });
-        await page.goto(origin);
-        if (!(await page.locator('[data-message="a-result-29"]').count())) {
-          if (name === "mobile")
-            await page.getByLabel("Toggle conversations").click();
-          await page.locator(`[data-chat="${a.id}"]`).click();
-        }
-        await page.locator('[data-message="a-result-29"]').waitFor();
-        await page.waitForTimeout(500);
-        await page.evaluate(() => {
-          window.metrics.phase = "scroll-witness";
-          const original = Storage.prototype.setItem;
-          (window as typeof window & { scrollWrites: number }).scrollWrites = 0;
-          Storage.prototype.setItem = function (...args) {
-            (window as typeof window & { scrollWrites: number }).scrollWrites++;
-            return original.apply(this, args);
-          };
-        });
-        for (let step = 0; step < 10; step++) {
-          await page.locator("#messages").evaluate((element) => {
-            element.scrollTop -= 50;
-            element.dispatchEvent(new Event("scroll"));
-          });
-          await page.waitForTimeout(50);
-        }
-        const scrollWitness = await page.evaluate(() => ({
-          renders: window.metrics.renderProbe.filter(
-            (entry) =>
-              entry.phase === "scroll-witness" &&
-              entry.component === "conversation",
-          ).length,
-          writes: (window as typeof window & { scrollWrites: number })
-            .scrollWrites,
-          longTasks: window.metrics.longTasks.filter(
-            (entry) => entry.phase === "scroll-witness",
-          ).length,
-        }));
-        console.log(JSON.stringify({ name, steps: 10, ...scrollWitness }));
-        assert.equal(
-          scrollWitness.renders,
-          0,
-          "scroll must not render Conversation",
-        );
-        assert.equal(scrollWitness.writes, 0, "scroll must not write storage");
-        const setPhase = (phase: string) =>
-          page.evaluate((phase) => {
-            window.metrics.phase = phase;
-          }, phase);
-        const input = page.locator("#message");
-        await setPhase("idle-input");
-        await input.focus();
-        let firstText = "Keep every typed character.";
-        await page.keyboard.type(firstText, { delay: 35 });
-        assert.equal(await input.inputValue(), firstText);
-        await page.waitForTimeout(150);
-        await page.locator("#messages").evaluate((element) => {
-          element.scrollTop = Math.floor(element.scrollHeight * 0.25);
-          element.dispatchEvent(new Event("scroll"));
-        });
-        await page.waitForTimeout(150);
-        await setPhase("scrolled-input");
-        // Let the scroll-state and background sync transitions settle before
-        // attributing renders to the following keyboard input.
-        await page.waitForTimeout(1000);
-        const scrolledSuffix = " Type while reading older text.";
-        await page.keyboard.type(scrolledSuffix, { delay: 35 });
-        firstText += scrolledSuffix;
-        assert.equal(await input.inputValue(), firstText);
-        await page.waitForTimeout(150);
-        const switchTo = async (agent: Agent, prefix: string) => {
-          if (name === "mobile")
-            await page.getByLabel("Toggle conversations").click();
-          const count = await page.evaluate((expected) => {
-            window.switchExpected = expected;
-            return window.metrics.switches.length;
-          }, `${prefix}-result-29`);
-          await page.locator(`[data-chat="${agent.id}"]`).click();
-          await page.waitForFunction(
-            (count) => window.metrics.switches.length > count,
-            count,
-          );
-        };
-        await setPhase("cold-switch");
-        await switchTo(b, "b");
-        await setPhase("cached-switch");
-        await switchTo(a, "a");
-        assert.equal(
-          await input.inputValue(),
-          firstText,
-          "Chat switch retains the draft",
-        );
-        await setPhase("stream-and-input");
-        await input.focus();
-        await input.evaluate((element) =>
-          (element as HTMLTextAreaElement).setSelectionRange(
-            (element as HTMLTextAreaElement).value.length,
-            (element as HTMLTextAreaElement).value.length,
-          ),
-        );
-        const suffix = " Input while the answer streams.";
-        const streaming = (async () => {
-          for (let revision = 1; revision <= 12; revision++) {
-            const items = [...required(histories.get(a.id))];
-            items[items.length - 1] = {
-              ...required(items.at(-1)),
-              text: `Stream revision ${revision}. ${"Current response text. ".repeat(revision)}`,
-            };
-            histories.set(a.id, items);
-            transcriptSequence++;
-            await page.evaluate(
-              ({ id, revision }) => window.emitFixture(id, revision),
-              {
-                id: a.id,
-                revision,
-              },
-            );
-            await page.waitForTimeout(100);
-          }
-        })();
-        await Promise.all([
-          streaming,
-          page.keyboard.type(suffix, { delay: 35 }),
-        ]);
-        await page.waitForFunction(() => window.metrics.stream.length === 12);
-        assert.equal(
-          await input.inputValue(),
-          firstText + suffix,
-          "Streaming does not lose typed characters",
-        );
-        assert.equal(
-          await page.locator('[data-message="a-text-29-3"]').count(),
-          1,
-          "Streaming retains the latest commentary in the mounted history window",
-        );
-        assert.equal(
-          await page.locator('[data-message="a-result-29"]').count(),
-          1,
-          "Streaming retains the latest final answer in the mounted history window",
-        );
-        assert.equal(
-          await page.locator('[data-message^="b-"]').count(),
-          0,
-          "The other chat does not leak into history",
-        );
-        assert.match(
-          await page.locator('[data-message="a-live"]').innerText(),
-          /Stream revision 12\./,
-        );
-        assert.deepEqual(errors, []);
-        const metrics = await page.evaluate(() => window.metrics);
-        const summarize = (values: number[]) => {
-          const sorted = [...values].sort((a, b) => a - b);
-          return {
-            count: sorted.length,
-            p50: sorted[Math.floor(sorted.length * 0.5)] || 0,
-            p95:
-              sorted[
-                Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))
-              ] || 0,
-            max: sorted.at(-1) || 0,
-          };
-        };
-        const summary = {
-          viewport: name,
-          records: required(histories.get(a.id)).length,
-          domElements: await page.locator("#messages *").count(),
-          idleInput: summarize(
-            metrics.input
-              .filter((x) => x.phase === "idle-input")
-              .map((x) => x.duration),
-          ),
-          scrolledInput: summarize(
-            metrics.input
-              .filter((x) => x.phase === "scrolled-input")
-              .map((x) => x.duration),
-          ),
-          layoutReads: metrics.layoutReads,
-          keyboardEvents: summarize(
-            metrics.events
-              .filter((x) =>
-                ["keydown", "keypress", "keyup", "input"].includes(x.type),
-              )
-              .map((x) => x.duration),
-          ),
-          streamInput: summarize(
-            metrics.input
-              .filter((x) => x.phase === "stream-and-input")
-              .map((x) => x.duration),
-          ),
-          streamPaint: summarize(metrics.stream.map((x) => x.duration)),
-          switches: metrics.switches,
-          renderCounts: Object.fromEntries(
-            ["idle-input", "scrolled-input", "stream-and-input"].map(
-              (phase) => [
-                phase,
-                Object.fromEntries(
-                  ["app", "sidebar", "conversation"].map((component) => [
-                    component,
-                    metrics.renderProbe.filter(
-                      (entry) =>
-                        entry.phase === phase &&
-                        entry.component === component &&
-                        entry.inputAgeMs < 20,
-                    ).length,
-                  ]),
-                ),
-              ],
-            ),
-          ),
-          longTasks: Object.fromEntries(
-            [
-              "startup",
-              "idle-input",
-              "scrolled-input",
-              "cold-switch",
-              "cached-switch",
-              "stream-and-input",
-            ].map((phase) => [
-              phase,
-              summarize(
-                metrics.longTasks
-                  .filter((x) => x.phase === phase)
-                  .map((x) => x.duration),
-              ),
-            ]),
-          ),
-        };
-        await writeFile(
-          join(dir, `${name}-metrics.json`),
-          JSON.stringify(metrics, null, 2),
-        );
-        for (const phase of ["idle-input", "scrolled-input"]) {
-          const counts: Record<string, number> = required(
-            summary.renderCounts[phase],
-          );
-          // The paired baseline (7066718) already includes 075fab64's
-          // per-chat composer subscription, so typing isolation applies to
-          // both revisions; compare latency and render counts without claiming
-          // this is the pre-extraction architecture.
-          assert.equal(
-            counts.app,
-            0,
-            `${name}/${phase}: typing must not rerender App`,
-          );
-          assert.equal(
-            counts.sidebar,
-            0,
-            `${name}/${phase}: typing must not rerender the sidebar`,
-          );
-          assert.ok(
-            required(counts.conversation) <= 1,
-            `${name}/${phase}: one incidental Conversation update may coincide with typing, not one per key`,
-          );
-        }
-        results.push(summary);
-        await writeFile(
-          join(dir, `${name}-metrics.json`),
-          JSON.stringify(metrics, null, 2),
-        );
-        await page.screenshot({ path: join(dir, `${name}.png`) });
-        console.log(JSON.stringify(summary));
-        await context.close();
-      }
-      const report = {
-        identity,
-        results,
-        evidence: dir,
-        result: "PASS correctness; timing report",
-      };
-      await writeFile(
-        join(dir, "report.json"),
-        JSON.stringify(report, null, 2),
+          ],
+        })),
+        { prompt: "Benchmark live", steps: [{ hold: true }] },
+      ]),
+    },
+  });
+  let log = "";
+  required(fixture.stderr).on("data", (chunk) => {
+    log += chunk;
+  });
+  const port = await new Promise<number>((resolve, reject) => {
+    required(fixture.stdout).once("data", (chunk) =>
+      resolve(Number(String(chunk).trim())),
+    );
+    fixture.once("exit", () => reject(new Error(log)));
+  });
+  const origin = `http://127.0.0.1:${port}`;
+  const state = await readTestState(origin);
+  const agent = required(
+    state.threads.find((row) => row.name === "Other project"),
+  );
+  const other = required(
+    state.threads.find((row) => row.name === "Release lead"),
+  );
+  const send = async (text: string) => {
+    const response = await fetch(`${origin}/api/commands`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        Origin: origin,
+        "X-Canvas-Token": state.token,
+      },
+      body: JSON.stringify(
+        standaloneCommand("send", agent.id, { text, delivery: "next_turn" }),
+      ),
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+  };
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 960 },
+  });
+  const page = await context.newPage();
+  const cdp = await context.newCDPSession(page);
+  await page.addInitScript(installResponsivenessFixture, {
+    stateDir: required(state.stateDir),
+    id: agent.id,
+    cachedId: cacheFixture(agent.id),
+  });
+  await page.goto(origin);
+  await page.locator(`[data-chat="${agent.id}"]`).click();
+  for (let i = 0; i < 300; i++) {
+    await send(`Benchmark turn ${i} end`);
+    await page
+      .getByText(`Benchmark result ${i} `, { exact: false })
+      .last()
+      .waitFor({ timeout: 30_000 });
+  }
+  await page.locator(`[data-chat="${other.id}"]`).click();
+  await expect(
+    page.getByText("Review the release", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Benchmark turn 299 end", { exact: true }),
+  ).toHaveCount(0);
+  await page.locator(`[data-chat="${agent.id}"]`).click();
+  await expect(
+    page.getByText("Benchmark result 299 ", { exact: false }).last(),
+  ).toBeVisible();
+  await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+  await page.reload();
+  await page
+    .getByText("Benchmark result 299 ", { exact: false })
+    .last()
+    .waitFor({ timeout: 60_000 });
+  const turns = queryFixtureDatabase(
+    root,
+    "SELECT state, count(*) AS count FROM turns WHERE chat=? GROUP BY state",
+    agent.id,
+  );
+  console.log("SERVER_TURNS", JSON.stringify(turns));
+  expect(
+    turns.find((row) => row.state === "completed")?.count,
+  ).toBeGreaterThanOrEqual(300);
+  await page.evaluate(() => {
+    window.metrics.phase = "idle-control";
+  });
+  await page.waitForTimeout(1200);
+  const input = page.locator("#message");
+  await input.focus();
+  await page.evaluate(() => {
+    window.metrics.phase = "idle-input";
+  });
+  await page.keyboard.type("Typing with a long transcript.", { delay: 35 });
+  await page.waitForTimeout(150);
+  await send("Benchmark live");
+  await page
+    .getByText("Benchmark live", { exact: true })
+    .waitFor({ timeout: 60_000 });
+  await page.locator("#stop").waitFor({ timeout: 60_000 });
+  await page.evaluate(() => {
+    window.metrics.phase = "stream-and-input";
+  });
+  const stream = async () => {
+    for (let i = 0; i < 20; i++) {
+      required(fixture.stdin).write(
+        JSON.stringify({
+          method: "fixture/provider",
+          agent: agent.id,
+          steps: [
+            { item: "latency-stream", delta: ` token ${i}`, append: i > 0 },
+          ],
+        }) + "\n",
       );
-      console.log(JSON.stringify(report));
-    } catch (error) {
-      console.error("Evidence:", dir, fixtureLog);
-      throw error;
-    } finally {
-      await Promise.all(
-        testBrowser
-          .contexts()
-          .filter((ownedContext) => ownedContext !== runnerContext)
-          .map((ownedContext) => ownedContext.close()),
-      );
+      await new Promise((resolve) => setTimeout(resolve, 70));
     }
-  },
-);
+  };
+  await Promise.all([
+    stream(),
+    page.keyboard.type(" Typing while tokens arrive.", { delay: 35 }),
+  ]);
+  await expect(page.getByText(/token 19/).last()).toBeVisible();
+  await page.waitForTimeout(300);
+  await page.evaluate(() => {
+    window.metrics.phase = "stream-only";
+  });
+  required(fixture.stdin).write(
+    JSON.stringify({
+      method: "fixture/provider",
+      agent: agent.id,
+      steps: [
+        { item: "latency-stream", delta: " stream-only-marker", append: true },
+      ],
+    }) + "\n",
+  );
+  await expect(page.getByText(/stream-only-marker/).last()).toBeVisible();
+  await page.waitForTimeout(150);
+  const metrics = await page.evaluate(() => window.metrics);
+  for (const phase of ["idle-input", "stream-and-input"]) {
+    const durations = metrics.input
+      .filter((entry) => entry.phase === phase)
+      .map((entry) => entry.duration)
+      .sort((a, b) => a - b);
+    const renders = Object.fromEntries(
+      ["app", "sidebar", "conversation", "prompt-composer"].map((component) => [
+        component,
+        metrics.renderProbe.filter(
+          (entry) => entry.phase === phase && entry.component === component,
+        ).length / durations.length,
+      ]),
+    );
+    const nearInputRenders = Object.fromEntries(
+      ["app", "sidebar", "conversation", "prompt-composer"].map((component) => [
+        component,
+        metrics.renderProbe.filter(
+          (entry) =>
+            entry.phase === phase &&
+            entry.component === component &&
+            entry.inputAgeMs < 20,
+        ).length,
+      ]),
+    );
+    console.log(
+      JSON.stringify({
+        phase,
+        keys: durations.length,
+        p50: durations[Math.floor(durations.length * 0.5)],
+        p95: durations[Math.floor(durations.length * 0.95)],
+        rendersPerKey: renders,
+        nearInputRenders,
+      }),
+    );
+    expect(durations.length).toBeGreaterThan(20);
+  }
+  console.log(
+    "IDLE_CONTROL_RENDERS",
+    JSON.stringify(
+      metrics.renderProbe.filter((entry) => entry.phase === "idle-control"),
+    ),
+  );
+  expect(
+    metrics.renderProbe.filter(
+      (entry) =>
+        entry.phase === "stream-only" && entry.component === "prompt-composer",
+    ),
+  ).toHaveLength(0);
+  await context.close();
+});

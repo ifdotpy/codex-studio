@@ -2,6 +2,8 @@ import { Textarea, type TextareaProps } from "@mantine/core";
 import {
   memo,
   useCallback,
+  useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -38,8 +40,7 @@ const AutosizeInput = memo(function AutosizeInput({
     <Textarea
       {...props}
       variant="unstyled"
-      autosize
-      minRows={INPUT_ROWS}
+      rows={INPUT_ROWS}
       onPaste={(event) => handlers.current.onPaste?.(event)}
       onChange={(event) => handlers.current.onChange?.(event)}
       onClick={(event) => handlers.current.onClick?.(event)}
@@ -79,6 +80,37 @@ export default function PromptInput(p: {
     provider: string;
   };
 }) {
+  const resizeFrame = useRef(0);
+  const resize = useCallback(() => {
+    if (resizeFrame.current) return;
+    resizeFrame.current = requestAnimationFrame(() => {
+      resizeFrame.current = 0;
+      const element = p.input.current;
+      if (!element) return;
+      element.style.height = "auto";
+      element.style.height = `${element.scrollHeight}px`;
+    });
+  }, [p.input]);
+  useLayoutEffect(() => {
+    resize();
+  }, [p.value, resize]);
+  useEffect(() => {
+    const element = p.input.current;
+    if (!element) return;
+    let width: number | undefined;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry && entry.contentRect.width !== width) {
+        width = entry.contentRect.width;
+        resize();
+      }
+    });
+    observer.observe(element);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(resizeFrame.current);
+      resizeFrame.current = 0;
+    };
+  }, [p.input, resize]);
   const insertSkill = useCallback(
     (text: string, start: number, end: number) => {
       const current = p.input.current?.value ?? p.getDraft(p.session);
