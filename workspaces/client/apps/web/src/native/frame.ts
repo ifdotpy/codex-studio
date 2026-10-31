@@ -1,6 +1,5 @@
 import { randomUUID } from "../uuid";
 import { audioFrameMethod, bindAudioFrames } from "./audioFrames";
-import { preferenceScope } from "./preferenceState";
 import { nativeSignInMethods } from "./signInProtocol";
 
 const REQUEST = "studio-native-frame-request";
@@ -100,8 +99,7 @@ export function bindNativeFrames(
           event.origin,
         );
     };
-    // Remote frames cannot use the local client's data. The native host also
-    // checks draft workspace ownership against its verified sync identity.
+    // Remote frames cannot use the local client's native services.
     const localService =
       owner === "local" &&
       [
@@ -110,13 +108,6 @@ export function bindNativeFrames(
         "desktop.showVaultKeys",
         "desktop.pickDirectory",
         "desktop.pickAttachments",
-        "identity.get",
-        "sync.open",
-        "drafts.view",
-        "drafts.import",
-        "drafts.edit",
-        "drafts.dismiss",
-        "drafts.refresh",
       ].includes(method);
     const saveMethod = [
       "desktop.saveBegin",
@@ -138,9 +129,10 @@ export function bindNativeFrames(
       method !== "markdown.parse" &&
       method !== "desktop.openExternal" &&
       !signInMethod &&
-      method !== "browser.preferences" &&
       method !== "browser.profile" &&
       method !== "browser.profileChunk" &&
+      method !== "browser.legacyPreferences" &&
+      method !== "browser.legacyPreferencesClear" &&
       !localService
     )
       return reply({
@@ -176,19 +168,25 @@ export function bindNativeFrames(
             )
           : method === "browser.profile"
             ? await invoke("profile.snapshot", { owner: `server:${owner}` }, id)
-            : method === "browser.preferences"
-              ? await preferenceScope(invoke, `server:${owner}`)(
-                  params?.method,
-                  params?.params,
+            : method === "browser.legacyPreferences"
+              ? await invoke(
+                  "preferences.legacy",
+                  { scope: `server:${owner}` },
                   id,
                 )
-              : await invoke(
-                  method,
-                  signInMethod
-                    ? { value: params?.value, signInOwner: owner }
-                    : params,
-                  id,
-                );
+              : method === "browser.legacyPreferencesClear"
+                ? await invoke(
+                    "preferences.legacy_clear",
+                    { scope: `server:${owner}`, keys: params?.keys },
+                    id,
+                  )
+                : await invoke(
+                    method,
+                    signInMethod
+                      ? { value: params?.value, signInOwner: owner }
+                      : params,
+                    id,
+                  );
       if (method === "desktop.saveBegin") {
         const transfer = (result as { transfer?: string })?.transfer;
         if (typeof transfer !== "string")

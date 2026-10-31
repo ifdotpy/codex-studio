@@ -31,6 +31,9 @@
       response
     );
   };
+  // The page mounts after the profile import finishes.
+  const mounted = () =>
+    document.getElementById("root")?.dataset.studioMounted === "true";
   /** @type {(condition: unknown, message: string) => asserts condition} */
   const assert = (condition, message) => {
     if (!condition) throw new Error(message);
@@ -38,18 +41,12 @@
   try {
     if (window.__studioCheckMode === "profile-census") {
       const deadline = Date.now() + 540000;
-      while (
-        Date.now() < deadline &&
-        typeof window.localStorage.flush !== "function"
-      ) {
+      while (Date.now() < deadline && !mounted()) {
         const message = document.getElementById("root")?.textContent || "";
         if (message.includes("could not recover")) throw new Error(message);
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      assert(
-        typeof window.localStorage.flush === "function",
-        "Large profile bootstrap did not finish",
-      );
+      assert(mounted(), "Large profile bootstrap did not finish");
       /** @type {import("./native-check-types.ts").CheckResponse<{id: string, snapshot: import("../../../web/src/native/importBrowserProfile.ts").BrowserProfileSnapshot}>} */
       const response = await call("census-manifest", "profile.snapshot", {
         owner: "root",
@@ -100,7 +97,6 @@
           db.close();
         }
       }
-      await window.localStorage.flush();
       await emit("studio-native-check-step", {
         kind: "profile-census",
         databases: response.result.snapshot.databases.length,
@@ -228,18 +224,12 @@
         root: document.getElementById("root")?.textContent,
       });
       const deadline = Date.now() + 5000;
-      while (
-        Date.now() < deadline &&
-        typeof window.localStorage.flush !== "function"
-      ) {
+      while (Date.now() < deadline && !mounted()) {
         const message = document.getElementById("root")?.textContent || "";
         if (message.includes("could not recover")) throw new Error(message);
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      assert(
-        typeof window.localStorage.flush === "function",
-        "Profile bootstrap did not finish",
-      );
+      assert(mounted(), "Profile bootstrap did not finish");
       assert(
         window.localStorage.getItem("migrated") === "saved Ж🦀",
         "Imported preference was lost",
@@ -269,24 +259,6 @@
       });
       remoteDb.close();
       assert(remoteValue === "remote bytes", "Remote owner database was lost");
-      await window.localStorage.flush();
-      /** @type {import("./native-check-types.ts").CheckResponse<Record<string,string>>} */
-      const stored = await call(
-        "profile-preferences",
-        "preferences.raw_all",
-        {},
-      );
-      assert(
-        stored.result?.['browser:"root":migrated'] === "saved Ж🦀",
-        "Imported preference did not reach Rust",
-      );
-      assert(
-        !Object.hasOwn(
-          stored.result,
-          'browser:"root":studio-browser-profile-import-v1',
-        ),
-        "Import receipt leaked into settings",
-      );
       const db = await new Promise(
         /** @param {(value: IDBDatabase) => void} resolve */ (
           resolve,
@@ -418,109 +390,8 @@
       });
       return;
     }
-    if (window.__studioCheckMode.startsWith("drafts-offline")) {
-      const identity = await call("cached-identity", "identity.get", {});
-      const workspace = identity.result?.workspaceId;
-      assert(workspace === "a".repeat(32), "Cached workspace was lost");
-      /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").DraftView>} */
-      const before = await call("offline-read", "drafts.view", { workspace });
-      const expected =
-        window.__studioCheckMode === "drafts-offline-write"
-          ? "saved Ж🦀"
-          : "offline Ж🦀";
-      assert(
-        before.result?.drafts.room === expected,
-        "Offline draft recovery failed",
-      );
-      /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").DraftView>} */
-      const edited = await call("offline-edit", "drafts.edit", {
-        workspace,
-        changes: { room: "offline Ж🦀" },
-      });
-      assert(
-        edited.result?.drafts.room === "offline Ж🦀",
-        "Offline edit failed",
-      );
-      await emit("studio-native-check-result", {
-        passed: true,
-        mode: window.__studioCheckMode,
-      });
-      return;
-    }
     if (window.__studioCheckMode.startsWith("network")) {
-      if (window.__studioCheckMode.startsWith("network-drafts")) {
-        const workspace = "a".repeat(32);
-        let denied = false;
-        try {
-          // The app may already restore the cached verified identity on restart.
-          // A different workspace must remain unauthorized in either ordering.
-          await call("unopened-draft", "drafts.edit", {
-            workspace: "c".repeat(32),
-            changes: { room: "wrong" },
-          });
-        } catch {
-          denied = true;
-        }
-        assert(denied, "An unopened workspace accepted a draft");
-        const opened = await call("open-drafts", "sync.open", {});
-        assert(
-          opened.result?.workspaceId === workspace,
-          "Workspace did not open",
-        );
-        denied = false;
-        try {
-          await call("other-workspace", "drafts.edit", {
-            workspace: "b".repeat(32),
-            changes: { room: "wrong" },
-          });
-        } catch {
-          denied = true;
-        }
-        assert(denied, "Another workspace accepted a draft");
-        /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").DraftView>} */
-        const imported = await call("import-browser-drafts", "drafts.import", {
-          workspace,
-          versions: [
-            {
-              id: "browser:room",
-              device: "browser",
-              session: "room",
-              text: "imported draft",
-              updated: 1,
-            },
-          ],
-        });
-        assert(
-          imported.result?.drafts.room === "imported draft",
-          "Draft import receipt was lost",
-        );
-        if (window.__studioCheckMode === "network-drafts-write") {
-          /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").DraftView>} */
-          const edited = await call("draft-write", "drafts.edit", {
-            workspace,
-            changes: { room: "saved Ж🦀" },
-          });
-          assert(
-            edited.result?.drafts.room === "saved Ж🦀",
-            "Draft did not commit",
-          );
-        }
-        /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").DraftView>} */
-        const saved = await call("draft-read", "drafts.view", { workspace });
-        assert(
-          saved.result?.drafts.room === "saved Ж🦀",
-          "Draft did not survive restart",
-        );
-        /** @type {import("./native-check-types.ts").CheckResponse<import("../../../web/src/native/host.ts").DraftView>} */
-        const refreshed = await call("draft-refresh", "drafts.refresh", {
-          workspace,
-        });
-        assert(
-          refreshed.result?.drafts.room === "saved Ж🦀" &&
-            !refreshed.result.error,
-          "Draft refresh failed",
-        );
-      } else if (window.__studioCheckMode === "network-stream") {
+      if (window.__studioCheckMode === "network-stream") {
         /** @type {(value: Record<string, unknown>) => void} */
         let receive = () => {};
         /** @type {Promise<Record<string, unknown>>} */
@@ -597,85 +468,6 @@
       });
       return;
     }
-    const snapshot = {
-      version: 1,
-      entries: { "imported-draft": "legacy Ж🦀" },
-    };
-    if (window.__studioCheckMode === "write") {
-      const imported = await call(
-        "stable-import",
-        "preferences.import",
-        snapshot,
-      );
-      assert(imported.result?.imported === 1, "Snapshot did not import");
-      const edited = await call("edit-imported", "preferences.raw_set", {
-        key: "imported-draft",
-        raw: "newer Ж🦀",
-      });
-      assert(!edited.error, "Imported value could not be edited");
-    }
-    const replay = await call("stable-import", "preferences.import", snapshot);
-    assert(
-      replay.result?.imported === 1,
-      "Import receipt did not survive restart",
-    );
-    /** @type {import("./native-check-types.ts").CheckResponse<Record<string,string>>} */
-    const importedRead = await call("read-imported", "preferences.raw_all");
-    assert(
-      importedRead.result?.["imported-draft"] === "newer Ж🦀",
-      "Import replay erased a newer edit",
-    );
-    const value = "persistent Ж🦀";
-    if (window.__studioCheckMode === "write") {
-      const params = { key: "native-check", raw: value };
-      const written = await call("stable-write", "preferences.raw_set", params);
-      assert(!written.error, "Native write failed");
-      const replayed = await call(
-        "stable-write",
-        "preferences.raw_set",
-        params,
-      );
-      assert(!replayed.error, "Exact retry failed");
-      const changed = await call("stable-write", "preferences.raw_set", {
-        ...params,
-        raw: "changed",
-      });
-      assert(changed.error, "Changed request identity was accepted");
-    }
-    /** @type {import("./native-check-types.ts").CheckResponse<Record<string,string>>} */
-    const read = await call("read-check", "preferences.raw_all");
-    assert(
-      read.result?.["native-check"] === value,
-      "Native persistent value changed",
-    );
-    // Exercise the real renderer bootstrap and Storage caller, not just IPC.
-    for (
-      let attempt = 0;
-      attempt < 100 && typeof window.localStorage.flush !== "function";
-      attempt++
-    )
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    assert(
-      typeof window.localStorage.flush === "function",
-      "Native preference bootstrap did not complete",
-    );
-    if (window.__studioCheckMode === "write") {
-      window.localStorage.setItem("renderer-check", value);
-      await window.localStorage.flush();
-    }
-    assert(
-      window.localStorage.getItem("renderer-check") === value,
-      "Renderer preference did not survive WebView restart",
-    );
-    /** @type {import("./native-check-types.ts").CheckResponse<Record<string,string>>} */
-    const browserRead = await call(
-      "renderer-read-check",
-      "preferences.raw_all",
-    );
-    assert(
-      browserRead.result?.['browser:"root":renderer-check'] === value,
-      "Renderer preference was not committed to Rust",
-    );
     let denied = false;
     try {
       await call("network-denied", "api.request", { path: "/api/health" });

@@ -49,7 +49,7 @@ it("derives the caller from the live frame and exposes only pure commands", asyn
       data: {
         kind: "studio-native-frame-request",
         id: "two",
-        method: "preferences.raw_set",
+        method: "uploads.list",
         params: { key: "wrong-store" },
       },
     }),
@@ -106,7 +106,6 @@ it("does not send a late result to a replaced server view", async () => {
 });
 
 it.each([
-  "drafts.edit",
   "desktop.fileAction",
   "desktop.pickDirectory",
   "desktop.pickAttachments",
@@ -167,71 +166,6 @@ it.each([
     dispose();
   },
 );
-
-it("scopes browser preferences to the authenticated frame, ignoring caller scope fields", async () => {
-  let listener: (event: MessageEvent) => Promise<void>;
-  vi.stubGlobal("window", {
-    addEventListener: (_name: string, callback: typeof listener) => {
-      listener = callback;
-    },
-    removeEventListener: vi.fn(),
-  });
-  const source = { postMessage: vi.fn() };
-  const frames = new Map([
-    [
-      "remote",
-      {
-        src: "studio-view://studio-remote.localhost/?studio-server=remote",
-        isConnected: true,
-        contentWindow: source,
-      },
-    ],
-  ]) as unknown as Map<string, HTMLIFrameElement>;
-  const invoke = vi.fn(async () => ({
-    'browser:"root":theme': "root-secret",
-    'browser:"server:local":theme': "local-secret",
-    'browser:"server:remote":theme': "remote-value",
-  }));
-  const dispose = bindNativeFrames(frames, invoke);
-  await listener!({
-    source,
-    origin: "studio-view://studio-remote.localhost",
-    data: {
-      kind: "studio-native-frame-request",
-      id: "read",
-      method: "browser.preferences",
-      params: { method: "preferences.raw_all", scope: "root", params: {} },
-    },
-  } as unknown as MessageEvent);
-  expect(source.postMessage.mock.lastCall?.[0]).toEqual({
-    kind: "studio-native-frame-response",
-    id: "read",
-    result: { theme: "remote-value" },
-  });
-  await listener!({
-    source,
-    origin: "studio-view://studio-remote.localhost",
-    data: {
-      kind: "studio-native-frame-request",
-      id: "write",
-      method: "browser.preferences",
-      params: {
-        method: "preferences.raw_set",
-        scope: "root",
-        params: { key: "theme", raw: "new" },
-      },
-    },
-  } as unknown as MessageEvent);
-  expect(invoke).toHaveBeenLastCalledWith(
-    "preferences.raw_set",
-    {
-      key: 'browser:"server:remote":theme',
-      raw: "new",
-    },
-    "write",
-  );
-  dispose();
-});
 
 it("selects profile snapshots by the authenticated frame owner", async () => {
   let listener: (event: MessageEvent) => Promise<void>;

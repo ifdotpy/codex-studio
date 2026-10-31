@@ -12,8 +12,6 @@ vi.mock("react", () => ({
     vi.fn(),
   ],
 }));
-vi.mock("../native/useNativeDrafts", () => ({ useNativeDrafts: vi.fn() }));
-vi.mock("../native/client", () => ({ hasNativeClient: () => false }));
 vi.mock("../api", () => ({
   saved: (_key: string, value: unknown) => value,
   save: vi.fn(),

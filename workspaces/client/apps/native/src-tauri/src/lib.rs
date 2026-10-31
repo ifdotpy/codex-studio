@@ -30,7 +30,6 @@ struct Clients {
     #[cfg(target_os = "macos")]
     remote: Mutex<Option<Arc<studio_client_core::server_transport::RemoteClient>>>,
     backend_verified: Mutex<bool>,
-    workspace: Mutex<Option<String>>,
 }
 
 struct Resources {
@@ -72,10 +71,6 @@ fn lock_profile(directory: &std::path::Path) -> Result<ProfileLock, String> {
     studio_client_core::operator::try_lock_profile(directory)?.ok_or_else(|| {
         "The native profile is already open. Close its desktop before importing keys.".into()
     })
-}
-
-fn draft_workspace_allowed(verified: Option<&str>, params: &serde_json::Value) -> bool {
-    verified.is_some() && verified == params["workspace"].as_str()
 }
 
 fn packaged_shell(url: &tauri::Url) -> bool {
@@ -182,7 +177,7 @@ mod tests {
     }
 
     /// Parity check: every core method the page sends by name reaches the core.
-    /// `client_request` handles `servers.*`, `profile.*` and `desktop.notify`
+    /// `client_request` handles `servers.*`, `profile.*`, `preferences.legacy*` and `desktop.notify`
     /// before the connected boundary; `native/frame.ts` turns `browser.*` into
     /// shell commands.
     #[test]
@@ -193,6 +188,7 @@ mod tests {
                 || method.starts_with("servers.")
                 || method.starts_with("profile.")
                 || method.starts_with("browser.")
+                || method.starts_with("preferences.legacy")
                 || method == "desktop.notify"
         }
         fn sources(folder: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
@@ -278,18 +274,6 @@ mod tests {
     }
 
     #[test]
-    fn drafts_require_a_verified_matching_workspace() {
-        let params = serde_json::json!({"workspace":"workspace"});
-        assert!(!super::draft_workspace_allowed(None, &params));
-        assert!(!super::draft_workspace_allowed(Some("other"), &params));
-        assert!(!super::draft_workspace_allowed(
-            Some("workspace"),
-            &serde_json::json!({})
-        ));
-        assert!(super::draft_workspace_allowed(Some("workspace"), &params));
-    }
-
-    #[test]
     fn native_commands_require_the_packaged_shell_url() {
         for value in [
             "tauri://localhost",
@@ -348,18 +332,7 @@ mod tests {
 fn connected_method(method: &str) -> bool {
     matches!(
         method,
-        "preferences.raw_all"
-            | "preferences.import"
-            | "preferences.raw_set"
-            | "preferences.raw_remove"
-            | "markdown.parse"
-            | "identity.get"
-            | "sync.open"
-            | "drafts.view"
-            | "drafts.import"
-            | "drafts.edit"
-            | "drafts.dismiss"
-            | "drafts.refresh"
+        "markdown.parse"
             | "desktop.openExternal"
             | studio_client_core::desktop::SIGN_IN_OPEN_METHOD
             | studio_client_core::desktop::SIGN_IN_PREPARE_METHOD
@@ -396,6 +369,49 @@ fn connected_view_method(method: &str) -> bool {
         method,
         "view.subscribe" | "view.next" | "view.resume" | "view.restart" | "view.unsubscribe"
     )
+}
+
+/// The old client store: what it still holds moves to the server (see `store_move`).
+fn client_store(window: &WebviewWindow) -> Result<std::path::PathBuf, String> {
+    let directory = match std::env::var_os("CODEX_DESKTOP_PROFILE").filter(|v| !v.is_empty()) {
+        Some(path) => std::path::PathBuf::from(path),
+        None => window
+            .app_handle()
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?,
+    };
+    #[cfg(feature = "native-check")]
+    let directory = native_check::directory().unwrap_or(directory);
+    Ok(directory
+        .join("client/local")
+        .join(studio_client_core::store_move::STORE_FILE))
+}
+
+/// Starts the one move per application start. A failed move keeps every local row.
+fn move_client_store(origin: &str, store: std::path::PathBuf) {
+    let origin = origin.to_owned();
+    let spawned = std::thread::Builder::new()
+        .name("studio-store-move".into())
+        .spawn(move || {
+            let result = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|runtime| {
+                    let backend = studio_client_core::backend::Backend::new(&origin)?;
+                    runtime.block_on(studio_client_core::store_move::move_to_server(
+                        &backend, &store,
+                    ))
+                });
+            match result {
+                Ok(report) => eprintln!("Client store move: {report:?}"),
+                Err(error) => eprintln!("The client store could not be moved: {error}"),
+            }
+        });
+    if let Err(error) = spawned {
+        eprintln!("The client store move did not start: {error}");
+    }
 }
 
 /// The one server client of this profile, shared by the window and the operator socket.
@@ -520,6 +536,26 @@ async fn client_request(
             error: None,
         });
     }
+    if matches!(
+        request.method.as_str(),
+        "preferences.legacy" | "preferences.legacy_clear"
+    ) {
+        let store = client_store(&window)?;
+        let scope = request.params["scope"].as_str().ok_or("Missing scope.")?;
+        let result = if request.method == "preferences.legacy" {
+            studio_client_core::store_move::legacy_preferences(&store, scope)
+                .map(|rows| serde_json::json!(rows))
+        } else {
+            let keys: Vec<String> = serde_json::from_value(request.params["keys"].clone())
+                .map_err(|_| "Invalid preference keys.")?;
+            studio_client_core::store_move::clear_legacy_preferences(&store, scope, &keys)
+                .map(|()| serde_json::Value::Null)
+        };
+        return Ok(match result {
+            Ok(value) => Response::success(request.id, value),
+            Err(error) => Response::failure(request.id, "preferences", error),
+        });
+    }
     if !connected_method(&request.method) && !connected_view_method(&request.method) {
         return Err("This client service is not connected yet.".into());
     }
@@ -589,7 +625,7 @@ async fn client_request(
     let origin = local_backend::origin()?;
     if matches!(
         request.method.as_str(),
-        "api.request" | "sync.open" | "drafts.refresh" | "desktop.fileAction"
+        "api.request" | "desktop.fileAction"
     ) || (request.method == studio_client_core::desktop::SIGN_IN_OPEN_METHOD
         && request.params["value"].get("forward").is_some())
         || (request.method == "view.subscribe" && request.params["topic"] == "sse")
@@ -607,27 +643,15 @@ async fn client_request(
             let allow_start = allow_start && native_check::directory().is_none();
             local_backend::verify(&origin, &resources.workspace, allow_start).await?;
             *verified = true;
+            move_client_store(&origin, client_store(&window)?);
         }
     }
     let client = {
         let mut local = state.local.lock().await;
         if local.is_none() {
-            let directory =
-                match std::env::var_os("CODEX_DESKTOP_PROFILE").filter(|v| !v.is_empty()) {
-                    Some(path) => std::path::PathBuf::from(path),
-                    None => window
-                        .app_handle()
-                        .path()
-                        .app_data_dir()
-                        .map_err(|error| error.to_string())?,
-                }
-                .join("client/local");
-            #[cfg(feature = "native-check")]
-            let directory = native_check::directory().unwrap_or(directory);
             let events_window = window.clone();
             *local = Some(Arc::new(Client::open(
                 ConnectionConfig {
-                    state_directory: directory,
                     backend_origin: origin,
                 },
                 move |event| {
@@ -640,32 +664,7 @@ async fn client_request(
             .ok_or("The client did not initialize.")?
             .clone()
     };
-    let method = request.method.clone();
-    if method.starts_with("drafts.") {
-        let workspace = state.workspace.lock().await;
-        if !draft_workspace_allowed(workspace.as_deref(), &request.params) {
-            return Err("Draft commands require the verified workspace identity.".into());
-        }
-    }
-    let response: Response = client.request(request).await?.into();
-    if matches!(method.as_str(), "sync.open" | "identity.get") && response.error.is_none() {
-        let Some(workspace) = response
-            .result
-            .as_ref()
-            .and_then(|value| value["workspaceId"].as_str())
-        else {
-            if method == "identity.get" {
-                return Ok(response);
-            }
-            return Err("The backend returned no workspace identity.".into());
-        };
-        let mut current = state.workspace.lock().await;
-        if current.as_deref().is_some_and(|value| value != workspace) {
-            return Err("The server workspace changed. Reload to synchronize.".into());
-        }
-        *current = Some(workspace.to_owned());
-    }
-    Ok(response)
+    Ok(client.request(request).await?.into())
 }
 
 // One expansion embeds the bundled renderer; tests read the same context.
@@ -914,7 +913,7 @@ pub fn import_server_credentials() -> Result<(), String> {
         if !directory.is_absolute() {
             return Err("Use an absolute native profile path.".into());
         }
-        std::fs::create_dir_all(directory.join("client/local")).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
         let directory = directory.canonicalize().map_err(|e| e.to_string())?;
         let _lock = lock_profile(&directory)?;
         let mut bytes = Vec::new();

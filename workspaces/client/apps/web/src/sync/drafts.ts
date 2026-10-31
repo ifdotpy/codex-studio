@@ -1,8 +1,5 @@
 import { randomUUID } from "../uuid";
 import type { Doc } from "./localCollection";
-import { isRemoteServerView } from "../servers/environment";
-import { hasNativeClient } from "../native/client";
-import { useNativeDrafts } from "../native/useNativeDrafts";
 import {
   useCallback,
   useEffect,
@@ -711,17 +708,14 @@ export function createBrowserDrafts(options: {
 
   return useBrowserDrafts;
 }
-export const useSyncedDrafts =
-  hasNativeClient() && !isRemoteServerView
-    ? useNativeDrafts
-    : createBrowserDrafts({
-        api: { isApiSchemaMismatch, onApiSchemaMismatch, saved, save },
-        sync: { startDraftReplication, syncDatabase },
-        journal: { readDraftJournal, writeDraftJournal, forgetDraftJournal },
-        storage: {
-          copyLocalDraftScope,
-          readLocalDraftRecord,
-          readLocalDrafts,
-          writeLocalDraftRecord,
-        },
-      });
+export const useSyncedDrafts = createBrowserDrafts({
+  api: { isApiSchemaMismatch, onApiSchemaMismatch, saved, save },
+  sync: { startDraftReplication, syncDatabase },
+  journal: { readDraftJournal, writeDraftJournal, forgetDraftJournal },
+  storage: {
+    copyLocalDraftScope,
+    readLocalDraftRecord,
+    readLocalDrafts,
+    writeLocalDraftRecord,
+  },
+});

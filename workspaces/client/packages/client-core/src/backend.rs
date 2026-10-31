@@ -41,7 +41,7 @@ struct ApiRequest {
     http_response: bool,
 }
 
-fn error(code: &str, message: impl ToString) -> CommandError {
+pub(crate) fn error(code: &str, message: impl ToString) -> CommandError {
     CommandError {
         code: code.into(),
         message: message.to_string(),

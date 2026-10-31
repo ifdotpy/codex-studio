@@ -119,9 +119,7 @@ try {
     "Backend did not start from this bundle",
   );
   ownedPid = backend.pid;
-  assert.ok(
-    (await stat(path.join(fixture, "profile/client/local"))).isDirectory(),
-  );
+  assert.ok((await stat(path.join(fixture, "profile"))).isDirectory());
   console.log(
     JSON.stringify({
       result: "PASS",

@@ -196,10 +196,9 @@ mod tests {
             params,
         }
     }
-    fn open(directory: &std::path::Path) -> Client {
+    fn open() -> Client {
         Client::open(
             ConnectionConfig {
-                state_directory: directory.into(),
                 backend_origin: "http://127.0.0.1:9".into(),
             },
             |_| {},
@@ -208,8 +207,7 @@ mod tests {
     }
     #[tokio::test]
     async fn retired_file_link_commands_do_not_affect_native_computations() {
-        let directory = tempfile::tempdir().unwrap();
-        let client = open(directory.path());
+        let client = open();
         let retired = client
             .request(request("old", "file_link.local", json!({"value":"a.md"})))
             .await
@@ -229,8 +227,7 @@ mod tests {
     }
     #[tokio::test]
     async fn retired_terminal_commands_and_views_are_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let client = open(directory.path());
+        let client = open();
         let command = client
             .request(request("terminal", "terminal.open", json!({"id":"shell"})))
             .await
@@ -252,8 +249,7 @@ mod tests {
     }
     #[tokio::test]
     async fn retired_preview_commands_are_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let client = open(directory.path());
+        let client = open();
         let response = client
             .request(request("preview", "preview.open", json!({"target":null})))
             .await
@@ -264,8 +260,7 @@ mod tests {
     }
     #[tokio::test]
     async fn retired_document_commands_are_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let client = open(directory.path());
+        let client = open();
         for method in ["document.render", "document.diagram"] {
             let response = client
                 .request(request("document", method, json!({"source":"test"})))
@@ -278,8 +273,7 @@ mod tests {
     }
     #[tokio::test]
     async fn retired_platform_commands_are_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let client = open(directory.path());
+        let client = open();
         for method in [
             "text.sentences",
             "locale.language_name",
@@ -298,8 +292,7 @@ mod tests {
     }
     #[tokio::test]
     async fn retired_native_notification_route_is_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let client = open(directory.path());
+        let client = open();
         let response = client
             .request(request(
                 "notification",
@@ -314,8 +307,7 @@ mod tests {
     }
     #[tokio::test]
     async fn retired_system_commands_are_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let client = open(directory.path());
+        let client = open();
         for method in [
             "system.start",
             "system.info",
@@ -334,8 +326,7 @@ mod tests {
     }
     #[tokio::test]
     async fn retired_navigation_view_is_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let client = open(directory.path());
+        let client = open();
         let response = client
             .request(request(
                 "navigation",
@@ -347,44 +338,6 @@ mod tests {
         assert!(
             matches!(response.outcome, NativeOutcome::Failure(error) if error.code == "invalid_subscription")
         );
-    }
-    #[tokio::test]
-    async fn sync_open_reaches_identity_backend() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let (headers, _) = crate::backend::tests::read_http(&mut stream).await;
-            assert!(headers.starts_with("GET /api/sync/identity"));
-            let body = json!({"workspaceId":"a".repeat(32),"chatState":true}).to_string();
-            stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
-        });
-        let directory = tempfile::tempdir().unwrap();
-        let client = Client::open(
-            ConnectionConfig {
-                state_directory: directory.path().into(),
-                backend_origin: origin,
-            },
-            |_| {},
-        )
-        .unwrap();
-        let response = client
-            .request(request("sync", "sync.open", json!({})))
-            .await
-            .unwrap();
-        assert!(
-            matches!(response.outcome, NativeOutcome::Success(value) if value["workspaceId"] == "a".repeat(32))
-        );
-        server.await.unwrap();
     }
     #[tokio::test]
     async fn reader_prioritizes_event_and_rejects_unknown_response_identity() {
@@ -418,73 +371,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_connection_isolates_stores_and_preserves_write_identity() {
-        let directory = tempfile::tempdir().unwrap();
-        let first = open(&directory.path().join("first"));
-        let second = open(&directory.path().join("second"));
-        let command = || {
-            request(
-                "exact",
-                "preferences.raw_set",
-                json!({"key":"draft","raw":"Ж🦀"}),
-            )
-        };
-        assert!(matches!(
-            first.request(command()).await.unwrap().outcome,
-            NativeOutcome::Success(_)
-        ));
-        assert!(matches!(
-            first.request(command()).await.unwrap().outcome,
-            NativeOutcome::Success(_)
-        ));
-        assert!(matches!(
-            first
-                .request(request(
-                    "exact",
-                    "preferences.raw_set",
-                    json!({"key":"draft","raw":"changed"})
-                ))
-                .await
-                .unwrap()
-                .outcome,
-            NativeOutcome::Failure(_)
-        ));
-        assert!(
-            matches!(first.request(request("read", "preferences.raw_all", Value::Null)).await.unwrap().outcome, NativeOutcome::Success(value) if value == json!({"draft":"Ж🦀"}))
-        );
-        assert!(
-            matches!(second.request(request("read", "preferences.raw_all", Value::Null)).await.unwrap().outcome, NativeOutcome::Success(value) if value == json!({}))
-        );
-        let denied = first
-            .request(request(
-                "denied",
-                "desktop.openExternal",
-                json!({"value":"https://example.invalid/"}),
-            ))
-            .await
-            .unwrap();
-        assert!(matches!(
-            denied.outcome,
-            crate::protocol::NativeOutcome::Failure(_)
-        ));
-    }
-    #[tokio::test]
-    async fn cancelled_wait_does_not_interrupt_framing_or_erase_the_commit() {
-        let directory = tempfile::tempdir().unwrap();
-        let client = Arc::new(open(directory.path()));
+    async fn cancelled_wait_does_not_interrupt_framing() {
+        let client = Arc::new(open());
         let symbol = "Ж🦀";
         let text = symbol.repeat(protocol::MAX_FRAME / symbol.len() + 1);
-        let command = request(
-            "cancelled-wait",
-            "preferences.raw_set",
-            json!({"key":"large","raw":text}),
-        );
+        let command = request("cancelled-wait", "markdown.parse", json!({"text": text}));
         assert!(
             protocol::fragments(&serde_json::to_vec(&command).unwrap())
                 .unwrap()
                 .count()
                 > 1,
-            "the cancelled write must span multiple transport frames"
+            "the cancelled request must span multiple transport frames"
         );
         // Enqueue without yielding to the writer, then cancel only the caller's wait.
         let mut wait = Box::pin(client.request(command));
@@ -496,9 +393,13 @@ mod tests {
         drop(wait);
         // The suite's hang guard bounds this correctness check; it is not a latency test.
         let result = client
-            .request(request("after", "preferences.raw_all", Value::Null))
+            .request(request(
+                "after",
+                "markdown.parse",
+                json!({"text":"# Hello"}),
+            ))
             .await
             .unwrap();
-        assert!(matches!(result.outcome, NativeOutcome::Success(value) if value["large"] == text));
+        assert!(matches!(result.outcome, NativeOutcome::Success(value) if value.is_array()));
     }
 }

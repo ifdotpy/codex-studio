@@ -1,6 +1,6 @@
 # Native client core
 
-Owns the installed client's durable state, network and presentation services.
+Owns the installed client's network and presentation services.
 Ported from `codex/attar-rust-migration-20260922` (`6586f3f77`) into the current
 workspace. Tauri hosts this core on desktop and mobile; React presents state and
 sends commands. Shared client business rules have one Rust implementation.
@@ -22,10 +22,10 @@ adapters; compiling an unavailable-platform stub does not establish parity.
 This package is under integration. Its presence alone does not switch a caller
 or establish release readiness.
 
-Entity batches are applied and materialized atomically by
-[`projections.rs`](src/projections.rs). The derived state sequence is a durable
-local revision; entity sequences and the pull checkpoint remain server cursors.
-[`sync.rs`](src/sync.rs) stages complete pulls before committing, requests reset
-support, and replaces entity rows and cursors together after a tombstone reset.
-A pull whose local base revision changed fails without writing and can be retried.
-Focused regression checks: `just test studio-client-core entity_`.
+The core keeps no client state. The server owns drafts, uploads, sync and the
+queue (see the [target architecture](../../../../docs/decisions/2026-10-28-target-client-server-architecture.md)).
+[`store_move.rs`](src/store_move.rs) moves what the removed client store still
+holds (drafts, unsent uploads, recordings) to the server at the first connection
+after an application start. It deletes a local row only after it has read the same
+data back from the server. A failed read-back keeps the row, and the next start
+tries again.
