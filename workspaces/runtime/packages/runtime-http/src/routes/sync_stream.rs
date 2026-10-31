@@ -596,6 +596,33 @@ async fn sync_stream(
         initial_event,
     ));
     append_progress_frames(&state, &view, &mut initial).await;
+    if matches!(
+        principal,
+        studio_runtime_services::principal::Principal::Owner
+    ) && let Some(client) = &state.vault_job_client
+    {
+        let selectors = match super::host_secrets::retained_progress(client).await {
+            Ok(selectors) => selectors,
+            Err(error) => return error.into_response(),
+        };
+        let resources = match selectors
+            .into_iter()
+            .map(|selector| SubscribedResource::new(progress_resource(selector)))
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(resources) => resources,
+            Err(error) => return error.into_response(),
+        };
+        let cursor = state.sync_changes.snapshot();
+        let view = ResourceChanges {
+            versions: vec![cursor.revision; resources.len()],
+            cursor,
+            resources,
+            entity_reset: false,
+            overflow: false,
+        };
+        append_progress_frames(&state, &view, &mut initial).await;
+    }
     // OpenAPI owns the omitted-selector compatibility default; the HTTP witness
     // keeps this native/signed-client behavior in parity with that contract.
     let token_interest = match query
@@ -1623,9 +1650,7 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
 async fn next_live_delta(
     live: &mut tokio::sync::broadcast::Receiver<LiveEvent>,
     resources: &[SubscribedResource],
-    http: Option<&HttpState>,
-    principal: Option<&studio_runtime_services::principal::Principal>,
-) -> Option<Event> {
+) -> Option<LiveEvent> {
     use tokio::sync::broadcast::error::RecvError;
     loop {
         match live.recv().await {
@@ -1634,30 +1659,43 @@ async fn next_live_delta(
                     matches!(&resource.resource, ResourceRef::TranscriptResource(transcript) if transcript.agent_id == delta.agent_id)
                 }) =>
             {
-                return Some(sse_event(
-                    "live-delta",
-                    None,
-                    crate::generated::ResourceLiveDeltaEvent {
-                        agent_id: delta.agent_id,
-                        item_id: delta.item_id,
-                        offset: delta.offset as i64,
-                        text: delta.text,
-                    },
-                ));
+                return Some(LiveEvent::Delta(delta));
             }
-            Ok(LiveEvent::Progress(selector)) => {
-                let (Some(http), Some(principal)) = (http, principal) else { continue };
-                let resource = progress_resource(selector);
-                if authorize_resource(principal, &resource).is_err() { continue; }
-                let Ok(resource) = SubscribedResource::new(resource) else { continue };
-                let cursor = http.sync_changes.snapshot();
-                let view = ResourceChanges { versions: vec![cursor.revision], cursor, resources: vec![resource], entity_reset: false, overflow: false };
-                let mut frames = VecDeque::new();
-                append_progress_frames(http, &view, &mut frames).await;
-                if let Some(frame) = frames.pop_front() { return Some(frame); }
-            }
+            Ok(LiveEvent::Progress(selector)) => return Some(LiveEvent::Progress(selector)),
             Ok(_) => {}
             Err(RecvError::Lagged(_) | RecvError::Closed) => return None,
+        }
+    }
+}
+
+async fn live_frame(state: &ResourceStream, live: LiveEvent) -> Option<Event> {
+    match live {
+        LiveEvent::Delta(delta) => Some(sse_event(
+            "live-delta",
+            None,
+            crate::generated::ResourceLiveDeltaEvent {
+                agent_id: delta.agent_id,
+                item_id: delta.item_id,
+                offset: delta.offset as i64,
+                text: delta.text,
+            },
+        )),
+        LiveEvent::Progress(selector) => {
+            let (http, principal) = (state.http_state.as_ref()?, state.principal.as_ref()?);
+            let resource = progress_resource(selector);
+            authorize_resource(principal, &resource).ok()?;
+            let resource = SubscribedResource::new(resource).ok()?;
+            let cursor = http.sync_changes.snapshot();
+            let view = ResourceChanges {
+                versions: vec![cursor.revision],
+                cursor,
+                resources: vec![resource],
+                entity_reset: false,
+                overflow: false,
+            };
+            let mut frames = VecDeque::new();
+            append_progress_frames(http, &view, &mut frames).await;
+            frames.pop_front()
         }
     }
 }
@@ -1692,8 +1730,9 @@ async fn next_frame(
                     subscription_frame(&mut state, update?).await?;
                     return Some((Ok(state.initial.pop_front()?), state));
                 },
-                live = next_live_delta(&mut state.live, &state.resources, state.http_state.as_ref(), state.principal.as_ref()) => {
-                    return Some((Ok(live?), state));
+                live = next_live_delta(&mut state.live, &state.resources) => {
+                    if let Some(frame) = live_frame(&state, live?).await { return Some((Ok(frame), state)); }
+                    continue;
                 },
                 changed = changed_not_before(Some(&mut state.changes), state.next_resources_frame_at) => {
                     if changed.is_err() { return None; }
@@ -1716,8 +1755,9 @@ async fn next_frame(
                     subscription_frame(&mut state, update?).await?;
                     return Some((Ok(state.initial.pop_front()?), state));
                 },
-                live = next_live_delta(&mut state.live, &state.resources, state.http_state.as_ref(), state.principal.as_ref()) => {
-                    return Some((Ok(live?), state));
+                live = next_live_delta(&mut state.live, &state.resources) => {
+                    if let Some(frame) = live_frame(&state, live?).await { return Some((Ok(frame), state)); }
+                    continue;
                 },
                 changed = changed_not_before(state.token_rates.as_mut(), state.next_token_frame_at) => {
                     if changed.is_err() { return None; }
