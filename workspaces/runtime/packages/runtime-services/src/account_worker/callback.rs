@@ -317,7 +317,7 @@ pub(super) async fn wait_for_managed_catalog(
 /// Without a turn id (an MCP elicitation may have none) the thread's active
 /// turn answers.
 const CALLBACK_CONTEXT_QUERY: &str = "SELECT id,record FROM runtime_agents
-WHERE thread_id=?3 AND account_key=?1
+WHERE id IN (SELECT chat FROM sessions WHERE thread_id=?3 AND state<>'ended') AND account_key=?1
   AND EXISTS(SELECT 1 FROM turns t WHERE t.chat=runtime_agents.id AND t.attempt_connection_generation=?2)
   AND (?4 IS NULL OR turn_id=?4) AND status IN ('running','approval')
   AND EXISTS(SELECT 1 FROM chats ch WHERE ch.id=runtime_agents.id AND ch.auto_wake=1)
@@ -676,7 +676,7 @@ mod tests {
         assert!(
             details
                 .iter()
-                .any(|detail| detail.contains("runtime_agent_thread")),
+                .any(|detail| detail.contains("sessions_thread")),
             "callback lookup must use its selective thread index: {details:?}"
         );
         drop(connection);

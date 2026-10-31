@@ -25,7 +25,6 @@ pub const LIVE_ROOT_INDEX: &str = "runtime_agent_live_root_v2";
 /// Agents by account key, live agents (`deleted_at IS NULL`) first.
 pub const ACCOUNT_INDEX: &str = "runtime_agent_account";
 /// Agents by provider thread within an account.
-pub const THREAD_INDEX: &str = "runtime_agent_thread";
 /// Agents with a running or reserved turn, by team root.
 pub const ACTIVE_INDEX: &str = "runtime_agent_active";
 /// SQL predicate: the agent may hold a running or reserved turn. One owner for
@@ -82,7 +81,6 @@ impl AgentIndexedReads {
             ),
             (ROOT_INDEX, "root_id)".to_owned()),
             (ACCOUNT_INDEX, "account_key,deleted_at)".to_owned()),
-            (THREAD_INDEX, "thread_id,account_key)".to_owned()),
             (ACTIVE_INDEX, concat!("root_id) WHERE ", active_turn!()).to_owned()),
             (LIVE_ROOT_INDEX, "root_id,id) WHERE deleted_at IS NULL".to_owned()),
             (

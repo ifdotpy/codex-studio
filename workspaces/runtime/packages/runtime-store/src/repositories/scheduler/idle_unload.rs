@@ -150,7 +150,7 @@ impl SchedulerRepository {
         );
         let thread_in_use = format!(
             "({transfer} OR EXISTS({ACCOUNT_AGENT_SQL} \
-               AND thread_id=c.thread_id AND ({in_use})) \
+               AND id IN (SELECT chat FROM sessions WHERE thread_id=c.thread_id AND state<>'ended') AND ({in_use})) \
              OR EXISTS(SELECT 1 FROM runtime_agents WHERE \
                source_cleanup_phase IN ({ACTIVE_SOURCE_CLEANUP_PHASES}) \
                AND source_cleanup_account_key=?1 AND source_cleanup_thread_id=c.thread_id))"
@@ -206,7 +206,7 @@ impl SchedulerRepository {
         let mut statement = connection.prepare_cached(&format!(
             "SELECT c.value FROM json_each(?2) c WHERE NOT EXISTS(SELECT 1 FROM runtime_agents \
              WHERE account_key=?1 AND deleted_at IS NULL AND NOT ({finished}) \
-             AND thread_id=c.value)"
+             AND id IN (SELECT chat FROM sessions WHERE thread_id=c.value AND state<>'ended'))"
         ))?;
         let rows = statement.query_map([account, &encoded_threads], |row| row.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
@@ -226,7 +226,9 @@ impl SchedulerRepository {
         let in_use = agent_in_use(connection)?;
         Ok(exists(
             connection,
-            &format!("{ACCOUNT_AGENT_SQL} AND thread_id=?2 AND ({in_use})"),
+            &format!(
+                "{ACCOUNT_AGENT_SQL} AND id IN (SELECT chat FROM sessions WHERE thread_id=?2 AND state<>'ended') AND ({in_use})"
+            ),
             &[account, thread],
         )? || exists(
             connection,

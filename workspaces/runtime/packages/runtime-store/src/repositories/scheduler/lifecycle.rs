@@ -814,7 +814,7 @@ impl SchedulerRepository {
     ) -> StoreResult<(bool, Option<(TurnAttemptIdentity, bool)>)> {
         let mut statement = connection.prepare_cached(
             "SELECT id,record FROM runtime_agents \
-             WHERE thread_id=?1 AND account_key=?2 AND (?3 IS NULL OR id=?3) ORDER BY rowid LIMIT 2",
+             WHERE id IN (SELECT chat FROM sessions WHERE thread_id=?1 AND state<>'ended') AND account_key=?2 AND (?3 IS NULL OR id=?3) ORDER BY rowid LIMIT 2",
         )?;
         let rows = statement
             .query_map(params![thread_id, account_key, actor], |row| {
@@ -904,7 +904,7 @@ impl SchedulerRepository {
         let ids = {
             let mut statement = transaction.prepare_cached(
                 "SELECT id FROM runtime_agents \
-                 WHERE thread_id=?1 AND account_key=?2 ORDER BY rowid LIMIT 2",
+                 WHERE id IN (SELECT chat FROM sessions WHERE thread_id=?1 AND state<>'ended') AND account_key=?2 ORDER BY rowid LIMIT 2",
             )?;
             statement
                 .query_map(params![thread_id, account_key], |row| {

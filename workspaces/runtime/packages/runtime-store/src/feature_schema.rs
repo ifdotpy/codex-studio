@@ -152,7 +152,7 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_model_status (agent TEXT, revision TEXT, at REAL, record TEXT, PRIMARY KEY(agent,revision));
             CREATE TABLE IF NOT EXISTS runtime_native_notices (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_agent_sweep_busy_v2 ON runtime_agents(account_key) WHERE provider='codex' AND (context_repair_phase IN ('preparing','submitted','unknown','ready') OR COALESCE(native_tool_refresh_id,'')!='');
-            CREATE INDEX IF NOT EXISTS runtime_agent_callback_context_v3 ON runtime_agents(account_key,thread_id,turn_id) WHERE status='running';
+            CREATE INDEX IF NOT EXISTS runtime_agent_callback_context_v3 ON runtime_agents(account_key,turn_id) WHERE status='running';
             CREATE INDEX IF NOT EXISTS runtime_agent_sweep_cleanup_v2 ON runtime_agents(source_cleanup_account_key,source_cleanup_thread_id) WHERE source_cleanup_phase IN ('planned','submitted');
             CREATE INDEX IF NOT EXISTS runtime_agent_unsettled_legacy ON runtime_agents(id) WHERE legacy_unsettled=1;
             CREATE INDEX IF NOT EXISTS runtime_idle_compaction_deadline ON runtime_agents(idle_episode_type,idle_episode_fire_at,id,idle_episode_id) WHERE idle_episode_type='object';

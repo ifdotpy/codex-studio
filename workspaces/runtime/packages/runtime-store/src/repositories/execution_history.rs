@@ -753,7 +753,7 @@ impl ExecutionHistoryRepository {
         status: ExecutionStatus,
         error: Option<&Value>,
     ) -> StoreResult<()> {
-        let mut stmt = tx.prepare_cached("SELECT r.id,r.record FROM runtime_execution_runs r JOIN runtime_agents a ON a.id=r.agent WHERE r.agent=?1 AND r.turn=?2 AND r.account=a.account_key AND r.thread IS a.thread_id ORDER BY r.created,r.id")?;
+        let mut stmt = tx.prepare_cached("SELECT r.id,r.record FROM runtime_execution_runs r JOIN runtime_agents a ON a.id=r.agent WHERE r.agent=?1 AND r.turn=?2 AND r.account=a.account_key AND r.thread IS (SELECT thread_id FROM sessions s WHERE s.chat=a.id AND s.state<>'ended') ORDER BY r.created,r.id")?;
         let rows = stmt
             .query_map(params![agent_id, turn_id], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))

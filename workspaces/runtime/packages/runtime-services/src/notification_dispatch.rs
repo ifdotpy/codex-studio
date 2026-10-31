@@ -1569,7 +1569,7 @@ fn stream_turn_active(
     key: &StreamKey,
 ) -> Result<bool, NotificationDispatchError> {
     Ok(transaction.query_row_cached(
-        "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE id=?4 AND account_key=?1 AND thread_id=?2 AND (?3 IS NULL OR turn_id=?3) AND deleted_at IS NULL AND (in_flight=1 OR status IN ('running','starting','approval')))",
+        "SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE id=?4 AND account_key=?1 AND id IN (SELECT chat FROM sessions WHERE thread_id=?2 AND state<>'ended') AND (?3 IS NULL OR turn_id=?3) AND deleted_at IS NULL AND (in_flight=1 OR status IN ('running','starting','approval')))",
         rusqlite::params![key.account, key.thread, key.turn, key.agent_id],
         |row| row.get(0),
     ).map_err(StoreError::from)?)
