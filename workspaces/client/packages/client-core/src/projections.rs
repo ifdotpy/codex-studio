@@ -644,8 +644,7 @@ mod tests {
             json!([]),
             json!({}),
         ] {
-            let params =
-                json!({"workspace":value,"chatState":value,"checkpoint":value});
+            let params = json!({"workspace":value,"chatState":value,"checkpoint":value});
             let input: ProjectionInput = projection(&params);
             assert_eq!(input.workspace.as_deref(), value.as_str());
             let identity: IdentityInput = projection(&params);

@@ -4,8 +4,8 @@ pub mod agent_volatile;
 pub mod blocking_pool;
 mod bootstrap;
 mod cached_sql;
-pub mod durable_seq;
 pub mod domain;
+pub mod durable_seq;
 pub mod entity_publication;
 pub mod error_incidents;
 pub mod item_seq_backfill;
@@ -48,13 +48,13 @@ pub mod state_owner;
 pub mod stored_text;
 pub mod stored_text_compaction;
 pub mod stored_text_dictionary;
-pub mod text_blobs;
 pub mod supervisor_journal;
 pub mod terminal_output;
+pub mod text_blobs;
 pub mod vm_work_intent;
-pub mod writer_lanes;
 pub mod wal_backup;
 mod write_alert;
+pub mod writer_lanes;
 pub use schema::{
     python_float_json, python_json, python_json_compact, python_json_utf8,
     python_json_with_separators, sha256_hex, truthy,

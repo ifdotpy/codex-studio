@@ -396,7 +396,7 @@ fn read_time_cursor(
 ) -> Result<ReadTimeCursor, TranscriptError> {
     let after = after.max(0);
     let actor = TranscriptRepository::agent(transaction, agent)?;
-    let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
+    let deleted = actor.as_ref().is_none_or(|a| a.is_deleted());
     let through = studio_runtime_store::durable_seq::transcript_change_cursor(transaction, agent)?;
     let workspace_id = studio_runtime_store::SyncDocumentsRepository::workspace_id(transaction)?;
     if after > 0 && after >= through {

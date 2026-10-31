@@ -8,7 +8,6 @@ use crate::{
     scheduler::lifecycle_transaction_with,
     task_recovery::{TaskRecoveryEffects, TaskRecoverySnapshot},
 };
-use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::sync::Arc;
 use studio_runtime_store::{
@@ -107,7 +106,7 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
             current.completed_turn = studio_runtime_store::domain::turn_completed(
                 tx,
                 &agent,
-                t["turnId"].as_str().ok_or(RecoveryError::CommitFailed)?,
+                t.turn_id(),
             )?
             .then_some(completed);
             let decision = match decision {
