@@ -462,7 +462,7 @@ fn header_path(path: &str) -> Option<String> {
 pub struct WorkspaceInboxData<'a> {
     pub agents: &'a [Value],
     pub all_agents: &'a [Value],
-    pub requests: &'a [Value],
+    pub requests: &'a [studio_runtime_schema::approvals::Approval],
     pub complaints: &'a [Value],
     pub work: &'a [studio_runtime_store::WorkItemRecord],
     pub statuses: &'a BTreeMap<String, studio_runtime_store::WorkStatus>,
@@ -485,10 +485,20 @@ pub fn workspace_inbox(
     } = data;
     let mut inbox = Vec::new();
     for request in requests {
-        if request["status"] == "pending" && !crate::event_write::truthy(request.get("deferred")) {
+        if matches!(
+            request.state,
+            studio_runtime_schema::approvals::ApprovalState::Pending
+        ) && request.hidden.is_none()
+            && !request
+                .deferral
+                .as_ref()
+                .is_some_and(|deferral| deferral.active)
+        {
             inbox.push(WorkspaceInboxItem::Other(json!({
-                "id":request["id"],"kind":"request","agent":request["agent"],
-                "title":"Answer required","text":request["method"],"request":request,
+                "id":request.id.as_str(),"kind":"request","agent":request.agent.as_str(),
+                "title":"Answer required",
+                "text":studio_runtime_schema::approvals::RequestKind::from(&request.request).as_str(),
+                "request":request,
             })));
         }
     }

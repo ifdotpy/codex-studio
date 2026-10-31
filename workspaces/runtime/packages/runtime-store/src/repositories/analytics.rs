@@ -360,11 +360,13 @@ pub fn rollup<'a>(
         .range("created", options.from, options.to)
         .counts("canvas.runtime_events", "status||':'||kind")?;
     let approval_counts = ScopeFilter::new(db)
-        .members(
-            "json_extract(record,'$.agent')",
-            selected_ids.iter().cloned(),
-        )
-        .counts("canvas.runtime_requests", "json_extract(record,'$.status')")?;
+        .members("agent", selected_ids.iter().cloned())
+        .counts(
+            "canvas.approvals",
+            "CASE WHEN hidden_at IS NOT NULL THEN 'deleted' WHEN state='unknown' THEN 'uncertain' \
+             WHEN state='closed' THEN CASE reason WHEN 'provider_resolved' THEN 'resolved' ELSE 'expired' END \
+             ELSE state END",
+        )?;
     let mut notification_filter = selected.and("hour IS NOT NULL", []);
     if let Some(from) = options.from {
         notification_filter = notification_filter.and("hour+3600>?", [SqlValue::Real(from)]);

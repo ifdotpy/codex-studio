@@ -352,7 +352,7 @@ pub fn maintain_entity_projections_with_server_id(
                 "runtime_rooms",
                 "runtime_complaints",
                 "runtime_projects",
-                "runtime_requests",
+                "runtime_rules",
                 "runtime_federation_rooms",
             ]
             .into_iter()
@@ -426,7 +426,6 @@ pub fn maintain_entity_projections_with_server_id(
             ("runtime_rooms", "room"),
             ("runtime_complaints", "complaint"),
             ("runtime_projects", "project"),
-            ("runtime_requests", "request"),
             ("runtime_rules", "rule"),
             ("runtime_work", "work"),
         ] {
@@ -438,7 +437,7 @@ pub fn maintain_entity_projections_with_server_id(
                 ))?
             };
             for (id, raw) in records {
-                if matches!(collection, "request" | "rule" | "work") {
+                if matches!(collection, "rule" | "work") {
                     publish_direct(transaction, collection, id, raw, &validate_projection)?;
                     continue;
                 }
@@ -504,6 +503,12 @@ pub fn maintain_entity_projections_with_server_id(
                         &validate_projection,
                     )?;
                 }
+            }
+        }
+        // Approval rows publish through the same code as their writers.
+        if table_exists(transaction, "approvals")? {
+            for row in studio_runtime_store::approvals::all(transaction)? {
+                crate::approval_sync::publish(transaction, &row)?;
             }
         }
         Ok::<(), StoreError>(())
@@ -731,8 +736,12 @@ pub fn publish_entity_changes(
     if !liveness_changed.is_empty() {
         publish_rooms_of(transaction, &liveness_changed, &changed_roots, validate)?;
     }
-    for (id, raw) in records_by_id(transaction, "runtime_requests", &changes.requests)? {
-        publish_direct(transaction, "request", &id, &raw, validate)?;
+    // Approval rows publish through the same code as their writers.
+    for id in &changes.requests {
+        let id = studio_runtime_schema::approvals::ApprovalId(id.clone());
+        if let Some(row) = studio_runtime_store::approvals::get(transaction, &id)? {
+            crate::approval_sync::publish(transaction, &row)?;
+        }
     }
     for (id, raw) in &work {
         if let Some(source) = &changes.source_work_changes {
@@ -1062,7 +1071,7 @@ pub(crate) fn publish_agent_projection(
     put_projection(transaction, "agent", id, compatibility, deleted, validate)
 }
 
-/// Publish one request, rule or work row; only pending requests stay live.
+/// Publish one rule or work row.
 fn publish_direct(
     transaction: &Transaction<'_>,
     collection: &str,
@@ -1081,38 +1090,6 @@ fn publish_direct(
             return Err(invalid());
         }
         return studio_runtime_store::RulesRepository::publish_entity(transaction, &record);
-    }
-    if collection == "request" {
-        let record: studio_runtime_store::RequestRecord =
-            serde_json::from_str(raw).map_err(|_| StoreError::InvalidStoredRecord {
-                object: "requests",
-                id: id.to_owned(),
-            })?;
-        if record.id != id {
-            return Err(StoreError::InvalidStoredRecord {
-                object: "requests",
-                id: id.to_owned(),
-            });
-        }
-        let question = crate::questions_reads::question_history_entity(&record)
-            .map_err(|_| StoreError::RecordContract("invalid question history entity"))?;
-        match question {
-            Some(value) => {
-                put_projection(transaction, "questionHistory", id, value, false, validate)?
-            }
-            None => retire_if_live(transaction, "questionHistory", id, validate)?,
-        }
-        if record.status != studio_runtime_schema::persistence::RequestCardStatus::Pending {
-            return retire_if_live(transaction, collection, id, validate);
-        }
-        if let Some(projected) = project_persisted_record(collection, &serde_json::json!(record)) {
-            put_projection(transaction, collection, id, projected, false, validate)?;
-        }
-        return Ok(());
-    }
-    let record = serde_json::from_str::<Value>(raw)?;
-    if collection == "work" {
-        publish_work_detail(transaction, id, &record, validate)?;
     }
     match project_persisted_record(collection, &record) {
         Some(projected) => put_projection(transaction, collection, id, projected, false, validate),

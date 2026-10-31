@@ -4,9 +4,7 @@
 //! keeps the thread loaded.
 use super::*;
 use crate::schema::table_exists;
-use crate::startup_recovery::{
-    active_monitor_predicate, unsettled_request_predicate, unsettled_tool_request_predicate,
-};
+use crate::startup_recovery::{active_monitor_predicate, unsettled_tool_request_predicate};
 
 /// Agent statuses whose turn may still be starting or running.
 const ACTIVE_AGENT_STATUSES: &str = "'queued','starting','running','approval'";
@@ -39,7 +37,6 @@ fn agent_in_use(connection: &Connection) -> StoreResult<String> {
     ];
     for (table, predicate) in [
         ("runtime_monitors", active_monitor_predicate()),
-        ("runtime_requests", unsettled_request_predicate()),
         ("runtime_tool_requests", unsettled_tool_request_predicate()),
     ] {
         if table_exists(connection, table)? {
@@ -48,6 +45,14 @@ fn agent_in_use(connection: &Connection) -> StoreResult<String> {
                  AND json_extract(record,'$.agent')=runtime_agents.id)"
             ));
         }
+    }
+    // An open approval (pending or being answered) holds the thread.
+    if table_exists(connection, "approvals")? {
+        checks.push(
+            "EXISTS(SELECT 1 FROM approvals WHERE state IN ('pending','answering') \
+             AND agent=runtime_agents.id)"
+                .to_owned(),
+        );
     }
     Ok(checks.join(" OR "))
 }
@@ -277,12 +282,12 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT, kind TEXT, text TEXT,
                    status TEXT, created REAL, epoch INTEGER, turn_id TEXT, error TEXT);
-                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL, monitor_status TEXT);
-                 CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL);",
             )
             .expect("schema creates");
+        crate::approvals::create_schema(&connection).expect("approvals table creates");
         connection
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
@@ -467,12 +472,33 @@ mod tests {
         connection
             .execute("DELETE FROM runtime_monitors", [])
             .expect("monitor deletes");
-        connection
-            .execute(
-                "INSERT INTO runtime_requests(id,record) VALUES('r',?1)",
-                [json!({"id":"r","agent":"a","status":"pending"}).to_string()],
+        {
+            use studio_runtime_schema::approvals as typed;
+            crate::approvals::create(
+                &connection,
+                crate::approvals::NewApproval {
+                    id: typed::ApprovalId("r".into()),
+                    agent: typed::AgentId("a".into()),
+                    turn: Some(typed::TurnId("t".into())),
+                    epoch: None,
+                    request: typed::Request::Exec {
+                        command: String::new(),
+                        cwd: String::new(),
+                        reason: None,
+                    },
+                    delivery: None,
+                    detail: typed::Detail {
+                        params: typed::ProviderObject(Default::default()),
+                        preview: None,
+                        answer_error: None,
+                        host_close_reason: None,
+                    },
+                    fire_at: None,
+                },
+                typed::Timestamp(1.0),
             )
             .expect("request writes");
+        }
         assert!(
             thread_in_use(&connection),
             "a pending request holds the thread"

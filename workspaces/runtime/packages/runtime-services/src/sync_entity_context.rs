@@ -523,7 +523,7 @@ fn pending_attention(
     id: &str,
     record: &Value,
 ) -> StoreResult<(bool, bool)> {
-    if !table_exists(transaction, "runtime_requests")? {
+    if !table_exists(transaction, "approvals")? {
         return Ok((false, false));
     }
     let epoch = record
@@ -531,8 +531,8 @@ fn pending_attention(
         .and_then(Value::as_i64)
         .unwrap_or_default();
     transaction.query_row_cached(
-        "SELECT EXISTS(SELECT 1 FROM runtime_requests WHERE json_valid(record) AND json_extract(record,'$.agent')=?1 AND (json_extract(record,'$.epoch') IS NULL OR json_extract(record,'$.epoch')=?2) AND COALESCE(json_extract(record,'$.status'),'pending')='pending' AND COALESCE(json_extract(record,'$.deferred'),0)=0 AND json_extract(record,'$.method') IN ('item/tool/requestUserInput','mcpServer/elicitation/request')), \
-                EXISTS(SELECT 1 FROM runtime_requests WHERE json_valid(record) AND json_extract(record,'$.agent')=?1 AND (json_extract(record,'$.epoch') IS NULL OR json_extract(record,'$.epoch')=?2) AND COALESCE(json_extract(record,'$.status'),'pending')='pending' AND COALESCE(json_extract(record,'$.deferred'),0)=0 AND COALESCE(json_extract(record,'$.method'),'') NOT IN ('item/tool/requestUserInput','mcpServer/elicitation/request'))",
+        "SELECT EXISTS(SELECT 1 FROM approvals WHERE agent=?1 AND (epoch IS NULL OR epoch=?2) AND state='pending' AND COALESCE(deferral_active,0)=0 AND kind IN ('question','elicitation')), \
+                EXISTS(SELECT 1 FROM approvals WHERE agent=?1 AND (epoch IS NULL OR epoch=?2) AND state='pending' AND COALESCE(deferral_active,0)=0 AND kind NOT IN ('question','elicitation'))",
         rusqlite::params![id, epoch], |row| Ok((row.get(0)?, row.get(1)?)),
     ).map_err(Into::into)
 }

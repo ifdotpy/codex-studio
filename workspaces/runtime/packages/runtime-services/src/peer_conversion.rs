@@ -281,7 +281,6 @@ pub(crate) fn idle(
     for table in [
         "runtime_tasks",
         "runtime_monitors",
-        "runtime_requests",
         "runtime_tool_requests",
         "runtime_rules",
         "runtime_workspace_operations",
@@ -299,7 +298,6 @@ pub(crate) fn idle(
                             Some("running" | "starting" | "approval")
                         )
                 }
-                "runtime_requests" => belongs && r["status"] == "pending",
                 "runtime_tool_requests" => {
                     belongs
                         && !truthy(r.get("readOnly"))
@@ -332,6 +330,23 @@ pub(crate) fn idle(
             if busy {
                 return Err(ProjectsError::Invalid("Finish pending operations first"));
             }
+        }
+    }
+    for id in ids.iter().copied() {
+        let waiting = studio_runtime_store::approvals::for_agent(
+            db,
+            &studio_runtime_schema::approvals::AgentId(id.to_owned()),
+        )
+        .map_err(studio_runtime_store::StoreError::from)?
+        .iter()
+        .any(|row| {
+            matches!(
+                row.state,
+                studio_runtime_schema::approvals::ApprovalState::Pending
+            )
+        });
+        if waiting {
+            return Err(ProjectsError::Invalid("Finish pending operations first"));
         }
     }
     Ok(())
