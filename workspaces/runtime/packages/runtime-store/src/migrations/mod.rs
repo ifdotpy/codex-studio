@@ -1012,7 +1012,7 @@ fn apply_target_catalog(
             )
             .optional()?
             .as_deref()
-            == Some(fingerprint.as_str())
+            == Some(catalog_marker(db, &fingerprint)?.as_str())
     {
         return Ok(());
     }
@@ -1068,13 +1068,24 @@ fn apply_target_catalog(
             source,
         ));
     }
-    if let Some(table) = marker_table
-        && let Err(error) = tx.execute(
-            &format!("INSERT INTO {table}(key,value) VALUES('migration_catalog',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value"),
-            [&fingerprint],
-        )
-    {
-        return Err(rolled_back(tx, last, target, MigrationPhase::Apply, error.into()));
+    if let Some(table) = marker_table {
+        let write_marker = || -> rusqlite::Result<()> {
+            let marker = catalog_marker(&tx, &fingerprint)?;
+            tx.execute(
+                &format!("INSERT INTO {table}(key,value) VALUES('migration_catalog',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value"),
+                [&marker],
+            )?;
+            Ok(())
+        };
+        if let Err(error) = write_marker() {
+            return Err(rolled_back(
+                tx,
+                last,
+                target,
+                MigrationPhase::Apply,
+                error.into(),
+            ));
+        }
     }
     // Keep ownership after COMMIT failure: consuming Transaction::commit would
     // discard a failed rollback from Drop and lose its diagnostic evidence.
@@ -1095,6 +1106,11 @@ fn apply_target_catalog(
             error.into(),
         )),
     }
+}
+
+fn catalog_marker(db: &Connection, fingerprint: &str) -> rusqlite::Result<String> {
+    let version: i64 = db.pragma_query_value(None, "schema_version", |row| row.get(0))?;
+    Ok(format!("{fingerprint}:{version}"))
 }
 
 /// Position in the currently migrating source, measured in SQLite rowids.
@@ -1516,6 +1532,18 @@ mod tests {
             )))
             .unwrap(),
             (2, 1)
+        );
+        db.execute_batch("CREATE TABLE schema_drift(id INTEGER)")
+            .expect("changed schema");
+        run(&mut db, &[&one, &two]).expect("schema change reruns target");
+        run(&mut db, &[&one, &two]).expect("unchanged schema skips target");
+        assert_eq!(
+            db.query_row("SELECT first,second FROM counts", [], |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?
+            )))
+            .unwrap(),
+            (3, 2)
         );
     }
 

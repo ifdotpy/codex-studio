@@ -19,11 +19,12 @@ phase are typed values. A migration must not receive an optional bag of unrelate
 database and file handles. Dates describe transitions; they are not expiration
 timers.
 
-Canvas and analytics record a fingerprint of their ordered SQL migration IDs in
-their existing metadata, in the same transaction as the target's migrations.
-An unchanged catalog skips those bodies on reopen; changing the catalog runs the
-target again. Keep completed migration IDs and behavior stable, and add a new ID
-for a later transition. Receipt families retain their own phase checkpoints.
+Canvas and analytics record a fingerprint of their ordered SQL migration IDs and
+the SQLite schema version in their existing metadata, in the same transaction as
+the target's migrations. An unchanged catalog and schema skip those bodies on
+reopen; changing either runs the target again. Keep completed migration IDs and
+behavior stable, and add a new ID for a later transition. Receipt families retain
+their own phase checkpoints.
 
 Convert known old owned formats before normal readers and workers use them.
 Remove the corresponding compatibility branch from the normal path. A malformed

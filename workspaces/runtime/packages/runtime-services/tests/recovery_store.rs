@@ -154,7 +154,7 @@ fn events(store: &RuntimeStore) -> Vec<(String, String)> {
 }
 fn projection(store: &RuntimeStore) -> Vec<String> {
     let db = store.test_reader().expect("store read");
-    ["SELECT json_group_array(json_array(collection,id,seq,hash,payload,deleted)) FROM (SELECT * FROM sync_entities ORDER BY collection,id)","SELECT json_group_array(json_array(key,value)) FROM (SELECT * FROM sync_entity_meta ORDER BY key)"]
+    ["SELECT json_group_array(json_array(collection,id,seq,hash,payload,deleted)) FROM (SELECT * FROM sync_entities ORDER BY collection,id)","SELECT json_group_array(json_array(key,value)) FROM (SELECT * FROM sync_entity_meta WHERE key!='migration_catalog' ORDER BY key)"]
         .iter().map(|sql|db.query_row(sql,[],|row|row.get(0)).expect("projection read")).collect()
 }
 #[tokio::test]
