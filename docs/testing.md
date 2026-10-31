@@ -147,24 +147,26 @@ layr git clone git@github.com:ifdotpy/codex-studio.git studio
 
 Start a line with a warm build:
 
-1. In a built line, run `layr save --caches`.
-2. Find the new automatic state: `layr log --auto -n 1`.
-3. Start the line from that state ID: `layr line new <name> <state-id>`.
-4. Enter it: `cd ../<name>`.
+1. Read the remote: `layr git fetch origin`.
+2. Start the line from it: `layr line new <name> origin/main`.
+3. Enter it: `cd ../<name>`.
 
-Use the state ID, not the line name. On an unprotected line, `save --caches`
-puts the caches on an automatic state.
-`target/` (about 11 GB) is regenerable. Starting the line copies it as an APFS
-clone in 5 to 15 seconds. Cargo rebuilds only what changed.
+The `cache.target` overlay (mode `follow`) shows the saved `target/` (about
+40 GB) in every line of the project as an APFS clone. Cargo rebuilds only what
+changed. `node_modules` is not cached: run `pnpm install` before web checks.
+After a long build, run `layr save --caches` once to update the overlay.
 
-Two traps in a line started from an automatic state:
+Do not start a line from local `main` or from another line's automatic state.
+Local work in them would go into your pull request. Since layr 0.6.0,
+`layr line new` refuses an automatic state with unsaved work, and
+`layr git push` refuses a line that started on unpushed states of another
+line. The error lists them. Start a new line from `origin/main` and use
+`layr pick` for your states.
 
-- Its index also holds ignored files, such as `node_modules`. Stage named
-  paths with `layr add <path>`. Do not use `layr add -A`.
-- Test binaries keep absolute paths that Cargo compiled in, such as
-  `env!("CARGO_BIN_EXE_<name>")`, which still name the line that built the
-  cache. Run `cargo clean -p <crate>` for a crate whose tests start its own
-  binary, before you trust its results.
+Test binaries keep absolute paths that Cargo compiled in, such as
+`env!("CARGO_BIN_EXE_<name>")`, which still name the line that built the
+cache. Run `cargo clean -p <crate>` for a crate whose tests start its own
+binary, before you trust its results.
 
 ### Run the gates
 
