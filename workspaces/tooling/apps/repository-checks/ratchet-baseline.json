@@ -3244,10 +3244,6 @@
       "fingerprint": "edada8886fc62e27c56e89c38a37395a3e8150b2fda9c93394b5e8bbf49614b0:1"
     },
     {
-      "file": "workspaces/client/apps/web/src/components/sidebarOrder.migration.test.ts",
-      "fingerprint": "c6487191939083ff97210a7759a52e86b7d6062414f1dd85390b015410faf8f5:0"
-    },
-    {
       "file": "workspaces/client/apps/web/src/components/SidebarWarnings.test.ts",
       "fingerprint": "b67a32f1b7da5f70d42e609275fdf152fc0c350881bb33fcb97ae9524a6376d3:0"
     },

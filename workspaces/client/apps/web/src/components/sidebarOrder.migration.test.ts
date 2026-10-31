@@ -1,6 +1,5 @@
 import { required } from "./componentTestFixtures";
 import { afterEach, expect, it, vi } from "vitest";
-import type { SidebarServices } from "./sidebar/services";
 const h = vi.hoisted(() => ({ effects: [] as Array<() => unknown> }));
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
@@ -63,7 +62,7 @@ it.each(["empty", "empty-group", "legacy", "pending"] as const)(
       owner: () => backend,
       byOwner: () => backend,
       available: () => true,
-    } as unknown as SidebarServices;
+    } as never;
     useSidebarOrder(
       "codex-sidebar-order:order",
       { revision: 0, groups: null },
@@ -99,7 +98,7 @@ it("allows an explicit reorder when the server has no previous order", async () 
     owner: () => backend,
     byOwner: () => backend,
     available: () => true,
-  } as unknown as SidebarServices;
+  } as never;
   const sorting = useSidebarOrder(
     "codex-sidebar-order:scope",
     { revision: 1, groups: null },

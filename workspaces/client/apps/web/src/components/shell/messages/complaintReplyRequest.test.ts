@@ -137,6 +137,13 @@ it("keeps the identity after an HTTP request timeout", () => {
 });
 
 it("refuses an unreadable pending response instead of replacing its identity", () => {
-  const storage = { getItem: () => "{broken" } as unknown as Storage;
+  const storage: Storage = {
+    length: 1,
+    clear() {},
+    key: () => null,
+    getItem: () => "{broken",
+    setItem() {},
+    removeItem() {},
+  };
   assert.throws(() => complaintResponseStore(storage, "state").read());
 });
