@@ -292,18 +292,6 @@
     "callee": "localStorage.setItem"
   },
   {
-    "file": "components/sidebar/SidebarFrame.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "components/sidebar/SidebarFrame.tsx",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "components/sidebar/SidebarFrame.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
     "file": "components/useMessageQueue.ts",
     "callee": "localStorage.getItem"
   },

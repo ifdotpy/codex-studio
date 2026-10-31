@@ -15,19 +15,6 @@ const widthContract = {
   navigationInlineMinPx: layoutValues.navigation.inlineMin,
 };
 
-export const sidebarWidthStorageKey = (scope: string) =>
-  `studio-sidebar-width:${scope}`;
-
-function readWidth(scope: string): number | null {
-  try {
-    return storedSidebarWidth(
-      JSON.parse(localStorage.getItem(sidebarWidthStorageKey(scope)) || "null"),
-    );
-  } catch {
-    return null;
-  }
-}
-
 /** Move focus to the visible control before removing sidebar content. */
 export function restoreSidebarFocus() {
   const sidebar = document.getElementById("sidebar");
@@ -59,10 +46,9 @@ export function SidebarFrame(p: SidebarFrameProps) {
   }));
   const [preference, setPreference] = useState(() => ({
     scope: p.scope,
-    width: readWidth(p.scope),
+    width: null as number | null,
   }));
-  const preferred =
-    preference.scope === p.scope ? preference.width : readWidth(p.scope);
+  const preferred = preference.scope === p.scope ? preference.width : null;
   const policy = resolveSidebarWidth({
     ...geometry,
     preferred,
@@ -193,17 +179,6 @@ export function SidebarFrame(p: SidebarFrameProps) {
     if (live.current.scope !== p.scope) return;
     if (width !== null && storedSidebarWidth(width) === null) return;
     setPreference({ scope: p.scope, width });
-    try {
-      if (width === null)
-        localStorage.removeItem(sidebarWidthStorageKey(p.scope));
-      else
-        localStorage.setItem(
-          sidebarWidthStorageKey(p.scope),
-          JSON.stringify(width),
-        );
-    } catch {
-      // The current window retains the preference when browser storage is unavailable.
-    }
   };
   const resize = useSidebarResize({
     scope: p.scope,
