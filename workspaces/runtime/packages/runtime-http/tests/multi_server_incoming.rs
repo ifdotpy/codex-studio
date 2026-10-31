@@ -1452,3 +1452,113 @@ async fn a_peer_with_an_unknown_contract_hash_is_refused() {
     assert_eq!(status, StatusCode::UPGRADE_REQUIRED);
     assert_eq!(mismatch.as_deref(), Some("1"));
 }
+
+/// Trust a new window key as a UI client with the given trust-list `grant` field.
+async fn pair_window(
+    receiver_store: &Arc<studio_runtime_store::RuntimeStore>,
+    grant: Option<&str>,
+) -> (
+    studio_runtime_services::remote_transport::RemoteIdentity,
+    tempfile::TempDir,
+) {
+    let root = tempfile::tempdir().expect("window key root");
+    let store = Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("window key store opens"),
+    );
+    let identity = studio_runtime_services::federation_credentials::Credentials::default()
+        .identity(store, Some("https://window.fixture.ts.net"))
+        .await
+        .expect("window key exists");
+    let signing = load_multi_server_identity(root.path()).expect("window signing key loads");
+    let id = signing.id().to_owned();
+    let mut record = serde_json::json!({
+        "id":id,"clientId":id,"kind":"ui","status":"paired","label":"Studio UI","created":1,
+        "publicKey":identity["publicKey"],"origin":null,"serverId":null,"revoked":null,
+        "tailscaleUser":"owner@example.test"
+    });
+    if let Some(grant) = grant {
+        record["grant"] = grant.into();
+    }
+    receiver_store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, record.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the receiver trusts the window");
+    (signing, root)
+}
+
+/// The grant comes from the server's trust list. A device with grant `observe` reads but
+/// cannot write; a device without a grant field keeps full rights.
+#[tokio::test]
+async fn a_signed_observe_device_reads_but_cannot_send() {
+    let PairedReceiver {
+        receiver_store,
+        receiver_identity,
+        origin,
+        app,
+        ..
+    } = paired_receiver().await;
+    let (observer, _observer_root) = pair_window(&receiver_store, Some("observe")).await;
+    let (full, _full_root) = pair_window(&receiver_store, None).await;
+    let body = br#"{"scope":"server","fields":{}}"#;
+    let send = |signing, method, target, body: &'static [u8], nonce| {
+        let request = signed_api_request(
+            signing,
+            &receiver_identity,
+            origin,
+            method,
+            target,
+            body,
+            nonce,
+        );
+        app.clone().oneshot(request)
+    };
+    let read = send(
+        &observer,
+        "GET",
+        "/api/ui-summary",
+        b"",
+        "observerreadnonce000000000000001",
+    )
+    .await
+    .expect("observer read answers");
+    assert_eq!(read.status(), StatusCode::OK);
+    let write = send(
+        &observer,
+        "POST",
+        "/api/sync/preferences",
+        body,
+        "observerwritenonce00000000000002",
+    )
+    .await
+    .expect("observer write answers");
+    assert_eq!(write.status(), StatusCode::FORBIDDEN);
+    let write = send(
+        &full,
+        "POST",
+        "/api/sync/preferences",
+        body,
+        "fullwritenonce000000000000000003",
+    )
+    .await
+    .expect("full write answers");
+    assert_eq!(write.status(), StatusCode::OK);
+    // Owner-only routes (pairing, grants, revoke, settings) refuse even a full device.
+    let owner_only = send(
+        &full,
+        "POST",
+        "/api/rules",
+        body,
+        "fullownerrouteno0000000000000004",
+    )
+    .await
+    .expect("owner-only answers");
+    assert_eq!(owner_only.status(), StatusCode::FORBIDDEN);
+}

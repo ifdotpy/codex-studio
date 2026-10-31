@@ -186,18 +186,7 @@ fn callback_refusal(error: CallbackError) -> crate::managed_host_tools::Error {
     }
 }
 
-fn is_descendant(
-    tx: &Transaction<'_>,
-    sender_id: &str,
-    target_id: &str,
-) -> Result<bool, crate::managed_host_tools::Error> {
-    use crate::managed_host_tools::{AgentAncestry, agent_ancestry};
-    match agent_ancestry(tx, sender_id, target_id)? {
-        AgentAncestry::Descendant => Ok(true),
-        AgentAncestry::Unrelated => Ok(false),
-        AgentAncestry::Cycle => Err(crate::managed_host_tools::Error::Stale),
-    }
-}
+use crate::managed_host_tools::is_descendant;
 
 impl crate::managed_host_tools::ChildCreationPort for ProductionPorts {
     type Prepared = ();

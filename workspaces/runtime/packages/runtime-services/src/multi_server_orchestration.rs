@@ -1171,7 +1171,14 @@ impl RuntimeOrchestrationEffects {
                             })?;
                         if target.root_id != worker.root_id
                             || target.id == worker.id
-                            || !is_descendant_of(tx, target_id, &worker_id)?
+                            || !crate::managed_host_tools::is_descendant(tx, &worker_id, target_id)
+                                .map_err(|_| {
+                                    refused(
+                                        503,
+                                        "invalid_record",
+                                        "A stored agent record is invalid",
+                                    )
+                                })?
                             || target.auto_wake != Some(true)
                         {
                             return Err(refused(
@@ -1690,32 +1697,6 @@ fn callback_error(error: crate::provider_callbacks::CallbackError) -> AccessErro
         Callback::Unknown => refused(503, "message_unknown", "The message outcome is unknown"),
         Callback::Stored(_) => refused(503, "invalid_record", "A stored message record is invalid"),
     }
-}
-
-fn is_descendant_of(
-    tx: &rusqlite::Transaction<'_>,
-    target_id: &str,
-    ancestor_id: &str,
-) -> Result<bool, AccessError> {
-    let mut current = studio_runtime_store::AgentRepository::get(
-        tx,
-        &studio_runtime_store::AgentId::from(target_id),
-    )?;
-    let mut seen = std::collections::HashSet::new();
-    while let Some(agent) = current {
-        let parent = agent.parent_id.as_deref().unwrap_or_default();
-        if parent == ancestor_id {
-            return Ok(true);
-        }
-        if parent.is_empty() || !seen.insert(parent.to_owned()) {
-            return Ok(false);
-        }
-        current = studio_runtime_store::AgentRepository::get(
-            tx,
-            &studio_runtime_store::AgentId::from(parent),
-        )?;
-    }
-    Ok(false)
 }
 
 impl OrchestrationEffects for RuntimeOrchestrationEffects {

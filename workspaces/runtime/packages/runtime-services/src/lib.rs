@@ -140,6 +140,7 @@ pub mod peer_update_pull;
 pub mod peer_updates;
 pub mod portable_history;
 pub mod pricing;
+pub mod principal;
 pub mod process_controls;
 pub mod project_deletion;
 pub mod project_locations;

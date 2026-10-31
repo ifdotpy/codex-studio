@@ -71,6 +71,24 @@ pub struct DispatchPrincipal {
     pub kind: String,
     /// The answering server, for the `X-Studio-Server` response header.
     pub local_server: String,
+    /// Read from the server's own trust list record of the client.
+    pub grant: crate::principal::Grant,
+}
+
+impl DispatchPrincipal {
+    pub fn principal(&self) -> crate::principal::Principal {
+        use crate::principal::Principal;
+        if self.kind == "server" {
+            Principal::Peer {
+                server: self.client_id.clone(),
+            }
+        } else {
+            Principal::Device {
+                id: self.client_id.clone(),
+                grant: self.grant,
+            }
+        }
+    }
 }
 
 /// Read-only signed-server verification and owner observation completed before admission.
@@ -427,6 +445,9 @@ impl MultiServerBoundary {
                     client_id: decision.principal.client_id().to_owned(),
                     kind: decision.principal.kind().to_owned(),
                     local_server: text(&identity, "serverId").to_owned(),
+                    grant: crate::principal::Grant::from_record(
+                        snapshot.client().unwrap_or(&Value::Null),
+                    ),
                 })
             })
             .await
