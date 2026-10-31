@@ -1324,13 +1324,13 @@ mod tests {
                 for (id, home) in [("p1", "lostlocal"), ("p2", "otherold")] {
                     tx.execute(
                         "INSERT INTO runtime_projects VALUES(?1,?2)",
-                        rusqlite::params![id, serde_json::json!({"homeServerId": home}).to_string()],
+                        rusqlite::params![
+                            id,
+                            serde_json::json!({"homeServerId": home}).to_string()
+                        ],
                     )?;
                 }
-                tx.execute_batch(
-                    "CREATE TABLE runtime_peer_update_settings(id INTEGER PRIMARY KEY CHECK(id=1), auto_update INTEGER NOT NULL);
-                     INSERT INTO runtime_peer_update_settings VALUES(1,0);",
-                )?;
+                tx.execute_batch("INSERT INTO runtime_peer_update_settings VALUES(1,0);")?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await

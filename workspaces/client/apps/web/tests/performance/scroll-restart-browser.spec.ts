@@ -54,6 +54,7 @@ test("Scroll restart", async () => {
         : {}),
     });
     const page = await browser.newPage();
+    page.setDefaultTimeout(10_000);
     await page.clock.install();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -79,6 +80,27 @@ test("Scroll restart", async () => {
     await mount();
     await ready();
     await page.evaluate(() => {
+      const original = Storage.prototype.setItem;
+      (window as typeof window & { scrollWrites: number }).scrollWrites = 0;
+      Storage.prototype.setItem = function (...args) {
+        (window as typeof window & { scrollWrites: number }).scrollWrites++;
+        return original.apply(this, args);
+      };
+      const root = document.getElementById("scroll")!;
+      for (let i = 0; i < 10; i++) {
+        root.scrollTop -= 50;
+        root.dispatchEvent(new Event("scroll", { bubbles: true }));
+      }
+    });
+    assert.equal(
+      await page.evaluate(
+        () => (window as typeof window & { scrollWrites: number }).scrollWrites,
+      ),
+      0,
+      "scrolling does not write browser storage",
+    );
+    await page.evaluate(() => window.fixture.position.setFollow(true));
+    await page.evaluate(() => {
       window.followChanges = 0;
       window.followUnsubscribe = window.fixture.position.subscribeFollow(() => {
         window.followChanges++;
@@ -97,12 +119,28 @@ test("Scroll restart", async () => {
     );
     assert.ok(await page.evaluate(() => window.followChanges > 0));
     await page.evaluate(() => window.followUnsubscribe());
+    await page.evaluate(() => window.fixture.select("workspace-b:agent:lead"));
+    await page.waitForFunction(
+      () => document.getElementById("scroll")!.scrollTop === 4500,
+    );
+    await page.evaluate(() => window.fixture.select("workspace-a:agent:lead"));
+    await page.waitForFunction(
+      () => document.getElementById("scroll")!.scrollTop === 900,
+    );
     await mount();
     assert.equal(
       await page.evaluate(() => window.fixture.position.getFollow()),
-      false,
+      true,
     );
     await ready();
+    await page.waitForFunction(
+      () => document.getElementById("scroll")!.scrollTop === 4500,
+    );
+    await page.evaluate(() => {
+      const root = document.getElementById("scroll")!;
+      root.scrollTop = 900;
+      root.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
     await page.waitForFunction(
       () => document.getElementById("scroll")!.scrollTop === 900,
     );
@@ -155,7 +193,7 @@ test("Scroll restart", async () => {
     );
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: reload retains reading position, delayed history does not overwrite it, workspace isolation, Latest remains selected after reload",
+      "PASS: positions remain in memory across chats, reload starts at latest, and delayed history preserves position",
     );
   } finally {
     await browser?.close();

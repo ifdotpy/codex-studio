@@ -2381,6 +2381,12 @@ async fn rename(
                 })) {
                     eprintln!("Could not publish rename completion: {error}");
                 }
+                notifications.publish_progress(
+                    studio_runtime_schema::progress_selector::ProgressSelector::Rename {
+                        agent_id,
+                        request_id,
+                    },
+                );
             }));
         }
         let response = Json(receipt).into_response();

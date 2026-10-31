@@ -32,6 +32,7 @@ vi.mock("../../servers/ServerServicesContext", () => ({
   useServerStorage: () => ({
     getItem: (key: string) => fixture.disk.get(key) ?? null,
     setItem: (key: string, value: string) => fixture.disk.set(key, value),
+    removeItem: (key: string) => fixture.disk.delete(key),
   }),
   useServerApi: () => ({ post: fixture.post }),
 }));
@@ -90,6 +91,7 @@ it("retains and blocks a malformed request introduced while a save is pending", 
   form.props.onSubmit({ preventDefault() {} });
   const key = [...fixture.disk.keys()][0];
   if (!key) throw new Error("Pending request missing");
+  expect(JSON.parse(fixture.disk.get(key)!)).not.toHaveProperty("confirmed");
   const raw = JSON.stringify({
     pending: {
       id: "other",

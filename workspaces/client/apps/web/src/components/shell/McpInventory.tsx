@@ -1,4 +1,5 @@
 import { randomUUID } from "../../uuid";
+import { sessionOutboxRequests } from "../../browserPersistence";
 import { Button } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -54,6 +55,7 @@ export function McpInventory({
   reconnect,
 }: Props) {
   const services = useServerServices();
+  const outbox = sessionOutboxRequests();
   const owner = services?.owner.id ?? serverViewId ?? "local";
   const [inventory, setInventory] = useState(initial);
   const [rows, setRows] = useState(() => mcpServers(initial.mcp));
@@ -81,15 +83,17 @@ export function McpInventory({
     setPageError("");
     setPageBusy(false);
   }, [initial]);
+  const requestSuffix = (name: string) =>
+    JSON.stringify([owner, agent, inventory.mcpSession, name]);
   const requestKey = (name: string) =>
-    `studio-mcp-reconnect:${JSON.stringify([owner, agent, inventory.mcpSession, name])}`;
+    outbox.key("mcpReconnect", requestSuffix(name));
   useEffect(() => {
     if (!inventory.mcpSession) return;
     // Restore the visible receipt action after a reload without sending it.
     for (const row of rows) {
       const key = requestKey(row.name);
       try {
-        const requestId = sessionStorage.getItem(key);
+        const requestId = outbox.get("mcpReconnect", requestSuffix(row.name));
         if (requestId && !requests.current.has(key)) {
           requests.current.set(key, {
             id: agent,
@@ -170,14 +174,15 @@ export function McpInventory({
       // Keep an uncertain request across a page reload. Failure to persist must
       // stop the mutation before it reaches the server.
       try {
-        const requestId = sessionStorage.getItem(storageKey) || randomUUID();
+        const requestId =
+          outbox.get("mcpReconnect", requestSuffix(name)) || randomUUID();
         body = {
           id: agent,
           name,
           session: inventory.mcpSession,
           request_id: requestId,
         };
-        sessionStorage.setItem(storageKey, requestId);
+        outbox.set("mcpReconnect", requestSuffix(name), requestId);
         requests.current.set(storageKey, body);
       } catch (error) {
         setFeedback((old) => ({
@@ -204,7 +209,7 @@ export function McpInventory({
       }));
       if (result.status !== "unknown") {
         try {
-          sessionStorage.removeItem(storageKey);
+          outbox.remove("mcpReconnect", requestSuffix(name));
           requests.current.delete(storageKey);
         } catch {
           /* A saved settled identity can still be replayed safely. */

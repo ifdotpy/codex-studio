@@ -30,8 +30,8 @@ import { createServerActivity } from "./activity";
 import { createMutationJournal } from "./mutationIdentity";
 import type { StudioServer } from "./registry";
 import { createServerTransport } from "./serverTransport";
-import { scopedStorage } from "./storage";
 import { serverCredentialAdapter } from "./transport";
+import { scopedSessionOutbox } from "../browserPersistence";
 
 /** Services belong to a server, never to the currently visible chat. */
 export function createServerServices(server: StudioServer) {
@@ -53,10 +53,7 @@ export function createServerServices(server: StudioServer) {
     origin: transport.owner.origin,
     fetch: transport.fetch,
     localStorage: storage,
-    sessionStorage: scopedStorage(
-      () => globalThis.sessionStorage,
-      `:server:${transport.owner.id}:`,
-    ),
+    sessionStorage: scopedSessionOutbox(`:server:${transport.owner.id}:`),
     beginMutation: createMutationJournal(transport.owner.id, storage),
     beginActivity: activity.beginServerActivity,
   });

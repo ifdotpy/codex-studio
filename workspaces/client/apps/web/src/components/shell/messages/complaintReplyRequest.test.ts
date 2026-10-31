@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { it } from "vitest";
 import {
   complaintReplyRequest,
+  complaintResponseStore,
+  isDefinitiveComplaintRefusal,
   submitComplaintResponse,
 } from "./complaintReplyRequest";
 import type { UserComplaintResponse } from "./complaintReplyRequest";
@@ -93,4 +95,55 @@ it("does not turn a successful response into a retry when detail reload fails", 
   assert.deepEqual(writes, [request]);
   assert.deepEqual(reads, ["complaint-3"]);
   assert.equal("reloadError" in outcome, true);
+});
+
+it("persists exact pending responses and keeps them when storage fails", () => {
+  const data = new Map<string, string>();
+  let fail = false;
+  const storage = {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      if (fail) throw new Error("unavailable");
+      data.set(key, value);
+    },
+    removeItem: (key: string) => {
+      if (fail) throw new Error("unavailable");
+      data.delete(key);
+    },
+  } as Storage;
+  const store = complaintResponseStore(storage, "state");
+  const request = complaintReplyRequest(
+    undefined,
+    { id: "complaint", version: 2 },
+    "reply",
+    GeneratedApiComplaintResponseStatus.in_progress,
+  );
+  const requests = new Map([["complaint", request]]);
+  store.write(requests);
+  assert.deepEqual(store.read(), { complaint: request });
+  assert.equal(
+    data.get("studio-message-responses:state"),
+    JSON.stringify({ complaint: request }),
+  );
+  fail = true;
+  assert.throws(() => store.write(new Map()), /unavailable/);
+  assert.deepEqual(store.read(), { complaint: request });
+});
+
+it("keeps the identity after an HTTP request timeout", () => {
+  assert.equal(isDefinitiveComplaintRefusal(408), false);
+  assert.equal(isDefinitiveComplaintRefusal(409), true);
+  assert.equal(isDefinitiveComplaintRefusal(503), false);
+});
+
+it("refuses an unreadable pending response instead of replacing its identity", () => {
+  const storage: Storage = {
+    length: 1,
+    clear() {},
+    key: () => null,
+    getItem: () => "{broken",
+    setItem() {},
+    removeItem() {},
+  };
+  assert.throws(() => complaintResponseStore(storage, "state").read());
 });

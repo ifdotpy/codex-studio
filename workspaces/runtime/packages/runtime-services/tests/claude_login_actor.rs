@@ -128,7 +128,7 @@ async fn auth_repair_regression_post_login_allows_only_fresh_safe_continuation()
         f.launcher.clone(),
         f.receipts.clone(),
         Arc::new(StoredChats(store.clone())),
-        Arc::new(move || changed.notify_one()),
+        Arc::new(move |_| changed.notify_one()),
     )
     .await
     .expect("real post-login repair caller");
@@ -478,7 +478,7 @@ exit 0
         Arc::new(StreamLauncher),
         f.receipts.clone(),
         f.chats.clone(),
-        Arc::new(move || changed.notify_one()),
+        Arc::new(move |_| changed.notify_one()),
     )
     .await
     .expect("valid fixture");
@@ -564,7 +564,7 @@ async fn restarted_unknown_keeps_config_until_recorded_child_is_proven_gone() {
         Arc::new(StreamLauncher),
         f.receipts.clone(),
         f.chats.clone(),
-        Arc::new(|| {}),
+        Arc::new(|_| {}),
     )
     .await
     .expect("open");
@@ -648,7 +648,7 @@ exit 0
                     Arc::new(StreamLauncher),
                     f.receipts.clone(),
                     f.chats.clone(),
-                    Arc::new(move || changes.notify_one()),
+                    Arc::new(move |_| changes.notify_one()),
                 )
                 .await
                 .expect("open");

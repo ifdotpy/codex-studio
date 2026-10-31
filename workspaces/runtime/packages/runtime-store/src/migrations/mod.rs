@@ -38,6 +38,7 @@ mod m2026_10_30_text_blobs;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
+mod m2026_10_31_current_checks;
 mod m2026_10_31_native_status_error;
 mod m2026_10_31_project_record_kind;
 mod m2026_10_31_retired_start_indexes;
@@ -749,6 +750,16 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
+            id: "2026-10-31-project-record-kind-repair",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Project records created without a discriminator after the first migration",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_31_project_record_kind::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-31-analytics-revision-schema",
             introduced: OCTOBER_31,
             target: MigrationTarget::Analytics,
@@ -756,6 +767,59 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| crate::fresh_state::prepare_analytics_revision_schema(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-peer-update-settings",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Stores with optional peer update settings",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::schema::prepare_peer_update_settings(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-publication-overflow-receipts",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Analytics,
+            supported_source: "Stores with optional publication overflow receipts",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::schema::prepare_publication_overflow_receipts(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-item-turn-scope",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Stores with the retired native approval index or without the item turn index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::schema::prepare_item_turn_scope(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-retired-capture-receipts",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Analytics,
+            supported_source: "Stores with retired capture receipt tables",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| {
+            c.transaction.execute_batch("DROP TABLE IF EXISTS analytics_capture_effect_receipts; DROP TABLE IF EXISTS analytics_capture_legacy_watermarks; DROP TABLE IF EXISTS analytics_capture_receipt_migrations;")?;
+            Ok(())
+        },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-current-checks",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Completed stores with earlier agent and server outbox CHECK constraints",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_31_current_checks::apply(c.transaction),
     },
 ];
 

@@ -96,7 +96,6 @@ function ServersFixture({ light = false }: { light?: boolean }) {
               checkedAt: Date.now() / 1000,
               busy: false,
               error: "",
-              excluded: new Set<string>(),
               actions: {
                 find: () => {},
                 setAutoPair: () => {},

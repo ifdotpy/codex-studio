@@ -1,6 +1,6 @@
-import { useServerApi } from "../../../servers/ServerServicesContext";
 import {
   Fragment,
+  memo,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -9,7 +9,6 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
-import "../../../api";
 import { messageRenderKey } from "../../message-delivery/messageDelivery";
 import { FOLLOW_THRESHOLD_PX } from "../../useConversationScroll";
 import type { HistoryGroup } from "../../turnHistoryModel";
@@ -23,6 +22,19 @@ import {
 } from "./historyWindowModel";
 
 type WindowAnchor = { id: string; offset: number; kind?: "message" | "row" };
+const anchors = new Map<string, WindowAnchor | null>();
+
+const HistoryRow = memo(function HistoryRow({
+  row,
+  render,
+  revealedMessage,
+}: {
+  row: HistoryGroup;
+  render: (row: HistoryGroup, revealedMessage?: string) => ReactNode;
+  revealedMessage?: string | undefined;
+}) {
+  return render(row, revealedMessage);
+});
 
 /** A viewport owns only mounted rows. The conversation scroll hook owns anchors. */
 export default function HistoryWindow({
@@ -43,8 +55,6 @@ export default function HistoryWindow({
   /** Rows with pending user input must remain reachable while history is virtualized. */
   requiredRows?: string[];
 }) {
-  const { save, saved } = useServerApi();
-
   const body = useRef<HTMLDivElement>(null);
   const scheduleUpdate = useRef<() => void>(() => {});
   const heights = useRef(new Map<string, number>());
@@ -57,9 +67,7 @@ export default function HistoryWindow({
   const [visible, setVisible] = useState<string[]>(() =>
     rows.slice(-12).map((row) => row.id),
   );
-  const [initialAnchor] = useState(() =>
-    saved<WindowAnchor | null>(`${storageKey}:window-anchor`, null),
-  );
+  const [initialAnchor] = useState(() => anchors.get(storageKey) || null);
   const storedAnchor = useRef(initialAnchor);
   const viewportAnchor = useRef<WindowAnchor | null>(initialAnchor);
   const restoringAnchor = useRef(initialAnchor?.id || null);
@@ -109,7 +117,7 @@ export default function HistoryWindow({
       restoringAnchor.current = null;
       setRequested(null);
       setRevealedMessage(undefined);
-      save(`${storageKey}:window-anchor`, null);
+      anchors.set(storageKey, null);
     };
     const reveal = (event: Event) => {
       const id: unknown = (event as CustomEvent).detail;
@@ -140,7 +148,7 @@ export default function HistoryWindow({
         FOLLOW_THRESHOLD_PX
       ) {
         viewportAnchor.current = null;
-        save(`${storageKey}:window-anchor`, null);
+        anchors.set(storageKey, null);
       } else if (row) {
         const metadata = latest.current.rowsById.get(row.dataset.historyRow!);
         if (!metadata) return;
@@ -169,7 +177,7 @@ export default function HistoryWindow({
               offset: row.getBoundingClientRect().top - bounds.top,
             };
         viewportAnchor.current = anchor;
-        save(`${storageKey}:window-anchor`, anchor);
+        anchors.set(storageKey, anchor);
       }
     };
     const update = () => {
@@ -467,7 +475,11 @@ export default function HistoryWindow({
               />
             )}
             <div className="history-window-row" data-history-row={row.id}>
-              {render(row, revealedMessage)}
+              <HistoryRow
+                row={row}
+                render={render}
+                revealedMessage={revealedMessage}
+              />
             </div>
           </Fragment>
         );

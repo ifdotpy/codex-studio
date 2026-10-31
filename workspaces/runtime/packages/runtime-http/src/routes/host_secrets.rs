@@ -94,6 +94,9 @@ enum VaultJobMessage {
         clear_progress: bool,
         reply: Option<oneshot::Sender<()>>,
     },
+    Retained {
+        reply: oneshot::Sender<Vec<(VaultJobKind, String)>>,
+    },
     Shutdown,
 }
 
@@ -116,9 +119,12 @@ pub struct VaultJobOwner {
 
 impl VaultJobOwner {
     /// Start the vault job owner on the current Tokio runtime.
-    pub fn start(changes: Arc<ChangeNotificationHub>) -> Self {
+    pub fn start(
+        changes: Arc<ChangeNotificationHub>,
+        notifications: Arc<studio_runtime_services::resource_notify::ResourceNotifications>,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(VAULT_JOB_MESSAGE_CAPACITY);
-        let task = tokio::spawn(run_vault_job_owner(receiver, changes));
+        let task = tokio::spawn(run_vault_job_owner(receiver, changes, notifications));
         Self {
             client: VaultJobClient { sender },
             task,
@@ -151,6 +157,7 @@ impl VaultJobOwner {
 async fn run_vault_job_owner(
     mut receiver: mpsc::Receiver<VaultJobMessage>,
     changes: Arc<ChangeNotificationHub>,
+    notifications: Arc<studio_runtime_services::resource_notify::ResourceNotifications>,
 ) {
     let mut jobs = VaultJobs {
         jobs: HashMap::new(),
@@ -175,7 +182,10 @@ async fn run_vault_job_owner(
                 if let Some(job) = jobs.jobs.get(&key) {
                     drop(reply.send((job.clone(), false)));
                 } else {
-                    jobs.order.entry(kind).or_default().push_back(request_id);
+                    jobs.order
+                        .entry(kind)
+                        .or_default()
+                        .push_back(request_id.clone());
                     jobs.jobs.insert(key, initial.clone());
                     loop {
                         let expired = {
@@ -192,6 +202,7 @@ async fn run_vault_job_owner(
                         jobs.jobs.remove(&(kind, expired));
                     }
                     changes.notify_one();
+                    notifications.publish_progress(vault_selector(kind, request_id));
                     drop(reply.send((initial, true)));
                 }
             }
@@ -202,7 +213,7 @@ async fn run_vault_job_owner(
                 clear_progress,
                 reply,
             } => {
-                if let Some(job) = jobs.jobs.get_mut(&(kind, request_id))
+                if let Some(job) = jobs.jobs.get_mut(&(kind, request_id.clone()))
                     && let Some(job) = job.as_object_mut()
                 {
                     let previous = job.clone();
@@ -214,6 +225,7 @@ async fn run_vault_job_owner(
                     }
                     if *job != previous {
                         changes.notify_one();
+                        notifications.publish_progress(vault_selector(kind, request_id));
                     }
                 }
                 if let Some(reply) = reply
@@ -222,9 +234,51 @@ async fn run_vault_job_owner(
                     continue;
                 }
             }
+            VaultJobMessage::Retained { reply } => {
+                drop(
+                    reply.send(
+                        jobs.jobs
+                            .iter()
+                            .map(|((kind, id), _)| (*kind, id.clone()))
+                            .collect(),
+                    ),
+                );
+            }
             VaultJobMessage::Shutdown => break,
         }
     }
+}
+
+fn vault_selector(
+    kind: VaultJobKind,
+    request_id: String,
+) -> studio_runtime_schema::progress_selector::ProgressSelector {
+    use studio_runtime_schema::progress_selector::{ProgressSelector, VaultJob};
+    ProgressSelector::Vault {
+        request_id,
+        job: match kind {
+            VaultJobKind::Setup => VaultJob::Setup,
+            VaultJobKind::Login => VaultJob::Login,
+            VaultJobKind::Pull => VaultJob::Pull,
+        },
+    }
+}
+
+pub(super) async fn retained_progress(
+    client: &VaultJobClient,
+) -> Result<Vec<studio_runtime_schema::progress_selector::ProgressSelector>, ApiError> {
+    let (reply, receiver) = oneshot::channel();
+    client
+        .sender
+        .send(VaultJobMessage::Retained { reply })
+        .await
+        .map_err(|_| ApiError::internal())?;
+    Ok(receiver
+        .await
+        .map_err(|_| ApiError::internal())?
+        .into_iter()
+        .map(|(kind, id)| vault_selector(kind, id))
+        .collect())
 }
 
 pub(crate) fn routes() -> RouteGroup {
@@ -1413,6 +1467,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn vault_reservation_publishes_progress_selector() {
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            "/unused".into(),
+            0,
+            None,
+            None,
+            None,
+        );
+        let mut live = state.resource_notifications.subscribe_live();
+        let owner = VaultJobOwner::start(
+            Arc::clone(&state.sync_changes),
+            state.resource_notifications_handle(),
+        );
+        reserve_job(
+            &owner.client(),
+            VaultJobKind::Setup,
+            "one",
+            json!({"requestId":"one","state":"running"}),
+        )
+        .await
+        .expect("reserve");
+        assert!(
+            matches!(tokio::time::timeout(Duration::from_millis(100), live.recv()).await.expect("progress publication").expect("live"), studio_runtime_services::resource_notify::LiveEvent::Progress(studio_runtime_schema::progress_selector::ProgressSelector::Vault { request_id, .. }) if request_id == "one")
+        );
+        owner.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
+    async fn vault_baseline_is_visible_only_to_owner() {
+        use futures_util::StreamExt;
+        use studio_runtime_services::principal::{Grant, Principal};
+        let root = tempfile::tempdir().expect("state");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("store"),
+        );
+        let mut state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let owner = VaultJobOwner::start(
+            Arc::clone(&state.sync_changes),
+            state.resource_notifications_handle(),
+        );
+        state.vault_job_client = Some(owner.client());
+        reserve_job(
+            &owner.client(),
+            VaultJobKind::Setup,
+            "one",
+            json!({"requestId":"one","state":"running","prefix":"demo"}),
+        )
+        .await
+        .expect("reserve");
+        super::finish_job(
+            &owner.client(),
+            VaultJobKind::Setup,
+            "one",
+            json!({"state":"done","site":"https://desk.example/"}),
+        )
+        .await;
+        let app = crate::router(state).expect("router");
+        for (principal, allowed) in [
+            (Principal::Owner, true),
+            (
+                Principal::Device {
+                    id: "device".into(),
+                    grant: Grant::Full,
+                },
+                false,
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "/api/sync/stream?protocol={}&resources=%5B%5D&tokenRates=false",
+                            studio_runtime_schema::SYNC_PROTOCOL_VERSION_TEXT
+                        ))
+                        .header("host", "127.0.0.1:4321")
+                        .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+                        .extension(principal)
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("stream");
+            assert_eq!(response.status(), StatusCode::OK);
+            let mut stream = response.into_body().into_data_stream();
+            stream.next().await.expect("session").expect("bytes");
+            stream.next().await.expect("baseline").expect("bytes");
+            let frame = tokio::time::timeout(Duration::from_millis(100), stream.next()).await;
+            if allowed {
+                assert!(
+                    String::from_utf8_lossy(
+                        &frame.expect("progress").expect("stream").expect("bytes")
+                    )
+                    .contains("vault-job-progress")
+                );
+            } else {
+                assert!(frame.is_err(), "device must not receive owner progress");
+            }
+        }
+        owner.shutdown().await.expect("shutdown");
+    }
+
+    #[tokio::test]
     async fn vault_job_progress_publishes_every_changed_receipt_without_persistence() {
         use axum::response::IntoResponse;
         use studio_runtime_services::resource_notify::ResourceChanges;
@@ -1427,7 +1596,10 @@ mod tests {
             None,
         );
         state.validators = crate::validation::Registry::compile(&[]).expect("validators");
-        let owner = VaultJobOwner::start(Arc::clone(&state.sync_changes));
+        let owner = VaultJobOwner::start(
+            Arc::clone(&state.sync_changes),
+            state.resource_notifications_handle(),
+        );
         let client = owner.client();
         state.vault_job_client = Some(client.clone());
         for (kind, job) in [
@@ -1582,7 +1754,11 @@ mod tests {
     }
 
     async fn test_job_client() -> (VaultJobOwner, VaultJobClient) {
-        let owner = VaultJobOwner::start(Arc::new(ChangeNotificationHub::new()));
+        let changes = Arc::new(ChangeNotificationHub::new());
+        let notifications = Arc::new(
+            studio_runtime_services::resource_notify::ResourceNotifications::new(changes.clone()),
+        );
+        let owner = VaultJobOwner::start(changes, notifications);
         let client = owner.client();
         (owner, client)
     }
@@ -2125,7 +2301,11 @@ else exit 94; fi"#;
             state.path(),
             "[ \"$1\" = pull ] && [ \"$2\" = --site ] && [ \"$3\" = https://desk.example/ ] && [ \"$4\" = --project ] && [ \"$5\" = project-one ] && [ \"$6\" = --to ] && [ \"$8\" = --json ] || exit 91\nprintf pull >> \"$0.calls\"\nprintf '%s\\n' '{\"seq\":7,\"files\":3,\"bytes\":1024}'",
         );
-        let owner = VaultJobOwner::start(Arc::new(ChangeNotificationHub::new()));
+        let changes = Arc::new(ChangeNotificationHub::new());
+        let notifications = Arc::new(
+            studio_runtime_services::resource_notify::ResourceNotifications::new(changes.clone()),
+        );
+        let owner = VaultJobOwner::start(changes, notifications);
         let client = owner.client();
         let mut state_http = HttpState::new(
             "test-token".to_owned(),

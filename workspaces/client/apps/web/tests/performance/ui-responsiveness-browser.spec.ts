@@ -280,6 +280,41 @@ test(
         }
         await page.locator('[data-message="a-result-29"]').waitFor();
         await page.waitForTimeout(500);
+        await page.evaluate(() => {
+          window.metrics.phase = "scroll-witness";
+          const original = Storage.prototype.setItem;
+          (window as typeof window & { scrollWrites: number }).scrollWrites = 0;
+          Storage.prototype.setItem = function (...args) {
+            (window as typeof window & { scrollWrites: number }).scrollWrites++;
+            return original.apply(this, args);
+          };
+        });
+        for (let step = 0; step < 10; step++) {
+          await page.locator("#messages").evaluate((element) => {
+            element.scrollTop -= 50;
+            element.dispatchEvent(new Event("scroll"));
+          });
+          await page.waitForTimeout(50);
+        }
+        const scrollWitness = await page.evaluate(() => ({
+          renders: window.metrics.renderProbe.filter(
+            (entry) =>
+              entry.phase === "scroll-witness" &&
+              entry.component === "conversation",
+          ).length,
+          writes: (window as typeof window & { scrollWrites: number })
+            .scrollWrites,
+          longTasks: window.metrics.longTasks.filter(
+            (entry) => entry.phase === "scroll-witness",
+          ).length,
+        }));
+        console.log(JSON.stringify({ name, steps: 10, ...scrollWitness }));
+        assert.equal(
+          scrollWitness.renders,
+          0,
+          "scroll must not render Conversation",
+        );
+        assert.equal(scrollWitness.writes, 0, "scroll must not write storage");
         const setPhase = (phase: string) =>
           page.evaluate((phase) => {
             window.metrics.phase = phase;

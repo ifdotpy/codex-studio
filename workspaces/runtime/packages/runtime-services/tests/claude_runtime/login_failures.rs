@@ -97,7 +97,7 @@ exit 7
                 Arc::new(ObservedLauncher(sender)),
                 f.receipts.clone(),
                 f.chats.clone(),
-                Arc::new(move || changes.notify_one()),
+                Arc::new(move |_| changes.notify_one()),
             )
             .await
             .expect("open");

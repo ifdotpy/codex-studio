@@ -1,20 +1,32 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { ResourceVersion } from "../sync/resourceEvents";
 import type { ServerAccessState } from "./accessContract";
+import type { DiscoverySnapshot } from "./discoveryModel";
 
 const mocks = vi.hoisted(() => ({
   effects: [] as (() => void | (() => void))[],
   read: undefined as undefined | ((version?: ResourceVersion) => Promise<void>),
   access: vi.fn(),
   snapshots: [] as unknown[],
+  setLocalServerDetails: vi.fn(),
+  reconcile: vi.fn(async (_snapshot: unknown) => {}),
+  stateCalls: 0,
+  snapshotOverride: undefined as unknown,
+  fields: {} as Record<string, unknown>,
 }));
 vi.mock("react", () => ({
   useEffect: (effect: () => void | (() => void)) => mocks.effects.push(effect),
   useRef: (current: unknown) => ({ current }),
   useState: (current: unknown) => [
-    current,
+    mocks.stateCalls++ === 0 && mocks.snapshotOverride !== undefined
+      ? mocks.snapshotOverride
+      : current,
     (value: unknown) => mocks.snapshots.push(value),
   ],
+}));
+vi.mock("../sync/uiPreferenceStore", () => ({
+  readPreferenceFields: () => mocks.fields,
+  capturePreferenceWrite: vi.fn(),
 }));
 vi.mock("./ServerServicesContext", () => ({
   useServerApi: () => ({ serverAccess: mocks.access }),
@@ -26,17 +38,20 @@ vi.mock("./ServerServicesContext", () => ({
 }));
 vi.mock("./automaticAccessStore", () => ({
   automaticAccessStore: () => ({ initialize: async () => {} }),
-  excludedServers: () => new Set(),
 }));
 vi.mock("./automaticUiAccess", () => ({
   AutomaticUiAccess: class {
-    async reconcile() {}
+    reconcile(snapshot: unknown) {
+      return mocks.reconcile(snapshot);
+    }
+    retry() {}
     stop() {}
   },
 }));
 vi.mock("./registry", () => ({
   readServers: () => [],
   writeServers: () => {},
+  setLocalServerDetails: mocks.setLocalServerDetails,
   LOCAL_NAME_KEY: "local-name",
   SERVER_REGISTRY_EVENT: "registry-changed",
   serveOrigin: (origin: string) => origin,
@@ -60,6 +75,11 @@ afterEach(() => {
   mocks.effects.length = 0;
   mocks.snapshots.length = 0;
   mocks.access.mockReset();
+  mocks.setLocalServerDetails.mockReset();
+  mocks.reconcile.mockClear();
+  mocks.stateCalls = 0;
+  mocks.snapshotOverride = undefined;
+  mocks.fields = {};
   mocks.read = undefined;
   vi.unstubAllGlobals();
 });
@@ -67,7 +87,8 @@ afterEach(() => {
 it("uses stream snapshots without a fallback HTTP read", async () => {
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("location", { origin: "http://owner.invalid" });
-  vi.stubGlobal("localStorage", { getItem: () => null, setItem: vi.fn() });
+  const setItem = vi.fn();
+  vi.stubGlobal("localStorage", { getItem: () => null, setItem });
   useServerDiscovery(true, vi.fn());
   cleanups = mocks.effects.flatMap((effect) => {
     const cleanup = effect();
@@ -85,7 +106,7 @@ it("uses stream snapshots without a fallback HTTP read", async () => {
     clients: [],
     servers: [],
     invites: [],
-    settings: { autoPair: true },
+    settings: { autoPair: true, aliases: { local: "OWN" } },
   };
   mocks.access.mockResolvedValue(snapshot);
   await mocks.read?.({
@@ -94,9 +115,15 @@ it("uses stream snapshots without a fallback HTTP read", async () => {
     discoverySnapshot: snapshot,
   } as ResourceVersion);
   expect(mocks.access).not.toHaveBeenCalled();
+  expect(mocks.reconcile).not.toHaveBeenCalled();
   expect(mocks.snapshots).toContainEqual(
     expect.objectContaining({ localServerId: "owner" }),
   );
+  expect(mocks.setLocalServerDetails).toHaveBeenCalledWith({
+    label: "Owner",
+    alias: "OWN",
+  });
+  expect(setItem).not.toHaveBeenCalled();
   await mocks.read?.();
   expect(mocks.access).not.toHaveBeenCalled();
   const newer = {
@@ -113,4 +140,25 @@ it("uses stream snapshots without a fallback HTTP read", async () => {
       !!value && typeof value === "object" && "localLabel" in value,
   );
   expect(snapshots.at(-1)?.localLabel).toBe("New name");
+  mocks.snapshotOverride = snapshots.at(-1);
+  mocks.fields = { '["server-alias:workspace"]': { value: "NEW" } };
+  mocks.stateCalls = 0;
+  const effectsBefore = mocks.effects.length;
+  useServerDiscovery(true, vi.fn(), true, { local: "workspace" });
+  for (const effect of mocks.effects.slice(effectsBefore)) {
+    const cleanup = effect();
+    if (cleanup) cleanups.push(cleanup);
+  }
+  expect(mocks.setLocalServerDetails).toHaveBeenCalledWith({ alias: "NEW" });
+  mocks.snapshotOverride = {
+    ...(snapshots.at(-1) as DiscoverySnapshot),
+    servers: [{ id: "peer" }, { id: "other" }],
+  };
+  mocks.stateCalls = 0;
+  const discovery = useServerDiscovery(true, vi.fn());
+  discovery.addAgain("peer");
+  expect(mocks.reconcile).toHaveBeenCalledOnce();
+  expect(mocks.reconcile.mock.calls[0]?.[0]).toMatchObject({
+    servers: [{ id: "peer" }],
+  });
 });

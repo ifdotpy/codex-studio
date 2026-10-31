@@ -1,3 +1,4 @@
+import { outboxRequests } from "../../browserPersistence";
 import { AgentMode } from "../../generated/api";
 import { randomUUID } from "../../uuid";
 import { useServerStorage } from "../../servers/ServerServicesContext";
@@ -152,7 +153,19 @@ function ScopedConcurrencyControl({
   storageKey,
   refresh,
 }: Props & { storageKey: string }) {
-  const localStorage = useServerStorage();
+  const storage = useServerStorage();
+  const outbox = outboxRequests(storage);
+  const prefix = outbox.key("agentMode", "");
+  const suffix = storageKey.slice(prefix.length);
+  const writeStored = (value: Stored) => {
+    if (value.pending)
+      outbox.set(
+        "agentMode",
+        suffix,
+        JSON.stringify({ pending: value.pending }),
+      );
+    else outbox.remove("agentMode", suffix);
+  };
   const { post } = useServerApi();
 
   const snapshot = stateOf(lead);
@@ -161,7 +174,7 @@ function ScopedConcurrencyControl({
     try {
       return {
         value: decodeStoredConcurrency(
-          localStorage.getItem(storageKey),
+          outbox.get("agentMode", suffix),
           lead.id,
         ),
         error: "",
@@ -174,7 +187,7 @@ function ScopedConcurrencyControl({
   const [error, setError] = useState(initial.error);
   const readStored = () => {
     try {
-      return decodeStoredConcurrency(localStorage.getItem(storageKey), lead.id);
+      return decodeStoredConcurrency(outbox.get("agentMode", suffix), lead.id);
     } catch (cause) {
       if (mounted.current)
         setInitial({ value: stored, error: errorText(cause) });
@@ -223,12 +236,7 @@ function ScopedConcurrencyControl({
     )
       return;
     const next = { ...stored, confirmed: snapshot };
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(next));
-      setStored(next);
-    } catch {
-      // The server snapshot remains usable if this best-effort cache fails.
-    }
+    setStored(next);
   }, [
     snapshot?.concurrency,
     snapshot?.revision,
@@ -273,7 +281,7 @@ function ScopedConcurrencyControl({
     };
     const pending: Stored = { confirmed, pending: request };
     try {
-      localStorage.setItem(storageKey, JSON.stringify(pending));
+      writeStored(pending);
     } catch {
       setError(
         "Cannot save the concurrency request on this device. Free browser storage and retry.",
@@ -311,7 +319,7 @@ function ScopedConcurrencyControl({
           ? { pending: disk.pending }
           : {}),
       };
-      localStorage.setItem(storageKey, JSON.stringify(next));
+      writeStored(next);
       if (mounted.current) {
         setStored(next);
         dirty.current = false;
@@ -331,7 +339,7 @@ function ScopedConcurrencyControl({
               ? { pending: disk.pending }
               : {}),
           };
-          localStorage.setItem(storageKey, JSON.stringify(next));
+          writeStored(next);
           if (mounted.current) {
             setStored(next);
             dirty.current = false;
@@ -486,7 +494,7 @@ function ScopedConcurrencyControl({
           className="agent-mode-retry"
           onClick={() => {
             try {
-              localStorage.removeItem(storageKey);
+              outbox.remove("agentMode", suffix);
               setInitial({ value: {}, error: "" });
               setStored({});
               dirty.current = false;

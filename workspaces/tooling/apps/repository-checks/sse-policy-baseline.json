@@ -4,14 +4,6 @@
     "callee": "localStorage.getItem"
   },
   {
-    "file": "App.tsx",
-    "callee": "globalThis.localStorage"
-  },
-  {
-    "file": "App.tsx",
-    "callee": "globalThis.localStorage"
-  },
-  {
     "file": "api.test.ts",
     "callee": "syncGet"
   },
@@ -21,7 +13,11 @@
   },
   {
     "file": "api.ts",
-    "callee": "localStorage.getItem"
+    "callee": "localStorage"
+  },
+  {
+    "file": "api.ts",
+    "callee": "localStorage"
   },
   {
     "file": "api.ts",
@@ -53,54 +49,10 @@
   },
   {
     "file": "chatCreation.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.length"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.key"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/MessageQueue.tsx",
-    "callee": "localStorage.length"
-  },
-  {
-    "file": "components/MessageQueue.tsx",
-    "callee": "localStorage.key"
-  },
-  {
-    "file": "components/MessageQueue.tsx",
     "callee": "localStorage"
   },
   {
-    "file": "components/MessageQueue.tsx",
-    "callee": "localStorage"
-  },
-  {
-    "file": "components/MessageQueue.tsx",
+    "file": "chatCreation.ts",
     "callee": "localStorage"
   },
   {
@@ -108,40 +60,8 @@
     "callee": "syncGet"
   },
   {
-    "file": "components/Sidebar.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
     "file": "components/TerminalDock.tsx",
     "callee": "syncPost"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.removeItem"
   },
   {
     "file": "components/newChatSettings.ts",
@@ -169,11 +89,7 @@
   },
   {
     "file": "components/removeSendingMessages.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "components/removeSendingMessages.ts",
-    "callee": "localStorage.setItem"
+    "callee": "localStorage"
   },
   {
     "file": "components/removeSendingMessages.ts",
@@ -252,14 +168,6 @@
     "callee": "localStorage"
   },
   {
-    "file": "components/useSidebarOrder.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/useSidebarOrder.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
     "file": "hooks.ts",
     "callee": "syncGet"
   },
@@ -308,14 +216,6 @@
     "callee": "indexedDB.open"
   },
   {
-    "file": "servers/automaticAccessStore.ts",
-    "callee": "globalThis.localStorage"
-  },
-  {
-    "file": "servers/automaticAccessStore.ts",
-    "callee": "globalThis.localStorage"
-  },
-  {
     "file": "servers/browserCredentials.ts",
     "callee": "fetch"
   },
@@ -334,10 +234,6 @@
   {
     "file": "servers/mutationIdentity.test.ts",
     "callee": "globalThis.fetch"
-  },
-  {
-    "file": "servers/projectLocations.ts",
-    "callee": "globalThis.localStorage"
   },
   {
     "file": "servers/routes.ts",
@@ -424,18 +320,6 @@
     "callee": "serverCredentialAdapter().fetch"
   },
   {
-    "file": "servers/useServerDiscovery.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useServerDiscovery.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useServerDiscovery.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
     "file": "servers/useUiPreferenceSync.test.ts",
     "callee": "localStorage.setItem"
   },
@@ -497,19 +381,15 @@
   },
   {
     "file": "sync/localDraft.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "sync/localDraft.ts",
     "callee": "localStorage.removeItem"
   },
   {
     "file": "sync/localDraft.ts",
     "callee": "localStorage.setItem"
-  },
-  {
-    "file": "sync/localDraft.ts",
-    "callee": "indexedDB.open"
-  },
-  {
-    "file": "sync/localDraft.ts",
-    "callee": "localStorage.getItem"
   },
   {
     "file": "sync/outboxWriteFailure.test.ts",
@@ -521,11 +401,7 @@
   },
   {
     "file": "sync/send.ts",
-    "callee": "syncGet"
-  },
-  {
-    "file": "sync/send.ts",
-    "callee": "localStorage.getItem"
+    "callee": "localStorage"
   },
   {
     "file": "sync/send.ts",
@@ -533,11 +409,7 @@
   },
   {
     "file": "sync/send.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "sync/send.ts",
-    "callee": "localStorage.setItem"
+    "callee": "syncGet"
   },
   {
     "file": "sync/send.ts",

@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
   test,
+  installApiSchemaFixtureHeaders,
+  syncIdentityFixture,
   createFixtureViteServer as createServer,
 } from "../playwright.ts";
 
@@ -72,6 +74,10 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
     });
     const page = await browserContext.newPage();
     const errors: string[] = [];
+    installApiSchemaFixtureHeaders(page);
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({ json: syncIdentityFixture("a".repeat(32)) }),
+    );
     page.on("pageerror", (error) => errors.push((error as Error).message));
     await page.route("**/check", (route) =>
       route.fulfill({

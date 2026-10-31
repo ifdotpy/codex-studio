@@ -116,6 +116,28 @@ test("scroll-follow desktop and phone wheel, trackpad and content-growth races",
 async function scrollFollow(page: Page, full: boolean) {
   test.setTimeout(150_000);
   page.setDefaultTimeout(15000);
+  await page.addInitScript(() => {
+    const state = window as typeof window & {
+      scrollRenderCount: number;
+      scrollWriteCount: number;
+      conversationRenders: number;
+      countScroll: boolean;
+    };
+    state.scrollRenderCount = 0;
+    state.scrollWriteCount = 0;
+    state.conversationRenders = 0;
+    state.countScroll = false;
+    window.__studioPromptComposerRenderProbe = (component) => {
+      if (component === "conversation") state.conversationRenders++;
+      if (state.countScroll && component === "conversation")
+        state.scrollRenderCount++;
+    };
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (...args) {
+      if (state.countScroll) state.scrollWriteCount++;
+      return setItem.apply(this, args);
+    };
+  });
   const dir = await mkdtemp(join(tmpdir(), "studio-scroll-follow-"));
   const proc = spawn(process.execPath, [rustUiFixture, dir], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -334,12 +356,20 @@ async function scrollFollow(page: Page, full: boolean) {
       json: transcripts.has(id) ? transcript(id) : { items: [] },
     });
   });
-  await page.route("**/api/transcript/page?*", (route) => {
+  let releasePage: (() => void) | undefined;
+  let holdPage = false;
+  await page.route("**/api/transcript/page?*", async (route) => {
     const query = new URL(route.request().url()).searchParams;
     const live = transcripts.get(query.get("id")!);
     if (!live) return route.continue();
     const end = live.items.findIndex((item) => item.id === query.get("before"));
     const start = Math.max(0, end - Number(query.get("limit")));
+    if (holdPage) {
+      holdPage = false;
+      await new Promise<void>((resolve) => {
+        releasePage = resolve;
+      });
+    }
     return route.fulfill({
       json: {
         items: live.items.slice(start, end),
@@ -445,6 +475,98 @@ async function scrollFollow(page: Page, full: boolean) {
     await expect(chatRow).toBeVisible();
     await chatRow.click();
     await root.locator('[data-message="prompt-live"]').waitFor();
+    await page.waitForTimeout(500);
+    assert.ok(
+      await page.evaluate(
+        () =>
+          (window as typeof window & { conversationRenders: number })
+            .conversationRenders > 0,
+      ),
+      "the Conversation render probe observed the initial render",
+    );
+    const witness = await root.evaluate(async (element) => {
+      const state = window as typeof window & {
+        scrollRenderCount: number;
+        scrollWriteCount: number;
+        countScroll: boolean;
+      };
+      state.scrollRenderCount = 0;
+      state.scrollWriteCount = 0;
+      state.countScroll = true;
+      for (let i = 0; i < 10; i++) {
+        element.scrollTop -= 300;
+        element.dispatchEvent(new Event("scroll", { bubbles: true }));
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        );
+      }
+      state.countScroll = false;
+      return {
+        renders: state.scrollRenderCount,
+        writes: state.scrollWriteCount,
+      };
+    });
+    console.log(JSON.stringify({ steps: 10, ...witness }));
+    if (!process.env.SCROLL_BASELINE) {
+      assert.equal(
+        witness.renders,
+        0,
+        "scrolling must not render Conversation",
+      );
+      assert.equal(witness.writes, 0, "scrolling must not write storage");
+    }
+    await expect(page.locator("#earlier-messages")).toBeVisible();
+    {
+      holdPage = true;
+      const response = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === "/api/transcript/page",
+      );
+      await root.evaluate((element) => {
+        element.dispatchEvent(
+          new WheelEvent("wheel", { deltaY: -100000, bubbles: true }),
+        );
+        element.scrollTop = 0;
+      });
+      await expect.poll(() => !!releasePage).toBe(true);
+      const anchor = await root.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const row = [
+          ...element.querySelectorAll<HTMLElement>("[data-message]"),
+        ].find((node) => {
+          const box = node.getBoundingClientRect();
+          return (
+            box.height > 0 && box.bottom > bounds.top && box.top < bounds.bottom
+          );
+        });
+        return row
+          ? {
+              id: row.dataset.message!,
+              top: row.getBoundingClientRect().top - bounds.top,
+            }
+          : null;
+      });
+      assert.ok(anchor, "a visible message anchors the prepend");
+      releasePage!();
+      releasePage = undefined;
+      await response;
+      await expect
+        .poll(async () =>
+          root.evaluate((element, anchor) => {
+            const row = [
+              ...element.querySelectorAll<HTMLElement>("[data-message]"),
+            ].find((node) => node.dataset.message === anchor.id);
+            return row
+              ? Math.abs(
+                  row.getBoundingClientRect().top -
+                    element.getBoundingClientRect().top -
+                    anchor.top,
+                )
+              : Infinity;
+          }, anchor),
+        )
+        .toBeLessThan(2);
+    }
     while (await page.locator("#earlier-messages").count()) {
       const response = page.waitForResponse(
         (response) =>

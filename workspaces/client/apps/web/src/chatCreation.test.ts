@@ -41,18 +41,31 @@ describe("saved chat creation recovery", () => {
       reuse_empty: false,
       cwd: "/project/two",
     };
-    saveChatCreation("workspace", first);
-    saveChatCreation("workspace", second);
+    saveChatCreation("codex-pending-creation:workspace", first);
+    saveChatCreation("codex-pending-creation:workspace", second);
 
     expect(
-      confirmChatCreationResponse("workspace", "request-one", "different"),
+      confirmChatCreationResponse(
+        "codex-pending-creation:workspace",
+        "request-one",
+        "different",
+      ),
     ).toBe(false);
-    expect(pendingChatCreations("workspace")).toEqual([first, second]);
+    expect(pendingChatCreations("codex-pending-creation:workspace")).toEqual([
+      first,
+      second,
+    ]);
 
     expect(
-      confirmChatCreationResponse("workspace", "request-one", "request-one"),
+      confirmChatCreationResponse(
+        "codex-pending-creation:workspace",
+        "request-one",
+        "request-one",
+      ),
     ).toBe(true);
-    expect(pendingChatCreations("workspace")).toEqual([second]);
+    expect(pendingChatCreations("codex-pending-creation:workspace")).toEqual([
+      second,
+    ]);
   });
 
   const request: Json = {
@@ -70,16 +83,19 @@ describe("saved chat creation recovery", () => {
     ["client-error refusal", new ApiError("Model catalog is unavailable", 400)],
     ["schema mismatch", new ApiError("Update Studio", 426)],
   ])("clears the pending request after a %s", (_, error) => {
-    saveChatCreation("workspace", request);
+    saveChatCreation("codex-pending-creation:workspace", request);
     expect(
-      settleFailedChatCreation("workspace", "request-one", error, "refused"),
+      settleFailedChatCreation(
+        "codex-pending-creation:workspace",
+        "request-one",
+        error,
+        "refused",
+      ),
     ).toBe(true);
-    expect(pendingChatCreations("workspace")).toEqual([]);
-    expect(JSON.parse(rows.get("workspace:rejected:request-one")!)).toEqual({
-      request,
-      outcome: "not_applied",
-      reason: "refused",
-    });
+    expect(pendingChatCreations("codex-pending-creation:workspace")).toEqual(
+      [],
+    );
+    expect(rows.size).toBe(0);
   });
 
   it.each([
@@ -89,23 +105,28 @@ describe("saved chat creation recovery", () => {
     ["server error", new ApiError("Internal server error", 500)],
     ["unavailable server", new ApiError("Unavailable", 503)],
   ])("keeps the pending request after a lost response: %s", (_, error) => {
-    saveChatCreation("workspace", request);
+    saveChatCreation("codex-pending-creation:workspace", request);
     expect(
-      settleFailedChatCreation("workspace", "request-one", error, "lost"),
+      settleFailedChatCreation(
+        "codex-pending-creation:workspace",
+        "request-one",
+        error,
+        "lost",
+      ),
     ).toBe(false);
-    expect(pendingChatCreations("workspace")).toEqual([request]);
+    expect(pendingChatCreations("codex-pending-creation:workspace")).toEqual([
+      request,
+    ]);
   });
 
-  it("dismisses an unknown outcome and keeps its exact body as evidence", () => {
+  it("dismisses an unknown outcome without archiving its body", () => {
     const other: Json = { id: "request-two", cwd: "/project/two" };
-    saveChatCreation("workspace", request);
-    saveChatCreation("workspace", other);
-    dismissChatCreation("workspace", "request-one");
-    expect(pendingChatCreations("workspace")).toEqual([other]);
-    expect(JSON.parse(rows.get("workspace:dismissed:request-one")!)).toEqual({
-      request,
-      outcome: "unknown",
-      reason: "Dismissed by the user",
-    });
+    saveChatCreation("codex-pending-creation:workspace", request);
+    saveChatCreation("codex-pending-creation:workspace", other);
+    dismissChatCreation("codex-pending-creation:workspace", "request-one");
+    expect(pendingChatCreations("codex-pending-creation:workspace")).toEqual([
+      other,
+    ]);
+    expect(rows.size).toBe(1);
   });
 });

@@ -55,7 +55,6 @@ function setup() {
       async (_origin: string, _code: string, _requestId: string) => server,
     ),
     existing: () => existing,
-    excluded: vi.fn(() => false),
     add: vi.fn((value: typeof server) => existing.push(value)),
   };
   const store = {
@@ -160,15 +159,6 @@ it("rejects an invitation for another server", async () => {
   expect(s.adapter.pair).not.toHaveBeenCalled();
 });
 
-it("keeps an explicit UI removal until the user adds it again", async () => {
-  const s = setup();
-  s.adapter.excluded.mockReturnValue(true);
-  await s.controller.reconcile(snapshot);
-  expect(s.adapter.pair).not.toHaveBeenCalled();
-  s.adapter.excluded.mockReturnValue(false);
-  await s.controller.reconcile(snapshot);
-  expect(s.existing).toEqual([server]);
-});
 it("pins the invitation public key to the local peer snapshot", async () => {
   const s = setup();
   s.adapter.invite.mockResolvedValue({
@@ -420,15 +410,5 @@ it("renews an invitation that expires during its final peer check without sendin
   expect(s.adapter.invite.mock.calls[0][1]).not.toBe(
     s.adapter.invite.mock.calls[1][1],
   );
-  expect(s.adapter.pair).toHaveBeenCalledOnce();
-});
-it("explicit Add to this UI clears the local cancellation generation", async () => {
-  const s = setup();
-  s.adapter.excluded.mockReturnValue(true);
-  await s.controller.reconcile(snapshot);
-  s.controller.cancel("remote");
-  s.controller.retry("remote");
-  s.adapter.excluded.mockReturnValue(false);
-  await s.controller.reconcile(snapshot);
   expect(s.adapter.pair).toHaveBeenCalledOnce();
 });

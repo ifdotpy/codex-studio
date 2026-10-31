@@ -1,3 +1,4 @@
+import { outboxRequests } from "../browserPersistence";
 import { AgentSource as GeneratedApiAgentSource } from "../generated/api.ts";
 import { DeliveryMoment } from "../generated/deliveryMoment";
 import { serverLocalStorage as localStorage } from "../servers/storage";
@@ -77,8 +78,14 @@ export function createSendingMessageRemoval(
     const clientId = message.clientMessageId;
     let cancelled = clientId ? await stopRemovedMessage(clientId) : false;
     if (kind === "agent" && clientId && message.deliveryStatus === "sending") {
-      const key = `studio-remove-sending:${JSON.stringify([scope.stateDir, scope.workspaceId, chat, clientId])}`;
-      const saved = localStorage.getItem(key);
+      const suffix = JSON.stringify([
+        scope.stateDir,
+        scope.workspaceId,
+        chat,
+        clientId,
+      ]);
+      const outbox = outboxRequests(localStorage);
+      const saved = outbox.get("removeSending", suffix);
       const parsed: unknown = saved ? JSON.parse(saved) : null;
       if (parsed !== null && !isWithdrawOf(parsed, chat, clientId))
         throw new Error("The saved message cancellation cannot be verified.");
@@ -98,7 +105,7 @@ export function createSendingMessageRemoval(
           queue.capabilities?.receipts
         ) {
           request = command.make("withdraw", chat, { message: clientId });
-          localStorage.setItem(key, JSON.stringify(request));
+          outbox.set("removeSending", suffix, JSON.stringify(request));
         }
       }
       if (request) {

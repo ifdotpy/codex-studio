@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { expect, it } from "vitest";
 import { accountServers } from "./accountServers";
 import type { DiscoveredServer } from "./discoveryModel";
@@ -19,7 +18,7 @@ function peer(
   };
 }
 
-it("includes backend peers without UI credentials and preserves a registered credential once", () => {
+it("only lists servers connected to this UI for account actions", () => {
   const registered = {
     ...peer("remote", "paired"),
     credentialId: "ui-credential",
@@ -37,15 +36,8 @@ it("includes backend peers without UI credentials and preserves a registered cre
       peer("revoked", "revoked"),
     ],
   );
-  expect(rows.map((row) => row.id)).toEqual([
-    "local",
-    "remote",
-    "backend",
-    "offline",
-  ]);
+  expect(rows.map((row) => row.id)).toEqual(["local", "remote"]);
   expect(rows[1]).toBe(registered);
-  assert.ok(rows[2] != null);
-  expect(rows[2].credentialId).toBeUndefined();
 });
 
 it("removes a backend-revoked peer even if this UI still has its credential", () => {

@@ -125,11 +125,12 @@ vi.mock("../api", async (importOriginal) => ({
 }));
 vi.mock("../sync/localDraft", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../sync/localDraft")>()),
-  updateLocalDraft: async (
-    key: string,
+  updateQueueRequest: async (
+    suffix: string,
     fallback: unknown,
     update: (value: unknown) => unknown,
   ) => {
+    const key = `studio-queue-change:${suffix}`;
     const raw = localStorage.getItem(key);
     const result = update(raw === null ? fallback : JSON.parse(raw));
     if (result === null) localStorage.removeItem(key);

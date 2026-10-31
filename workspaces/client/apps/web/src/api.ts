@@ -1,3 +1,4 @@
+import { outboxRequests } from "./browserPersistence";
 import {
   ProcessActionStatus,
   MonitorInputKind,
@@ -924,10 +925,8 @@ export function createApiScope(options: ApiScopeOptions) {
       "codex-desktop-opened:",
       "project-last-server:",
       "studio-recovered-limit:",
-      "studio-chat-scroll:",
       "codex-chat-seen:",
     ].some((prefix) => key.startsWith(prefix)) ||
-    key.endsWith(":window-anchor") ||
     key.endsWith(":tools-v3");
   function saved<T>(key: string, fallback: T): T {
     try {
@@ -955,7 +954,8 @@ export function createApiScope(options: ApiScopeOptions) {
   }
 
   function stableRequestId(key: string): string {
-    const raw = localStorage.getItem(`request-id:${key}`);
+    const outbox = outboxRequests(localStorage);
+    const raw = outbox.get("stableRequest", key);
     const savedId: unknown = raw === null ? null : JSON.parse(raw);
     if (savedId !== null) {
       if (typeof savedId !== "string" || !savedId)
@@ -965,12 +965,12 @@ export function createApiScope(options: ApiScopeOptions) {
       return savedId;
     }
     const requestId = randomUUID();
-    save(`request-id:${key}`, requestId);
+    outbox.set("stableRequest", key, JSON.stringify(requestId));
     return requestId;
   }
 
   function clearStableRequestId(key: string) {
-    save(`request-id:${key}`, null);
+    outboxRequests(localStorage).remove("stableRequest", key);
   }
 
   function pendingMonitorInput(id: string) {

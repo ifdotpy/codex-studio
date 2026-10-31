@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::{StoreError, StoreResult};
 
-const SNAPSHOT: &str = include_str!("runtime-state-schema.json");
+pub(crate) const SNAPSHOT: &str = include_str!("runtime-state-schema.json");
 const CORE_DATABASES: [&str; 2] = ["canvas.sqlite3", "analytics.sqlite3"];
 pub(crate) const TERMINAL_ERROR_REPAIR_KEY: &str = "terminalErrorRepairV1";
 /// The process supervisor's journal (`codex_process_supervisor.Journal` and
@@ -311,11 +311,14 @@ fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreRes
         ))?;
     transaction.pragma_update(None, "user_version", version)?;
     if schema_name == "canvas.sqlite3" {
+        crate::schema::prepare_peer_update_settings(&transaction)?;
+        crate::schema::prepare_item_turn_scope(&transaction)?;
         crate::bootstrap::prepare_runtime_event_indexes(&transaction)?;
         crate::AgentRepository::prepare_change_journal(&transaction)?;
         crate::MonitorsRepository::prepare_indexes(&transaction)?;
         crate::migrations::seed_receipt_finish_markers(&transaction)?;
     } else {
+        crate::schema::prepare_publication_overflow_receipts(&transaction)?;
         crate::schema::ensure_analytics_limits_index(&transaction)?;
         prepare_analytics_revision_schema(&transaction)?;
         transaction.execute(

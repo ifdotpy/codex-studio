@@ -1,4 +1,5 @@
 import { randomUUID } from "../../uuid";
+import { sessionOutboxRequests } from "../../browserPersistence";
 import { Button, Text, Textarea, TextInput } from "@mantine/core";
 import { useState } from "react";
 import { ApiError, errorText, type PostBody } from "../../api";
@@ -33,12 +34,14 @@ export default function MonitorRestart({
 }) {
   const { post } = useServerApi();
   const services = useServerServices();
-  const storageKey = `monitor-restart:${services?.owner.id || "local"}:${task.id}`;
+  const outbox = sessionOutboxRequests();
+  const suffix = `${services?.owner.id || "local"}:${task.id}`;
   const [receipt, setReceipt] = useState<Restart | null>(() => {
     try {
-      return JSON.parse(
-        sessionStorage.getItem(storageKey) || "null",
-      ) as Restart | null;
+      const saved: Restart | null = JSON.parse(
+        outbox.get("monitorRestart", suffix) || "null",
+      );
+      return saved;
     } catch {
       return null;
     }
@@ -63,13 +66,13 @@ export default function MonitorRestart({
       outputPatterns: values,
     };
     // Retain the exact confirmed request across a lost reply or drawer close.
-    sessionStorage.setItem(storageKey, JSON.stringify(body));
+    outbox.set("monitorRestart", suffix, JSON.stringify(body));
     setReceipt(body);
     setPending(true);
     setError("");
     try {
       await post("/api/monitor/restart", body);
-      sessionStorage.removeItem(storageKey);
+      outbox.remove("monitorRestart", suffix);
       setReceipt(null);
       setOpened(false);
       notify(
@@ -82,7 +85,7 @@ export default function MonitorRestart({
         failure.status >= 400 &&
         failure.status < 500
       ) {
-        sessionStorage.removeItem(storageKey);
+        outbox.remove("monitorRestart", suffix);
         setReceipt(null);
         setError(errorText(failure));
       } else {

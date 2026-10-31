@@ -9,18 +9,7 @@ import { expect, it } from "vitest";
 // entry needs an owner. A removed use must leave this list, so the list always
 // matches the source.
 const allowed: Record<string, string> = {
-  "App.tsx": "workspace id of each server view, read by the server list",
   "browserPersistence.ts": "allowed browser persistence and legacy cleanup",
-  "components/shell/BackgroundTasks.tsx":
-    "request identity of a pending background task control, kept for a lost reply",
-  "components/shell/McpInventory.tsx":
-    "request identity of a pending MCP action, kept for a lost reply",
-  "components/shell/MonitorRestart.tsx":
-    "request body of a pending monitor restart, kept for a lost reply",
-  "servers/automaticAccessStore.ts":
-    "servers removed from the automatic UI list",
-  "servers/projectLocations.ts": "paired server list, for project locations",
-  "servers/serverServices.ts": "server-scoped storage for each server view",
   "servers/storage.ts":
     "server-scoped storage that drafts, queues, uploads, and caches use",
 };
@@ -29,7 +18,7 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 const pattern =
   /(?:globalThis|window)\.(?:localStorage|sessionStorage)\b|(?<![.\w$])(localStorage|sessionStorage)\.(?:getItem|setItem|removeItem|key|clear|length)\b/g;
 const binding =
-  /(?:const|let|var)\s+(?:localStorage|sessionStorage)\b|\{[^}]*:\s*(?:localStorage|sessionStorage)\s*(?=[,}])[^}]*\}\s*=|import\s[^;]*\b(?:localStorage|sessionStorage)\b[^;]*from|\b(?:localStorage|sessionStorage)\s*[:,)=]|\bas\s+(?:localStorage|sessionStorage)\b/;
+  /(?:const|let|var)\s+(?:localStorage|sessionStorage)\b|\{[^}]*:\s*(?:localStorage|sessionStorage)\s*(?=[,}])[^}]*\}\s*=|import\s[^;]*\b(?:localStorage|sessionStorage)\b[^;]*from|\b(?:localStorage|sessionStorage)\s*(?:[,)=]|:\s*Storage\b)|\bas\s+(?:localStorage|sessionStorage)\b/;
 
 function sources(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
