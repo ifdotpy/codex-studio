@@ -12,6 +12,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use std::sync::LazyLock;
 use studio_runtime_schema::ProviderKind;
+use studio_runtime_schema::project_record::ProjectAccountPreference;
 use studio_runtime_schema::shared_values::{
     ACCOUNT_GROUP_PATTERN, ACCOUNT_GROUPS_MAX, DEFAULT_CLAUDE_LEAD_EFFORT,
     DEFAULT_CLAUDE_LEAD_MODEL,
@@ -210,13 +211,15 @@ pub fn groups_of(value: Option<&Value>) -> Vec<String> {
 
 /// The order that applies to `project`: its own non-empty order, else the default.
 #[must_use]
-pub fn effective_groups(project: Option<&Value>, default_groups: &[String]) -> Vec<String> {
-    let own = groups_of(project.and_then(|row| row.get(PROJECT_GROUPS_FIELD)));
-    if own.is_empty() {
-        default_groups.to_vec()
-    } else {
-        own
-    }
+pub fn effective_groups(
+    project: Option<&ProjectAccountPreference>,
+    default_groups: &[String],
+) -> Vec<String> {
+    project
+        .map(|row| &row.account_groups)
+        .filter(|groups| !groups.is_empty())
+        .cloned()
+        .unwrap_or_else(|| default_groups.to_vec())
 }
 
 /// Position of `group` in the order; a missing or unlisted group sorts last.
@@ -257,14 +260,14 @@ pub fn new_chat_default(
     accounts: &[crate::account_policy::PublicAccount],
     default_account_key: &str,
     default_groups: &[String],
-    project: Option<&Value>,
+    project: Option<&ProjectAccountPreference>,
     model: Option<&str>,
 ) -> NewChatDefault {
     let groups = effective_groups(project, default_groups);
-    let project_account = project
-        .and_then(|row| row.get("accountKey"))
-        .and_then(Value::as_str);
-    let allowed = groups_of(project.and_then(|row| row.get("accountKeys")));
+    let project_account = project.and_then(|row| row.account_key.as_deref());
+    let allowed = project
+        .map(|row| row.account_keys.as_slice())
+        .unwrap_or_default();
     let mut candidates = accounts
         .iter()
         .enumerate()
@@ -388,32 +391,46 @@ mod tests {
 
     #[test]
     fn every_shared_decision_case_holds() {
-        let contract: Value = serde_json::from_str(include_str!(
+        #[derive(Deserialize)]
+        struct Contract {
+            cases: Vec<Case>,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Case {
+            name: String,
+            accounts: Vec<crate::account_policy::PublicAccount>,
+            default_account_key: String,
+            default_account_groups: Vec<String>,
+            project: Option<ProjectAccountPreference>,
+            model: Option<String>,
+            expected: Expected,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Expected {
+            account_key: String,
+            model: Option<String>,
+            effort: Option<String>,
+        }
+        let contract: Contract = serde_json::from_str(include_str!(
             "../../../../client/contracts/account-preference.json"
         ))
         .expect("the contract parses");
-        let cases = contract["cases"].as_array().expect("cases");
+        let cases = contract.cases;
         assert!(cases.len() >= 10);
         for case in cases {
-            let name = case["name"].as_str().expect("name");
-            let accounts: Vec<crate::account_policy::PublicAccount> =
-                serde::Deserialize::deserialize(case["accounts"].clone()).expect("accounts");
-            let project = case.get("project").filter(|value| !value.is_null());
             let actual = new_chat_default(
-                &accounts,
-                case["defaultAccountKey"].as_str().expect("default key"),
-                &groups_of(case.get("defaultAccountGroups")),
-                project,
-                case["model"].as_str(),
+                &case.accounts,
+                &case.default_account_key,
+                &case.default_account_groups,
+                case.project.as_ref(),
+                case.model.as_deref(),
             );
-            let expected = &case["expected"];
-            assert_eq!(
-                actual.account_key,
-                expected["accountKey"].as_str().expect("account"),
-                "{name}"
-            );
-            assert_eq!(actual.model, expected["model"].as_str(), "{name}");
-            assert_eq!(actual.effort, expected["effort"].as_str(), "{name}");
+            let expected = &case.expected;
+            assert_eq!(actual.account_key, expected.account_key, "{}", case.name);
+            assert_eq!(actual.model, expected.model.as_deref(), "{}", case.name);
+            assert_eq!(actual.effort, expected.effort.as_deref(), "{}", case.name);
         }
     }
 

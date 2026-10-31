@@ -35,6 +35,7 @@ pub mod persistence;
 pub mod plan_record;
 pub mod pricing;
 pub mod process_controls;
+pub mod project_record;
 pub mod provider_call_contract;
 pub mod provider_diagnostics;
 pub mod provider_errors;
