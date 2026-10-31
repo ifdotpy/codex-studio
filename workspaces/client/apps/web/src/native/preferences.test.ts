@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import { moveLegacyPreferences } from "./preferences";
 
 class MemoryStorage implements Storage {
+  [name: string]: unknown;
   private values = new Map<string, string>();
   constructor(
     initial: Record<string, string> = {},

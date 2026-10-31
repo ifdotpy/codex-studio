@@ -34,7 +34,7 @@ export async function importNativeProfile() {
         ),
     );
   await moveLegacyPreferences(
-    (method, params) => nativeRequest(method, params),
+    nativeRequest,
     window.localStorage,
     isNativeFrame(),
   );

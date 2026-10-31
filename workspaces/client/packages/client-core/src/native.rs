@@ -16,7 +16,8 @@ pub struct ConnectionConfig {
 fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
     // Electron verifies/starts the backend before opening the client. Rust must
     // never race that owner by launching a second backend.
-    let backend = Arc::new(Backend::new(&config.backend_origin));
+    let ConnectionConfig { backend_origin } = config;
+    let backend = Arc::new(Backend::new(&backend_origin));
     channel.set_nonblocking(true).map_err(|e| e.to_string())?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
