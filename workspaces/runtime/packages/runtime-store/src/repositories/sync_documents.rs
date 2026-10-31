@@ -866,11 +866,7 @@ fn entity_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntityRow> {
 }
 
 pub(crate) fn hash_payload(payload: &str) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(payload.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::sha256_hex(payload.as_bytes())
 }
 
 pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {
@@ -897,6 +893,26 @@ inventory::submit! {
 mod tests {
     use super::SyncDocumentsRepository;
     use rusqlite::Connection;
+
+    #[test]
+    fn payload_hash_preserves_lowercase_sha256_bytes() {
+        for (payload, expected) in [
+            (
+                "",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                "hello",
+                "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            ),
+            (
+                "żółć",
+                "47ff00909613d05d62e7ba4ae9e6c072d7371dcc16c7eb27edb5d298d21094ec",
+            ),
+        ] {
+            assert_eq!(super::hash_payload(payload), expected);
+        }
+    }
 
     #[test]
     fn migrated_legacy_versions_keep_the_sequence_floor() {
