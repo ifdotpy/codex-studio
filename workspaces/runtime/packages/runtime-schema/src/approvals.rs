@@ -157,7 +157,11 @@ pub struct QuestionAnswer {
     pub answer: Vec<String>,
 }
 
-<<<<<<< head
+impl QuestionAnswer {
+    /// Stored in place of the value the user typed for a secret question.
+    pub const REDACTED: &'static str = "[redacted]";
+}
+
 /// The answer a person or policy gives. Its kind must fit the request kind.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -327,151 +331,6 @@ pub(crate) fn check_schema_parity(openapi: &serde_json::Value) -> Result<(), Str
         }
     }
     Ok(())
-||||||| base
-=======
-impl QuestionAnswer {
-    /// Stored in place of the value the user typed for a secret question.
-    pub const REDACTED: &'static str = "[redacted]";
-}
-
-/// The answer a person or policy gives. Its kind must fit the request kind.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum Answer {
-    Decision {
-        decision: Decision,
-    },
-    Answers {
-        answers: Vec<QuestionAnswer>,
-    },
-    Elicitation {
-        action: ElicitationAction,
-        content: Option<serde_json::Value>,
-    },
-}
-
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, strum::VariantNames,
-)]
-#[serde(rename_all = "snake_case")]
-#[strum(serialize_all = "snake_case")]
-pub enum CloseReason {
-    TurnEnded,
-    ProviderResolved,
-    SessionLost,
-    ChatDeleted,
-    Expired,
-    /// Migrated row whose answer was never recorded. Nothing is inferred.
-    Legacy,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, strum::EnumDiscriminants)]
-#[strum_discriminants(name(ApprovalStateKind), derive(VariantNames))]
-#[strum_discriminants(strum(serialize_all = "snake_case"))]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ApprovalState {
-    Pending,
-    /// The answer is stored and its delivery command exists.
-    Answering {
-        answer: Answer,
-        command: CommandId,
-    },
-    Answered {
-        answer: Answer,
-        by: Principal,
-        at: Timestamp,
-    },
-    /// Delivery was lost. Nobody knows whether the provider got the answer.
-    Unknown {
-        answer: Answer,
-        since: Timestamp,
-    },
-    Closed {
-        reason: CloseReason,
-        at: Timestamp,
-    },
-}
-
-/// JSON-RPC id of a provider request. The reply must use the same form.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RpcId {
-    Number { value: i64 },
-    Text { value: String },
-}
-
-/// The provider process generation that owns a request, under the supervisor.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Supervisor {
-    pub generation: u64,
-    pub state_dir: Option<String>,
-    pub handle: Option<String>,
-}
-
-/// What the server needs to send the answer back to the provider.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct Delivery {
-    pub rpc_id: RpcId,
-    pub account: String,
-    pub connection: String,
-    /// Absent on rows written before supervisor generations were recorded.
-    pub supervisor: Option<Supervisor>,
-}
-
-/// Provider-owned content that Studio stores and shows as is (tolerant at the
-/// provider boundary). Typed request fields are removed from `params`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(transparent)]
-pub struct ProviderObject(pub serde_json::Map<String, serde_json::Value>);
-
-/// Display content and provider fields that no logic reads by name.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Detail {
-    /// Provider request params without the fields typed in `Request`.
-    pub params: ProviderObject,
-    /// Item body shown on the card (command run, file changes).
-    pub preview: Option<ProviderObject>,
-    /// Human text of a lost delivery.
-    pub answer_error: Option<String>,
-    /// Text the browser host gave when it closed a browser request.
-    pub host_close_reason: Option<String>,
-}
-
-/// The user moved the question aside. `active` is false after it came back.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Deferral {
-    pub active: bool,
-    pub at: Timestamp,
-    pub by: Principal,
-}
-
-/// History stays: a hidden row is not shown in the default list.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Hidden {
-    pub at: Timestamp,
-    pub by: Principal,
-}
-
-/// A row. `fire_at` is the durable expiry timer of a pending approval.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct Approval {
-    pub id: ApprovalId,
-    pub agent: AgentId,
-    /// None only for kinds in `RequestKind::TURN_OPTIONAL`: requests of the
-    /// agent itself (not of a provider turn).
-    pub turn: Option<TurnId>,
-    pub created: Timestamp,
-    /// Agent epoch when the request was made. Absent on old rows.
-    pub epoch: Option<u64>,
-    pub request: Request,
-    /// Present for provider requests that Studio answers over a connection.
-    pub delivery: Option<Delivery>,
-    pub detail: Detail,
-    pub state: ApprovalState,
-    pub deferral: Option<Deferral>,
-    pub fire_at: Option<Timestamp>,
-    pub hidden: Option<Hidden>,
->>>>>>> origin/feat/approval-entity
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]

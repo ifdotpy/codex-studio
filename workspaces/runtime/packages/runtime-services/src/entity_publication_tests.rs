@@ -370,17 +370,53 @@ async fn work_detail_publishes_full_review_state_at_commit_and_retires_on_delete
     }
 }
 
+/// A native question (kind `question`) of the chat, pending, for attention tests.
+async fn create_user_question(
+    store: &studio_runtime_store::RuntimeStore,
+    id: &'static str,
+    epoch: Option<u64>,
+) {
+    use studio_runtime_schema::approvals::{Request, Timestamp};
+    store
+        .transaction_with(move |tx| {
+            let mut new = new_question(id);
+            let Request::AgentQuestion { questions } = new.request.clone() else {
+                unreachable!("new_question builds an agent question");
+            };
+            new.request = Request::Question { questions };
+            new.epoch = epoch;
+            let row = studio_runtime_store::approvals::create(tx, new, Timestamp(1.0))?;
+            crate::approval_sync::publish(tx, &row)?;
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .expect("question is created");
+}
+
+async fn set_question_epoch(
+    store: &studio_runtime_store::RuntimeStore,
+    id: &'static str,
+    epoch: u64,
+) {
+    use studio_runtime_schema::approvals::ApprovalId;
+    store
+        .transaction_with(move |tx| {
+            let id = ApprovalId(id.to_owned());
+            let mut row = studio_runtime_store::approvals::get(tx, &id)?.expect("row");
+            row.epoch = Some(epoch);
+            studio_runtime_store::approvals::put(tx, &row)?;
+            crate::approval_sync::publish(tx, &row)?;
+            Ok::<_, StoreError>(())
+        })
+        .await
+        .expect("epoch is set");
+}
+
 #[tokio::test]
 async fn agent_projections_attention_rejects_stale_requests_and_clears() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({"epoch":2}))).await;
-    let stale = json!({"id":"question","agent":CHAT,"epoch":1,"status":"pending","method":"item/tool/requestUserInput"});
-    write(
-        &store,
-        "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
-        vec!["question".into(), stale.to_string()],
-    )
-    .await;
+    create_user_question(&store, "question", Some(1)).await;
     assert!(
         client_entity(&store, "agentSummary", CHAT)
             .expect("summary")
@@ -389,12 +425,7 @@ async fn agent_projections_attention_rejects_stale_requests_and_clears() {
             .is_none(),
         "stale requests cannot demand attention"
     );
-    write(
-        &store,
-        "UPDATE runtime_requests SET record=json_set(record,'$.epoch',2) WHERE id=?1",
-        vec!["question".into()],
-    )
-    .await;
+    set_question_epoch(&store, "question", 2).await;
     assert_eq!(
         client_entity(&store, "agentSummary", CHAT)
             .expect("summary")
@@ -405,12 +436,7 @@ async fn agent_projections_attention_rejects_stale_requests_and_clears() {
         chat_view(&store, CHAT).get("hasQuestion").is_none(),
         "legacy agent wire remains unchanged"
     );
-    write(
-        &store,
-        "UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id=?1",
-        vec!["question".into()],
-    )
-    .await;
+    answer_question(&store, "question").await;
     assert!(
         client_entity(&store, "agentSummary", CHAT)
             .expect("summary")

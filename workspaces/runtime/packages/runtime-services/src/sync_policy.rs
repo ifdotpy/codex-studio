@@ -731,6 +731,13 @@ pub fn publish_entity_changes(
     if !liveness_changed.is_empty() {
         publish_rooms_of(transaction, &liveness_changed, &changed_roots, validate)?;
     }
+    // Approval rows publish through the same code as their writers.
+    for id in &changes.requests {
+        let id = studio_runtime_schema::approvals::ApprovalId(id.clone());
+        if let Some(row) = studio_runtime_store::approvals::get(transaction, &id)? {
+            crate::approval_sync::publish(transaction, &row)?;
+        }
+    }
     for (id, raw) in &work {
         if let Some(source) = &changes.source_work_changes {
             let record = serde_json::from_str(raw)?;

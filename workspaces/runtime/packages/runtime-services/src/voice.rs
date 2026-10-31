@@ -400,41 +400,13 @@ pub async fn approvals(store: &RuntimeStore, agent_id: &str) -> Result<Value, Vo
     validate_agent(agent, agent_id)?;
     let mut requests = Vec::new();
     for row in rows {
-<<<<<<< head
-        if row.agent() == Some(agent_id)
-            && row.status() == Some("pending")
-            && row
-                .method()
-                .is_some_and(|method| APPROVAL_METHODS.contains(&method))
-||||||| base
-    for (row, raw) in rows {
-        let row_id = row.id().to_string();
-        let value: Value =
-            serde_json::from_str(&raw).map_err(|_| invalid("runtime_requests", &row_id))?;
-        if !value.is_object() || value.get("id").and_then(Value::as_str).is_none() {
-            return Err(invalid("runtime_requests", &row_id));
-        }
-        if value.get("agent").and_then(Value::as_str) == Some(agent_id)
-            && value.get("status").and_then(Value::as_str) == Some("pending")
-            && value
-                .get("method")
-                .and_then(Value::as_str)
-                .is_some_and(|method| APPROVAL_METHODS.contains(&method))
-=======
         if matches!(
             row.state,
             studio_runtime_schema::approvals::ApprovalState::Pending
         ) && row.hidden.is_none()
             && is_approval_request(&row.request)
->>>>>>> origin/feat/approval-entity
         {
-<<<<<<< head
-            requests.push(row.into_value());
-||||||| base
-            requests.push(value);
-=======
             requests.push(serde_json::to_value(&row)?);
->>>>>>> origin/feat/approval-entity
         }
     }
     Ok(json!({"requests": requests}))
