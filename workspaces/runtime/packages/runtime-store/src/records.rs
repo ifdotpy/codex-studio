@@ -3146,9 +3146,9 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT,created REAL,record TEXT NOT NULL);
-                 INSERT INTO runtime_items VALUES('i1','a',2,'{\"id\":\"i1\",\"agent\":\"a\",\"text\":\"one\"}');
-                 INSERT INTO runtime_items VALUES('i2','b',4,'{\"id\":\"i2\",\"agent\":\"b\",\"text\":\"two\"}');
-                 INSERT INTO runtime_items VALUES('i3','a',3,'{\"id\":\"i3\",\"agent\":\"a\",\"text\":\"three\"}');",
+                 INSERT INTO runtime_items VALUES('i1','a',2,'{\"id\":\"i1\",\"role\":\"assistant\",\"agent\":\"a\",\"text\":\"one\"}');
+                 INSERT INTO runtime_items VALUES('i2','b',4,'{\"id\":\"i2\",\"role\":\"assistant\",\"agent\":\"b\",\"text\":\"two\"}');
+                 INSERT INTO runtime_items VALUES('i3','a',3,'{\"id\":\"i3\",\"role\":\"assistant\",\"agent\":\"a\",\"text\":\"three\"}');",
             )
             .expect("transcript table creates");
         let table = Table::<TranscriptItemRecord>::new(&connection);
@@ -3188,9 +3188,9 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 INSERT INTO runtime_tasks VALUES('t1','{\"id\":\"t1\",\"agent\":\"a\",\"kind\":\"command\",\"status\":\"completed\",\"created\":1,\"finished\":3}');
-                 INSERT INTO runtime_tasks VALUES('t2','{\"id\":\"t2\",\"agent\":\"a\",\"kind\":\"command\",\"status\":\"completed\",\"created\":2}');
-                 INSERT INTO runtime_tasks VALUES('t3','{\"id\":\"t3\",\"agent\":\"b\",\"kind\":\"command\",\"status\":\"completed\",\"created\":0}');",
+                 INSERT INTO runtime_tasks VALUES('t1','{\"id\":\"t1\",\"itemId\":\"t1\",\"turnId\":\"turn\",\"type\":\"commandExecution\",\"name\":\"command\",\"agent\":\"a\",\"kind\":\"command\",\"status\":\"completed\",\"created\":1,\"finished\":3}');
+                 INSERT INTO runtime_tasks VALUES('t2','{\"id\":\"t2\",\"itemId\":\"t2\",\"turnId\":\"turn\",\"type\":\"commandExecution\",\"name\":\"command\",\"agent\":\"a\",\"kind\":\"command\",\"status\":\"completed\",\"created\":2}');
+                 INSERT INTO runtime_tasks VALUES('t3','{\"id\":\"t3\",\"itemId\":\"t3\",\"turnId\":\"turn\",\"type\":\"commandExecution\",\"name\":\"command\",\"agent\":\"b\",\"kind\":\"command\",\"status\":\"completed\",\"created\":0}');",
             )
             .expect("runtime task table creates");
         let agents = vec!["a".to_owned()];
