@@ -4,6 +4,7 @@ pub mod agent_volatile;
 pub mod blocking_pool;
 mod bootstrap;
 mod cached_sql;
+pub mod durable_seq;
 pub mod entity_publication;
 pub mod error_incidents;
 pub mod migrations;
@@ -263,7 +264,13 @@ pub enum ResourceChange {
 }
 
 // Entity projection tables whose rows are delivered by entity-backed sync refs.
-const ENTITY_RESOURCE_TABLES: [&str; 2] = ["sync_entities", "sync_entity_meta"];
+const ENTITY_RESOURCE_TABLES: [&str; 5] = [
+    "sync_entities",
+    "sync_entity_meta",
+    "durable_rows",
+    "durable_view_log",
+    "durable_floor",
+];
 
 type ResourceChangeObserver = Arc<dyn Fn(ResourceChange) + Send + Sync>;
 type TableChangeObserver = Arc<dyn for<'a> Fn(TableChange<'a>) + Send + Sync>;

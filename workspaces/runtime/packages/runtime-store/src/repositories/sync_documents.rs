@@ -57,6 +57,10 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[
         name: "sync_entity_meta",
         columns: &["key", "value"],
     },
+    TableRequirement {
+        name: "durable_rows",
+        columns: &["tbl", "id", "seq", "deleted", "at"],
+    },
 ];
 const BOOTSTRAP_TRIGGERS: &[TriggerRequirement] = &[
     TriggerRequirement {
@@ -873,10 +877,11 @@ pub(crate) fn hash_payload(payload: &str) -> String {
 pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {
     connection
         .query_row_cached(
-            "SELECT MAX(entity_seq,document_seq,generation)+1 FROM ( \
+            "SELECT MAX(entity_seq,document_seq,generation,durable_seq)+1 FROM ( \
              SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities), \
              (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents), \
-             (SELECT COALESCE(MAX(value),0) AS generation FROM sync_generation WHERE id=1)",
+             (SELECT COALESCE(MAX(value),0) AS generation FROM sync_generation WHERE id=1), \
+             (SELECT COALESCE(MAX(seq),0) AS durable_seq FROM durable_rows)",
             [],
             |row| row.get(0),
         )
@@ -1442,7 +1447,7 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-             CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);",
+             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);",
         ).expect("sync fixture creates");
         let transaction = connection.transaction().expect("transaction begins");
         let value = serde_json::json!({"b":2,"a":1});
@@ -1532,7 +1537,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
+                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  INSERT INTO sync_documents VALUES(9,'drafts','d','{}',0);",
             )
             .expect("sync fixture creates");

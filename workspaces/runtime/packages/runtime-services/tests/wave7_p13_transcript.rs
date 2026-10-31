@@ -453,7 +453,22 @@ async fn transcript_cases(group: usize) {
                 transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", after)
                     .await
                     .expect("pull");
-            assert_pull(&got, expected, fixture_sync_high, case["phase"] == "prune");
+            // The workspace limits write and every agent, request and work number come
+            // before the transcript allocations, so the highest durable number is the shift.
+            let durable_high: i64 = store
+                .test_reader()
+                .expect("reader")
+                .query_row("SELECT COALESCE(MAX(seq),0) FROM durable_rows", [], |row| {
+                    row.get(0)
+                })
+                .expect("durable high");
+            assert_pull(
+                &got,
+                expected,
+                fixture_sync_high,
+                (durable_high - fixture_sync_high).max(1),
+                case["phase"] == "prune",
+            );
             let committed = sync_snapshot(&store);
             let replay =
                 transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", after)
@@ -581,7 +596,13 @@ async fn seed_transcript_replies(store: &RuntimeStore, replies: Vec<(String, Str
         .expect("seed current transcript receipts");
 }
 
-fn assert_pull(got: &Value, expected: &Value, fixture_sync_high: i64, migrated_execution: bool) {
+fn assert_pull(
+    got: &Value,
+    expected: &Value,
+    fixture_sync_high: i64,
+    allocation_shift: i64,
+    migrated_execution: bool,
+) {
     let decode = |v: &Value| {
         let mut v = v.clone();
         for doc in v["documents"].as_array_mut().expect("documents") {
@@ -592,8 +613,9 @@ fn assert_pull(got: &Value, expected: &Value, fixture_sync_high: i64, migrated_e
     };
     let mut expected = decode(expected);
     // The frozen Python snapshots predate the v4 workspace limits migration.
-    // Its one startup write uses the shared allocator. Shift only newly
-    // allocated transcript sequences; persisted cursors and pruning stay exact.
+    // Its one startup write and the numbering of the restored agent, request and work
+    // rows use the shared allocator. Shift only newly allocated transcript sequences;
+    // persisted cursors and pruning stay exact.
     for document in expected["documents"].as_array_mut().expect("documents") {
         // Preserve the frozen corpus while retiring its unused wire-only map.
         document["payload"]
@@ -602,24 +624,24 @@ fn assert_pull(got: &Value, expected: &Value, fixture_sync_high: i64, migrated_e
             .remove("itemRevisions");
         let sequence = document["seq"].as_i64().expect("document sequence");
         if sequence > fixture_sync_high {
-            document["seq"] = json!(sequence + 1);
+            document["seq"] = json!(sequence + allocation_shift);
         }
     }
     let checkpoint = expected["checkpoint"]["seq"]
         .as_i64()
         .expect("checkpoint sequence");
     if checkpoint > fixture_sync_high {
-        expected["checkpoint"]["seq"] = json!(checkpoint + 1);
+        expected["checkpoint"]["seq"] = json!(checkpoint + allocation_shift);
     }
     if migrated_execution {
         // m2026_10_28_receipts_execution.rs:168-189 moves activeExecution,
         // advancing the transcript revision once after the workspace allocation.
         assert_eq!(expected["checkpoint"]["seq"], fixture_sync_high);
-        expected["checkpoint"]["seq"] = json!(fixture_sync_high + 2);
+        expected["checkpoint"]["seq"] = json!(fixture_sync_high + allocation_shift + 1);
         let documents = expected["documents"].as_array_mut().expect("documents");
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0]["seq"], fixture_sync_high);
-        documents[0]["seq"] = json!(fixture_sync_high + 2);
+        documents[0]["seq"] = json!(fixture_sync_high + allocation_shift + 1);
     }
     assert_eq!(decode(got), expected);
 }
