@@ -237,7 +237,9 @@ fn access_step(error: AccessError) -> Step {
     match error {
         AccessError::Store(error) => Step::Store(error),
         AccessError::Sqlite(error) => Step::Store(error.into()),
-        other => Step::Refused(other.to_string()),
+        other @ (AccessError::Refused { .. } | AccessError::Stored { .. }) => {
+            Step::Refused(other.to_string())
+        }
     }
 }
 

@@ -32,7 +32,11 @@ pub async fn hold(store: &RuntimeStore) -> Result<(), RecoveryError> {
             crate::multi_server_orchestration::hold_unclean_server_requests(tx).map_err(
                 |error| match error {
                     crate::multi_server_auth::AccessError::Store(error) => error,
-                    other => StoreError::SchemaMismatch(other.to_string()),
+                    other @ (crate::multi_server_auth::AccessError::Refused { .. }
+                    | crate::multi_server_auth::AccessError::Stored { .. }
+                    | crate::multi_server_auth::AccessError::Sqlite(_)) => {
+                        StoreError::SchemaMismatch(other.to_string())
+                    }
                 },
             )?;
             Ok::<_, RecoveryError>(())

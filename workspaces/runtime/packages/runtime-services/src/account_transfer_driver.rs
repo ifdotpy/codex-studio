@@ -672,20 +672,23 @@ pub(crate) async fn provider_read_intent(
     let operation = intent.operation.to_owned();
     let account = intent.account.to_owned();
     let method = intent.method.to_owned();
+    let root = store.root().to_path_buf();
     store
         .transaction_with_error(move |tx| {
             let snapshot = load(tx, &transfer)?;
             let next = json!({"operation":operation,"account":account,"scope":intent.scope,
                 "method":method,"params":intent.params});
             if let Some(reply) = snapshot.written_read_replay(&agent, &next)? {
-                return Ok(Some(reply));
+                return Ok(Some(inline_reply(&root, reply)?));
             }
             let prior = snapshot.operation()["members"][agent.as_str()]["providerReadReceipts"]
                 [operation.as_str()]
             .as_object()
             .filter(|receipt| receipt.get("certainty") == Some(&Value::String("written".into())))
             .cloned()
-            .map(Value::Object);
+            .map(Value::Object)
+            .map(|saved| inline_reply(&root, saved))
+            .transpose()?;
             let mut decision = snapshot.provider_read_intent(
                 &agent,
                 &operation,
@@ -720,6 +723,25 @@ pub(crate) async fn provider_read_intent(
         .await
 }
 
+/// Put back a reply body that the record keeps as a payload blob.
+fn inline_reply(root: &std::path::Path, mut saved: Value) -> Result<Value, TransferError> {
+    let Some(reference) = saved["result"].get("valueBlob").cloned() else {
+        return Ok(saved);
+    };
+    let lost = |_| TransferError::Refused("The saved provider reply is unavailable");
+    let value =
+        serde_json::from_slice(&crate::payload_blobs::load_blob(root, &reference).map_err(lost)?)
+            .map_err(|_| TransferError::Refused("The saved provider reply is unavailable"))?;
+    let result = saved["result"]
+        .as_object_mut()
+        .ok_or(TransferError::Refused(
+            "The saved provider reply is unavailable",
+        ))?;
+    result.remove("valueBlob");
+    result.insert("value".into(), value);
+    Ok(saved)
+}
+
 pub(crate) struct ProviderReadReceipt<'a> {
     pub transfer: &'a str,
     pub agent: &'a str,
@@ -735,6 +757,18 @@ pub(crate) async fn provider_read_receipt(
     let transfer = receipt.transfer.to_owned();
     let agent = receipt.agent.to_owned();
     let operation = receipt.operation.to_owned();
+    // The blob is content addressed: a failed transaction leaves a harmless file.
+    if let Some((sha256, bytes)) = crate::account_transfer::spilled_reply(&receipt.receipt) {
+        crate::payload_blobs::write_blobs(
+            store.root(),
+            &[crate::payload_blobs::BlobWrite {
+                sha256,
+                bytes,
+                preview: Value::Null,
+            }],
+        )
+        .map_err(|_| TransferError::Refused("The provider reply could not be saved"))?;
+    }
     store
         .transaction_with_error(move |tx| {
             let snapshot = load(tx, &transfer)?;
@@ -1128,9 +1162,217 @@ mod request_tests {
             "codex",
             11.0,
         )
+<<<<<<< head
         .expect("active chat request");
         assert_eq!(again["members"].as_object().expect("members").len(), 1);
         assert_eq!(stored(&store, "late")["accountKey"], "source");
+||||||| base
+        .expect("active subagents request adopts late workers");
+        assert_eq!(adopted["id"], result["id"]);
+        assert_eq!(adopted["members"].as_object().expect("members").len(), 2);
+        assert_eq!(adopted["members"]["late"]["phase"], "lazy");
+        assert_eq!(stored(&store, "lead")["accountKey"], "source");
+    }
+
+    #[test]
+    fn scoped_membership_keeps_nested_workers_and_excludes_deleted_or_other_roots() {
+        let (_root, store) = store_with_agents();
+        run_async(store.transaction(|tx| {
+            let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
+            lead.root_id = AgentId::from("legacy-root");
+            AgentRepository::put(tx, &lead)?;
+            let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.expect("child");
+            child.deleted_at = Some((0) as f64);
+            AgentRepository::put(tx, &child)?;
+            for value in [
+                json!({"id":"nested", "rootId":"lead", "parentId":"child", "provider":"codex"}),
+                json!({"id":"other-root", "rootId":"other", "parentId":"lead", "provider":"codex", "environment":"linux"}),
+                json!({"id":"deleted", "rootId":"lead", "provider":"codex", "deletedAt":1.0, "environment":"linux"}),
+                json!({"id":"other-provider", "rootId":"lead", "provider":"claude"}),
+            ] {
+                let mut value = value;
+                value["epoch"] = json!(3);
+                value["status"] = json!("idle");
+                value["accountKey"] = json!("source");
+                value["compactions"] = json!(0);
+                AgentRepository::put(tx, &AgentRecord::from_value(value)?)?;
+            }
+            Ok(())
+        })).expect("membership fixture");
+        let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42288";
+        let result =
+            request(&store, id, "lead", "target", "team", "codex", 10.0).expect("scoped transfer");
+        assert_eq!(
+            result["members"]
+                .as_object()
+                .expect("members")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["child", "lead", "nested", "other-provider"]
+        );
+        assert_eq!(result["members"]["other-provider"]["phase"], "left");
+        for member in ["child", "lead", "nested"] {
+            assert_eq!(stored(&store, member)["accountKey"], "target");
+        }
+        for member in ["other-root", "deleted", "other-provider"] {
+            assert_eq!(stored(&store, member)["accountKey"], "source");
+        }
+    }
+
+    #[test]
+    fn vm_member_guard_applies_only_to_enrolled_members() {
+        for scope in ["team", "subagents"] {
+            let (_root, store) = store_with_agents();
+            run_async(store.transaction(|tx| {
+                let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
+                lead.extra.insert("environment".into(), json!("linux"));
+                AgentRepository::put(tx, &lead)
+            }))
+            .expect("VM lead fixture");
+            let before = stored(&store, "lead");
+            let result = request(
+                &store,
+                "5a300f72-4ea6-4d30-8a0e-9b2c13c42289",
+                "lead",
+                "target",
+                scope,
+                "codex",
+                10.0,
+            );
+            if scope == "team" {
+                assert_eq!(
+                    result.expect_err("VM transfer guard").to_string(),
+                    "Archive VM workers before changing the team account"
+                );
+                assert_eq!(stored(&store, "lead"), before);
+                assert_eq!(stored(&store, "child")["accountKey"], "source");
+            } else {
+                assert_eq!(
+                    result.expect("VM lead stays outside subagent enrollment")["members"]["child"]
+                        ["phase"],
+                    "lazy"
+                );
+                assert_eq!(stored(&store, "lead")["accountKey"], "source");
+            }
+        }
+=======
+        .expect("active subagents request adopts late workers");
+        assert_eq!(adopted["id"], result["id"]);
+        assert_eq!(adopted["members"].as_object().expect("members").len(), 2);
+        assert_eq!(adopted["members"]["late"]["phase"], "lazy");
+        assert_eq!(stored(&store, "lead")["accountKey"], "source");
+    }
+
+    #[test]
+    fn inline_reply_restores_a_spilled_body() {
+        let root = tempfile::tempdir().expect("directory");
+        let body = json!({"data":["page"]});
+        let bytes = serde_json::to_vec(&body).expect("bytes");
+        let sha256 = studio_runtime_store::sha256_hex(&bytes);
+        crate::payload_blobs::write_blobs(
+            root.path(),
+            &[crate::payload_blobs::BlobWrite {
+                sha256: sha256.clone(),
+                bytes: bytes.clone(),
+                preview: Value::Null,
+            }],
+        )
+        .expect("blob");
+        let saved =
+            json!({"result":{"kind":"reply","valueBlob":{"sha256":sha256,"size":bytes.len()}}});
+        assert_eq!(
+            inline_reply(root.path(), saved).expect("restored"),
+            json!({"result":{"kind":"reply","value":body}})
+        );
+        let lost =
+            json!({"result":{"kind":"reply","valueBlob":{"sha256":"0".repeat(64),"size":1}}});
+        assert!(inline_reply(root.path(), lost).is_err());
+    }
+
+    #[test]
+    fn scoped_membership_keeps_nested_workers_and_excludes_deleted_or_other_roots() {
+        let (_root, store) = store_with_agents();
+        run_async(store.transaction(|tx| {
+            let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
+            lead.root_id = AgentId::from("legacy-root");
+            AgentRepository::put(tx, &lead)?;
+            let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.expect("child");
+            child.deleted_at = Some((0) as f64);
+            AgentRepository::put(tx, &child)?;
+            for value in [
+                json!({"id":"nested", "rootId":"lead", "parentId":"child", "provider":"codex"}),
+                json!({"id":"other-root", "rootId":"other", "parentId":"lead", "provider":"codex", "environment":"linux"}),
+                json!({"id":"deleted", "rootId":"lead", "provider":"codex", "deletedAt":1.0, "environment":"linux"}),
+                json!({"id":"other-provider", "rootId":"lead", "provider":"claude"}),
+            ] {
+                let mut value = value;
+                value["epoch"] = json!(3);
+                value["status"] = json!("idle");
+                value["accountKey"] = json!("source");
+                value["compactions"] = json!(0);
+                AgentRepository::put(tx, &AgentRecord::from_value(value)?)?;
+            }
+            Ok(())
+        })).expect("membership fixture");
+        let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42288";
+        let result =
+            request(&store, id, "lead", "target", "team", "codex", 10.0).expect("scoped transfer");
+        assert_eq!(
+            result["members"]
+                .as_object()
+                .expect("members")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["child", "lead", "nested", "other-provider"]
+        );
+        assert_eq!(result["members"]["other-provider"]["phase"], "left");
+        for member in ["child", "lead", "nested"] {
+            assert_eq!(stored(&store, member)["accountKey"], "target");
+        }
+        for member in ["other-root", "deleted", "other-provider"] {
+            assert_eq!(stored(&store, member)["accountKey"], "source");
+        }
+    }
+
+    #[test]
+    fn vm_member_guard_applies_only_to_enrolled_members() {
+        for scope in ["team", "subagents"] {
+            let (_root, store) = store_with_agents();
+            run_async(store.transaction(|tx| {
+                let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
+                lead.extra.insert("environment".into(), json!("linux"));
+                AgentRepository::put(tx, &lead)
+            }))
+            .expect("VM lead fixture");
+            let before = stored(&store, "lead");
+            let result = request(
+                &store,
+                "5a300f72-4ea6-4d30-8a0e-9b2c13c42289",
+                "lead",
+                "target",
+                scope,
+                "codex",
+                10.0,
+            );
+            if scope == "team" {
+                assert_eq!(
+                    result.expect_err("VM transfer guard").to_string(),
+                    "Archive VM workers before changing the team account"
+                );
+                assert_eq!(stored(&store, "lead"), before);
+                assert_eq!(stored(&store, "child")["accountKey"], "source");
+            } else {
+                assert_eq!(
+                    result.expect("VM lead stays outside subagent enrollment")["members"]["child"]
+                        ["phase"],
+                    "lazy"
+                );
+                assert_eq!(stored(&store, "lead")["accountKey"], "source");
+            }
+        }
+>>>>>>> origin/main
     }
 
     #[test]

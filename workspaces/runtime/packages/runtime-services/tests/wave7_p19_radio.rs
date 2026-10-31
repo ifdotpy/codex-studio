@@ -344,6 +344,23 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
             result.insert(table.clone(), json!([]));
             continue;
         }
+        if table == "completed_turns" {
+            // Completed turns are rows of the `turns` table; the old table is frozen.
+            let ids = db
+                .prepare(
+                    "SELECT chat||':'||provider_turn FROM turns WHERE state='completed' ORDER BY 1",
+                )
+                .expect("completed turns")
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("rows read");
+            result.insert(
+                table.clone(),
+                json!(ids.iter().map(|id| json!({"id":id})).collect::<Vec<_>>()),
+            );
+            continue;
+        }
         let order = if table == "chat_messages" {
             "seq"
         } else if table == "sync_entities" {

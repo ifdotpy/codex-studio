@@ -759,6 +759,7 @@ fn parse_since(
 /// of them needs no request. Only a stream that has a chat open gets them. Returns whether
 /// a chat was open. These chats are not subscribed: later changes arrive when the client
 /// subscribes to one.
+#[allow(clippy::wildcard_enum_match_arm)]
 async fn attach_recent_transcripts(state: &HttpState, event: &mut ResourceChangeEvent) -> bool {
     use studio_runtime_schema::shared_values::SYNC_TRANSCRIPT_RECENT_CHATS;
     let open = event

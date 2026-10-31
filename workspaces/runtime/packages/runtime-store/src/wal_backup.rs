@@ -521,7 +521,8 @@ fn be(bytes: &[u8]) -> u32 {
 /// The WAL checksum of `data` (a multiple of 8 bytes) after `seed`.
 fn checksum(big_endian: bool, seed: [u32; 2], data: &[u8]) -> [u32; 2] {
     let [mut s1, mut s2] = seed;
-    for pair in data.chunks_exact(8) {
+    let (pairs, _) = data.as_chunks::<8>();
+    for pair in pairs {
         let word = |bytes: &[u8]| {
             let raw = [bytes[0], bytes[1], bytes[2], bytes[3]];
             if big_endian {

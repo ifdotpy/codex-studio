@@ -480,7 +480,9 @@ impl ProductionLifecyclePorts {
                     })
                     .map_err(|error| match error {
                         crate::multi_server_auth::AccessError::Store(error) => error,
-                        other => {
+                        other @ (crate::multi_server_auth::AccessError::Refused { .. }
+                        | crate::multi_server_auth::AccessError::Stored { .. }
+                        | crate::multi_server_auth::AccessError::Sqlite(_)) => {
                             studio_runtime_store::StoreError::SchemaMismatch(other.to_string())
                         }
                     })
