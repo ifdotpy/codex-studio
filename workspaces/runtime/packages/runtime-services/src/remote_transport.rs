@@ -448,6 +448,7 @@ fn multi_server_signed_headers_normalized(
 /// the sender state, server is the recipient state). It also carries the retired
 /// federation signature for one release, so a peer on the previous build still
 /// accepts it. A receiver that knows the unified headers ignores the retired ones.
+#[allow(clippy::too_many_arguments)]
 pub fn federation_signed_headers(
     identity: &RemoteIdentity,
     server_id: &str,
