@@ -855,12 +855,11 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_31_native_status_error::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-31-restore-monitor-active-index",
-            introduced: MigrationDate {
-                year: 2026,
-                month: 10,
-                day: 31,
-            },
+            introduced: OCTOBER_31,
             target: MigrationTarget::Canvas,
             supported_source: "Monitor status migration without the active monitor index",
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
