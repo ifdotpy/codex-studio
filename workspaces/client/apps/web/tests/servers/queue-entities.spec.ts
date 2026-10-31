@@ -170,12 +170,19 @@ test("bounded entities render initial and live changes with zero resource GETs",
     ).toBeVisible();
     // Read the cache record of the mounted server scope. A new default sync
     // client would create a second subscription with a separate service owner.
-    const rows = await readCachedRows(page, "entities");
-    const projection = await page.evaluate(async (rows) => {
-      const { applyEntityRows, emptyEntityProjection } =
-        await import("/src/sync/entityProjection.ts");
-      return applyEntityRows(emptyEntityProjection(), rows, true).runtime;
-    }, rows);
+    const readProjection = async () => {
+      const rows = await readCachedRows(page, "entities");
+      return page.evaluate(async (rows) => {
+        const { applyEntityRows, emptyEntityProjection } =
+          await import("/src/sync/entityProjection.ts");
+        return applyEntityRows(emptyEntityProjection(), rows, true).runtime;
+      }, rows);
+    };
+    // The record is written after render; poll until it holds the update.
+    await expect
+      .poll(async () => (await readProjection()).accountCostsByAccount.default)
+      .toBeDefined();
+    const projection = await readProjection();
     expect(projection.accountCostsByAccount).toEqual({
       default: backend.snapshot.runtime.accountCostsByAccount.default,
     });

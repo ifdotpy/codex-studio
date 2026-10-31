@@ -24,6 +24,7 @@ import { useNativeDrafts } from "../native/useNativeDrafts";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
 import { frontendIsLocal } from "../sync/localFrontend";
+import { indexedDbKeyValue } from "../sync/thinCache";
 import { createServerSubscriptions } from "../sync/subscriptions/server";
 import { createTranscriptCache } from "../sync/transcriptCache";
 import { createTokenRateCache } from "../usage/tokenRate";
@@ -92,6 +93,7 @@ export function createServerServices(server: StudioServer) {
       resources,
       sequences,
       transcripts,
+      keyValue: () => indexedDbKeyValue(),
       cacheProjections: () => !frontendIsLocal(transport.owner.id),
       databaseSuffix:
         transport.owner.id === "local"
