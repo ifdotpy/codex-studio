@@ -5,7 +5,10 @@ use serde_json::{Value, json};
 
 use crate::records::{decode_json_record, get_json_record};
 use crate::schema::{SchemaRequirements, TableRequirement};
-use crate::{CheckpointRecord, EventWriteRepository, StoreError, StoreResult, Table};
+use crate::{
+    AgentId, AgentRecord, AgentRepository, CheckpointRecord, EventWriteRepository, StoreError,
+    StoreResult, Table,
+};
 
 const CHECKPOINTS: &[TableRequirement] = &[TableRequirement {
     name: "runtime_checkpoints",
@@ -80,7 +83,7 @@ pub struct StoredCheckpointObject {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceSnapshot {
-    pub agent: StoredCheckpointObject,
+    pub agent: AgentRecord,
     pub parent_checkpoint: Option<StoredCheckpointObject>,
     pub agents: Vec<StoredCheckpointObject>,
     pub operations: Vec<StoredCheckpointObject>,
@@ -136,20 +139,39 @@ impl CheckpointsRepository {
         agent_id: &str,
         checkpoint_id: &str,
     ) -> StoreResult<Option<String>> {
-        let operations = read_active(
-            connection,
+        use studio_runtime_schema::workspace_operation::OperationKind;
+
+        if !table_exists(connection, "runtime_workspace_operations")? {
+            return Ok(None);
+        }
+        let mut statement = connection.prepare_cached(&active_query(
             "runtime_workspace_operations",
             "phase",
-            ACTIVE_OPERATION_PHASES,
-        )?;
+            ACTIVE_OPERATION_PHASES.len(),
+        ))?;
+        let mut rows = statement.query(rusqlite::params_from_iter(ACTIVE_OPERATION_PHASES))?;
+        let table = Table::<crate::WorkspaceOperationRecord>::new(connection);
+        let mut operations = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let encoded: String = row.get(1)?;
+            let operation = table.decode_stored(&id, &encoded)?;
+            if operation.agent.is_empty() {
+                return Err(invalid_record("runtime_workspace_operations", &id));
+            }
+            operations.push(operation);
+        }
         Ok(operations.into_iter().find_map(|operation| {
-            (operation.record.get("kind").and_then(Value::as_str) == Some("restore")
-                && operation.record.get("agent").and_then(Value::as_str) == Some(agent_id)
-                && operation.record.get("checkpoint").and_then(Value::as_str)
+            (operation.kind == OperationKind::Restore
+                && operation.agent == agent_id
+                && operation
+                    .extensions()
+                    .get("checkpoint")
+                    .and_then(Value::as_str)
                     == Some(checkpoint_id))
             .then(|| {
                 operation
-                    .record
+                    .extensions()
                     .get("expectedTree")
                     .and_then(Value::as_str)
                     .map(str::to_owned)
@@ -162,11 +184,11 @@ impl CheckpointsRepository {
         connection: &Connection,
         agent_id: &str,
     ) -> StoreResult<Option<WorkspaceSnapshot>> {
-        let Some(agent) = Self::agent(connection, agent_id)? else {
+        let Some(agent) = AgentRepository::get(connection, &AgentId::from(agent_id))? else {
             return Ok(None);
         };
         let parent_checkpoint = agent
-            .record
+            .extra
             .get("checkpointHistoryHead")
             .and_then(Value::as_str)
             .map(|id| read_object(connection, "runtime_checkpoints", id))
@@ -200,7 +222,7 @@ impl CheckpointsRepository {
         connection: &Connection,
         agent_id: &str,
     ) -> StoreResult<Option<WorkspaceSnapshot>> {
-        let Some(agent) = Self::agent(connection, agent_id)? else {
+        let Some(agent) = AgentRepository::get(connection, &AgentId::from(agent_id))? else {
             return Ok(None);
         };
         Ok(Some(WorkspaceSnapshot {
@@ -224,7 +246,7 @@ impl CheckpointsRepository {
         transaction: &Transaction<'_>,
         expected: &WorkspaceSnapshot,
     ) -> StoreResult<bool> {
-        Ok(Self::workspace_snapshot(transaction, &expected.agent.id)?
+        Ok(Self::workspace_snapshot(transaction, &expected.agent.id.0)?
             .is_some_and(|current| same_workspace_activity(&current, expected)))
     }
 
@@ -262,17 +284,15 @@ impl CheckpointsRepository {
         turn_id: Option<&str>,
         now: f64,
     ) -> StoreResult<bool> {
-        let Some(current) = Self::workspace_snapshot(transaction, &expected.agent.id)? else {
+        let Some(current) = Self::workspace_snapshot(transaction, &expected.agent.id.0)? else {
             return Ok(false);
         };
         if !same_workspace_activity(&current, expected) {
             return Ok(false);
         }
-        let agent =
-            current.agent.record.as_object().ok_or_else(|| {
-                StoreError::SchemaMismatch("invalid stored agents record".to_owned())
-            })?;
-        let source = Self::workspace_source(&current.agent.record);
+        let mut record = current.agent.value();
+        let agent = record.as_object().expect("agent is an object");
+        let source = Self::workspace_source(&record);
         let mut operation = json!({
             "id": operation_id,
             "kind": kind.as_str(),
@@ -285,13 +305,12 @@ impl CheckpointsRepository {
             "created": now,
         });
         if kind == CaptureKind::Turn {
-            operation["completionSource"] = completion_source(&current.agent.record);
+            operation["completionSource"] = completion_source(&record);
         }
         transaction.execute(
             "INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)",
             params![operation_id, serde_json::to_string(&operation)?],
         )?;
-        let mut record = current.agent.record;
         let object = record
             .as_object_mut()
             .ok_or_else(|| StoreError::SchemaMismatch("invalid stored agents record".to_owned()))?;
@@ -305,7 +324,7 @@ impl CheckpointsRepository {
         );
         update_agent(
             transaction,
-            &expected.agent.id,
+            &expected.agent.id.0,
             &record,
             &[
                 ("workspaceOperation", json!(kind.as_str())),
@@ -321,17 +340,14 @@ impl CheckpointsRepository {
         operation_id: &str,
         now: f64,
     ) -> StoreResult<bool> {
-        let Some(current) = Self::workspace_snapshot(transaction, &expected.agent.id)? else {
+        let Some(current) = Self::workspace_snapshot(transaction, &expected.agent.id.0)? else {
             return Ok(false);
         };
         if !same_workspace_activity(&current, expected) {
             return Ok(false);
         }
-        let Some(agent) = current.agent.record.as_object() else {
-            return Err(StoreError::SchemaMismatch(
-                "invalid stored agent".to_owned(),
-            ));
-        };
+        let record = current.agent.value();
+        let agent = record.as_object().expect("agent is an object");
         if agent.get("workspaceReservationId").and_then(Value::as_str) != Some(operation_id)
             || !matches!(
                 agent.get("workspaceOperation").and_then(Value::as_str),
@@ -350,17 +366,16 @@ impl CheckpointsRepository {
         })?;
         if object.get("phase").and_then(Value::as_str) != Some("capture_pending")
             || object.get("kind") != agent.get("workspaceOperation")
-            || object.get("agent").and_then(Value::as_str) != Some(expected.agent.id.as_str())
+            || object.get("agent").and_then(Value::as_str) != Some(expected.agent.id.0.as_str())
             || object.get("cwd") != agent.get("cwd")
             || object.get("epoch") != agent.get("epoch")
         {
             return Ok(false);
         }
-        let source = Self::workspace_source(&current.agent.record);
+        let source = Self::workspace_source(&record);
         if object.get("source") != Some(&source)
             || (object.get("kind").and_then(Value::as_str) == Some("checkpoint")
-                && object.get("completionSource")
-                    != Some(&completion_source(&current.agent.record)))
+                && object.get("completionSource") != Some(&completion_source(&record)))
         {
             return Ok(false);
         }
@@ -777,26 +792,26 @@ fn completion_source(agent: &Value) -> Value {
 }
 
 fn same_workspace_activity(current: &WorkspaceSnapshot, expected: &WorkspaceSnapshot) -> bool {
-    const AGENT_FIELDS: &[&str] = &[
-        "id",
-        "cwd",
-        "epoch",
-        "accountKey",
-        "threadId",
-        "rootId",
-        "lastCompletedTurn",
-        "worktreeReady",
-        "status",
-        "inFlight",
-        "workspaceOperation",
-        "workspaceReservationId",
-        "deletedAt",
-        "executionMode",
-        "workspaceMode",
-        "checkpointHistoryHead",
-    ];
     current.agent.id == expected.agent.id
-        && same_record_fields(&current.agent.record, &expected.agent.record, AGENT_FIELDS)
+        && current.agent.root_id == expected.agent.root_id
+        && current.agent.epoch == expected.agent.epoch
+        && current.agent.cwd == expected.agent.cwd
+        && current.agent.account_key == expected.agent.account_key
+        && current.agent.thread_id == expected.agent.thread_id
+        && current.agent.worktree_ready == expected.agent.worktree_ready
+        && current.agent.status == expected.agent.status
+        && current.agent.in_flight == expected.agent.in_flight
+        && current.agent.deleted_at == expected.agent.deleted_at
+        && current.agent.execution_mode == expected.agent.execution_mode
+        && current.agent.workspace_mode == expected.agent.workspace_mode
+        && [
+            "lastCompletedTurn",
+            "workspaceOperation",
+            "workspaceReservationId",
+            "checkpointHistoryHead",
+        ]
+        .iter()
+        .all(|key| current.agent.extra.get(*key) == expected.agent.extra.get(*key))
         && same_parent_boundary(
             current.parent_checkpoint.as_ref(),
             expected.parent_checkpoint.as_ref(),
@@ -901,12 +916,7 @@ fn read_active(
     if !table_exists(connection, table)? || values.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = std::iter::repeat_n("?", values.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let mut statement = connection.prepare_cached(&format!(
-        "SELECT id,record FROM {table} WHERE json_extract(record,'$.{field}') IN ({placeholders}) ORDER BY rowid"
-    ))?;
+    let mut statement = connection.prepare_cached(&active_query(table, field, values.len()))?;
     let rows = statement.query_map(rusqlite::params_from_iter(values.iter()), read_stored_row)?;
     let records = collect_records(connection, rows, table)?;
     for record in &records {
@@ -920,6 +930,13 @@ fn read_active(
         }
     }
     Ok(records)
+}
+
+fn active_query(table: &str, field: &str, count: usize) -> String {
+    let placeholders = vec!["?"; count].join(",");
+    format!(
+        "SELECT id,record FROM {table} WHERE json_extract(record,'$.{field}') IN ({placeholders}) ORDER BY rowid"
+    )
 }
 
 fn read_object(
@@ -1110,13 +1127,7 @@ mod tests {
             [r#"{"id":"other","id":"c"}"#],
         )
         .unwrap();
-        assert_eq!(
-            CheckpointsRepository::checkpoint(&db, "c")
-                .unwrap()
-                .unwrap()
-                .record,
-            json!({"id":"c"})
-        );
+        assert!(CheckpointsRepository::checkpoint(&db, "c").is_err());
         db.execute(
             "UPDATE runtime_checkpoints SET record=?1",
             [r#"{"id":"c","id":"other"}"#],
@@ -1163,7 +1174,7 @@ mod tests {
     fn workspace_activity_ignores_unrelated_record_metadata() {
         let agent = StoredCheckpointObject {
             id: "agent".to_owned(),
-            record: json!({
+            record: json!({"compactions":0,
                 "id": "agent",
                 "provider": "codex",
                 "cwd": "/workspace",
@@ -1173,6 +1184,7 @@ mod tests {
                 "rootId": "root",
                 "lastCompletedTurn": "turn",
                 "inFlight": false,
+                "status": "idle",
                 "workspaceOperation": null,
                 "workspaceReservationId": null,
                 "name": "before",
@@ -1191,20 +1203,21 @@ mod tests {
             }),
         };
         let snapshot = WorkspaceSnapshot {
-            agent: agent.clone(),
+            agent: crate::AgentRecord::from_value(agent.record.clone()).unwrap(),
             parent_checkpoint: None,
             agents: vec![agent, other_agent],
             operations: Vec::new(),
             monitors: Vec::new(),
             tasks: Vec::new(),
         };
+        let _: &crate::AgentRecord = &snapshot.agent;
 
         let mut metadata_update = snapshot.clone();
-        metadata_update.agent.record["name"] = json!("renamed target agent");
+        metadata_update.agent.name = Some("renamed target agent".into());
         metadata_update.agents[1].record["name"] = json!("renamed unrelated agent");
         assert!(same_workspace_activity(&metadata_update, &snapshot));
 
-        metadata_update.agent.record["epoch"] = json!(1);
+        metadata_update.agent.epoch = 1;
         assert!(!same_workspace_activity(&metadata_update, &snapshot));
     }
 
@@ -1235,5 +1248,26 @@ mod tests {
                 |row| row.get::<_, String>(0),
             )
             .is_ok_and(|phase| phase == "capture_running"));
+    }
+
+    #[test]
+    fn restore_tree_refuses_duplicate_operation_fields() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             INSERT INTO runtime_workspace_operations VALUES
+             ('op','{\"id\":\"op\",\"kind\":\"capture\",\"kind\":\"restore\",\"phase\":\"provider_pending\",\"agent\":\"a\",\"checkpoint\":\"c\",\"expectedTree\":\"tree\"}');",
+        ).unwrap();
+        assert!(CheckpointsRepository::restore_expected_tree(&connection, "a", "c").is_err());
+        connection.execute(
+            "UPDATE runtime_workspace_operations SET record=?1 WHERE id='op'",
+            [r#"{"id":"op","kind":"restore","phase":"provider_pending","agent":"a","checkpoint":"c","expectedTree":"tree"}"#],
+        ).unwrap();
+        assert_eq!(
+            CheckpointsRepository::restore_expected_tree(&connection, "a", "c")
+                .unwrap()
+                .as_deref(),
+            Some("tree")
+        );
     }
 }

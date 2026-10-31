@@ -1195,7 +1195,7 @@ fn monitor_call(
     operation: &crate::monitor_policy::Operation,
 ) -> Result<Option<storage::RecordedCall>, WorkerError> {
     let identity = format!("monitor:{id}");
-    let key = Call::operation_key(&operation.account_key, &identity);
+    let key = Call::operation_key(operation.account_key.as_str(), &identity);
     let result_id = if let Some(token) = &operation.evidence.provider_request {
         Some(token.id().to_owned())
     } else if let Some(root) = operation.evidence.root_request_id.as_deref() {
@@ -1203,9 +1203,9 @@ fn monitor_call(
             RequestIdentity::new(
                 "provider-call",
                 &[
-                    &operation.account_key,
-                    &operation.agent,
-                    &operation.epoch.to_string(),
+                    operation.account_key.as_str(),
+                    operation.agent.as_str(),
+                    &operation.epoch.get().to_string(),
                 ],
                 root,
                 &[&identity],
@@ -1222,14 +1222,13 @@ fn monitor_call(
     };
     let call = value.call();
     if call.operation != identity
-        || call.scope.account != operation.account_key
-        || call.scope.connection != operation.connection_id
+        || call.scope.account != operation.account_key.as_str()
+        || call.scope.connection != operation.connection_id.as_str()
         || call.method != Method::CommandExec
         || call.params.get("processId").and_then(Value::as_str) != Some(id)
-        || call
-            .actor
-            .as_ref()
-            .is_none_or(|actor| actor.agent != operation.agent || actor.epoch != operation.epoch)
+        || call.actor.as_ref().is_none_or(|actor| {
+            actor.agent != operation.agent.as_str() || actor.epoch != operation.epoch.get()
+        })
     {
         return Err(WorkerError::PreparationRefused(
             "monitor retained receipt identity changed".into(),
@@ -1248,7 +1247,7 @@ pub(crate) fn monitor_command_scope(
     let Some(record) = studio_runtime_store::MonitorsRepository::get(tx, id)? else {
         return Ok(None);
     };
-    if record.value().get("operation") != Some(&json!(operation)) {
+    if record.operation.as_ref() != Some(operation) {
         return Ok(None);
     }
     let Some(submitted) = monitor_call(tx, id, operation)? else {
@@ -1284,27 +1283,22 @@ pub(crate) fn monitor_survives_account_transfer(
     let Some(record) = studio_runtime_store::MonitorsRepository::get(tx, id)? else {
         return Ok(false);
     };
-    let record = record.value();
     let Some(actor) = AgentRepository::get(tx, &AgentId::from(agent))? else {
         return Ok(false);
     };
-    let Some(operation) = record
-        .get("operation")
-        .cloned()
-        .and_then(|value| serde_json::from_value::<crate::monitor_policy::Operation>(value).ok())
-    else {
+    let Some(operation) = record.operation.as_ref() else {
         return Ok(false);
     };
-    if record["status"] != "running"
-        || record["agent"] != agent
-        || record["epoch"].as_i64() != Some(actor.epoch)
-        || operation.agent != agent
-        || operation.epoch != actor.epoch
+    if record.status != crate::monitor_policy::MonitorStatus::Running
+        || record.agent != agent
+        || record.epoch.get() != actor.epoch
+        || operation.agent.as_str() != agent
+        || operation.epoch.get() != actor.epoch
         || vm_actor(tx, agent)?
     {
         return Ok(false);
     }
-    Ok(monitor_command_scope(tx, id, &operation)?.is_some())
+    Ok(monitor_command_scope(tx, id, operation)?.is_some())
 }
 /// Read a monitor's checkpoint-verified retained terminal receipt. This never
 /// creates a provider request; recovered pending requests publish into this ledger.
@@ -1321,7 +1315,7 @@ pub async fn monitor_result(
                 return Ok(None);
             };
             if studio_runtime_store::MonitorsRepository::get(tx, &id)?
-                .is_none_or(|record| record.value().get("operation") != Some(&json!(operation)))
+                .is_none_or(|record| record.operation.as_ref() != Some(&operation))
             {
                 return Ok(None);
             }

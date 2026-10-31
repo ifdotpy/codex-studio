@@ -38,20 +38,33 @@ async fn leave_stale_receipt(state: &State, shape: Shape, thread: &str, stale: V
     let epoch = state.epoch;
     let thread = thread.to_owned();
     edit(state, move |row| {
-        row.extra.insert(
-            "disconnectRecovery".into(),
-            json!({"accountKey":"default","epoch":epoch,"autoWake":true,"threadId":thread,
-                "turnId":stale["turnId"],"connectionId":null,"supervisor":null,"at":1.0,
-                "startAttempt":stale}),
-        );
-        row.extra.remove("startAttempt");
+        row.disconnect_recovery = Some(Box::new(
+            studio_runtime_schema::recovery_record::RecoveryFields {
+                account_key: Some("default".into()),
+                epoch: studio_runtime_schema::recovery_record::SafeInteger::from_i64(epoch),
+                auto_wake: Some(true),
+                thread_id: Some(thread),
+                turn_id: stale["turnId"].as_str().map(str::to_owned),
+                start_attempt: Some(Box::new(
+                    serde::Deserialize::deserialize(stale.clone()).expect("typed fixture"),
+                )),
+                extra: [
+                    ("at".into(), json!(1.0)),
+                    ("supervisor".into(), Value::Null),
+                ]
+                .into(),
+                ..Default::default()
+            },
+        ));
+        row.start_attempt.take();
         if shape == Shape::Interrupted {
             row.status = studio_runtime_store::AgentStatus::Interrupted;
             row.extra.insert(
                 "error".into(),
                 json!(studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR),
             );
-            row.extra.insert("startAttempt".into(), stale);
+            row.start_attempt =
+                Some(serde::Deserialize::deserialize(stale).expect("typed fixture"));
         }
     })
     .await;
@@ -172,7 +185,18 @@ async fn native_review_attempt_without_a_turn(shape: Shape) {
                     "status":"started","response":{}}),
             ),
         ] {
-            row.extra.insert(key.into(), value);
+            match key {
+                "startAttempt" => {
+                    row.start_attempt = Some(serde::Deserialize::deserialize(value).unwrap())
+                }
+                "disconnectRecovery" => {
+                    row.disconnect_recovery =
+                        Some(Box::new(serde::Deserialize::deserialize(value).unwrap()))
+                }
+                _ => {
+                    row.extra.insert(key.into(), value);
+                }
+            }
         }
     })
     .await;

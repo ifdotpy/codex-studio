@@ -42,6 +42,7 @@ impl JsonRecord for ProfileRecord {
     const SCHEMA: &'static str = "PersistedProfileRecord";
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
 
     fn record_key(&self) -> Option<&Self::Id> {
         Some(&self.id)
@@ -126,5 +127,49 @@ inventory::submit! {
     crate::repositories::SchemaRegistration {
         repository: "profiles",
         requirements: &REQUIREMENTS,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_profile_reader_checks_shape_and_row_identity() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute(
+                "CREATE TABLE runtime_profiles(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+        let table = Table::<ProfileRecord>::new(&connection);
+        let id = "profile".to_owned();
+        for (raw, valid) in [
+            (
+                r#"{"id":"profile","name":"Reviewer","role":"reviewer","model":"m","effort":null,"instructions":""}"#,
+                true,
+            ),
+            (
+                r#"{"id":"other","name":"Reviewer","role":"reviewer","model":"m","effort":null,"instructions":""}"#,
+                false,
+            ),
+            (
+                r#"{"id":"profile","name":"Reviewer","role":"reviewer","model":null,"effort":null,"instructions":""}"#,
+                false,
+            ),
+            (r#"["profile","Reviewer","reviewer","m",null,""]"#, false),
+        ] {
+            connection
+                .execute("DELETE FROM runtime_profiles", [])
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO runtime_profiles(id,record) VALUES(?1,?2)",
+                    (&id, raw),
+                )
+                .unwrap();
+            assert_eq!(table.get(&id).is_ok(), valid);
+        }
     }
 }

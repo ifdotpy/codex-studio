@@ -16040,6 +16040,9 @@
                 "$ref": "#/components/schemas/ClaudeLoginResponse"
               },
               {
+                "$ref": "#/components/schemas/CodexLoginReceipt"
+              },
+              {
                 "type": "null"
               }
             ]
@@ -23768,17 +23771,6 @@
               }
             ]
           },
-          "peerUpdate": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdateStatus"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          },
           "pid": {
             "maximum": 9007199254740991,
             "minimum": 0,
@@ -23983,17 +23975,6 @@
                 "type": "null"
               }
             ]
-          },
-          "peerUpdate": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdateStatus"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
           },
           "pid": {
             "maximum": 9007199254740991,
@@ -35146,137 +35127,6 @@
           "commit",
           "commitTime",
           "branch"
-        ],
-        "type": "object"
-      },
-      "PeerUpdateEvent": {
-        "additionalProperties": false,
-        "description": "The last pull or install attempt of the update puller.",
-        "properties": {
-          "at": {
-            "description": "Time of the pull or install attempt, in seconds since the epoch.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "build": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdateBuild"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "outcome": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "reason": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "server": {
-            "description": "The paired server that offered the build.",
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "at",
-          "server",
-          "build",
-          "outcome",
-          "reason"
-        ],
-        "type": "object"
-      },
-      "PeerUpdatePending": {
-        "additionalProperties": false,
-        "description": "The staged update that the desktop installer takes next.",
-        "properties": {
-          "build": {
-            "$ref": "#/components/schemas/PeerUpdateBuild"
-          },
-          "server": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "build",
-          "server"
-        ],
-        "type": "object"
-      },
-      "PeerUpdateStatus": {
-        "additionalProperties": false,
-        "description": "The update state from a paired server, as `/api/desktop` shows it (`peerUpdate`).",
-        "properties": {
-          "build": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdateBuild"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The build of the installed app; null for a source checkout."
-          },
-          "checkedAt": {
-            "description": "Time of the last check, in seconds since the epoch.",
-            "format": "double",
-            "type": [
-              "number",
-              "null"
-            ]
-          },
-          "lastInstall": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdateEvent"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "lastPull": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdateEvent"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "pending": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PeerUpdatePending"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "build",
-          "checkedAt",
-          "lastPull",
-          "pending",
-          "lastInstall"
         ],
         "type": "object"
       },
@@ -49047,85 +48897,256 @@
         "type": "string"
       },
       "StartWaitRecordResponse": {
-        "additionalProperties": {
-          "$ref": "#/components/schemas/JsonValue"
-        },
-        "description": "Older persisted and status waits may omit details and carry extensions.",
-        "properties": {
-          "epoch": {
-            "format": "int64",
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "maxRunningTurns": {
-            "anyOf": [
-              {
+        "description": "One epoch-scoped wait. `until` is a retry deadline in Unix seconds.\n\n```compile_fail\nuse studio_runtime_schema::agent_progress::AgentStartWait;\nlet _ = AgentStartWait::Slot { epoch: 1 };\n```\n```compile_fail\nuse studio_runtime_schema::agent_progress::AgentStartWait;\nlet _ = AgentStartWait::Pause { epoch: 1 };\n```",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maxRunningTurns": {
                 "format": "uint64",
                 "maximum": 9007199254740991,
                 "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "type": "integer"
               },
-              {
-                "type": "null"
+              "reason": {
+                "const": "slot",
+                "type": "string"
+              },
+              "runningTurns": {
+                "format": "uint64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
               }
-            ]
-          },
-          "reason": {
-            "enum": [
-              "slot",
-              "pause",
-              "start_queue",
-              "disk",
-              "model_catalog",
-              "provider_session",
-              "dependency",
-              "dispatch_pending",
-              "paused",
-              "native_failure",
-              "account_transfer"
+            },
+            "required": [
+              "reason",
+              "epoch",
+              "runningTurns",
+              "maxRunningTurns"
             ],
-            "type": "string"
+            "type": "object"
           },
-          "runningTurns": {
-            "anyOf": [
-              {
-                "format": "uint64",
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
                 "maximum": 9007199254740991,
                 "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
+                "type": "integer"
               },
-              {
-                "type": "null"
+              "reason": {
+                "const": "pause",
+                "type": "string"
+              },
+              "until": {
+                "format": "double",
+                "type": "number"
               }
-            ]
+            },
+            "required": [
+              "reason",
+              "epoch",
+              "until"
+            ],
+            "type": "object"
           },
-          "until": {
-            "anyOf": [
-              {
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "start_queue",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "disk",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "model_catalog",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "provider_session",
+                "type": "string"
+              },
+              "until": {
+                "description": "The registry knows a deadline during retry backoff, but not initial startup.",
                 "format": "double",
                 "type": [
                   "number",
                   "null"
                 ]
-              },
-              {
-                "type": "null"
               }
-            ]
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "dependency",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "dispatch_pending",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "paused",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "native_failure",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "reason": {
+                "const": "account_transfer",
+                "type": "string"
+              }
+            },
+            "required": [
+              "reason",
+              "epoch"
+            ],
+            "type": "object"
           }
-        },
-        "required": [
-          "reason",
-          "epoch"
-        ],
-        "type": "object"
+        ]
       },
       "StateResource": {
         "additionalProperties": false,
@@ -50019,6 +50040,9 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ClaudeLoginResponse"
+              },
+              {
+                "$ref": "#/components/schemas/CodexLoginReceipt"
               },
               {
                 "type": "null"

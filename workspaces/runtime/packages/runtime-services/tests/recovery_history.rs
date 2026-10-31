@@ -262,7 +262,7 @@ impl RecoveryEffects for Effects {
     }
 }
 fn agent() -> RecoverySnapshot {
-    RecoverySnapshot::from_record(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnId":"turn","inFlight":true,"autoWake":true})).expect("valid recovery fixture")
+    RecoverySnapshot::from_record(json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnId":"turn","inFlight":true,"autoWake":true})).expect("valid recovery fixture")
 }
 #[tokio::test]
 async fn observed_turn_consumer_applies_after_barrier_and_never_submits_input() {
@@ -532,7 +532,7 @@ fn unknown_start_snapshot(held: bool) -> RecoverySnapshot {
     let attempt = json!({"id":"attempt","epoch":0,"accountKey":"default",
         "threadId":"thread","connectionId":"connection","events":["event"],
         "submitted":true,"executionOutcome":"unknown"});
-    let mut record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,
+    let mut record = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,
         "status":"queued","accountKey":"default","threadId":"thread",
         "autoWake":true,"inFlight":!held});
     if held {

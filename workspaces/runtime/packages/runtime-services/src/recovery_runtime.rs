@@ -154,7 +154,7 @@ impl RecoveryJob {
         };
         let a = self.agent().record();
         let task = match self {
-            Self::Task(t) => Some(t.task()["id"].clone()),
+            Self::Task(t) => Some(t.task().id().as_ref().to_owned()),
             Self::Turn(_) | Self::Connection { .. } => None,
         };
         // Diagnostic timestamps change after each probe; they must not reset
@@ -267,7 +267,7 @@ fn load_recovery_jobs_in(
         let full = rows.len() == MAX_SCAN_JOBS;
         for (id, task, agent, agent_id) in rows {
             cursor.tasks = id.clone();
-            let task: Value =
+            let task: studio_runtime_store::TaskRecord =
                 serde_json::from_str(&task).map_err(|_| invalid_record("runtime_tasks", &id))?;
             let mut agent: Value = serde_json::from_str(&agent)
                 .map_err(|_| invalid_record("runtime_agents", &agent_id))?;
@@ -500,7 +500,10 @@ fn due(job: &RecoveryJob, at: f64) -> bool {
     let e = job.agent().eligibility();
     match job {
         RecoveryJob::Connection { .. } => e.connection,
-        RecoveryJob::Task(t) => e.task_owner && t.task()["status"] == "running",
+        RecoveryJob::Task(t) => {
+            e.task_owner
+                && t.task().status() == studio_runtime_schema::task_record::TaskStatus::Running
+        }
         RecoveryJob::Turn(_) => {
             if !e.unconfirmed_start && (a["inFlight"] != true || a["deletedAt"].is_string()) {
                 return false;
@@ -546,4 +549,20 @@ fn invalid_record(table: &'static str, id: &str) -> RecoveryError {
         id: id.into(),
     }
     .into()
+}
+
+#[cfg(test)]
+mod task_identity_tests {
+    #[test]
+    fn typed_task_preserves_recovery_key() {
+        let agent = serde_json::json!({"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
+        let task = serde_json::from_str(r#"{"id":"a:i","agent":"a","created":1,"itemId":"i","turnId":"turn","kind":"command","status":"running","type":"commandExecution","name":"commandExecution"}"#).expect("task fixture");
+        let snapshot =
+            crate::task_recovery::TaskRecoverySnapshot::from_records(agent, task, vec![], vec![])
+                .expect("recovery snapshot");
+        assert_eq!(
+            super::RecoveryJob::Task(snapshot).key(),
+            "5d216505be4f4c64b33f1f490a2593afdda76f7dbf5eea760bf01e12a34492a7"
+        );
+    }
 }

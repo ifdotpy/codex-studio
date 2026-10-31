@@ -180,21 +180,6 @@ impl PreparedCapture {
             usage_unknown: false,
         })
     }
-    pub fn model_payload(
-        agent: &Value,
-        params: &Value,
-        at: f64,
-        recorded_at: f64,
-        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
-    ) -> Result<Self, CaptureError> {
-        Self::model_payload_shared(
-            Arc::new(agent.clone()),
-            params,
-            at,
-            recorded_at,
-            ledger_since,
-        )
-    }
     pub(crate) fn model_payload_shared(
         agent: Arc<Value>,
         params: &Value,
@@ -690,8 +675,8 @@ pub(crate) fn capture_logged_effect(
         agent,
         &observation.method,
         &observation.params,
-        observation.observed_at,
-        observation.observed_at,
+        observation.observed_at.get(),
+        observation.observed_at.get(),
         epoch,
     )?;
     if let Effect::Analytics {

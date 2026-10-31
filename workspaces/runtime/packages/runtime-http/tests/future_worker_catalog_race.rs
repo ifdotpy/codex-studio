@@ -163,7 +163,7 @@ impl Fixture {
         );
         let cwd_text = cwd.to_string_lossy().into_owned();
         store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,
                 "id":LEAD,"rootId":LEAD,"epoch":3,"name":"PM installation","isLead":true,
                 "accountKey":LEAD_ACCOUNT,"provider":"claude","model":"default","status":"waiting",
                 "cwd":cwd_text,"autoWake":false,"workerDefaults":{
@@ -171,7 +171,7 @@ impl Fixture {
                     "daybreakEnabled":false,"cyberAccessProgram":"standard","delegationDepth":1
                 }
             }))?)?;
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,
                 "id":CHILD,"parentId":LEAD,"rootId":LEAD,"epoch":2,"name":"Existing worker",
                 "accountKey":OLD,"provider":"codex","model":MODEL,"status":"paused",
                 "cwd":cwd_text,"autoWake":false,"threadId":"existing-thread"

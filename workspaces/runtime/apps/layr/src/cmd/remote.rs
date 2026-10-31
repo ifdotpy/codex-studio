@@ -329,18 +329,22 @@ pub mod git {
                 }
             }
         }
-        let _lock = repo.p.lock()?;
-        let (export_id, commit) = match prepared {
-            Some((eid, c)) => {
-                if gitbridge::ls_remote(ctx, repo, &url, &branch)?.as_deref() == Some(c.as_str()) {
-                    let mut rec = Record::new("export");
-                    rec.data = serde_json::json!({"export": eid, "state": state_id, "remote": remote, "branch": branch, "commit": c, "status": "pushed", "verified": "remote ref"});
-                    repo.commit_record(ctx, rec)?;
-                    outln!(ctx, "Already pushed before: {remote}/{branch} is {} (state {})", &c[..10], ids::short(&state_id));
-                    return Ok(0);
-                }
-                (eid, c)
+        // The network steps (ls-remote, push) run without the store lock: a push takes seconds
+        // to minutes, and every other command of the project waited for it. The export records
+        // ("prepared", then "pushed") keep a push whose answer was lost recoverable.
+        if let Some((eid, c)) = &prepared {
+            if gitbridge::ls_remote(ctx, repo, &url, &branch)?.as_deref() == Some(c.as_str()) {
+                let _lock = repo.p.lock()?;
+                let mut rec = Record::new("export");
+                rec.data = serde_json::json!({"export": eid, "state": state_id, "remote": remote, "branch": branch, "commit": c, "status": "pushed", "verified": "remote ref"});
+                repo.commit_record(ctx, rec)?;
+                outln!(ctx, "Already pushed before: {remote}/{branch} is {} (state {})", &c[..10], ids::short(&state_id));
+                return Ok(0);
             }
+        }
+        let lock = repo.p.lock()?;
+        let (export_id, commit) = match prepared {
+            Some((eid, c)) => (eid, c),
             None => {
                 if a.get("-m").is_some() && !a.has("--squash") {
                     return Err(exit(128, "fatal: -m names the message of a squashed commit: add --squash"));
@@ -363,12 +367,14 @@ pub mod git {
                 (eid, c)
             }
         };
+        drop(lock);
         if a.has("-n") {
             outln!(ctx, "Would push {} (state {}) to {url} {branch}", &commit[..10], ids::short(&state_id));
             return Ok(0);
         }
         let before = gitbridge::ls_remote(ctx, repo, &url, &branch).ok().flatten();
         gitbridge::push(ctx, repo, &url, &commit, &branch, a.has("-f") || a.has("--force-with-lease"))?;
+        let _lock = repo.p.lock()?;
         let mut rec = Record::new("export");
         rec.data = serde_json::json!({"export": export_id, "state": state_id, "remote": remote, "branch": branch, "commit": commit, "status": "pushed"});
         repo.commit_record(ctx, rec)?;

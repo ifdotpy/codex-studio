@@ -677,7 +677,7 @@ print(json.dumps({'stdin':value(limit.comparators[0]),'command':command,'wait':w
                 .expect("store"),
         );
         let home_text = home.to_string_lossy().into_owned();
-        let record = json!({"id":"lead","rootId":"lead","epoch":6,"status":"queued","provider":"claude",
+        let record = json!({"compactions":0,"id":"lead","rootId":"lead","epoch":6,"status":"queued","provider":"claude",
             "accountKey":"account","executionMode":"vm","layrReady":true,"layrHome":home_text,
             "layrProjectId":"project","layrLine":"main","cwd":"/guest/line"});
         store

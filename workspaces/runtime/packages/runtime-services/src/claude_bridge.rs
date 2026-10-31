@@ -25,7 +25,6 @@ pub enum BridgeHold {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Profile {
-    provider: String,
     account_id: Option<String>,
     email: Option<String>,
     status: String,
@@ -115,49 +114,6 @@ pub struct BridgeSnapshot {
     options: ClaudeOptionsRecord,
 }
 impl BridgeSnapshot {
-    pub fn from_record(record: Value) -> Result<Self, BridgeHold> {
-        let profile: Profile =
-            Deserialize::deserialize(&record).map_err(|_| BridgeHold::Account)?;
-        if profile.provider != ProviderKind::Claude.key() {
-            return Err(BridgeHold::Account);
-        }
-        let empty = json!({});
-        let options =
-            serde::Deserialize::deserialize(record.get("claudeOptions").unwrap_or(&empty))
-                .map_err(|_| BridgeHold::Options)?;
-        let (credential_identity, native_auth_pending, raw_options) = match record {
-            Value::Object(mut fields) => {
-                let credential =
-                    fields
-                        .remove("_credentialIdentity")
-                        .and_then(|value| match value {
-                            Value::String(value) => Some(value),
-                            Value::Null
-                            | Value::Bool(_)
-                            | Value::Number(_)
-                            | Value::Array(_)
-                            | Value::Object(_) => None,
-                        });
-                (
-                    credential,
-                    fields.remove("_nativeAuthPending") == Some(Value::Bool(true)),
-                    fields.remove("claudeOptions"),
-                )
-            }
-            Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::String(_)
-            | Value::Array(_) => (None, false, None),
-        };
-        Ok(Self {
-            profile,
-            credential_identity,
-            native_auth_pending,
-            raw_options,
-            options,
-        })
-    }
     /// Validate only after the adapter has resolved executables and created its root.
     pub fn from_launch(profile: &ClaudeLaunchProfile) -> Result<Self, BridgeHold> {
         use crate::account_policy::PublicString;
@@ -189,7 +145,6 @@ impl BridgeSnapshot {
         };
         Ok(Self {
             profile: Profile {
-                provider,
                 status,
                 account_id,
                 email,
@@ -341,13 +296,6 @@ pub struct ResolvedBridge {
     pub root: PathBuf,
     pub sdk_present: bool,
 }
-pub fn bridge_options(value: &Value) -> Result<Value, BridgeHold> {
-    let mut options = value.as_object().cloned().ok_or(BridgeHold::Options)?;
-    let args = options.remove("launchArgs").unwrap_or(json!(""));
-    let args = args.as_str().ok_or(BridgeHold::Options)?;
-    finish_bridge_options(options, args)
-}
-
 pub fn bridge_options_public(
     options: Option<&crate::account_policy::PublicClaudeOptions>,
 ) -> Result<Value, BridgeHold> {
@@ -420,108 +368,45 @@ pub(crate) fn bridge_launch_args(args: &str) -> Result<serde_json::Map<String, V
 
 #[cfg(test)]
 mod options_tests {
-    use super::{BridgeHold, BridgeSnapshot, bridge_options, bridge_options_checked};
+    use super::{BridgeHold, BridgeSnapshot, ClaudeLaunchProfile};
     use serde_json::json;
 
     #[test]
     fn snapshot_checks_options_shape_and_bridge_preserves_extensions() {
         let profile =
             |options| json!({"provider":"claude","status":"ready","claudeOptions":options});
-        assert!(BridgeSnapshot::from_record(profile(json!({"customModels":[{"id":"m","label":"Model","extra":true}],"extension":{"key":1}}))).is_ok());
+        let decode = |options| {
+            let launch = ClaudeLaunchProfile::from_record(&profile(options))?;
+            BridgeSnapshot::from_launch(&launch)
+        };
+        assert!(decode(json!({"customModels":[{"id":"m","label":"Model","extra":true}],"extension":{"key":1}})).is_ok());
         assert!(matches!(
-            BridgeSnapshot::from_record(profile(json!({"customModels":[["m","Model"]]}))),
+            decode(json!({"customModels":[["m","Model"]]})),
             Err(BridgeHold::Options)
         ));
-        assert!(matches!(
-            BridgeSnapshot::from_record(profile(json!(null))),
-            Err(BridgeHold::Options)
-        ));
-        assert_eq!(
-            bridge_options(&json!({"launchArgs":"--verbose","extension":{"key":1}})).unwrap(),
-            json!({"customModels":[],"extension":{"key":1},"extraArgs":{"verbose":null}})
-        );
-        assert!(bridge_options(&json!({"launchArgs":null})).is_err());
+        assert!(matches!(decode(json!(null)), Err(BridgeHold::Options)));
     }
 
     #[test]
-    fn public_options_match_legacy_bridge_projection() {
-        for raw in [
-            json!({}),
-            json!({"launchArgs":"--verbose","vendor":{"n":1}}),
-            json!({"launchArgs":null}),
-            json!({"launchArgs":7}),
-            json!(null),
-            json!([]),
+    fn public_options_keep_extensions_and_validate_launch_arguments() {
+        for (raw, expected) in [
+            (
+                r#"{"claudeOptions":{}}"#,
+                Some(r#"{"customModels":[],"extraArgs":{}}"#),
+            ),
+            (
+                r#"{"claudeOptions":{"launchArgs":"--verbose","vendor":{"n":1}}}"#,
+                Some(r#"{"customModels":[],"extraArgs":{"verbose":null},"vendor":{"n":1}}"#),
+            ),
+            (r#"{"claudeOptions":{"launchArgs":null}}"#, None),
         ] {
-            let profile: crate::account_policy::PublicAccount =
-                <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
-                    json!({"claudeOptions": raw}),
-                )
-                .expect("public fixture");
-            let old = super::bridge_options(&raw);
+            let profile: crate::account_policy::PublicAccount = serde_json::from_str(raw).unwrap();
             let actual = super::bridge_options_public(profile.claude_options.as_ref());
-            assert_eq!(actual.is_ok(), old.is_ok(), "{raw}");
-            if let (Ok(actual), Ok(old)) = (actual, old) {
-                assert_eq!(actual, old);
-            }
-        }
-        assert_eq!(
-            super::bridge_options_public(None).expect("default"),
-            super::bridge_options(&json!({})).expect("default")
-        );
-    }
-
-    #[test]
-    fn launch_projection_preserves_literal_pending_and_credential_pin() {
-        use crate::account_driver::{AuthMetadata, AuthStatus};
-        for pending in [json!(true), json!(false), json!("true"), json!(null)] {
-            let row = json!({"provider":"claude","status":"error","email":"a@example.test","accountId":"claude:a@example.test","_credentialIdentity":"claude:a@example.test","_nativeAuthPending":pending,"claudeOptions":{"vendor":{"n":1.0}}});
-            let legacy = BridgeSnapshot::from_record(row.clone()).expect("legacy profile");
-            let projected = super::ClaudeLaunchProfile::from_record(&row).expect("profile");
-            let projected = BridgeSnapshot::from_launch(&projected).expect("projected profile");
-            let paths = || super::ResolvedBridge {
-                node: "/node".into(),
-                executable: "/claude".into(),
-                bridge: "/bridge".into(),
-                root: "/root".into(),
-                sdk_present: true,
-            };
-            let metadata = AuthMetadata {
-                status: AuthStatus::Error,
-                account_id: None,
-                email: None,
-                plan: None,
-                organization_name: None,
-                credential_identity: None,
-                error: None,
-                error_kind: None,
-            };
-            let old = legacy.launch(paths(), &metadata, Default::default());
-            let new = projected.launch(paths(), &metadata, Default::default());
-            assert_eq!(old.is_ok(), new.is_ok(), "pending={pending}");
-            if let (Ok(old), Ok(new)) = (old, new) {
-                assert_eq!(old.environment, new.environment);
-            }
-        }
-    }
-
-    #[test]
-    fn checked_options_keep_missing_null_and_extensions_at_launch() {
-        use serde::Deserialize;
-        for raw in [
-            json!({}),
-            json!({"launchArgs":"--verbose","future":[1]}),
-            json!({"launchArgs":null}),
-            json!({"customModels":null}),
-        ] {
-            let typed =
-                studio_runtime_schema::claude_options::ClaudeOptionsRecord::deserialize(&raw)
-                    .unwrap();
-            let old = bridge_options(&raw);
-            let checked = bridge_options_checked(Some(&raw), &typed);
-            assert_eq!(checked.is_ok(), old.is_ok(), "{raw}");
-            if let (Ok(checked), Ok(old)) = (checked, old) {
-                assert_eq!(checked, old);
+            match expected {
+                Some(expected) => {
+                    assert_eq!(serde_json::to_string(&actual.unwrap()).unwrap(), expected)
+                }
+                None => assert!(actual.is_err()),
             }
         }
     }

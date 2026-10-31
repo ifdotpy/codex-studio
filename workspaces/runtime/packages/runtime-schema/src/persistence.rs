@@ -5,6 +5,48 @@ use serde::{Deserialize, Serialize};
 use strum::VariantNames;
 use uuid::Uuid;
 
+/// A request admitted for durable asynchronous settlement.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AdmittedRequest {
+    id: String,
+    signature: String,
+    created: i64,
+}
+impl AdmittedRequest {
+    /// Restore a token from a previously validated persisted owner record.
+    pub fn from_persisted_fields(id: String, signature: String, created: i64) -> Self {
+        Self {
+            id,
+            signature,
+            created,
+        }
+    }
+    /// Restore a token during a classified historical migration.
+    pub fn from_migration(id: &str, signature: &str, cutover_ms: i64) -> Self {
+        Self::from_persisted_fields(id.into(), signature.into(), cutover_ms)
+    }
+    /// Derive a completion identity without refreshing the owner's issuance time.
+    pub fn derive_result(&self, namespace: &str, operation: &[&str], signature: &str) -> Self {
+        let id = serde_json::to_string(&("owner-result", namespace, &self.id, operation))
+            .expect("owner result identity serializes");
+        Self {
+            id,
+            signature: signature.into(),
+            created: self.created,
+        }
+    }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn signature(&self) -> &str {
+        &self.signature
+    }
+    pub fn created(&self) -> i64 {
+        self.created
+    }
+}
+
 /// Maximum request-result age. Unit: milliseconds (30 days).
 pub const REQUEST_RESULT_TTL_MS: i64 = 2_592_000_000;
 /// Maximum accepted UUIDv7 issuance time ahead of the clock. Unit: milliseconds.

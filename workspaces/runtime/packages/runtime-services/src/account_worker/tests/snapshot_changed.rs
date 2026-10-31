@@ -25,8 +25,8 @@ fn put_child(
     let mut row = AgentRepository::get(tx, &AgentId::from(lead))?.expect("lead");
     row.id = child.into();
     row.status = status;
-    row.extra.insert("parentId".into(), json!(lead));
-    row.extra.insert("isLead".into(), json!(false));
+    row.parent_id = Some((lead).to_string());
+    row.is_lead = Some(false);
     row.auto_wake = Some(false);
     row.thread_id = Some(format!("{child}-thread"));
     AgentRepository::put(tx, &row)?;

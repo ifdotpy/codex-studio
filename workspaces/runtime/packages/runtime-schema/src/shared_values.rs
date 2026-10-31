@@ -161,6 +161,9 @@ pub const MODEL_CATALOG_OPERATION_TIMEOUT_SECONDS: u64 = 30;
 pub const MODEL_CATALOG_ADMISSION_WAIT_SECONDS: u64 = 5;
 /// Seconds a model catalog stays cached.
 pub const MODEL_CATALOG_CACHE_TTL_SECONDS: u64 = 300;
+/// Longest age, in seconds, of the last successfully read model catalog that worker
+/// creation still validates a model against when a fresh read fails or times out.
+pub const MODEL_CATALOG_LAST_GOOD_MAX_AGE_SECONDS: u64 = 86400;
 
 // Codex account limits are refreshed on separate window and complete-read ages.
 /// Seconds an account limit window stays fresh.

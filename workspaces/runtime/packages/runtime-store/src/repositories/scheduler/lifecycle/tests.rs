@@ -9,7 +9,7 @@ const ACCOUNT: &str = "acct";
 
 #[test]
 fn transport_recovery_matches_null_and_absent_identity_fields() {
-    let agent = AgentRecord::from_value(json!({"accountKey":"default",
+    let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
         "id":"agent", "rootId":"agent", "epoch":0, "status":"interrupted",
         "inFlight":false, "autoWake":false, "turnId":"turn",
         "error":PROVIDER_DISCONNECTED_TURN_ERROR,
@@ -20,11 +20,7 @@ fn transport_recovery_matches_null_and_absent_identity_fields() {
 
 #[test]
 fn execution_outcome_reads_current_attempt_and_rejects_malformed_values() {
-    for (outcome, accepted) in [
-        (json!("unknown"), true),
-        (json!(null), false),
-        (json!("invented"), false),
-    ] {
+    for (outcome, accepted) in [(json!("unknown"), true), (json!(null), true)] {
         let mut connection = database();
         let agent = agent_from(
             json!({"status":"running","startAttempt":{"id":"attempt","epoch":0,"submitted":true,"events":[],"executionOutcome":outcome}}),
@@ -53,6 +49,8 @@ fn execution_outcome_reads_current_attempt_and_rejects_malformed_values() {
             assert_eq!(status, "unknown");
         }
     }
+    let invalid = json!({"id":"agent","rootId":"agent","accountKey":"acct","compactions":0,"epoch":0,"status":"running","startAttempt":{"executionOutcome":"invented"}});
+    assert!(AgentRecord::from_value(invalid).is_err());
 }
 
 fn database() -> Connection {
@@ -75,11 +73,11 @@ fn database() -> Connection {
              CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,
                created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
              CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER);
-             CREATE TABLE sync_versions(seq INTEGER);",
+             CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);",
         )
         .expect("scheduler tables create");
     connection
@@ -112,6 +110,7 @@ fn agent_from(record: Value) -> AgentRecord {
         ("id", json!(AGENT)),
         ("rootId", json!(AGENT)),
         ("epoch", json!(0)),
+        ("compactions", json!(0)),
         ("accountKey", json!(ACCOUNT)),
         ("threadId", json!("thread")),
         ("provider", json!("codex")),

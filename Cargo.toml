@@ -106,6 +106,10 @@ ureq = { version = "=3.5.0", default-features = false, features = ["rustls-no-pr
 # Debug info level for local builds and tests. Full debuginfo made each
 # runtime-services test binary about 1 GB and dominated link time and disk
 # use (#373); line tables keep file:line in backtraces, dependencies carry none.
+# Line tables let live `perf` attribute inlined frames to source lines; no runtime cost.
+[profile.release]
+debug = "line-tables-only"
+
 [profile.dev]
 debug = "line-tables-only"
 

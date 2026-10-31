@@ -474,11 +474,8 @@ fn tick_before_observation(s: &Snapshot, now: f64) -> Result<Option<Decision>> {
         d.hold(s.record_id().unwrap_or(""), "account-excluded", &reason);
         return Ok(Some(d));
     }
-    if s.agent_view()
-        .deleted_at
-        .as_ref()
-        .is_some_and(|v| v.get() != 0.0)
-        || !s.agent_view().auto_wake.unwrap_or(false)
+    if s.agent_record().is_deleted()
+        || !s.agent_record().auto_wake.unwrap_or(false)
         || s.agent_record().usage_resume_enabled == Some(false)
         || s.agent_account() != key
         || !s.parents_running(false)
@@ -533,7 +530,7 @@ pub fn limits_changed(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Res
     Ok(d)
 }
 /// Existing exact cancelled rows can be re-enabled; a changed failed turn needs turn capture.
-pub fn set_enabled(s: &Snapshot, enabled: bool, now: f64) -> Result<Decision> {
+pub fn enable(s: &Snapshot, now: f64) -> Result<Decision> {
     now_checked(now)?;
     let Some(_r) = &s.record else {
         return Err(ContinuationError::Invalid("/record".into()));
@@ -542,12 +539,7 @@ pub fn set_enabled(s: &Snapshot, enabled: bool, now: f64) -> Result<Decision> {
         return Ok(Decision::default());
     }
     let mut r = ProposedRecord::existing(s).expect("validated record");
-    if !enabled && s.status() == Some(WaitStatus::Scheduled) {
-        r.update(U::Status("cancelled"));
-        r.update(U::DueAt(None));
-        r.update(U::Reason(Some(OFF.into())));
-    } else if enabled
-        && s.status() == Some(WaitStatus::Cancelled)
+    if s.status() == Some(WaitStatus::Cancelled)
         && s.record_reason() == Some(OFF)
         && s.agent_view().native_failure_hold.unwrap_or(false)
         && s.agent_view().last_completed_turn_status.as_deref() == Some("failed")
@@ -571,7 +563,7 @@ pub fn set_enabled(s: &Snapshot, enabled: bool, now: f64) -> Result<Decision> {
     }
     let mut d = Decision::save(s, r, "usageResume", now);
     if let Some(a) = &mut d.agent {
-        a.usage_enabled(enabled);
+        a.enable_usage();
     }
     Ok(d)
 }
@@ -597,11 +589,7 @@ pub struct FailureObservation<'a> {
 pub fn failure_eligible(s: &Snapshot) -> bool {
     !crate::continuation::native_thread_blocked(&s.agent)
         && s.agent_record().auto_wake.unwrap_or(false)
-        && !s
-            .agent_view()
-            .deleted_at
-            .as_ref()
-            .is_some_and(|v| v.get() != 0.0)
+        && !s.agent_record().is_deleted()
         && s.agent_record().usage_resume_enabled != Some(false)
         && s.agent_record().thread_id.is_some()
         && !s

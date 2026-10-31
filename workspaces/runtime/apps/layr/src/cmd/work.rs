@@ -287,6 +287,8 @@ pub fn begin_change(ctx: &Ctx, repo: &Repo, line: &Line) -> Result<(crate::store
 /// `begin_change` for another kind of change (a merge).
 pub fn begin(ctx: &Ctx, repo: &Repo, line: &Line, op: crate::repo::LineOp) -> Result<(crate::store::Lock, Option<String>)> {
     repo.authorize_line(ctx, line, op)?;
+    // The copy of changed files goes before the lock; under it the save takes it by a rename.
+    repo.prepare_save(line)?;
     let lock = repo.p.lock()?;
     let line = repo.line(&line.id)?;
     let w = repo.working_state(ctx, &line, "before a layr command")?;
@@ -440,25 +442,39 @@ pub fn add(ctx: &Ctx, args: &[String]) -> Result<i32> {
         specs = vec![String::new()];
     }
     h.repo.authorize_line(ctx, &line, crate::repo::LineOp::Direct)?;
-    let _lock = h.repo.p.lock()?;
-    let line = h.repo.line(&line.id)?;
-    let quiet = h.repo.quiet_paths(&line)?;
+    // The status and the copy of the named paths read the whole working folder: seconds in a
+    // large line. They run before the store lock; under it the copy is used when the head and
+    // the staging content did not change, else the read runs again under the lock.
     #[cfg(target_os = "macos")]
-    let prepared = {
-        let work = h.repo.working(&line);
-        let (index, stage) = h.repo.index_source(&line)?;
+    let read = |line: &Line| -> Result<Option<(crate::repo::Temp, BTreeSet<String>, Vec<String>)>> {
+        let quiet = h.repo.quiet_paths(line)?;
+        let work = h.repo.working(line);
+        let (index, stage) = h.repo.index_source(line)?;
         let mut roots = vec![work.as_path()];
         if let Some(s) = &stage {
             roots.push(s.as_path());
         }
         crate::storage::stable_read(&roots, || {
-            let st = h.repo.status_for_add(&line, &work, &index)?;
+            let st = h.repo.status_for_add(line, &work, &index)?;
             let (paths, ignored) = select_add(&h, &a, &specs, &st, &work, &index, &quiet)?;
             let scan = crate::repo::Temp { path: h.repo.p.scan_dir().join(ids::new_id()) };
             crate::storage::create_subvolume(&scan.path)?;
             crate::storage::copy_selected(&work, &scan.path, &paths)?;
             Ok((scan, paths, ignored))
-        })?
+        })
+    };
+    #[cfg(target_os = "macos")]
+    let early = {
+        let token = add_token(&h.repo, &line)?;
+        read(&line)?.map(|r| (token, r))
+    };
+    let _lock = h.repo.p.lock()?;
+    let line = h.repo.line(&line.id)?;
+    let quiet = h.repo.quiet_paths(&line)?;
+    #[cfg(target_os = "macos")]
+    let prepared = match early {
+        Some((token, r)) if token == add_token(&h.repo, &line)? => Some(r),
+        _ => read(&line)?,
     };
     #[cfg(not(target_os = "macos"))]
     let prepared: Option<(crate::repo::Temp, BTreeSet<String>, Vec<String>)> = None;
@@ -496,6 +512,21 @@ pub fn add(ctx: &Ctx, args: &[String]) -> Result<i32> {
         return Err(exit(1, m));
     }
     Ok(0)
+}
+
+/// What an `add` read depends on besides the working folder: the head and the staging content.
+/// The head and the index content of a line: a read before the lock is still valid under it
+/// when this did not change.
+#[cfg(target_os = "macos")]
+pub type AddToken = (String, Option<Vec<(String, crate::storage::Fingerprint)>>);
+
+#[cfg(target_os = "macos")]
+pub fn add_token(repo: &Repo, line: &Line) -> Result<AddToken> {
+    let stage = match repo.current_stage(line)? {
+        Some(s) => Some(crate::storage::scan_with_data(&s, true)?.into_iter().map(|(k, v)| (k, v.fingerprint)).collect()),
+        None => None,
+    };
+    Ok((line.head.clone(), stage))
 }
 
 pub fn rm(ctx: &Ctx, args: &[String]) -> Result<i32> {
@@ -864,11 +895,17 @@ pub fn commit(ctx: &Ctx, args: &[String]) -> Result<i32> {
     // rule (commit_layers checks it), so a protected line takes commits of its overlays only.
     let op = if stacked { crate::repo::LineOp::Save } else { crate::repo::LineOp::Direct };
     h.repo.authorize_line(ctx, &line, op)?;
+    // -a stages the changed tracked files like `add -u`, which reads the working folder before
+    // the store lock (a status of a large line took tens of seconds under it).
+    #[cfg(target_os = "macos")]
+    if a.has("-a") && !stacked {
+        add(ctx, &["-u".to_string()])?;
+    }
     let _lock = h.repo.p.lock()?;
     let line = h.repo.line(&line.id)?;
     crate::gitbridge::check_git_head(&h.repo, &line)?;
     crate::repo::recover_cache_replacements(&h.repo.working(&line))?;
-    if a.has("-a") && !stacked {
+    if a.has("-a") && !stacked && !cfg!(target_os = "macos") {
         let (st, scan, _it, _index) = h.repo.status(&line)?;
         let paths: BTreeSet<String> = st.unstaged.iter().map(|c| c.path.clone()).collect();
         if !paths.is_empty() {
@@ -1251,6 +1288,9 @@ pub fn restore_impl(
         matched |= !d.is_empty();
     }
     if worktree {
+        #[cfg(target_os = "macos")]
+        let scan = repo.scan_matching(&line, specs)?;
+        #[cfg(not(target_os = "macos"))]
         let scan = repo.scan(&line)?;
         let wdir = repo.working(&line);
         let d = restore_paths(repo, &line, &src_root, &scan.path, &wdir, specs, Some(&index))?;
@@ -1306,6 +1346,16 @@ pub fn reset(ctx: &Ctx, args: &[String]) -> Result<i32> {
         return restore_impl(ctx, &h, &line, &specs, true, false, Some(src), false, false);
     }
     let target = revs::resolve(&h.repo, Some(&line), pos.first().map(|s| s.as_str()).unwrap_or("head"))?;
+    // APFS: the copy of the working folder and the tree of the target go before the store lock
+    // (minutes under it in a large project). The working folder is never under the lock.
+    #[cfg(target_os = "macos")]
+    let prepared = if a.has("--hard") && h.repo.layers(&line)?.is_empty() {
+        hard_reset_changes(&h.repo, &line, &h.repo.state_root(&target)?).ok()
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "macos"))]
+    let prepared: Option<(Temp, Vec<Change>)> = None;
     let (_lock, w) = begin_change(ctx, &h.repo, &line)?;
     let line = h.repo.line(&line.id)?;
     let repo = &h.repo;
@@ -1344,14 +1394,12 @@ pub fn reset(ctx: &Ctx, args: &[String]) -> Result<i32> {
         "hard" => {
             repo.drop_stage(&line)?;
             if !repo.reset_snapshot(ctx, &line, &target)? {
-                let scan = repo.scan(&line)?;
+                let (_scan, list) = match prepared {
+                    Some(p) => p,
+                    None => hard_reset_changes(repo, &line, &target_root)?,
+                };
                 let wdir = repo.working(&line);
-                // Revert every tracked path; untracked and ignored files stay.
                 let own = repo.own(&line);
-                let list: Vec<_> = changes::without_moves(changes::file_changes(&scan.path, &target_root)?)
-                    .into_iter()
-                    .filter(|c| !skip_path(&c.path))
-                    .collect();
                 let gone: Vec<&str> = list
                     .iter()
                     .filter(|c| c.new.is_none() && fsutil::lmeta(&index, &c.path).is_some())
@@ -1377,6 +1425,17 @@ pub fn reset(ctx: &Ctx, args: &[String]) -> Result<i32> {
         outln!(ctx, "head is now at {} {}", ids::short(&target), s.message.lines().next().unwrap_or(""));
     }
     Ok(0)
+}
+
+/// The changes from the working folder to `target_root` that `reset --hard` applies: every
+/// tracked path; untracked and ignored files stay. The scan stays alive with the list.
+fn hard_reset_changes(repo: &Repo, line: &Line, target_root: &std::path::Path) -> Result<(Temp, Vec<Change>)> {
+    let scan = repo.scan(line)?;
+    let list = changes::without_moves(changes::file_changes(&scan.path, target_root)?)
+        .into_iter()
+        .filter(|c| !skip_path(&c.path))
+        .collect();
+    Ok((scan, list))
 }
 
 pub fn stash(ctx: &Ctx, args: &[String]) -> Result<i32> {

@@ -888,7 +888,83 @@ pub fn scan_snapshot(src: &Path, dst: &Path) -> Result<()> {
     snapshot_with(src, dst, true, false)
 }
 
+/// A copy of a tree made before a store lock (`prepare_snapshot`).
+struct Prepared {
+    src: PathBuf,
+    readonly: bool,
+    path: PathBuf,
+}
+thread_local! {
+    static PREPARED: std::cell::RefCell<Vec<Prepared>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Copy `src` into `dir` now, before the caller takes the store lock. A later `snapshot` of
+/// `src` then takes this copy with one rename instead of copying every file under the lock:
+/// build output has hundreds of thousands of files, and that copy took minutes under it. The
+/// copy is a consistent copy of `src` from a moment before the lock; a cache is build output,
+/// and a few seconds older output warms a line as well.
+pub fn prepare_snapshot(src: &Path, dir: &Path, readonly: bool) -> Result<()> {
+    fs::create_dir_all(dir)?;
+    let path = dir.join(format!("prepared-{}", crate::ids::new_id()));
+    copy_snapshot(src, &path, readonly, true)?;
+    PREPARED.with(|p| p.borrow_mut().push(Prepared { src: src.to_path_buf(), readonly, path }));
+    Ok(())
+}
+
+/// Rename the tree `src` to `dst` (one APFS volume), also when its root is sealed: a sealed
+/// root is immutable and read-only, and macOS 14 requires write access to a directory when
+/// rename updates its parent. The root keeps its seal and mode.
+pub fn move_tree(src: &Path, dst: &Path) -> Result<()> {
+    use std::os::macos::fs::MetadataExt as MacMetadataExt;
+    let m = fs::symlink_metadata(src)?;
+    let sealed = m.st_flags() & libc::UF_IMMUTABLE != 0;
+    let mode = m.mode() & 0o7777;
+    if sealed {
+        crate::sys::apfs_immutable(src, false)?;
+    }
+    let moved = (|| -> Result<()> {
+        if m.is_dir() {
+            fs::set_permissions(src, fs::Permissions::from_mode(mode | 0o200))?;
+        }
+        crate::sys::apfs_publish(src, dst)?;
+        Ok(())
+    })();
+    let at = if moved.is_ok() { dst } else { src };
+    if m.is_dir() {
+        let _ = fs::set_permissions(at, fs::Permissions::from_mode(mode));
+    }
+    if sealed {
+        crate::sys::apfs_immutable(at, true)?;
+    }
+    moved
+}
+
+/// The prepared copies that no snapshot took; the caller deletes them.
+pub fn take_prepared() -> Vec<PathBuf> {
+    PREPARED.with(|p| p.borrow_mut().drain(..).map(|x| x.path).collect())
+}
+
 fn snapshot_with(src: &Path, dst: &Path, readonly: bool, keep_links: bool) -> Result<()> {
+    if keep_links {
+        let taken = PREPARED.with(|p| {
+            let mut p = p.borrow_mut();
+            let i = p.iter().position(|x| x.src == src && x.readonly == readonly)?;
+            Some(p.remove(i).path)
+        });
+        if let Some(path) = taken {
+            let _t = crate::trace::span(format!("APFS take prepared copy {}", dst.display()));
+            if fs::symlink_metadata(dst).is_ok() {
+                PREPARED.with(|p| p.borrow_mut().push(Prepared { src: src.to_path_buf(), readonly, path }));
+                bail!("snapshot destination already exists");
+            }
+            return move_tree(&path, dst).context("publish prepared snapshot");
+        }
+    }
+    copy_snapshot(src, dst, readonly, keep_links).map(|_| ())
+}
+
+/// Copy `src` to `dst` as a snapshot. Returns the scan of `src` that the copy matches.
+fn copy_snapshot(src: &Path, dst: &Path, readonly: bool, keep_links: bool) -> Result<BTreeMap<String, ScanEntry>> {
     let _t = crate::trace::span(format!("APFS clone {}", dst.display()));
     if fs::symlink_metadata(dst).is_ok() {
         bail!("snapshot destination already exists");
@@ -900,7 +976,7 @@ fn snapshot_with(src: &Path, dst: &Path, readonly: bool, keep_links: bool) -> Re
     };
     let temp = dst.with_file_name(format!(".apfs-{}", crate::ids::new_id()));
     let mut published = false;
-    let result = (|| -> Result<()> {
+    let result = (|| -> Result<BTreeMap<String, ScanEntry>> {
         let mut before = before;
         for round in 0.. {
             let _t = crate::trace::span("APFS copy tree");
@@ -978,7 +1054,7 @@ fn snapshot_with(src: &Path, dst: &Path, readonly: bool, keep_links: bool) -> Re
             let _t = crate::trace::span("APFS seal tree");
             seal(dst, true, false).context("seal snapshot")?;
         }
-        Ok(())
+        Ok(before)
     })();
     if result.is_err() {
         let _ = delete_tree(&temp);

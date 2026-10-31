@@ -138,6 +138,9 @@ impl Selection {
             .map(|value| format!("'{value}'"))
             .collect::<Vec<_>>()
             .join(",");
+        if self.table == "runtime_monitors" {
+            return format!("monitor_status IN ({values})");
+        }
         format!(
             "CASE WHEN json_valid(record) THEN json_extract(record,'$.{}') IN ({values}) ELSE 0 END",
             self.field
@@ -206,6 +209,13 @@ fn tool_request_counts_sql() -> String {
 pub struct StartupRecoveryRepository;
 
 impl StartupRecoveryRepository {
+    pub(crate) fn prepare_monitor_index(connection: &Connection) -> StoreResult<()> {
+        if crate::schema::table_exists(connection, MONITORS.table)? {
+            connection.execute_batch(&MONITORS.definition().create_sql)?;
+        }
+        Ok(())
+    }
+
     /// Canonical DDL for the startup recovery partial indexes.
     #[doc(hidden)]
     pub fn index_definitions() -> Vec<OwnedRuntimeIndexDefinition> {
@@ -301,7 +311,7 @@ mod tests {
         let connection = Connection::open_in_memory().expect("memory SQLite opens");
         connection
             .execute_batch(
-                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL,monitor_status TEXT);
                  CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL);",
             )
@@ -443,12 +453,12 @@ mod tests {
             ),
         ] {
             for (id, record) in rows {
-                connection
-                    .execute(
-                        &format!("INSERT INTO {}(id,record) VALUES(?1,?2)", selection.table),
-                        [id, record],
-                    )
-                    .expect("row");
+                let sql = if selection.table == "runtime_monitors" {
+                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))".to_owned()
+                } else {
+                    format!("INSERT INTO {}(id,record) VALUES(?1,?2)", selection.table)
+                };
+                connection.execute(&sql, [id, record]).expect("row");
             }
             let selected = selection.rows(&connection).expect("rows");
             let ids = selected

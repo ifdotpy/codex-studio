@@ -32,6 +32,18 @@ fn registered_parent_tables() -> Vec<&'static str> {
 }
 
 pub(crate) fn prepare_sync_schema(transaction: &Transaction<'_>) -> StoreResult<()> {
+    if crate::schema::table_exists(transaction, "sync_versions")? {
+        transaction.execute_batch("CREATE TABLE IF NOT EXISTS sync_generation (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);
+            INSERT OR IGNORE INTO sync_generation VALUES(1,0);
+            UPDATE sync_generation SET value=MAX(value,(SELECT COALESCE(MAX(seq),0) FROM sync_versions)) WHERE id=1;
+            DROP TRIGGER IF EXISTS summary_plan_delete;
+            DROP TRIGGER IF EXISTS summary_annotation_delete;
+            DROP TRIGGER IF EXISTS summary_messageReceipt_delete;
+            DROP TRIGGER IF EXISTS summary_task_delete;
+            DROP TRIGGER IF EXISTS summary_questionHistory_delete;
+            DROP TRIGGER IF EXISTS summary_retainedWorktree_delete;
+            DROP TABLE sync_versions;")?;
+    }
     let sections = parse_sections(SYNC_SCHEMA)?;
     let has_runtime_items = transaction.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_items' COLLATE NOCASE)",

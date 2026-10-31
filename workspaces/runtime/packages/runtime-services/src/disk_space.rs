@@ -527,27 +527,17 @@ async fn hold_agent_turn_with_gate(
                 }
                 _ => false,
             };
-            use studio_runtime_schema::agent_progress::{
-                AgentStartWait, START_WAIT_FIELD,
-            };
-            let previous_wait = agent
-                .extra
-                .get(START_WAIT_FIELD)
-                .cloned()
-                .and_then(|value| serde_json::from_value::<studio_runtime_schema::agent_progress::LegacyStartWait>(value).ok())
-                .and_then(studio_runtime_schema::agent_progress::LegacyStartWait::into_fresh);
+            use studio_runtime_schema::agent_progress::AgentStartWait;
             let wait_changed = if held {
-                let value = serde_json::to_value(AgentStartWait::Disk { epoch })?;
-                if agent.extra.get(START_WAIT_FIELD) != Some(&value) {
-                    agent.extra.insert(START_WAIT_FIELD.into(), value);
+                let wait = AgentStartWait::Disk { epoch };
+                if agent.start_wait.as_ref() != Some(&wait) {
+                    agent.start_wait = Some(wait);
                     true
                 } else {
                     false
                 }
-            } else if previous_wait
-                .is_some_and(|wait| matches!(wait, AgentStartWait::Disk { epoch: wait_epoch } if wait_epoch == epoch))
-            {
-                agent.extra.remove(START_WAIT_FIELD);
+            } else if matches!(agent.start_wait, Some(AgentStartWait::Disk { epoch: wait_epoch }) if wait_epoch == epoch) {
+                agent.start_wait = None;
                 true
             } else {
                 false
@@ -754,8 +744,8 @@ mod tests {
         store
             .transaction_with_error(move |tx| {
                 let agent =
-                    AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker", "rootId":"worker", "epoch":1,
-                    "status":"queued", "role":"implementer", "autoWake":true, "cwd":cwd, "startWait":{"reason":"slot", "epoch":1, "runningTurns":null}}))?;
+                    AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker", "rootId":"worker", "epoch":1,
+                    "status":"queued", "role":"implementer", "autoWake":true, "cwd":cwd, "startWait":{"reason":"slot", "epoch":1, "runningTurns":1, "maxRunningTurns":2}}))?;
                 AgentRepository::put(tx, &agent)?;
                 crate::event_write::enqueue_event(
                     tx,
@@ -797,7 +787,10 @@ mod tests {
             .expect("worker");
         assert_eq!(agent.status, studio_runtime_store::AgentStatus::Queued);
         assert_eq!(agent.epoch, 1);
-        assert_eq!(agent.extra["startWait"], json!({"reason":"disk","epoch":1}));
+        assert_eq!(
+            agent.start_wait,
+            Some(studio_runtime_schema::agent_progress::AgentStartWait::Disk { epoch: 1 })
+        );
         assert!(
             agent.extra["error"]
                 .as_str()
@@ -825,7 +818,7 @@ mod tests {
             .expect("read")
             .expect("worker");
         assert!(!agent.extra.contains_key("error"));
-        assert!(!agent.extra.contains_key("startWait"));
+        assert!(agent.start_wait.is_none());
         assert_eq!(agent.status, studio_runtime_store::AgentStatus::Queued);
         let after = store
             .read_async("test/storage-queue-after", |tx| {

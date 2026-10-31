@@ -3,10 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
 use studio_runtime_store::truthy;
-
-use studio_runtime_store::workspace_operations::MAX_CHECKPOINT_LINEAGE;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceOperationError {
@@ -16,14 +13,6 @@ pub enum WorkspaceOperationError {
         id: String,
         pointer: String,
     },
-    #[error("Checkpoint history lineage contains a cycle")]
-    HistoryCycle,
-    #[error("Checkpoint history parent is missing")]
-    MissingParent,
-    #[error("Checkpoint history exceeds the supported bound")]
-    HistoryLimit,
-    #[error("Checkpoint history payload requires payload-store/checkpoint-history")]
-    HistoryPayload,
     #[error("Workspace operation source changed")]
     SourceChanged,
     #[error("This request id has different content")]
@@ -155,87 +144,6 @@ impl CompletionSnapshot {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct HistoryRecord {
-    id: String,
-    agent: String,
-    #[serde(default)]
-    created: f64,
-    #[serde(default)]
-    history_parent: Option<String>,
-    items: Option<Vec<String>>,
-    history_delta: Option<Vec<String>>,
-}
-
-/// A resolved lineage and the legacy created-time fallback supplied by the repository.
-pub struct CheckpointHistory {
-    selected: HistoryRecord,
-    records: BTreeMap<String, HistoryRecord>,
-    fallback: Vec<(String, f64)>,
-}
-impl CheckpointHistory {
-    pub fn from_records(
-        selected: &Value,
-        parents: &[Value],
-        fallback: Vec<(String, f64)>,
-    ) -> Result<Self> {
-        let mut records = BTreeMap::new();
-        for raw in std::iter::once(selected).chain(parents) {
-            if raw
-                .get("_payloadBlobs")
-                .and_then(Value::as_object)
-                .is_some_and(|v| v.contains_key("items") || v.contains_key("historyDelta"))
-            {
-                return Err(WorkspaceOperationError::HistoryPayload);
-            }
-            let record: HistoryRecord = decode("WorkspaceCheckpointHistoryRecord", raw)?;
-            if records.insert(record.id.clone(), record).is_some() {
-                return Err(WorkspaceOperationError::HistoryCycle);
-            }
-        }
-        Ok(Self {
-            selected: decode("WorkspaceCheckpointHistoryRecord", selected)?,
-            records,
-            fallback,
-        })
-    }
-    pub fn visible_ids(&self) -> Result<BTreeSet<String>> {
-        let mut ids = BTreeSet::new();
-        let mut seen = BTreeSet::new();
-        let mut current = &self.selected;
-        loop {
-            if !seen.insert(&current.id) {
-                return Err(WorkspaceOperationError::HistoryCycle);
-            }
-            if seen.len() > MAX_CHECKPOINT_LINEAGE {
-                return Err(WorkspaceOperationError::HistoryLimit);
-            }
-            if current.agent != self.selected.agent {
-                return Err(WorkspaceOperationError::SourceChanged);
-            }
-            if let Some(delta) = current.items.as_ref().or(current.history_delta.as_ref()) {
-                ids.extend(delta.iter().cloned());
-            } else {
-                ids.extend(
-                    self.fallback
-                        .iter()
-                        .filter(|(_, created)| *created <= self.selected.created)
-                        .map(|(id, _)| id.clone()),
-                );
-            }
-            let Some(parent) = current.history_parent.as_ref().filter(|s| !s.is_empty()) else {
-                break;
-            };
-            current = self
-                .records
-                .get(parent)
-                .ok_or(WorkspaceOperationError::MissingParent)?;
-        }
-        Ok(ids)
-    }
-}
-
 use studio_runtime_schema::queue_command::Field;
 pub use studio_runtime_schema::workspace_operation::{
     OperationKind, OperationPhase, WorkspaceOperationRecord,
@@ -259,11 +167,6 @@ pub struct RecoveryWrites {
 }
 
 impl OperationSnapshot {
-    pub fn from_records(operation: &Value, agent: &Value) -> Result<Self> {
-        let typed: WorkspaceOperationRecord =
-            decode("PersistedWorkspaceOperationRecord", operation)?;
-        Self::from_checked(typed, agent)
-    }
     pub fn from_checked(operation: WorkspaceOperationRecord, agent: &Value) -> Result<Self> {
         let actor: CompletionIdentity = decode("WorkspaceCheckpointAgentRecord", agent)?;
         if operation.agent != actor.id {
@@ -368,18 +271,7 @@ impl OperationSnapshot {
     }
 }
 
-/// Durable transport identity; response contents alone never authorize local mutation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderTicket {
-    pub operation: String,
-    pub agent: String,
-    pub epoch: u64,
-    pub account: String,
-    pub thread: Option<String>,
-    pub connection: String,
-    pub generation: u64,
-    pub request: String,
-}
+pub use studio_runtime_schema::start_attempt::ProviderTicket;
 
 pub fn accept_provider_result(
     expected: &ProviderTicket,

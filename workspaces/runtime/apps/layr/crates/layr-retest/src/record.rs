@@ -38,6 +38,9 @@ pub struct TestRec {
 pub struct Record {
     /// State of the record that this run started from. `None` for a full run.
     pub baseline: Option<String>,
+    /// The nextest arguments of the run. A run with other arguments lists its tests again.
+    #[serde(default)]
+    pub args: Vec<String>,
     /// Key: `<binary id> <test name>`.
     pub tests: BTreeMap<String, TestRec>,
 }

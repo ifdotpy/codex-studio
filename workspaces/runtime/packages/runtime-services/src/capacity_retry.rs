@@ -85,23 +85,12 @@ pub fn failed(
     turn_id: &str,
     settings: &Value,
     now: f64,
-) -> Result<Decision> {
-    failed_with_reason(s, kind, turn_id, settings, now, None)
-}
-
-/// As [`failed`], with the visible reason of a disk-full hold.
-pub fn failed_with_reason(
-    s: &Snapshot,
-    kind: Failure,
-    turn_id: &str,
-    settings: &Value,
-    now: f64,
     reason: Option<&str>,
 ) -> Result<Decision> {
     now_checked(now)?;
     if crate::continuation::native_thread_blocked(&s.agent)
         || !s.agent_record().auto_wake.unwrap_or(false)
-        || present(&s.agent, "deletedAt")
+        || s.agent_record().is_deleted()
         || s.agent_record().thread_id.is_none()
         || s.agent
             .get("turnEpoch")
@@ -328,7 +317,6 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                         id,
                         text: CONTINUATION.into(),
                     }],
-                    ..Decision::default()
                 });
             }
         }

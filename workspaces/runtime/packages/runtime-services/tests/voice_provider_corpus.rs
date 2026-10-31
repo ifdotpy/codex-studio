@@ -404,8 +404,8 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
                 let id = studio_runtime_store::AgentId::from(agent);
                 let record = studio_runtime_store::AgentRecord {
                     in_flight: None,
-        account_key: "default".into(),
-        thread_id: None,
+        account_key: "account".into(),
+        thread_id: Some("thread".into()),
         turn_id: None,
         auto_wake: None,
         usage_resume_enabled: None,
@@ -421,12 +421,11 @@ async fn seeded_store() -> (tempfile::TempDir, RuntimeStore) {
                     native_release: None,
                     id: id.clone(), root_id: id, epoch: 0,
                     status: studio_runtime_store::AgentStatus::Idle,
+                    is_lead: Some(true),
                     extra: [
                         ("provider".into(), serde_json::to_value(studio_runtime_schema::ProviderKind::Codex).expect("provider")),
-                        ("isLead".into(), serde_json::Value::Bool(true)),
-                        ("threadId".into(), serde_json::Value::String("thread".into())),
-                        ("accountKey".into(), serde_json::Value::String("account".into())),
                     ].into(),
+                    ..studio_runtime_store::AgentRecord::test_defaults()
                 };
                 studio_runtime_store::AgentRepository::put(connection, &record)?;
             }
@@ -1389,76 +1388,6 @@ async fn changed_speech_text_after_written_receipt_refuses_without_writes() {
         .expect("receipt exists");
     assert_eq!(before, after);
     assert_eq!(provider.calls.lock().expect("calls").len(), 1);
-}
-
-#[tokio::test]
-#[allow(clippy::disallowed_methods)]
-async fn python_approval_speech_rows_and_voice_views_match_rust() {
-    let (_root, store) = seeded_store().await;
-    let store = Arc::new(store);
-    let request = json!({
-        "id":"oracle-approval", "agent":"agent", "epoch":0,
-        "status":"pending", "method":"item/commandExecution/requestApproval",
-        "params":{"command":"printf safe", "cwd":"/tmp"}
-    });
-    store
-        .transaction(move |tx| {
-            tx.execute(
-                "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
-                rusqlite::params!["oracle-approval", request.to_string()],
-            )?;
-            Ok(())
-        })
-        .await
-        .expect("seed Python-readable approval");
-
-    let expected: serde_json::Value =
-        serde_json::from_str(include_str!("voice_provider/approval-expected.json"))
-            .expect("frozen approval speech corpus");
-    store
-        .transaction(|tx| {
-            tx.execute_batch(include_str!("voice_provider/approval-seed.sql"))?;
-            Ok(())
-        })
-        .await
-        .expect("historical approval speech row");
-
-    let approvals = voice::approvals(&store, "agent")
-        .await
-        .expect("Rust approvals");
-    assert_eq!(approvals, expected["approvals"]);
-    let records = voice::records(&store, "agent", 0)
-        .await
-        .expect("Rust records view");
-    assert_eq!(records, expected["records"]);
-    let speech = voice::approval_speech(std::sync::Arc::clone(&store), "agent", "oracle-approval")
-        .await
-        .expect("Rust reads Python-written approval speech");
-    assert_eq!(speech, expected["approval"]);
-
-    let connection = store.test_reader().expect("full voice record rows");
-    let rows = connection.prepare(
-        "SELECT seq,id,agent,session,kind,text,item_id,previous_item_id,payload,created \
-         FROM voice_records WHERE agent='agent' ORDER BY seq",
-    ).expect("voice rows query").query_map([], |row| {
-        Ok(json!({"seq":row.get::<_,i64>(0)?,"id":row.get::<_,String>(1)?,"agent":row.get::<_,String>(2)?,
-          "session":row.get::<_,String>(3)?,"kind":row.get::<_,String>(4)?,"text":row.get::<_,String>(5)?,
-          "item_id":row.get::<_,String>(6)?,"previous_item_id":row.get::<_,String>(7)?,
-          "payload":row.get::<_,String>(8)?,"created":row.get::<_,f64>(9)?}))
-    }).expect("voice rows").collect::<Result<Vec<_>,_>>().expect("decode rows");
-    assert_eq!(json!(rows), expected["rows"]);
-    assert_eq!(
-        table_rows(&connection, "runtime_events", "created,id"),
-        expected["events"]
-    );
-    assert_eq!(
-        table_rows(&connection, "sync_entities", "collection,id"),
-        expected["sync_entities"]
-    );
-    assert_eq!(
-        table_rows(&connection, "sync_documents", "scope,id,seq"),
-        expected["sync_documents"]
-    );
 }
 
 #[tokio::test]

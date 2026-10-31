@@ -38,23 +38,24 @@ pub(super) fn snapshot(tx: &Transaction<'_>, actor: &Value) -> Result<Option<Val
     for (_, raw) in team {
         let record: studio_runtime_store::AgentRecord =
             serde_json::from_str(&raw).map_err(|_| refusal("invalid child record".into()))?;
-        let worker = record.value();
-        if worker["id"] == id
-            || (!lead && worker["parentId"] != id)
-            || studio_runtime_store::truthy(worker.get("deletedAt"))
+        if record.id.0 == id
+            || (!lead && record.parent_id.as_deref() != Some(id))
+            || record.is_deleted()
         {
             continue;
         }
         has_children = true;
         if matches!(
-            worker["status"].as_str(),
-            Some("completed" | "failed" | "interrupted")
-        ) || (worker["status"] == "paused"
+            record.status,
+            studio_runtime_store::AgentStatus::Completed
+                | studio_runtime_store::AgentStatus::Failed
+                | studio_runtime_store::AgentStatus::Interrupted
+        ) || (record.status == studio_runtime_store::AgentStatus::Paused
             && record.auto_wake != Some(true))
         {
             continue;
         }
-        children.push(json!({"id":worker["id"],"name":worker["name"],"status":worker["status"]}));
+        children.push(json!({"id":record.id,"name":record.name,"status":record.status}));
     }
     children.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
     let tasks = rows(tx,
@@ -117,8 +118,8 @@ mod idle_return_tests {
         let root = tempfile::tempdir().expect("root");
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         store.transaction(|tx| {
-            let lead = json!({"id":"lead","rootId":"lead","epoch":1,"events":0,"accountKey":"default","isLead":true,"provider":"claude","status":"idle","autoWake":true});
-            let mut worker = json!({"id":"worker","rootId":"lead","epoch":1,"events":0,"accountKey":"default","parentId":"lead","name":"Worker","provider":"claude","status":"running","autoWake":true});
+            let lead = json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,"events":0,"accountKey":"default","isLead":true,"provider":"claude","status":"idle","autoWake":true});
+            let mut worker = json!({"compactions":0,"id":"worker","rootId":"lead","epoch":1,"events":0,"accountKey":"default","parentId":"lead","name":"Worker","provider":"claude","status":"running","autoWake":true});
             AgentRepository::put(tx,&AgentRecord::from_value(lead.clone()).expect("lead"))?;
             AgentRepository::put(tx,&AgentRecord::from_value(worker.clone()).expect("worker"))?;
             let previous = snapshot(tx,&lead).expect("snapshot").expect("team");

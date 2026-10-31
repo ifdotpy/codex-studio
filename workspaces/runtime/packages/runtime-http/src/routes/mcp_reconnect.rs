@@ -34,7 +34,10 @@ pub(crate) fn routes() -> RouteGroup {
     )])
 }
 
-pub(super) fn binding(agent: &studio_runtime_store::AgentRecord, scope: &ConnectionScope) -> Option<Value> {
+pub(super) fn binding(
+    agent: &studio_runtime_store::AgentRecord,
+    scope: &ConnectionScope,
+) -> Option<Value> {
     let thread = agent.thread_id.as_deref().filter(|v| !v.is_empty())?;
     Some(
         json!({"account":scope.account,"thread":thread,"epoch":u64::try_from(agent.epoch).ok()?,
@@ -48,8 +51,11 @@ fn changed() -> ApiError {
         "The agent session changed. Refresh the tools list.",
     )
 }
-fn matches_agent(agent: &studio_runtime_store::AgentRecord, expected: &crate::generated::McpSessionBinding) -> bool {
-    !studio_runtime_store::truthy(agent.extra.get("deletedAt"))
+fn matches_agent(
+    agent: &studio_runtime_store::AgentRecord,
+    expected: &crate::generated::McpSessionBinding,
+) -> bool {
+    !agent.is_deleted()
         && agent.extra.get("deleted") != Some(&json!(true))
         && agent.thread_id.as_deref() == Some(expected.thread.as_str())
         && agent.epoch == expected.epoch
@@ -309,6 +315,9 @@ mod tests {
         ) {
         }
         typed_execute(execute);
-        const _: fn(&studio_runtime_store::AgentRecord, &crate::generated::McpSessionBinding) -> bool = matches_agent;
+        const _: fn(
+            &studio_runtime_store::AgentRecord,
+            &crate::generated::McpSessionBinding,
+        ) -> bool = matches_agent;
     }
 }

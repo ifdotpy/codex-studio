@@ -2,6 +2,28 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Preserve a valid field or ignore a value of the wrong type.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum LenientField<T> {
+    Value(T),
+    Other(serde::de::IgnoredAny),
+}
+
+/// Decode an optional field while treating a wrong type as absent.
+pub fn optional_field<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    Ok(
+        match Option::<LenientField<T>>::deserialize(deserializer)? {
+            Some(LenientField::Value(value)) => Some(value),
+            _ => None,
+        },
+    )
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct JsonObject<T>(pub T);

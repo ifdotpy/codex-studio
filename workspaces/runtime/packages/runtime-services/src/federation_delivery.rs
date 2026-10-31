@@ -700,12 +700,8 @@ pub fn send_message_in_transaction(
         .cloned()
         .filter(|value| !value.is_null())
         .or_else(|| {
-            if sender_agent.extra.get("isLead") == Some(&json!(true)) {
-                sender_agent
-                    .extra
-                    .get("name")
-                    .cloned()
-                    .or_else(|| Some(json!("Lead")))
+            if sender_agent.is_lead == Some(true) {
+                Some(json!(sender_agent.name.as_deref().unwrap_or("Lead")))
             } else {
                 None
             }
@@ -761,7 +757,7 @@ pub fn send_message_in_transaction(
         }
         let agent = AgentRepository::get(tx, &AgentId::from(member))?
             .ok_or(Error::Invalid("room.localMembers"))?;
-        if !crate::event_write::truthy(agent.extra.get("deletedAt")) {
+        if !agent.is_deleted() {
             let event_id = format!("federation-local:{room_id}:{message_id}:{member}");
             studio_runtime_store::QueueWriteRepository::put_metadata(
                 tx,

@@ -348,7 +348,7 @@ fn steer_turn(agent: &AgentRecord) -> Option<(String, String)> {
         .thread_id
         .as_deref()
         .filter(|thread| !thread.is_empty())?;
-    let attempt = agent.start_attempt().ok().flatten()?;
+    let attempt = agent.start_attempt.as_ref()?;
     let eligible = agent.status == AgentStatus::Running
         && agent.auto_wake == Some(true)
         && agent.in_flight == Some(true)
@@ -428,8 +428,8 @@ fn pending_steer_events(
 fn release(tx: &Transaction<'_>, id: &str, receipt: &SteerPayload) -> StoreResult<bool> {
     let agent_id = receipt.agent.as_str();
     let epoch = receipt.epoch;
-    let agent = load_agent(tx, agent_id)?
-        .filter(|agent| agent.epoch == epoch && !agent.extra.get("deletedAt").is_some_and(truthy));
+    let agent =
+        load_agent(tx, agent_id)?.filter(|agent| agent.epoch == epoch && !agent.is_deleted());
     let returned = tx.execute_cached(
         "UPDATE runtime_events SET status=?1,turn_id=NULL,error=NULL \
          WHERE agent=?2 AND epoch=?3 AND id IN (SELECT value FROM json_each(?4)) \
@@ -908,37 +908,33 @@ impl SchedulerRepository {
         }
         // The first prompt can still be in Claude's pending-dispatch window
         // even after turn/start was accepted. Refine that exact attempt too.
-        if let Some(agent) = load_agent(tx, agent_id)? {
-            let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
-            if attempt["accountKey"] == account
-                && attempt["connectionGeneration"].as_u64() == Some(generation)
-                && attempt["threadId"] == thread_id
-                && let Some(events) = attempt["events"].as_array()
-                && let Some(first) = events.first()
-            {
-                let status = if still_queued.contains(&json!(first)) {
-                    Some("uncertain")
-                } else if cancelled.contains(&json!(first)) {
-                    Some("cancelled")
-                } else {
-                    None
-                };
-                if let Some(status) = status {
-                    let epoch = attempt["epoch"]
-                        .as_i64()
-                        .ok_or_else(|| invalid_agent(agent_id))?;
-                    let turn = attempt["turnId"].as_str().unwrap_or_default();
-                    tx.execute_cached(
+        if let Some(agent) = load_agent(tx, agent_id)?
+            && let Some(attempt) = agent.start_attempt.as_ref()
+            && attempt.account_key.as_deref() == Some(account)
+            && attempt.connection_generation == Some(generation)
+            && attempt.thread_id.as_deref() == Some(thread_id)
+            && let Some(events) = attempt.events.as_ref()
+            && let Some(first) = events.first()
+        {
+            let status = if still_queued.contains(&json!(first)) {
+                Some("uncertain")
+            } else if cancelled.contains(&json!(first)) {
+                Some("cancelled")
+            } else {
+                None
+            };
+            if let Some(status) = status {
+                let epoch = attempt.epoch.ok_or_else(|| invalid_agent(agent_id))?;
+                let turn = attempt.turn_id.as_deref().unwrap_or_default();
+                tx.execute_cached(
                         "UPDATE runtime_events SET status=?1,error=?2 WHERE agent=?3 AND epoch=?4 \
                          AND id IN (SELECT value FROM json_each(?5)) \
                          AND (status IN ('reserved','dispatching','uncertain') OR (status='delivered' AND turn_id=?6))",
                         params![status, if status == "cancelled" { STOP_CANCELLED_ERROR }
                             else { STOP_QUEUED_ERROR },
-                            agent_id, epoch, attempt["events"].to_string(), turn],
+                            agent_id, epoch, serde_json::to_string(events)?, turn],
                     )?;
-                    let events: Vec<String> = serde_json::from_value(attempt["events"].clone())?;
-                    Self::project_chat_event_status(tx, agent_id, epoch, turn, &events, status)?;
-                }
+                Self::project_chat_event_status(tx, agent_id, epoch, turn, events, status)?;
             }
         }
         for (id, mut receipt) in receipts(tx, agent_id)? {

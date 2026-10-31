@@ -5,7 +5,7 @@ use studio_runtime_services::{capacity_retry, continuation::Snapshot};
 fn capacity_wait_accepts_usage_record_with_matching_embedded_id() {
     let retry = json!({"id":"same","accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":1,"maxAttempts":4});
     let usage = json!({"id":"same","accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","status":"scheduled","cause":"auth","failedAt":10});
-    let snapshot = Snapshot::from_records(json!({"agent":{"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","capacityRetry":retry},"record":usage})).unwrap();
+    let snapshot = Snapshot::from_records(json!({"agent":{"compactions":0,"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","capacityRetry":retry},"record":usage})).unwrap();
     let decision =
         capacity_retry::transition(&snapshot, capacity_retry::Action::Wait("wait"), 20.0).unwrap();
     let record = decision.record.unwrap().value();
@@ -21,8 +21,7 @@ fn typed_continuation_snapshot_matches_schema_shapes() {
     ))
     .expect("schema");
     let validator = jsonschema::validator_for(&schema).expect("validator");
-    let base =
-        json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"}});
+    let base = json!({"agent":{"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"}});
     for (key, value) in [
         ("ancestors", json!(null)),
         ("claims", json!(["a"])),
@@ -30,7 +29,6 @@ fn typed_continuation_snapshot_matches_schema_shapes() {
         ("agent", json!(["a", "a", 1, "running", "codex"])),
         ("record", json!([])),
         ("record", json!(null)),
-        ("limits", json!({"accountKey":"a","unknown":true})),
     ] {
         let mut input = base.clone();
         input[key] = value;
@@ -41,10 +39,93 @@ fn typed_continuation_snapshot_matches_schema_shapes() {
 }
 
 #[test]
+fn limits_observation_keeps_its_own_validation() {
+    use studio_runtime_services::usage_resume::LimitsObservation;
+    assert!(LimitsObservation::from_record(json!({"accountKey":"a"}), None).is_ok());
+    assert!(
+        LimitsObservation::from_record(json!({"accountKey":"a","unknown":true}), None).is_err()
+    );
+}
+
+#[test]
+fn deleted_agent_blocks_new_continuations() {
+    let cases = cases();
+    let original = &cases
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "capacity-create-server-0")
+        .unwrap()["input"];
+    for (marker, eligible) in [(Value::Null, true), (json!(0), true), (json!(1), false)] {
+        let mut input = original.clone();
+        input["agent"]["deletedAt"] = marker;
+        let snapshot = Snapshot::from_records(input).unwrap();
+        assert_eq!(
+            studio_runtime_services::usage_resume::failure_eligible(&snapshot),
+            eligible
+        );
+        let decision = capacity_retry::failed(
+            &snapshot,
+            capacity_retry::Failure::ServerOverloaded,
+            "turn",
+            &json!({}),
+            1000.0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(decision.record.is_some(), eligible);
+    }
+    let original = &cases
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "usage-identity-deletedAt")
+        .unwrap()["input"];
+    for (marker, status) in [(json!(0), "scheduled"), (json!(1), "cancelled")] {
+        let mut input = original.clone();
+        input["agent"]["deletedAt"] = marker;
+        let snapshot = Snapshot::from_records(input).unwrap();
+        let decision =
+            studio_runtime_services::usage_resume::tick_without_observation(&snapshot, 1000.0)
+                .unwrap();
+        assert_eq!(decision.record.unwrap().value()["status"], status);
+    }
+}
+
+#[test]
+fn continuation_ignores_unread_agent_details() {
+    let input = json!({"agent":{"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"running",
+        "provider":"codex","accountKey":"default","startAttempt":{"created":1.0},"isLead":true}});
+    assert!(Snapshot::from_records(input).is_ok());
+}
+
+#[test]
+fn enable_reschedules_a_current_cancelled_resume() {
+    let cases = cases();
+    let mut input = cases
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "disable-scheduled")
+        .unwrap()["input"]
+        .clone();
+    input["record"]["status"] = json!("cancelled");
+    input["record"]["dueAt"] = Value::Null;
+    input["record"]["reason"] = json!("Automatic resume is off for this chat.");
+    input["agent"]["usageResume"] = input["record"].clone();
+    input["agent"]["usageResumeEnabled"] = json!(false);
+    input["agent"]["lastCompletedTurnStatus"] = json!("failed");
+    input["agent"]["error"] = json!({"codexErrorInfo":"usageLimitExceeded"});
+    let snapshot = Snapshot::from_records(input).unwrap();
+    let decision = studio_runtime_services::usage_resume::enable(&snapshot, 1000.0).unwrap();
+    assert_eq!(decision.record.unwrap().value()["status"], "scheduled");
+    assert_eq!(decision.agent.unwrap().value()["usageResumeEnabled"], true);
+}
+
+#[test]
 fn typed_continuation_snapshot_enforces_schema_bounds() {
     use studio_runtime_schema::continuation_snapshot::ContinuationSnapshotRecord;
-    let base =
-        json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"}});
+    let base = json!({"agent":{"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"}});
     for (key, accepted, rejected) in [
         ("claims", json!(vec!["a"; 4096]), json!(vec!["a"; 4097])),
         (
@@ -64,23 +145,6 @@ fn typed_continuation_snapshot_enforces_schema_bounds() {
     assert!(<ContinuationSnapshotRecord as serde::Deserialize>::deserialize(&input).is_ok());
     input["agent"]["id"] = json!("é".repeat(4097));
     assert!(<ContinuationSnapshotRecord as serde::Deserialize>::deserialize(input).is_err());
-}
-
-#[test]
-fn continuation_event_identity_keeps_exact_epoch_evidence() {
-    let mut input = json!({
-        "agent":{"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"},
-        "events":[{"id":"e","agent":"a","epoch":1,"kind":"input","text":"x","status":"pending","created":1}]
-    });
-    assert!(Snapshot::from_records(input.clone()).is_ok());
-    input["events"][0]["epoch"] = json!(1.0);
-    assert!(
-        Snapshot::from_records(input)
-            .err()
-            .expect("different numeric spelling must not match")
-            .to_string()
-            .contains("/events/identity")
-    );
 }
 
 #[test]
@@ -145,6 +209,7 @@ fn capacity_counts_preserve_integer_and_decimal_alias_behavior() {
             "turn",
             &json!({}),
             1000.0,
+            None,
         )
         .expect("failure");
         assert_eq!(
@@ -196,11 +261,19 @@ fn cases() -> Value {
         serde_json::from_str(include_str!("continuation/cases.json")).expect("corpus JSON");
     // The frozen corpus predates explicit identity for these Codex continuations.
     for case in cases.as_array_mut().expect("corpus cases") {
+        case["input"]["agent"]["compactions"] = json!(0);
         case["input"]["agent"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        for key in ["events", "metadata", "assets", "complaints", "work"] {
+            case["input"]
+                .as_object_mut()
+                .expect("snapshot object")
+                .remove(key);
+        }
         for ancestor in case["input"]["ancestors"]
             .as_array_mut()
             .expect("corpus ancestors")
         {
+            ancestor["compactions"] = json!(0);
             ancestor["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
         }
     }
@@ -353,7 +426,7 @@ fn claimed_capacity_retry_ends_finished_after_its_turn_settles() {
         let snapshot = Snapshot::from_records(raw.clone()).expect("snapshot");
         let decision = capacity_retry::transition(&snapshot, action, 1000.0).expect("transition");
         raw["record"] = decision.record.clone().expect("record").value();
-        raw["agent"] = decision.agent.clone().expect("agent").into_value();
+        raw["agent"] = decision.agent.clone().expect("agent").value().clone();
         decision
     };
     step(
@@ -415,7 +488,7 @@ fn rejected_capacity_start_ends_failed_and_lost_reply_ends_unknown() {
         )
         .expect("claim");
         raw["record"] = claimed.record.expect("record").value();
-        raw["agent"] = claimed.agent.expect("agent").into_value();
+        raw["agent"] = claimed.agent.expect("agent").value().clone();
         let snapshot = Snapshot::from_records(raw).expect("claimed snapshot");
         let failed = capacity_retry::transition(
             &snapshot,

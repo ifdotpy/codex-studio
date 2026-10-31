@@ -94,7 +94,7 @@ async fn changes(
 async fn workspace(
     query: QueryParams,
     State(state): State<HttpState>,
-) -> Result<Json<crate::generated::WorkspaceView>, ApiError> {
+) -> Result<Json<studio_runtime_services::workspace_views::WorkspaceViewResponse>, ApiError> {
     let agent = query.nonempty_str("agent").map(str::to_owned);
     let view = query.nonempty_str("view").unwrap_or("full").to_owned();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
@@ -104,9 +104,7 @@ async fn workspace(
             workspace_view(transaction, &validators, agent.as_deref(), &view)
         })
         .await?;
-    Ok(Json(super::generated_json::<
-        crate::generated::WorkspaceView,
-    >(value)?))
+    Ok(Json(value))
 }
 
 fn git_changes(cwd: &str) -> Result<Value, ApiError> {
@@ -121,7 +119,7 @@ fn git_changes(cwd: &str) -> Result<Value, ApiError> {
 struct ReportedChangePayload {
     diff: String,
     #[serde(rename = "turnId")]
-    turn_id: Option<Value>,
+    turn_id: Option<Box<serde_json::value::RawValue>>,
 }
 
 fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiError> {
@@ -133,33 +131,31 @@ fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiEr
     }) else {
         return Ok(empty_reported_changes());
     };
-    if studio_runtime_services::event_write::truthy(item.record.extra("afterRestore")) {
+    if item
+        .record
+        .after_restore()
+        .is_some_and(|value| !value.is_empty())
+    {
         return Ok(empty_reported_changes());
     }
     let text = TranscriptRepository::full_text(connection, &item).map_err(map_transcript_error)?;
-    if item.record.extra("truncated").and_then(Value::as_bool) == Some(true) && text.is_none() {
+    if item.record.truncated() == Some(true) && text.is_none() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "The complete reported changes are unavailable",
         ));
     }
     let raw = text.or_else(|| item.record.text().value().cloned());
-    let payload: Value = serde_json::from_str(raw.as_deref().unwrap_or_default())
-        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid"))?;
-    if !payload.is_object() {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "The recorded changes are invalid",
-        ));
-    }
-    let payload: ReportedChangePayload = serde::Deserialize::deserialize(payload)
-        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid"))?;
+    let studio_runtime_schema::json_object::JsonObject(payload): studio_runtime_schema::json_object::JsonObject<ReportedChangePayload> =
+        serde_json::from_str(raw.as_deref().unwrap_or_default()).map_err(|_| {
+            ApiError::new(StatusCode::BAD_REQUEST, "The recorded changes are invalid")
+        })?;
     let files = reported_change_files(&payload.diff);
     let truncated = payload.diff.chars().count() > 300_000;
     let diff = payload.diff.chars().take(300_000).collect::<String>();
     Ok(json!({
         "scope":"chat", "git":true, "files":files, "diff":diff, "patch":diff,
-        "truncated":truncated, "turnId":payload.turn_id, "reportedAt":item.record.extra("at"),
+        "truncated":truncated, "turnId":payload.turn_id, "reportedAt":item.record.at().value(),
     }))
 }
 
@@ -175,7 +171,7 @@ fn workspace_view(
     validators: &Registry,
     agent_id: Option<&str>,
     view: &str,
-) -> Result<Value, ApiError> {
+) -> Result<studio_runtime_services::workspace_views::WorkspaceViewResponse, ApiError> {
     let stored_agents = WorkspaceViewsRepository::agents(connection).map_err(ApiError::stored)?;
     let agents = record_values(stored_agents)?;
     let root = studio_runtime_services::workspace_views::agent_root(&agents, agent_id).map_err(
@@ -224,16 +220,12 @@ fn workspace_view(
     let all_work =
         studio_runtime_store::WorkItemsRepository::work(connection).map_err(ApiError::stored)?;
     let statuses = work_policy::work_statuses(&all_work);
-    let root_view = root.as_deref().unwrap_or("");
     let scoped_work = all_work
         .into_iter()
         .filter(|item| {
-            ids.contains(
-                &item.value()["rootId"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned(),
-            ) && (root.is_none() || item.value()["rootId"] == root_view)
+            let item_root = item.root_id();
+            ids.iter().any(|id| id == item_root.unwrap_or_default())
+                && root.as_deref().is_none_or(|root| item_root == Some(root))
         })
         .collect::<Vec<_>>();
     let work = scoped_work
@@ -269,10 +261,9 @@ fn workspace_view(
                 .map_err(ApiError::stored)?,
         )?
     };
-    let rules = record_values(
+    let rules =
         WorkspaceViewsRepository::records_for_agents::<RuleRecord>(connection, "agent", &ids)
-            .map_err(ApiError::stored)?,
-    )?;
+            .map_err(ApiError::stored)?;
     let tasks = project_task_records(
         validators,
         WorkspaceViewsRepository::snapshot_tasks(connection, root.as_deref())
@@ -281,20 +272,12 @@ fn workspace_view(
     let monitors = WorkspaceViewsRepository::snapshot_monitors(connection, root.as_deref())
         .map_err(ApiError::stored)?
         .into_iter()
+        .filter(|monitor| ids.contains(&monitor.agent))
         .map(|monitor| {
-            let id = monitor.id().to_owned();
-            validators
-                .project_entity("monitor", &monitor.into_value())
-                .ok_or_else(|| invalid_stored("runtime_monitors", &id))
+            studio_runtime_services::sync_policy::project_monitor_record(&monitor)
+                .map_err(ApiError::stored)
         })
-        .collect::<Result<Vec<_>, ApiError>>()?
-        .into_iter()
-        .filter(|monitor| {
-            monitor["agent"]
-                .as_str()
-                .is_some_and(|agent| ids.iter().any(|id| id == agent))
-        })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()?;
     let inbox = studio_runtime_services::workspace_views::workspace_inbox(
         studio_runtime_services::workspace_views::WorkspaceInboxData {
             agents: &agents,
@@ -390,7 +373,7 @@ fn project_task_records(
         .map(|task| {
             let id = task.id().as_ref().to_owned();
             validators
-                .project_entity("task", &task.into_value())
+                .project_entity("task", &studio_runtime_store::projection_value(&task))
                 .ok_or_else(|| invalid_stored("runtime_tasks", &id))
         })
         .collect()
@@ -417,8 +400,7 @@ async fn task_detail(
             let agent = WorkspaceViewsRepository::agent(connection, agent_id)
                 .map_err(map_store_error)?
                 .ok_or_else(|| invalid_stored("runtime_agents", agent_id))?;
-            let agent = agent.value();
-            if deleted(&agent) {
+            if agent.deleted_at.is_some() {
                 return Err(invalid_request());
             }
             Ok(task)
@@ -550,7 +532,7 @@ fn map_transcript_error(error: studio_runtime_store::TranscriptStoreError) -> Ap
     match error {
         TranscriptStoreError::InvalidStoredObject { table, id } => invalid_stored(table, &id),
         TranscriptStoreError::Store(error) => ApiError::stored(error),
-        TranscriptStoreError::Sqlite(_) | TranscriptStoreError::ActiveTurn => ApiError::internal(),
+        TranscriptStoreError::Sqlite(_) => ApiError::internal(),
     }
 }
 
@@ -591,7 +573,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"compactions":0,"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
             Ok::<_, StoreError>(())
         }).await.unwrap();
         let state = crate::HttpState::new(
@@ -615,8 +597,8 @@ mod tests {
             (
                 r#"{"diff":"first","diff":"second","turnId":null}"#,
                 json!({}),
-                StatusCode::OK,
-                json!({"diff":"second","turnId":null}),
+                StatusCode::BAD_REQUEST,
+                json!({"error":"The recorded changes are invalid"}),
             ),
             (
                 r#"{"diff":9}"#,
@@ -633,8 +615,8 @@ mod tests {
             (
                 r#"{"diff":"ok","extra":1e400}"#,
                 json!({}),
-                StatusCode::BAD_REQUEST,
-                json!({"error":"The recorded changes are invalid"}),
+                StatusCode::OK,
+                json!({"diff":"ok"}),
             ),
             (
                 r#"["diff"]"#,
@@ -655,8 +637,8 @@ mod tests {
                 json!({"diff":"full","turnId":"turn"}),
             ),
             (
-                "invalid",
-                json!({"afterRestore":true}),
+                "restored",
+                json!({"afterRestore":"true"}),
                 StatusCode::OK,
                 json!({"diff":"","turnId":null}),
             ),
@@ -706,8 +688,11 @@ mod tests {
         ] {
             let value: Value = serde_json::from_str(raw).unwrap();
             let expected = value.get("turnId").cloned().unwrap_or(Value::Null);
-            let payload: super::ReportedChangePayload = serde_json::from_value(value).unwrap();
-            assert_eq!(payload.turn_id.unwrap_or(Value::Null), expected);
+            let payload: super::ReportedChangePayload = serde_json::from_str(raw).unwrap();
+            let actual = payload
+                .turn_id
+                .map_or(Value::Null, |raw| serde_json::from_str(raw.get()).unwrap());
+            assert_eq!(actual, expected);
         }
         assert!(
             serde_json::from_str::<Value>(&format!(
@@ -731,9 +716,9 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary runtime");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
             for (id, created) in [("a", 1), ("b", 2), ("c", 3)] {
-                tx.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":if id == "a" { "wrong" } else { id },"agent":"agent","created":created,"tail":"large tail","arguments":{},"error":"detail"}).to_string()))?;
+                tx.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":if id == "a" { "wrong" } else { id },"agent":"agent","created":created,"kind":"command","type":"commandExecution","name":"commandExecution","itemId":"item","turnId":"turn","status":"completed","tail":"large tail","arguments":"{}","error":"detail"}).to_string()))?;
             }
             Ok::<_, StoreError>(())
         }).await.expect("seed");
@@ -791,7 +776,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
         store.transaction_with(|tx| {
             for id in ["lead", "foreign"] {
-                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", (id, json!({"accountKey":"default","provider":"codex","id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()))?;
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", (id, json!({"compactions":0,"accountKey":"default","provider":"codex","id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()))?;
             }
             tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('good',?1)", [json!({"id":"good","agent":"lead","created":1,"items":["private"],"future":{"kept":true}}).to_string()])?;
             tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('foreign',?1)", [json!({"id":"wrong","agent":"foreign","created":1}).to_string()])?;
@@ -852,7 +837,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             app.clone().oneshot(annotations).await.unwrap().status(),
-            StatusCode::OK
+            StatusCode::SERVICE_UNAVAILABLE
         );
         assert_eq!(
             app.oneshot(request()).await.unwrap().status(),

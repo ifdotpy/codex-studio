@@ -1,77 +1,37 @@
 //! Canonical legacy JSON spellings used by durable receipt identities.
 use serde_json::Value;
 
+mod serializer;
+
 /// Python-compatible sorted-key JSON used for persisted signatures.
 pub fn python_json(value: &Value) -> String {
-    python_json_separated(value, ", ", ": ", true)
+    python_json_serialized(value).expect("JSON values are serializable")
+}
+
+/// Serialize typed data with Python-compatible sorted keys and ASCII escaping.
+pub fn python_json_serialized<T: serde::Serialize + ?Sized>(
+    value: &T,
+) -> Result<String, serde_json::Error> {
+    serializer::serialize(value, ", ", ": ", true)
 }
 
 /// Sorted UTF-8 JSON with Python's human-readable separators.
 pub fn python_json_utf8(value: &Value) -> String {
-    python_json_separated(value, ", ", ": ", false)
+    serializer::serialize(value, ", ", ": ", false).expect("JSON values are serializable")
 }
 
 /// Compact Python-compatible JSON for content-addressed signatures.
 pub fn python_json_compact(value: &Value) -> String {
-    python_json_separated(value, ",", ":", false)
+    serializer::serialize(value, ",", ":", false).expect("JSON values are serializable")
 }
 
 /// Sorted ASCII JSON with explicitly selected separators for provider catalog digests.
 pub fn python_json_with_separators(value: &Value, item: &str, key: &str) -> String {
-    python_json_separated(value, item, key, true)
+    serializer::serialize(value, item, key, true).expect("JSON values are serializable")
 }
 
-fn python_json_separated(
-    value: &Value,
-    item_separator: &str,
-    key_separator: &str,
-    ensure_ascii: bool,
-) -> String {
-    match value {
-        Value::Null | Value::Bool(_) => value.to_string(),
-        Value::Number(number) if number.is_f64() => number
-            .as_f64()
-            .map(python_float_json)
-            .unwrap_or_else(|| number.to_string()),
-        Value::Number(number) => number.to_string(),
-        Value::String(text) => python_quote(text, ensure_ascii),
-        Value::Array(values) => format!(
-            "[{}]",
-            values
-                .iter()
-                .map(|item| python_json_separated(
-                    item,
-                    item_separator,
-                    key_separator,
-                    ensure_ascii
-                ))
-                .collect::<Vec<_>>()
-                .join(item_separator)
-        ),
-        Value::Object(values) => {
-            let mut keys = values.keys().collect::<Vec<_>>();
-            keys.sort();
-            format!(
-                "{{{}}}",
-                keys.into_iter()
-                    .map(|key| format!(
-                        "{}{key_separator}{}",
-                        python_quote(key, ensure_ascii),
-                        python_json_separated(
-                            &values[key],
-                            item_separator,
-                            key_separator,
-                            ensure_ascii,
-                        )
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(item_separator)
-            )
-        }
-    }
-}
-
-fn python_quote(value: &str, ensure_ascii: bool) -> String {
+/// Quote a string using Python JSON escaping.
+pub fn python_quote(value: &str, ensure_ascii: bool) -> String {
     let mut output = String::from("\"");
     for character in value.chars() {
         match character {
@@ -170,4 +130,100 @@ pub fn python_float_json(value: f64) -> String {
         result.push_str(&digits[position..]);
     }
     result
+}
+
+#[cfg(test)]
+mod serialization_tests {
+    use super::{
+        python_float_json, python_json, python_json_compact, python_json_serialized,
+        python_json_utf8, python_json_with_separators, python_quote,
+    };
+    use serde_json::Value;
+
+    fn old_json(value: &Value, item: &str, key_separator: &str, ascii: bool) -> String {
+        match value {
+            Value::Null | Value::Bool(_) => value.to_string(),
+            Value::Number(n) if n.is_f64() => n
+                .as_f64()
+                .map(python_float_json)
+                .unwrap_or_else(|| n.to_string()),
+            Value::Number(n) => n.to_string(),
+            Value::String(s) => python_quote(s, ascii),
+            Value::Array(items) => format!(
+                "[{}]",
+                items
+                    .iter()
+                    .map(|value| old_json(value, item, key_separator, ascii))
+                    .collect::<Vec<_>>()
+                    .join(item)
+            ),
+            Value::Object(items) => {
+                let mut keys = items.keys().collect::<Vec<_>>();
+                keys.sort();
+                format!(
+                    "{{{}}}",
+                    keys.into_iter()
+                        .map(|key| format!(
+                            "{}{key_separator}{}",
+                            python_quote(key, ascii),
+                            old_json(&items[key], item, key_separator, ascii)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join(item)
+                )
+            }
+        }
+    }
+    use serde_json::json;
+
+    #[test]
+    fn serialize_matches_existing_python_json_bytes() {
+        for value in [
+            json!({"z":"é😀\n", "a":[null, true, {}, []]}),
+            json!({"large":1.0e20,"small":1.0e-7,"negative_zero":-0.0,"nested":{"z":2,"a":1}}),
+            json!({"id":"c","author":"user","text":"  raw é  ","responses":[],"status":"open"}),
+            json!({"id":"r","params":{"questions":[{"id":"1","question":"Why?"}]},"method":"agent/asyncQuestion"}),
+        ] {
+            assert_eq!(
+                python_json_serialized(&value).unwrap(),
+                old_json(&value, ", ", ": ", true)
+            );
+            assert_eq!(python_json(&value), old_json(&value, ", ", ": ", true));
+            assert_eq!(
+                python_json_utf8(&value),
+                old_json(&value, ", ", ": ", false)
+            );
+            assert_eq!(
+                python_json_compact(&value),
+                old_json(&value, ",", ":", false)
+            );
+            assert_eq!(
+                python_json_with_separators(&value, ";", "="),
+                old_json(&value, ";", "=", true)
+            );
+        }
+    }
+
+    #[test]
+    fn typed_record_matches_previous_value_serialization() {
+        use serde::Serialize;
+        #[derive(Serialize)]
+        struct Record<'a> {
+            z: &'a str,
+            values: Vec<f64>,
+            a: Option<&'a str>,
+        }
+        let record = Record {
+            z: "é😀",
+            values: vec![-0.0, 1e-7, 1e20],
+            a: None,
+        };
+        let old = record.serialize(serde_json::value::Serializer).unwrap();
+        assert_eq!(
+            python_json_serialized(&record).unwrap(),
+            old_json(&old, ", ", ": ", true)
+        );
+        let raw = serde_json::value::RawValue::from_string("{\"a\":1}".into()).unwrap();
+        assert!(python_json_serialized(&raw).is_err());
+    }
 }

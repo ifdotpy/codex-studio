@@ -172,8 +172,17 @@ fn source_submission_identity(
     let Some((id, record)) = row else {
         return Ok(None);
     };
-    let typed =
-        crate::Table::<crate::ExecutionRunRecord>::new(connection).decode_stored(&id, &record)?;
+    // Source-era selection normalized duplicate object keys before decoding;
+    // keep that representation here because it determines historical receipt hashes.
+    let invalid = || crate::StoreError::InvalidStoredObject {
+        table: "runtime_execution_runs",
+        id: id.clone(),
+    };
+    let value: Value = serde_json::from_str(&record).map_err(|_| invalid())?;
+    let typed = crate::ExecutionRunRecord::deserialize(value).map_err(|_| invalid())?;
+    if typed.run().id != id {
+        return Err(invalid());
+    }
     let run = typed.run();
     if turn.is_none()
         && matches!(

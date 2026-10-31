@@ -922,6 +922,22 @@ pub fn write_checked(
     base_id: &str,
     writable: bool,
 ) -> Result<()> {
+    write_checked_scan(src, base, old, before, d, dst, base_id, writable).map(|_| ())
+}
+
+/// `write_checked`, returning the scan of `src` that the layer matches: `None` when `src`
+/// changed during every round and the layer keeps a mix of versions.
+#[allow(clippy::too_many_arguments)]
+pub fn write_checked_scan(
+    src: &Path,
+    base: &Layered,
+    old: &BTreeMap<String, ScanEntry>,
+    before: &BTreeMap<String, ScanEntry>,
+    d: &Diff,
+    dst: &Path,
+    base_id: &str,
+    writable: bool,
+) -> Result<Option<BTreeMap<String, ScanEntry>>> {
     let mut before = before.clone();
     let mut d = Diff { write: d.write.clone(), removed: d.removed.clone() };
     let mut round = 0;
@@ -945,7 +961,7 @@ pub fn write_checked(
             if !writable {
                 apfs::seal(dst, true, false)?;
             }
-            return Ok(());
+            return Ok(None);
         }
         let wrote = write_layer(src, dst, &d, base_id, true, None);
         let after = apfs::scan_with_data(src, true)?;
@@ -964,7 +980,7 @@ pub fn write_checked(
             if !writable {
                 apfs::seal(dst, true, false)?;
             }
-            return Ok(());
+            return Ok(Some(before));
         }
         // Writers changed the source during the copy: make the difference again.
         apfs::delete_tree(dst)?;
@@ -1051,13 +1067,13 @@ pub fn delete_state(p: &Project, id: &str) -> Result<bool> {
     if bases(p)?.values().any(|b| b == id) {
         // Keep the layer; a view is not needed.
         if p.delta_path(id).is_dir() {
-            apfs::delete_tree(&p.state_path(id))?;
+            p.trash(&p.state_path(id))?;
             let _ = fs::remove_file(view_stamp(p, id));
         }
         return Ok(false);
     }
-    apfs::delete_tree(&p.state_path(id))?;
-    apfs::delete_tree(&p.delta_path(id))?;
+    p.trash(&p.state_path(id))?;
+    p.trash(&p.delta_path(id))?;
     let _ = fs::remove_file(view_stamp(p, id));
     Ok(true)
 }

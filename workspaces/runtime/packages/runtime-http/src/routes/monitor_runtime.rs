@@ -30,11 +30,17 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
+#[derive(serde::Serialize)]
+struct RestartResponse {
+    id: String,
+    status: studio_runtime_schema::studio_errors::MonitorStatus,
+}
+
 async fn restart(
     State(state): State<HttpState>,
     runtime: Option<Extension<Arc<MonitorRuntime>>>,
     ApiJson(body): ApiJson<monitor_runtime::RestartRequest>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<RestartResponse>, ApiError> {
     let runtime = runtime
         .ok_or_else(|| ApiError::dependency("provider-session/monitor-commands"))?
         .0;
@@ -66,7 +72,10 @@ async fn restart(
                 &log_root,
                 now,
             )?;
-            Ok(serde_json::json!({"id":record["id"],"status":record["status"]}))
+            Ok(RestartResponse {
+                id: record.id,
+                status: record.status,
+            })
         },
         error,
     )
@@ -168,7 +177,10 @@ mod tests {
             Option<Extension<Arc<MonitorRuntime>>>,
             ApiJson<monitor_runtime::RestartRequest>,
         ) -> F;
-        fn typed_restart<F: Future<Output = Result<Json<Value>, ApiError>>>(_: RestartHandler<F>) {}
+        fn typed_restart<F: Future<Output = Result<Json<RestartResponse>, ApiError>>>(
+            _: RestartHandler<F>,
+        ) {
+        }
         typed_restart(restart);
     }
 

@@ -1,10 +1,10 @@
 //! A loss decided at the command deadline, and the command's late real answer.
 use crate::monitor_fixtures as fixtures;
 use serde_json::{Value, json};
-use studio_runtime_services::monitor_policy::{self, Effect, MonitorSnapshot, Operation};
+use studio_runtime_services::monitor_policy::{self, Effect, Operation};
 
 /// A command lost with `proof` after its reattach; `rule` makes it a rule check.
-fn lost(proof: &str, rule: bool) -> (Value, Value, Operation) {
+fn lost(proof: &str, rule: bool) -> (studio_runtime_store::MonitorRecord, Value, Operation) {
     let root = fixtures::tempdir();
     let case = fixtures::corpus(root.path()).remove(0);
     let mut record = case["before"].clone();
@@ -18,11 +18,19 @@ fn lost(proof: &str, rule: bool) -> (Value, Value, Operation) {
         record["ruleId"] = json!("rule");
     }
     let operation = serde_json::from_value(record["operation"].clone()).expect("operation");
-    (record, case["actor"].clone(), operation)
+    let actor = case["actor"].clone();
+    let snapshot = fixtures::checked(record, actor.clone()).expect("snapshot");
+    (snapshot.record().clone(), actor, operation)
 }
 
-fn finish(record: &Value, actor: &Value, operation: &Operation, now: f64) -> (Value, Vec<Effect>) {
-    let snapshot = MonitorSnapshot::checked(record.clone(), actor.clone()).expect("snapshot");
+fn finish(
+    record: &studio_runtime_store::MonitorRecord,
+    actor: &Value,
+    operation: &Operation,
+    now: f64,
+) -> (studio_runtime_store::MonitorRecord, Vec<Effect>) {
+    let snapshot =
+        monitor_policy::MonitorSnapshot::checked_stored(record, actor.clone()).expect("snapshot");
     let decision =
         monitor_policy::finish(&snapshot, Some(operation), Some(0), None, now).expect("finish");
     (decision.record, decision.effects)
@@ -32,12 +40,18 @@ fn finish(record: &Value, actor: &Value, operation: &Operation, now: f64) -> (Va
 fn a_late_answer_completes_a_deadline_loss_once() {
     let (record, actor, operation) = lost(monitor_policy::DEADLINE_PASSED, false);
     let (completed, effects) = finish(&record, &actor, &operation, 3100.0);
-    assert_eq!(completed["status"], "completed");
-    assert_eq!(completed["exitCode"], 0);
-    assert_eq!(completed["error"], Value::Null);
-    assert_eq!(completed["finished"], 3100.0);
-    assert_eq!(completed["lateAnswerAt"], 3100.0);
-    assert!(completed.get("reattachRecovery").is_none());
+    assert_eq!(
+        completed.status,
+        studio_runtime_schema::studio_errors::MonitorStatus::Completed
+    );
+    assert_eq!(completed.exit_code, Some(0));
+    assert!(completed.error.is_none());
+    assert_eq!(
+        completed.finished.as_ref().map(|time| time.seconds()),
+        Some(3100.0)
+    );
+    assert_eq!(completed.late_answer_at, Some(3100.0));
+    assert!(completed.reattach_recovery.is_none());
     assert!(
         effects
             .iter()
@@ -72,7 +86,7 @@ async fn a_reattach_proof_observed_before_deadline_loss_is_superseded() {
     let root = fixtures::tempdir();
     let store = fixtures::store(root.path(), "stale-proof").await;
     let case = fixtures::corpus(root.path()).remove(0);
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("id");
     let operation: Operation =
         serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
@@ -92,7 +106,6 @@ async fn a_reattach_proof_observed_before_deadline_loss_is_superseded() {
         MonitorsRepository::get(&store.test_reader().expect("reader"), id)
             .expect("read")
             .expect("monitor")
-            .value()
     };
     let before = read();
     let result = monitor_runtime::reattach(&store, id, &proof, 3001.0).await;
@@ -130,7 +143,7 @@ async fn an_unanswered_command_commits_only_its_loss_and_replays_without_changes
     let root = fixtures::tempdir();
     let store = fixtures::store(root.path(), "atomic-loss").await;
     let case = fixtures::corpus(root.path()).remove(0);
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("id");
     let operation: Operation =
         serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
@@ -151,14 +164,21 @@ async fn an_unanswered_command_commits_only_its_loss_and_replays_without_changes
         .expect("atomic deadline loss");
         let record = MonitorsRepository::get(&store.test_reader().expect("reader"), id)
             .expect("read")
-            .expect("monitor")
-            .value()
-            .clone();
-        assert_eq!(record["status"], "lost");
-        assert_eq!(record["finished"], 3000.0);
+            .expect("monitor");
         assert_eq!(
-            record["reattachRecovery"]["proof"],
-            monitor_policy::DEADLINE_PASSED
+            record.status,
+            studio_runtime_schema::studio_errors::MonitorStatus::Lost
+        );
+        assert_eq!(
+            record.finished.as_ref().map(|time| time.seconds()),
+            Some(3000.0)
+        );
+        assert_eq!(
+            record
+                .reattach_recovery
+                .as_ref()
+                .and_then(|recovery| recovery.proof.as_deref()),
+            Some(monitor_policy::DEADLINE_PASSED)
         );
         assert_eq!(
             commits.load(Ordering::SeqCst),
@@ -171,7 +191,7 @@ async fn an_unanswered_command_commits_only_its_loss_and_replays_without_changes
         );
     }
     let mut wrong_operation = operation.clone();
-    wrong_operation.connection_id = "different-command".into();
+    wrong_operation.connection_id = "different-command".to_owned().try_into().unwrap();
     assert!(
         monitor_runtime::settle_unanswered(
             &store,
