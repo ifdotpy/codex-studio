@@ -27,22 +27,6 @@ fn main() -> ExitCode {
         for path in &stale {
             eprintln!("{path} is stale; run `pnpm run contracts:generate`");
         }
-        // DIAGNOSTIC (remove before merge): show how a stale file differs from its rendering.
-        #[allow(clippy::disallowed_methods)]
-        for file in rendered.iter().filter(|file| stale.contains(&file.path)) {
-            let expected = std::env::temp_dir().join("contract-expected");
-            if std::fs::write(&expected, &file.text).is_ok()
-                && let Ok(out) = std::process::Command::new("diff")
-                    .arg("-u")
-                    .arg(root.join(&file.path))
-                    .arg(&expected)
-                    .output()
-            {
-                for line in String::from_utf8_lossy(&out.stdout).lines().take(900) {
-                    eprintln!("DIFF {}: {line}", file.path);
-                }
-            }
-        }
         return if stale.is_empty() {
             ExitCode::SUCCESS
         } else {
