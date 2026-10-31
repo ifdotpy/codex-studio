@@ -1,3 +1,4 @@
+import { EventHistory } from "./eventHistory.testHelper";
 import {
   SubscriptionReplyKind,
   AgentSource,
@@ -14,7 +15,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import { ReplaySubject, filter, firstValueFrom, timeout } from "rxjs";
 import type { Snapshot } from "../types";
 import type { components } from "../generated/api";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
@@ -691,7 +691,7 @@ it("applies source commits beyond a full entity page through real SSE and the pr
   );
   const client = await import("./client");
   const { ResourceEntityDelivery } = await import("./resourceEntityDelivery");
-  const snapshots = new ReplaySubject<Snapshot>(1);
+  const snapshots = new EventHistory<Snapshot>(1);
   const failed = vi.fn();
   let latest: Snapshot | undefined;
   const stop = client.subscribeStateProjection((value) => {
@@ -702,12 +702,12 @@ it("applies source commits beyond a full entity page through real SSE and the pr
   }, failed);
   stopProjection = stop;
   const waitSnapshot = (accept: (snapshot: Snapshot) => boolean) =>
-    firstValueFrom(snapshots.pipe(filter(accept), timeout(5000)));
+    snapshots.wait(accept);
   const { db, workspaceId } = await client.syncDatabase();
   const queryProjection = vi.spyOn(db.projections, "find");
   const controller = new AbortController();
-  const frames = new ReplaySubject<ResourceChangeEvent>();
-  const dispatched = new ReplaySubject<ResourceChangeEvent>();
+  const frames = new EventHistory<ResourceChangeEvent>();
+  const dispatched = new EventHistory<ResourceChangeEvent>();
   const delivery = new ResourceEntityDelivery(
     client.persistResourceEntityChanges,
     (event) => {
@@ -749,9 +749,9 @@ it("applies source commits beyond a full entity page through real SSE and the pr
     if (!controller.signal.aborted) throw error;
   });
   const waitFrame = (accept: (event: ResourceChangeEvent) => boolean) =>
-    firstValueFrom(frames.pipe(filter(accept), timeout(5000)));
+    frames.wait(accept);
   try {
-    await firstValueFrom(dispatched.pipe(timeout(5000)));
+    await dispatched.wait();
     const baseline = await waitSnapshot(
       (value) => value.entitiesComplete === true,
     ).catch((error) => {
