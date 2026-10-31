@@ -23,10 +23,11 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  cachedStepKey,
   crateKeys,
   recordPass,
+  passedCrates,
   reusedResult,
-  stepKey,
 } from "./test-result-cache.ts";
 
 import type ts from "typescript";
@@ -989,8 +990,8 @@ export function gateSteps(root: string, name: string): GateStep[] {
       {
         id: "provider-contracts",
         label: "provider contract drift witnesses",
-        lane: "rust",
-        requires: "workspace",
+        // Own Cargo target folder, and it reads no workspace build output: it runs beside the build.
+        lane: "provider",
         requiresCargo: true,
         item: tooling,
         commands: [["pnpm", ["--dir", root, "run", "test:provider-contracts"]]],
@@ -1307,6 +1308,24 @@ export function recipePlan(root: string, name: string) {
   };
 }
 
+// Crates that passed in this step's nextest report. A report older than the step is ignored.
+function nextestPassedCrates(root: string, step: GateStep, since: number) {
+  const args = step.commands?.[0]?.[1] ?? [];
+  const report = path.join(
+    cargoTarget(root),
+    "nextest",
+    args[args.indexOf("--profile") + 1] ?? "default",
+    "junit.xml",
+  );
+  try {
+    return statSync(report).mtimeMs >= since
+      ? passedCrates(readFileSync(report, "utf8"))
+      : new Set<string>();
+  } catch {
+    return new Set<string>();
+  }
+}
+
 export async function executeRecipe(
   root: string,
   name: string,
@@ -1367,6 +1386,7 @@ export async function executeRecipe(
         (readiness.has(step.requires)
           ? await readiness.get(step.requires)!.promise
           : external[step.requires]);
+      const stepStarted = Date.now();
       let result: StepResult | undefined;
       let cacheKey: string | undefined;
       let crates: Map<string, string | undefined> | false | undefined;
@@ -1385,7 +1405,7 @@ export async function executeRecipe(
       } else if (
         // A test executor stands in for real runs; it never reuses or records results.
         !options.execute &&
-        (cacheKey = stepKey(root, step)) &&
+        (cacheKey = cachedStepKey(root, step)) &&
         (result = reusedResult(root, step, cacheKey))
       ) {
         // Same inputs as an earlier passing run: reuse it like a build artifact.
@@ -1466,6 +1486,17 @@ export async function executeRecipe(
       if (crates && !result.reused)
         for (const [name, key] of stale)
           if (key) recordPass(root, { id: `${step.id}-${name}` }, key, result);
+      if (crates && step.id === "rust-tests" && result.status === "failed")
+        // Nextest runs every crate after a failure: the crates without a failed test passed.
+        for (const name of nextestPassedCrates(root, step, stepStarted)) {
+          const key = crates.get(name);
+          if (key && stale.some(([stale]) => stale === name))
+            recordPass(root, { id: `${step.id}-${name}` }, key, {
+              status: "passed",
+              exitCode: 0,
+              durationSeconds: 0,
+            });
+        }
       results[index] = { ...result, id: step.id, lane, label: step.label };
       if (step.provides)
         readiness.get(step.provides)!.resolve(result.exitCode === 0);

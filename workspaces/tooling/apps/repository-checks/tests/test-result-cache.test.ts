@@ -6,6 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import {
   SHARED_INPUTS,
+  cachedStepKey,
+  passedCrates,
   recordPass,
   reusedResult,
   stepKey,
@@ -62,9 +64,14 @@ test("a passing step is reused until one of its inputs changes", () => {
   git("commit", "-qam", "other");
   assert.equal(stepKey(root, step, {}), key);
 
-  // An uncommitted input change always runs the step.
+  // An uncommitted input change makes a new key; the same content gives the same key again.
   fs.writeFileSync(path.join(root, "guest", "suite.py"), "two\n");
-  assert.equal(stepKey(root, step, {}), undefined);
+  const dirty = stepKey(root, step, {});
+  assert.ok(dirty && dirty !== key);
+  assert.equal(stepKey(root, step, {}), dirty);
+  fs.writeFileSync(path.join(root, "guest", "suite.py"), "one\n");
+  assert.equal(stepKey(root, step, {}), key);
+  fs.writeFileSync(path.join(root, "guest", "suite.py"), "two\n");
 
   // A committed input change makes a new key without a saved result.
   git("commit", "-qam", "guest");
@@ -107,4 +114,50 @@ test("a shared result folder carries a passing result to another checkout", () =
   }
   assert.equal(reusedResult(second.root, step, key)?.reused, undefined);
   assert.equal(fs.existsSync(path.join(first.root, "target")), false);
+});
+
+test("a rerun on an unsaved tree keys on file content, including new and deleted files", () => {
+  const { root } = repository();
+  const key = stepKey(root, step, {})!;
+  fs.writeFileSync(path.join(root, "guest", "new.py"), "new\n");
+  const added = stepKey(root, step, {});
+  assert.ok(added && added !== key);
+  fs.rmSync(path.join(root, "guest", "new.py"));
+  assert.equal(stepKey(root, step, {}), key);
+  fs.rmSync(path.join(root, "guest", "suite.py"));
+  const removed = stepKey(root, step, {});
+  assert.ok(removed && removed !== key);
+  // A file outside the inputs never changes the key.
+  fs.writeFileSync(path.join(root, "unrelated.txt"), "x\n");
+  assert.equal(stepKey(root, step, {}), removed);
+});
+
+test("a step without declared inputs is keyed by the whole tree, an artifact step never", () => {
+  const { root } = repository();
+  const plain = {
+    id: "tooling",
+    commands: [["node", ["x"]]],
+  } satisfies Partial<GateStep>;
+  const key = cachedStepKey(root, plain, {});
+  assert.ok(key);
+  assert.equal(cachedStepKey(root, plain, {}), key);
+  fs.writeFileSync(path.join(root, "other.txt"), "two\n");
+  assert.notEqual(cachedStepKey(root, plain, {}), key);
+  assert.equal(
+    cachedStepKey(root, { ...plain, provides: "workspace" }, {}),
+    undefined,
+  );
+  assert.equal(
+    cachedStepKey(root, plain, { STUDIO_TEST_REUSE: "0" }),
+    undefined,
+  );
+});
+
+test("passedCrates lists the crates of a nextest report without a failure", () => {
+  const report = `<testsuites><testsuite name="studio-a" tests="2" failures="0" errors="0"><testcase name="x"/></testsuite>
+<testsuite name="studio-b::bin/studio-b" tests="1" failures="1" errors="0"><testcase name="y"><failure/></testcase></testsuite>
+<testsuite name="studio-b::integration" tests="1" failures="0" errors="0"><testcase name="z"/></testsuite>
+<testsuite name="studio-c" tests="1" failures="0" errors="1"><testcase name="w"><error/></testcase></testsuite></testsuites>`;
+  assert.deepEqual([...passedCrates(report)], ["studio-a"]);
+  assert.deepEqual([...passedCrates("not a report")], []);
 });

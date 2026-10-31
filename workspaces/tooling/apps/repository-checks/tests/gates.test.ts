@@ -343,17 +343,22 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
     assert.notEqual(lane("tooling"), lane("TypeScript projects"));
     assert.notEqual(lane("tooling"), lane("web unit tests"));
     assert.notEqual(lane("TypeScript projects"), lane("web unit tests"));
-    assert.ok(
-      steps.filter((s) => s.requiresCargo).every((s) => s.lane === "rust"),
+    // Only the provider mutation witness compiles outside the Rust lane: it owns its target folder
+    // and reads nothing the workspace build makes, so it runs beside the build.
+    assert.deepEqual(
+      steps
+        .filter((s) => s.requiresCargo && s.lane !== "rust")
+        .map((s) => s.id),
+      ["provider-contracts"],
     );
     const providerContracts = steps.find((s) => s.id === "provider-contracts");
     assert.ok(
       providerContracts,
       "provider source mutations must run in both tiers",
     );
-    assert.equal(providerContracts.lane, "rust");
+    assert.equal(providerContracts.lane, "provider");
     assert.equal(providerContracts.requiresCargo, true);
-    assert.equal(providerContracts.requires, "workspace");
+    assert.equal(providerContracts.requires, undefined);
     assert.deepEqual(providerContracts.commands, [
       ["pnpm", ["--dir", process.cwd(), "run", "test:provider-contracts"]],
     ]);
