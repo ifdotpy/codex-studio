@@ -11,7 +11,7 @@ use base64::Engine;
 use serde_json::{Value, json};
 
 use super::protocol::{self, Failure, HostExecError, INVALID, Manifest, Outcome, require};
-use super::{HostService, Op, SyncBatchItem, SyncModeItem, SyncOperation, clone_ffi, slots, text};
+use super::{HostService, Op, State, SyncBatchItem, SyncModeItem, SyncOperation, clone_ffi, slots};
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 /// Largest hash cache of a project folder before it starts again.
@@ -148,7 +148,7 @@ impl HostService {
     /// project objects through alternates and writes new objects into the slot.
     pub(crate) fn link_git_objects(&self, op: &Op, source: &Path) -> Outcome<()> {
         let git = source.join(".git");
-        let Some(project) = self.project_folder(text(op, "projectId")) else {
+        let Some(project) = self.project_folder(op.project_id.as_str()) else {
             return Ok(());
         };
         let objects = project.join(".git").join("objects");
@@ -220,7 +220,7 @@ impl HostService {
         {
             return skipped("the slot has the folder");
         }
-        let Some(folder) = self.project_folder(text(op, "projectId")) else {
+        let Some(folder) = self.project_folder(op.project_id.as_str()) else {
             return skipped("no project folder on this host");
         };
         let Ok(origin) = protocol::inside(&folder, Some(&protocol::text_value(cache)), true) else {
@@ -297,7 +297,7 @@ impl HostService {
         caches: &[String],
     ) -> Outcome<Value> {
         require(
-            text(op, "state") == "leased",
+            op.state == State::Leased,
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
@@ -360,7 +360,7 @@ impl HostService {
             false,
         )?;
         let skipped = |reason: &str| Ok(json!({"cloned": false, "reason": reason}));
-        let Some(folder) = self.project_folder(text(op, "projectId")) else {
+        let Some(folder) = self.project_folder(op.project_id.as_str()) else {
             return skipped("no project folder on this host");
         };
         let Ok(origin) = protocol::inside(&folder, Some(&protocol::text_value(&name)), true) else {
@@ -375,7 +375,7 @@ impl HostService {
         let cache = self
             .state
             .join("layr-projects")
-            .join(text(op, "projectId"))
+            .join(op.project_id.as_str())
             .join("host-exec-hashes.json");
         let mut hashes = protocol::load_hashes(&cache);
         if hashes.len() > PROJECT_HASHES_LIMIT {
@@ -426,7 +426,7 @@ impl HostService {
         entry: &protocol::ManifestEntry,
     ) -> Outcome<Value> {
         require(
-            text(op, "state") == "leased",
+            op.state == State::Leased,
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
@@ -519,7 +519,7 @@ impl HostService {
         items: &[SyncModeItem],
     ) -> Outcome<Value> {
         require(
-            text(op, "state") == "leased",
+            op.state == State::Leased,
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
@@ -591,7 +591,7 @@ impl HostService {
         self.reserve(slot.parent().unwrap_or(slot), budget, length, slot)?;
         let Some(data) = data else {
             fs::File::create(&path)?;
-            let entries = self.opdir(text(op, "operationId")).join("entries");
+            let entries = self.opdir(op.operation_id.as_str()).join("entries");
             if !entries.is_dir() {
                 fs::create_dir(&entries)?;
             }
@@ -622,7 +622,7 @@ impl HostService {
         items: &[SyncBatchItem],
     ) -> Outcome<Value> {
         require(
-            text(op, "state") == "leased",
+            op.state == State::Leased,
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
@@ -654,7 +654,7 @@ impl HostService {
         operation: &SyncOperation,
     ) -> Outcome<Value> {
         require(
-            text(op, "state") == "leased",
+            op.state == State::Leased,
             "The slot is no longer open for source transfer",
             INVALID,
         )?;

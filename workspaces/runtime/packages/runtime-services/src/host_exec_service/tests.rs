@@ -6,6 +6,22 @@ use std::time::Duration;
 const TOKEN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const BUILD: &str = "build-a";
 
+#[test]
+fn persisted_operation_rejects_invalid_and_unknown_fields() {
+    let body = r#"{"operationId":"op","agentId":"agent","projectId":"project","linePath":"line","slotId":"0","state":"leased","createdAt":1.0,"slotPath":"slot","derivedData":"derived","packageCache":"cache","artifactsPath":"artifacts","diskBudget":5,"macOnly":[],"features":[]}"#;
+    assert!(serde_json::from_str::<Op>(body).is_ok());
+    assert!(
+        serde_json::from_str::<Op>(
+            &body.replace(r#""features":[]"#, r#""features":[],"extension":{"z":1}"#)
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_str::<Op>(&body.replace(r#""agentId":"agent""#, r#""agentId":42"#))
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn slot_lease_preserves_nullable_generation_number() {
     let fixture = Fixture::new();
@@ -792,7 +808,10 @@ async fn slots_are_exclusive_and_settings_set_the_count_and_budget() {
         (json!(300_u64 << 30), json!(["out"]))
     );
     // The smaller slot count removed the least recently used idle slot.
-    assert_eq!(one["slotId"], fixture.op_status("b")["slotId"]);
+    assert_eq!(
+        one["slotId"].as_str().unwrap(),
+        fixture.op_status("b").slot_id
+    );
     assert_eq!(fixture.acquire("two").await.unwrap_err().0, "busy");
     for (index, value) in [
         json!({"slots": 0}),
@@ -995,7 +1014,7 @@ async fn the_mac_refuses_an_invalid_tree_id_and_a_changed_manifest() {
         assert_eq!(escaped.unwrap_err().0, "invalid_params");
     }
     assert!(fixture.service.inner().commands.is_empty());
-    assert_eq!(fixture.op_status("bad")["state"], "leased");
+    assert_eq!(fixture.op_status("bad").state, State::Leased);
 }
 
 #[tokio::test]
@@ -1055,7 +1074,7 @@ async fn command_group_signals_come_before_the_leader_is_reaped() {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     for operation in ["plain", "stopped"] {
-        let pid = i32::try_from(fixture.op_status(operation)["pid"].as_i64().unwrap()).unwrap();
+        let pid = fixture.op_status(operation).pid.unwrap();
         let seen = signals.get(&pid).cloned().unwrap_or_default();
         assert!(!seen.is_empty(), "{operation}: the group is signalled");
         assert!(
@@ -1068,16 +1087,11 @@ async fn command_group_signals_come_before_the_leader_is_reaped() {
 #[tokio::test]
 async fn a_lost_owner_is_unknown_and_keeps_the_lease() {
     let fixture = Fixture::new();
-    let mut op = fixture
-        .acquire("lost-owner")
-        .await
-        .unwrap()
-        .as_object()
-        .unwrap()
-        .clone();
-    op.insert("state".into(), json!("running"));
+    fixture.acquire("lost-owner").await.unwrap();
+    let mut op = fixture.service.load("lost-owner").unwrap();
+    op.state = State::Running;
     fixture.service.save("lost-owner", &op).unwrap();
-    assert_eq!(fixture.op_status("lost-owner")["state"], "unknown");
+    assert_eq!(fixture.op_status("lost-owner").state, State::Unknown);
     let release = fixture
         .call(
             "release",
@@ -1115,7 +1129,7 @@ async fn a_guest_restart_frees_idle_slots_and_orphans_running_commands() {
         .call("acquire-idle", "acquire", params("idle", "old"))
         .await
         .unwrap();
-    let mine = fixture
+    fixture
         .call("acquire-mine", "acquire", params("mine", "new"))
         .await
         .unwrap();
@@ -1129,11 +1143,14 @@ async fn a_guest_restart_frees_idle_slots_and_orphans_running_commands() {
         .unwrap();
     assert_eq!(report["released"], json!(["idle"]));
     assert_eq!(report["releasedSlots"][0]["generation"], idle["generation"]);
-    assert_eq!(fixture.op_status("idle")["abandoned"], "guest_owner_lost");
+    assert_eq!(
+        fixture.op_status("idle").abandoned.as_deref(),
+        Some("guest_owner_lost")
+    );
     assert!(
         fixture
             .service
-            .slot(mine.as_object().unwrap())
+            .slot(&fixture.service.load("mine").unwrap())
             .unwrap()
             .join("lease.json")
             .exists()
