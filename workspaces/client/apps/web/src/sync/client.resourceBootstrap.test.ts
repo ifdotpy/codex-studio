@@ -64,6 +64,8 @@ vi.mock("../api", () => ({
   syncGet: mocks.syncGet,
   get: mocks.syncGet,
   post: vi.fn(),
+  receiveStreamSession: vi.fn(),
+  clearStreamSession: vi.fn(),
   clearSchemaUpdateAttemptAfterMatch: vi.fn(),
   matchingApiSchemaResponseGeneration: () => 0,
   markApiSchemaMismatch: vi.fn(),
@@ -749,7 +751,6 @@ it.each([false, true])(
 
 it.each([
   { follower: false, staged: false, cancelled: false },
-  { follower: true, staged: false, cancelled: false },
   { follower: false, staged: true, cancelled: false },
   { follower: false, staged: true, cancelled: true },
 ])(
@@ -850,7 +851,6 @@ it.each([
         getWorkspaceTokenRates: vi.fn(() => ({ records: [] })),
       },
       openEvents: () => source,
-      storageName: (name) => name,
     });
     mocks.watch.mockImplementation(transport.watchResourceChanges);
     mocks.watchConnection.mockImplementation(transport.watchResourceConnection);

@@ -1,13 +1,9 @@
 import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
-import type { OutgoingTabMessage } from "./resourceEvents";
+type OutgoingTabMessage = { kind: string; [key: string]: unknown };
 import { afterEach, expect, it, vi } from "vitest";
 import { createResourceEvents } from "./resourceEvents";
-import {
-  resourceCoordinationNames,
-  RESOURCE_COORDINATION_VERSION,
-  RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS,
-} from "./resourceConnection";
+import { RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS } from "./resourceConnection";
 import { PERSIST_DEADLINE_MS } from "./resourceEntityDelivery";
 import { createSubscriptionStore } from "./subscriptions/store";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
@@ -187,6 +183,8 @@ async function fixture(
   const readCursor = vi.fn().mockResolvedValue(undefined);
   const persist = vi.fn().mockResolvedValue(undefined);
   const staged = vi.fn().mockResolvedValue(undefined);
+  const receiveSession = vi.fn();
+  const clearSession = vi.fn();
   const transport = createResourceEvents({
     api: {
       get,
@@ -196,6 +194,8 @@ async function fixture(
       matchingApiSchemaResponseGeneration: () => 0,
       markApiSchemaMismatch: vi.fn(),
       onApiSchemaMismatch: () => () => {},
+      receiveStreamSession: receiveSession,
+      clearStreamSession: clearSession,
     },
     sync: {
       syncDatabase: vi.fn().mockResolvedValue({ workspaceId: "workspace" }),
@@ -214,8 +214,6 @@ async function fixture(
       urls.push(url);
       return source;
     },
-    storageName: (name) => name,
-    ...(independent ? { independent: true } : {}),
   });
   disposals.push(transport.dispose);
   const state = { kind: "state" } as const;
@@ -249,6 +247,8 @@ async function fixture(
     stopState,
     get,
     readCursor,
+    receiveSession,
+    clearSession,
     posted,
     peerMessage: (message: Record<string, unknown>) =>
       deliverPeer?.({
@@ -397,6 +397,20 @@ it("an independent page owns its stream without Web Locks or a BroadcastChannel"
   expect(f.sources).toHaveLength(1);
   expect(f.persist).toHaveBeenCalled();
   expect(f.source.closed).toBe(false);
+});
+
+it("publishes and clears the current stream session as the source changes", async () => {
+  const f = await fixture();
+  expect(f.receiveSession).toHaveBeenCalledWith({ sessionId: "session-one" });
+  f.source.onerror?.();
+  expect(f.clearSession).toHaveBeenCalledWith("session-one");
+});
+
+it("opens its own stream even when another tab holds the former lock", async () => {
+  const f = await fixture(true, false, false);
+  expect(f.sources).toHaveLength(1);
+  expect(f.lockNames).toEqual([]);
+  expect(f.channelNames).toEqual([]);
 });
 
 it("publishes each resource event without a listener flush timer", async () => {
@@ -973,87 +987,6 @@ it("drops initial data for an addition removed before its acknowledgement", asyn
   expect(listener).not.toHaveBeenCalled();
 });
 
-it("a late follower ignores deltas until the same-revision full token replay", async () => {
-  const f = await fixture(true);
-  const listener = vi.fn();
-  f.transport.watchTokenRateEvents(listener);
-  const record = {
-    agentId: "active",
-    rootId: "root",
-    turnId: "turn",
-    active: true,
-    estimated: false,
-    rate: 1,
-    outputTokens: 10,
-  };
-  const frame = {
-    protocol: SYNC_PROTOCOL_VERSION,
-    workspaceId: "workspace",
-    epoch: "epoch",
-    revision: 7,
-    snapshot: false,
-    records: [record],
-    removed: [],
-  };
-  f.source.emit("token-rates", frame);
-  expect(listener).not.toHaveBeenCalled();
-  const full = {
-    ...frame,
-    snapshot: true,
-    records: [record, { ...record, agentId: "quiet", active: false, rate: 0 }],
-  };
-  f.source.emit("token-rates", full);
-  expect(listener).toHaveBeenCalledExactlyOnceWith(full);
-  f.source.emit("token-rates", full);
-  expect(listener).toHaveBeenCalledTimes(1);
-  f.source.emit("token-rates", { ...frame, epoch: "new", revision: 1 });
-  expect(listener).toHaveBeenCalledTimes(1);
-  f.source.emit("token-rates", { ...full, epoch: "new", revision: 1 });
-  expect(listener).toHaveBeenCalledTimes(2);
-});
-
-it("invalidates pending follower persistence when its last transcript subscriber leaves", async () => {
-  const f = await fixture(true);
-  const resource = { kind: "transcript", agentId: "slow-follower" } as const;
-  const stop = f.transport.watchResourceChanges(resource, vi.fn());
-  f.persist.mockClear();
-  let finish!: () => void;
-  f.persist.mockImplementationOnce(
-    () =>
-      new Promise<void>((resolve) => {
-        finish = resolve;
-      }),
-  );
-  const frame = (revision: number) => ({
-    protocol: SYNC_PROTOCOL_VERSION,
-    workspaceId: "workspace",
-    epoch: "epoch",
-    revision,
-    reason: "change",
-    resources: [resource],
-    resourceVersions: [
-      {
-        revision,
-        transcriptChanges: {
-          after: revision - 1,
-          through: revision,
-          delta: { delta: true, items: [], removed: [], truncated: false },
-        },
-      },
-    ],
-  });
-  f.source.emit("resources", frame(2));
-  f.source.emit("resources", frame(3));
-  expect(f.persist).toHaveBeenCalledTimes(1);
-  const isCurrent = f.persist.mock.calls[0]![1] as () => boolean;
-  expect(isCurrent()).toBe(true);
-  stop();
-  expect(isCurrent()).toBe(false);
-  finish();
-  await vi.advanceTimersByTimeAsync(25);
-  expect(f.persist).toHaveBeenCalledTimes(1);
-});
-
 it.each(["entityChanges", "transcriptChanges"])(
   "rejects oversized UTF-8 %s frame data before parsing or persistence",
   async (batch) => {
@@ -1511,297 +1444,6 @@ it("reopens a terminal from its durable cursor after its reset write fails", asy
   quiet.mockRestore();
 });
 
-it("takes terminal ownership using its durable cursor", async () => {
-  const f = await fixture(true);
-  const resource = {
-    kind: "terminal-output",
-    terminalId: "taken-over",
-  } as const;
-  f.readCursor.mockImplementation(async (ref) =>
-    ref.kind === "terminal-output"
-      ? { workspaceId: "workspace", seq: 40 }
-      : undefined,
-  );
-  f.transport.watchResourceChanges(resource, vi.fn());
-  const frame = (revision: number, text: string, offset: number) => ({
-    protocol: SYNC_PROTOCOL_VERSION,
-    workspaceId: "workspace",
-    epoch: "epoch",
-    revision,
-    reason: "change",
-    resources: [resource],
-    resourceVersions: [
-      {
-        revision,
-        cursor: { workspaceId: "workspace", seq: offset },
-        replyKind: "snapshot",
-        viewSnapshot: {
-          terminalOutput: { text, offset, status: "running", truncated: false },
-        },
-      },
-    ],
-  });
-  f.source.emit("resources", {
-    ...frame(10, "o".repeat(40), 40),
-    reason: "initial",
-  });
-  await vi.advanceTimersByTimeAsync(0);
-  const reset = frame(11, "new", 3);
-  assert.ok(reset.resourceVersions[0]);
-  // This is what an owner's failed snapshot dispatch broadcasts to a follower.
-  const {
-    cursor: _cursor,
-    replyKind: _kind,
-    ...revoked
-  } = reset.resourceVersions[0];
-  f.source.emit("resources", { ...reset, resourceVersions: [revoked] });
-  await vi.advanceTimersByTimeAsync(0);
-  f.takeOwnership();
-  await vi.advanceTimersByTimeAsync(50);
-  const coldUrl = new URL(f.urls.at(-1)!, "http://studio.test");
-  expect(JSON.parse(coldUrl.searchParams.get("since") ?? "[]")).toContainEqual({
-    resource,
-    since: { workspaceId: "workspace", seq: 40 },
-  });
-  const owned = f.sources.at(-1)!;
-  owned.emit("session", { sessionId: "owned" });
-  owned.emit("api-schema", { hash: API_SCHEMA_HASH });
-  owned.emit("resources", { ...frame(12, "new", 3), reason: "initial" });
-  await vi.advanceTimersByTimeAsync(0);
-  f.readCursor.mockImplementation(async (ref) =>
-    ref.kind === "terminal-output"
-      ? { workspaceId: "workspace", seq: 3 }
-      : undefined,
-  );
-  owned.onerror?.();
-  await vi.advanceTimersByTimeAsync(10000);
-  const resumed = new URL(f.urls.at(-1)!, "http://studio.test");
-  expect(JSON.parse(resumed.searchParams.get("since")!)).toContainEqual({
-    resource,
-    since: { workspaceId: "workspace", seq: 3 },
-  });
-});
-
-it("a late terminal follower consumes owner merged views without repeated recovery GETs", async () => {
-  const owner = await fixture(false, true, true);
-  const { mergeTerminalOutput } =
-    await import("./subscriptions/terminalOutput");
-  const { createDataObserver } = await import("./subscriptions/data");
-  const resource = {
-    kind: "terminal-output",
-    terminalId: "late-follower",
-  } as const;
-  owner.transport.watchResourceChanges(resource, vi.fn());
-  await vi.advanceTimersByTimeAsync(50);
-  owner.source.emit("subscriptions", { gen: 1 });
-  let merged: Parameters<typeof mergeTerminalOutput>[0];
-  owner.persist.mockImplementation(async (event, current) => {
-    if (!current()) return;
-    for (const entry of event.resourceVersions) {
-      if (!entry.viewSnapshot?.terminalOutput) continue;
-      merged = mergeTerminalOutput(
-        merged,
-        entry.viewSnapshot.terminalOutput,
-        entry.replyKind === "delta",
-      );
-      entry.viewSnapshot = { terminalOutput: merged };
-    }
-  });
-  const frame = (
-    revision: number,
-    text: string,
-    offset: number,
-    replyKind = "delta",
-  ) => ({
-    protocol: SYNC_PROTOCOL_VERSION,
-    workspaceId: "workspace",
-    epoch: "epoch",
-    revision,
-    reason: "change",
-    resources: [resource],
-    resourceVersions: [
-      {
-        revision,
-        cursor: { workspaceId: "workspace", seq: offset },
-        replyKind,
-        viewSnapshot: {
-          terminalOutput: { text, offset, status: "running", truncated: false },
-        },
-      },
-    ],
-  });
-  owner.source.emit("resources", {
-    ...frame(10, "old", 3, "snapshot"),
-    reason: "initial",
-  });
-  await vi.advanceTimersByTimeAsync(0);
-  const follower = await fixture(true);
-  const recover = vi.fn(async () => {
-    if (!merged) throw new Error("Missing persisted terminal output");
-    return merged;
-  });
-  const accept = vi.fn();
-  const stop = createDataObserver(
-    () => ({}) as ReturnType<Parameters<typeof createDataObserver>[0]>,
-    follower.transport,
-    undefined,
-    { "terminal-output": recover },
-  )(resource, accept, vi.fn());
-  const relay = () => {
-    const message = owner.posted
-      .filter((message) => message.kind === "resource-event")
-      .at(-1)!;
-    follower.source.emit("resources", message.event);
-    return message.event;
-  };
-  owner.peerMessage({
-    kind: "subscriptions",
-    resources: [resource],
-    reset: true,
-    tokenRates: false,
-  });
-  const replay = relay();
-  await vi.advanceTimersByTimeAsync(0);
-  expect(replay.resourceVersions[0]).toMatchObject({
-    replyKind: "snapshot",
-    viewSnapshot: { terminalOutput: { text: "old" } },
-  });
-  expect(accept).toHaveBeenLastCalledWith(
-    merged,
-    expect.objectContaining({
-      epoch: "epoch",
-      revision: 10,
-      replyKind: "snapshot",
-      cursor: { workspaceId: "workspace", seq: 3 },
-    }),
-  );
-  for (const revision of [11, 12]) {
-    owner.source.emit("resources", frame(revision, "!", revision - 7));
-    await vi.advanceTimersByTimeAsync(0);
-    const broadcast = relay();
-    expect(broadcast.resourceVersions[0]).toMatchObject({
-      replyKind: "snapshot",
-      viewSnapshot: { terminalOutput: merged },
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(accept).toHaveBeenLastCalledWith(
-      merged,
-      expect.objectContaining({
-        epoch: "epoch",
-        revision,
-        replyKind: "snapshot",
-        cursor: { workspaceId: "workspace", seq: revision - 7 },
-      }),
-    );
-  }
-  let finish!: () => void;
-  const apply = owner.persist.getMockImplementation()!;
-  owner.persist.mockImplementationOnce(async (event, current) => {
-    await new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-    await apply(event, current);
-  });
-  const before = owner.posted.filter(
-    (message) => message.kind === "resource-event",
-  ).length;
-  owner.source.emit("resources", frame(13, "!", 6));
-  await vi.advanceTimersByTimeAsync(0);
-  expect(
-    owner.posted.filter((message) => message.kind === "resource-event"),
-  ).toHaveLength(before);
-  finish();
-  await vi.advanceTimersByTimeAsync(0);
-  expect(relay().resourceVersions[0]).toMatchObject({
-    replyKind: "snapshot",
-    viewSnapshot: { terminalOutput: { text: "old!!!" } },
-  });
-  await vi.advanceTimersByTimeAsync(0);
-  expect(recover).not.toHaveBeenCalled();
-  const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
-  const beforeFailure = owner.posted.filter(
-    (message) => message.kind === "resource-event",
-  ).length;
-  owner.persist.mockRejectedValueOnce(new Error("disk full"));
-  owner.source.emit("resources", frame(14, "new", 3, "snapshot"));
-  await vi.advanceTimersByTimeAsync(0);
-  expect(
-    owner.posted.filter((message) => message.kind === "resource-event"),
-  ).toHaveLength(beforeFailure);
-  expect(owner.source.closed).toBe(true);
-  await vi.advanceTimersByTimeAsync(1000);
-  expect(owner.sources).toHaveLength(2);
-  const retry = new URL(owner.urls.at(-1)!, "http://studio.test");
-  expect(
-    JSON.parse(retry.searchParams.get("since") ?? "[]").some(
-      (entry: { resource: unknown }) =>
-        JSON.stringify(entry.resource) === JSON.stringify(resource),
-    ),
-  ).toBe(false);
-  quiet.mockRestore();
-  stop();
-});
-
-it.each([false, true])(
-  "a follower scoped application failure requests owner recovery only while subscribed (cancelled=%s)",
-  async (cancelled) => {
-    const f = await fixture(true);
-    const ref = { kind: "work", agentId: "lead" } as const;
-    const stop = f.transport.watchResourceChanges(ref, () => {});
-    let reject!: (error: Error) => void;
-    f.persist.mockReturnValueOnce(
-      new Promise((_resolve, failed) => {
-        reject = failed;
-      }),
-    );
-    const error = vi.spyOn(console, "error").mockImplementation(() => {});
-    f.source.emit("resources", {
-      protocol: SYNC_PROTOCOL_VERSION,
-      workspaceId: "workspace",
-      epoch: "epoch",
-      revision: 2,
-      reason: "initial",
-      resources: [ref],
-      resourceVersions: [
-        {
-          resource: ref,
-          revision: 2,
-          cursor: { workspaceId: "workspace", seq: 2 },
-          replyKind: "snapshot",
-          entityChanges: { after: 0, through: 2, documents: [] },
-        },
-      ],
-    });
-    await vi.advanceTimersByTimeAsync(0);
-    if (cancelled) stop();
-    reject(new Error("local follower write unavailable"));
-    await vi.advanceTimersByTimeAsync(0);
-    const requests = f.messages.filter(
-      (message) => (message as { kind: string }).kind === "resource-recovery",
-    );
-    expect(requests).toHaveLength(cancelled ? 0 : 1);
-    if (!cancelled) expect(requests[0]).toMatchObject({ resources: [ref] });
-    expect(f.get).not.toHaveBeenCalled();
-    error.mockRestore();
-  },
-);
-
-it("the owner coalesces a subscribed peer recovery request into its bounded cursor reconnect", async () => {
-  const f = await fixture(false, true, true);
-  const ref = { kind: "state" };
-  f.control("subscriptions", {
-    resources: [ref],
-    tokenRates: false,
-    reset: false,
-  });
-  f.control("resource-recovery", { resources: [ref] });
-  expect(f.source.closed).toBe(true);
-  f.control("resource-recovery", { resources: [ref] });
-  await vi.advanceTimersByTimeAsync(1000);
-  expect(f.sources).toHaveLength(2);
-  expect(f.get).not.toHaveBeenCalled();
-});
-
 it("a failed Work write drops its queued terminal reset and resumes durable cursors", async () => {
   const f = await fixture();
   const terminal = {
@@ -1882,31 +1524,6 @@ it("a failed Work write drops its queued terminal reset and resumes durable curs
   quiet.mockRestore();
 });
 
-it("relays legacy revision-only hints from an owner to a follower", async () => {
-  const owner = await fixture(false, true, true);
-  const follower = await fixture(true);
-  const accept = vi.fn();
-  follower.transport.watchResourceChanges({ kind: "state" }, accept);
-  accept.mockClear();
-  owner.source.emit("resources", {
-    protocol: SYNC_PROTOCOL_VERSION,
-    workspaceId: "workspace",
-    epoch: "epoch",
-    revision: 20,
-    reason: "change",
-    resources: [{ kind: "state" }],
-  });
-  await vi.advanceTimersByTimeAsync(0);
-  const message = owner.posted
-    .filter((message) => message.kind === "resource-event")
-    .at(-1)!;
-  expect(message.event.revision).toBe(20);
-  expect(message.event.resourceVersions).toBeUndefined();
-  follower.source.emit("resources", message.event);
-  await vi.advanceTimersByTimeAsync(0);
-  expect(accept).toHaveBeenCalledOnce();
-});
-
 function health(
   status = "live",
   generation = 1,
@@ -1915,76 +1532,6 @@ function health(
 ) {
   return { status, generation, sequence, sentAt: Date.now(), validatedAt };
 }
-
-it("connection: fresh healthy owner proof recovers a quiet follower without reads", async () => {
-  const f = await fixture(true);
-  const status = vi.fn();
-  f.transport.watchResourceConnection(status);
-  await vi.advanceTimersByTimeAsync(12_000);
-  expect(status.mock.lastCall?.[0]).toBe("degraded");
-  const reads = f.get.mock.calls.length;
-  for (let sequence = 1; sequence <= 20; sequence++) {
-    f.control("leader-heartbeat", { health: health("live", 1, sequence) });
-    expect(status.mock.lastCall?.[0]).toBe("live");
-    await vi.advanceTimersByTimeAsync(3_000);
-  }
-  expect(f.sources).toHaveLength(0);
-  expect(f.get).toHaveBeenCalledTimes(reads);
-});
-
-it("connection: peer liveness and degraded owner proof never heal a follower", async () => {
-  const f = await fixture(true);
-  const status = vi.fn();
-  f.transport.watchResourceConnection(status);
-  await vi.advanceTimersByTimeAsync(12_000);
-  for (let sequence = 1; sequence <= 20; sequence++) {
-    f.control("leader-heartbeat", {});
-    f.control("leader-heartbeat", { health: health("degraded", 1, sequence) });
-    await vi.advanceTimersByTimeAsync(3_000);
-    expect(status.mock.lastCall?.[0]).toBe("degraded");
-  }
-});
-
-it("connection: rejects replayed, expired, wrong workspace/schema and replaced-source health", async () => {
-  const f = await fixture(true);
-  const status = vi.fn();
-  f.transport.watchResourceConnection(status);
-  const prior = health("live", 1, 1);
-  f.control("leader-heartbeat", { health: prior });
-  f.control("status", { status: "degraded", health: health("degraded", 2, 2) });
-  for (const fields of [
-    { health: prior },
-    { health: health("live", 1, 3) },
-    { health: health("live", 2, 2) },
-    { health: health("live", 2, 3, Date.now() - 45_001) },
-    { workspaceId: "elsewhere", health: health("live", 2, 4) },
-    { apiSchemaHash: "old-schema", health: health("live", 2, 5) },
-  ]) {
-    f.control("leader-heartbeat", fields);
-    expect(status.mock.lastCall?.[0]).toBe("degraded");
-  }
-  f.control("leader-heartbeat", { health: health("live", 2, 6) });
-  expect(status.mock.lastCall?.[0]).toBe("live");
-});
-
-it("connection: live status without current server proof cannot heal", async () => {
-  const f = await fixture(true);
-  const status = vi.fn();
-  f.transport.watchResourceConnection(status);
-  await vi.advanceTimersByTimeAsync(12_000);
-  f.control("status", { status: "live" });
-  expect(status.mock.lastCall?.[0]).toBe("degraded");
-});
-
-it("connection: an offline owner does not make the follower locally offline", async () => {
-  const f = await fixture(true);
-  const status = vi.fn();
-  f.transport.watchResourceConnection(status);
-  f.control("status", { status: "offline", health: health("offline", 1, 2) });
-  expect(status.mock.lastCall?.[0]).toBe("degraded");
-  f.control("leader-heartbeat", { health: health("live", 1, 3) });
-  expect(status.mock.lastCall?.[0]).toBe("live");
-});
 
 it("connection: offline closes a validated stream and online is not proof", async () => {
   const f = await fixture();
@@ -2371,23 +1918,6 @@ it("connection: the desktop app keeps its stream while its window is hidden", as
   expect(status.mock.calls.map(([value]) => value)).not.toContain("paused");
 });
 
-it("connection: hidden follower ignores live peer frames and visible follower recovers from paused owner", async () => {
-  const f = await fixture(true);
-  const status = vi.fn();
-  f.transport.watchResourceConnection(status);
-  Object.assign(document, { hidden: true });
-  document.dispatchEvent(new Event("visibilitychange"));
-  f.control("leader-heartbeat", { health: health() });
-  expect(status.mock.lastCall?.[0]).toBe("paused");
-  Object.assign(document, { hidden: false });
-  document.dispatchEvent(new Event("visibilitychange"));
-  await vi.advanceTimersByTimeAsync(60);
-  f.control("status", { status: "paused", health: health("paused", 1, 2) });
-  expect(status.mock.lastCall?.[0]).toBe("degraded");
-  f.control("leader-heartbeat", { health: health("live", 2, 3) });
-  expect(status.mock.lastCall?.[0]).toBe("live");
-});
-
 it("connection: real lifecycle removes every registered listener across disposal and restart", async () => {
   const f = await fixture();
   for (let cycle = 0; cycle < 2; cycle++) {
@@ -2406,213 +1936,6 @@ it("connection: real lifecycle removes every registered listener across disposal
       await vi.advanceTimersByTimeAsync(0);
     }
   }
-});
-
-it("connection: owner health snapshots retain server freshness and invalidate replacement source", async () => {
-  const f = await fixture(false, true, true);
-  await vi.advanceTimersByTimeAsync(3_000);
-  const first = [...f.posted]
-    .reverse()
-    .find((message) => message.kind === "leader-heartbeat");
-  assert.ok(first != null);
-  expect(first.health).toMatchObject({
-    status: "live",
-    validatedAt: expect.any(Number),
-  });
-  await vi.advanceTimersByTimeAsync(3_000);
-  const quiet = [...f.posted]
-    .reverse()
-    .find((message) => message.kind === "leader-heartbeat");
-  assert.ok(quiet != null);
-  assert.ok(quiet.health != null);
-  assert.ok(first.health != null);
-  expect(quiet.health.validatedAt).toBe(first.health.validatedAt);
-  expect(quiet.health.sequence).toBeGreaterThan(first.health.sequence);
-  f.source.onerror?.();
-  const failed = [...f.posted]
-    .reverse()
-    .find((message) => message.kind === "status");
-  assert.ok(failed != null);
-  assert.ok(failed.health != null);
-  expect(failed.health.status).toBe("degraded");
-  expect(failed.health.validatedAt).toBeUndefined();
-  expect(failed.health.generation).toBeGreaterThan(first.health.generation);
-});
-
-it("connection: first and late quiet followers recover only from fresh scoped owner proof", async () => {
-  const f = await fixture(true, true, false, false);
-  const status = vi.fn();
-  f.transport.watchResourceConnection(status);
-  expect(status.mock.lastCall?.[0]).toBe("connecting");
-  f.control("leader-heartbeat", {});
-  f.control("status", { status: "live" });
-  expect(status.mock.lastCall?.[0]).toBe("connecting");
-  f.control("leader-heartbeat", { health: health() });
-  expect(status.mock.lastCall?.[0]).toBe("live");
-});
-
-it("connection: offline invalidates follower health and plain heartbeats cannot restore it", async () => {
-  const f = await fixture(true);
-  const status = vi.fn();
-  f.transport.watchResourceConnection(status);
-  Object.assign(navigator, { onLine: false });
-  window.dispatchEvent(new Event("offline"));
-  expect(status.mock.lastCall?.[0]).toBe("offline");
-  Object.assign(navigator, { onLine: true });
-  window.dispatchEvent(new Event("online"));
-  for (let i = 0; i < 5; i++) {
-    f.control("leader-heartbeat", {});
-    await vi.advanceTimersByTimeAsync(3_000);
-  }
-  expect(status.mock.lastCall?.[0]).toBe("degraded");
-});
-
-it("connection: owner A B A can recover while prior ownership replay stays rejected", async () => {
-  const f = await fixture(true);
-  const status = vi.fn();
-  f.transport.watchResourceConnection(status);
-  f.control("leader-heartbeat", { health: health("live", 1, 1) });
-  await vi.advanceTimersByTimeAsync(1);
-  f.control("leader-heartbeat", {
-    tabId: "owner-B",
-    health: health("degraded", 1, 1),
-  });
-  f.control("leader-heartbeat", { health: health("live", 1, 2) });
-  expect(status.mock.lastCall?.[0]).toBe("degraded");
-  f.control("leader-heartbeat", { health: health("live", 2, 3) });
-  expect(status.mock.lastCall?.[0]).toBe("live");
-});
-
-it("connection: degraded owner cached resource and token replay applies without healing", async () => {
-  const f = await fixture(true);
-  const status = vi.fn();
-  f.transport.watchResourceConnection(status);
-  f.control("status", { status: "degraded", health: health("degraded", 2, 1) });
-  f.control("resource-event", {
-    health: health("degraded", 2, 2),
-    event: {
-      protocol: SYNC_PROTOCOL_VERSION,
-      workspaceId: "workspace",
-      epoch: "epoch",
-      revision: 1,
-      reason: "initial",
-      resources: [{ kind: "state" }],
-      resourceVersions: [{ revision: 1 }],
-    },
-  });
-  await vi.advanceTimersByTimeAsync(0);
-  expect(status.mock.lastCall?.[0]).toBe("degraded");
-  f.control("token-rates", {
-    health: health("degraded", 2, 3),
-    event: {
-      protocol: SYNC_PROTOCOL_VERSION,
-      workspaceId: "workspace",
-      epoch: "epoch",
-      revision: 2,
-      snapshot: true,
-      removed: [],
-      records: [],
-    },
-  });
-  expect(status.mock.lastCall?.[0]).toBe("degraded");
-});
-
-it("connection: cancelling a pending server frame cannot publish live proof for replacement", async () => {
-  const f = await fixture(false, true, true);
-  let finish!: () => void;
-  f.persist.mockImplementationOnce(
-    () =>
-      new Promise<void>((resolve) => {
-        finish = resolve;
-      }),
-  );
-  const status = vi.fn();
-  f.transport.watchResourceConnection(status);
-  f.source.emit("resources", {
-    protocol: SYNC_PROTOCOL_VERSION,
-    workspaceId: "workspace",
-    epoch: "epoch",
-    revision: 2,
-    reason: "change",
-    resources: [{ kind: "state" }],
-    resourceVersions: [
-      {
-        revision: 2,
-        cursor: { workspaceId: "workspace", seq: 2 },
-        replyKind: "delta",
-      },
-    ],
-  });
-  await vi.advanceTimersByTimeAsync(0);
-  f.source.onerror?.();
-  finish();
-  await vi.advanceTimersByTimeAsync(1_000);
-  expect(status.mock.lastCall?.[0]).toBe("degraded");
-  const failed = [...f.posted]
-    .reverse()
-    .find((message) => message.kind === "status");
-  assert.ok(failed != null);
-  assert.ok(failed.health != null);
-  expect(failed.health.validatedAt).toBeUndefined();
-});
-
-it("connection: actual lock and channel share the version and schema coordination scope", async () => {
-  const f = await fixture(false, true, true);
-  const names = resourceCoordinationNames(location.origin, "workspace");
-  expect(f.lockNames).toEqual([names.lock]);
-  expect(f.channelNames).toEqual([names.channel]);
-  for (const name of Object.values(names)) {
-    expect(name).toContain(
-      `${RESOURCE_COORDINATION_VERSION}:${API_SCHEMA_HASH}:${location.origin}:workspace`,
-    );
-  }
-  expect(resourceCoordinationNames(location.origin, "other")).not.toEqual(
-    names,
-  );
-  expect(
-    resourceCoordinationNames("http://other.test", "workspace"),
-  ).not.toEqual(names);
-});
-
-it("connection: validated progress keeps owner health fresh through a false offline hint", async () => {
-  const f = await fixture(false, true, true);
-  const resource = { kind: "vault-readiness", prefix: "vault" } as const;
-  f.transport.watchResourceChanges(resource, vi.fn());
-  await vi.advanceTimersByTimeAsync(50);
-  f.source.emit("subscriptions", { gen: 1 });
-  const status = vi.fn();
-  f.transport.watchResourceConnection(status);
-  const follower = await fixture(true);
-  follower.transport.watchResourceChanges(resource, vi.fn());
-  const followerStatus = vi.fn();
-  follower.transport.watchResourceConnection(followerStatus);
-  for (let revision = 2; revision <= 4; revision++) {
-    await vi.advanceTimersByTimeAsync(20_000);
-    f.source.emit("resource-progress", {
-      protocol: SYNC_PROTOCOL_VERSION,
-      workspaceId: "workspace",
-      epoch: "epoch",
-      revision,
-      resource,
-      value: true,
-    });
-    const relay = [...f.posted]
-      .reverse()
-      .find((message) => message.kind === "resource-progress");
-    assert.ok(relay);
-    follower.control("resource-progress", relay);
-    expect(followerStatus.mock.lastCall?.[0]).toBe("live");
-  }
-  Object.assign(navigator, { onLine: false });
-  window.dispatchEvent(new Event("offline"));
-  expect(f.source.closed).toBe(false);
-  expect(status.mock.lastCall?.[0]).toBe("live");
-  const proof = [...f.posted]
-    .reverse()
-    .find((message) => message.kind === "resource-progress");
-  assert.ok(proof != null);
-  assert.ok(proof.health != null);
-  expect(proof.health.validatedAt).toBe(Date.now());
 });
 
 it("connection: foreign, stale and invalid progress cannot heal a replacement stream", async () => {

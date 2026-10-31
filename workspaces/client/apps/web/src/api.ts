@@ -354,7 +354,9 @@ export function createApiScope(options: ApiScopeOptions) {
   let workspace = "";
 
   let latestStreamSession: components["schemas"]["SyncSessionEvent"];
-  let activeStreamSession: components["schemas"]["SyncSessionEvent"] | undefined;
+  let activeStreamSession:
+    | components["schemas"]["SyncSessionEvent"]
+    | undefined;
   let resolveStreamSession!: () => void;
   const streamSession = new Promise<void>((resolve) => {
     resolveStreamSession = resolve;

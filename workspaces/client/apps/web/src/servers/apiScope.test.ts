@@ -91,6 +91,10 @@ describe("concurrent servers in one interface", () => {
     ).toThrow();
     expect(api.getStreamSession()?.sessionId).toBe("one");
     expect(requests).toHaveLength(1);
+    api.clearStreamSession("older");
+    expect(api.getStreamSession()?.sessionId).toBe("one");
+    api.clearStreamSession("one");
+    expect(api.getStreamSession()).toBeUndefined();
   });
   it("versions disposable caches without changing request identity storage", () => {
     const disk = memory();

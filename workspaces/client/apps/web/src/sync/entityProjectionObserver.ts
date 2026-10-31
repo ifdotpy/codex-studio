@@ -51,7 +51,7 @@ export async function observeEntityProjection(
     markerDirty = false;
     let failed = false;
     try {
-      // BroadcastChannel can deliver old events after a reset. Events only mark
+      // Delayed stream events can arrive after a reset. Events only mark
       // IDs dirty; the current durable row and marker determine what to show.
       const documents = await collection.storageInstance.findDocumentsById(
         ["state:entities:ready", "state:entities:complete", ...ids],

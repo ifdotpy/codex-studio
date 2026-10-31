@@ -50,7 +50,6 @@ it("forwards resumed refs to the same server's fully applied cursor reader", asy
     mocks.options?.sync.readSubscriptionCursor?.(ref),
   ).resolves.toEqual(cursor);
   expect(read).toHaveBeenCalledExactlyOnceWith(ref);
-  expect(mocks.options?.storageName?.("cache")).toBe("cache:server:remote");
   mocks.options?.openEvents?.("/api/sync/stream");
   expect(mocks.source).toHaveBeenCalledWith(
     "https://server.example/api/sync/stream",
