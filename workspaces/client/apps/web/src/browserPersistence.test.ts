@@ -40,6 +40,17 @@ it("removes retired draft and upload data without touching identities", async ()
     ["codex-sidebar-order:scope", "cached"],
     ["codex-sidebar-order:scope:pending", "pending"],
     ["studio-removed-messages:chat", "old"],
+    [
+      "studio-agent-mode:with-pending",
+      JSON.stringify({
+        confirmed: { concurrency: 2, revision: 1 },
+        pending: { request_id: "same" },
+      }),
+    ],
+    [
+      "studio-agent-mode:confirmed-only",
+      JSON.stringify({ confirmed: { concurrency: 2, revision: 1 } }),
+    ],
     ["codex-queue-edit:scope:writer", "old"],
     [
       "codex-pending-creation:scope:rejected:00000000-0000-4000-8000-000000000000",
@@ -59,6 +70,8 @@ it("removes retired draft and upload data without touching identities", async ()
       return values.size;
     },
     key: (index: number) => [...values.keys()][index] ?? null,
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
     removeItem: (key: string) => values.delete(key),
   };
   const deleted: string[] = [];
@@ -79,11 +92,15 @@ it("removes retired draft and upload data without touching identities", async ()
   await cleanupLegacyPersistence(storage, factory);
   expect([...values.keys()]).toEqual([
     "codex-sidebar-order:scope:pending",
+    "studio-agent-mode:with-pending",
     "codex-pending-creation:scope:request:active",
     "studio-queue-change:scope:chat",
     "studio-paired-servers-v1",
     "unrelated-app-key",
   ]);
+  expect(JSON.parse(values.get("studio-agent-mode:with-pending")!)).toEqual({
+    pending: { request_id: "same" },
+  });
   expect(deleted).toEqual([
     "codex-studio-dictation",
     "codex-studio-uploads:server:remote",

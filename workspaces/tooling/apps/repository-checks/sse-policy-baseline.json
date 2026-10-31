@@ -64,34 +64,6 @@
     "callee": "syncPost"
   },
   {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/agents/SubagentConcurrencyControl.tsx",
-    "callee": "localStorage.removeItem"
-  },
-  {
     "file": "components/newChatSettings.ts",
     "callee": "serverCredentialAdapter().fetch"
   },
