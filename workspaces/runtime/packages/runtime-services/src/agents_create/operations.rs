@@ -4382,7 +4382,8 @@ mod tests {
                         json!({
                             "id": project_path_for_write,
                             "path": project_path_for_write,
-                            "accountKey": "project-account"
+                            "accountKey": "project-account",
+                            "peerTeams": []
                         })
                         .to_string()
                     ],
@@ -4457,7 +4458,8 @@ mod tests {
                             "id": write_path,
                             "path": write_path,
                             "accountKey": "codex-work",
-                            "accountGroups": ["work", "own"]
+                            "accountGroups": ["work", "own"],
+                            "peerTeams": []
                         })
                         .to_string()
                     ],
