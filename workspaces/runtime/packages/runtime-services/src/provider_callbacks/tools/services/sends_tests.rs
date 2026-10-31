@@ -529,12 +529,13 @@ async fn try_send_args_with(
 }
 
 #[tokio::test]
-async fn receipt_domain_opaque_send_replays_after_legacy_receipts() {
+async fn receipt_domain_send_replays_without_reapplying() {
     use crate::provider_callbacks::{
         CallbackDecision, dispatch_with_managed_tools, managed_tool_ports,
     };
     use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
-    let (directory, store, oracle) = frozen::state().await;
+    let (_directory, store, oracle) = frozen::state().await;
+    let store = Arc::new(store);
     let actor = &oracle["agents"][0];
     let context = CallbackContext {
         stream_id: "default".into(),
@@ -547,30 +548,8 @@ async fn receipt_domain_opaque_send_replays_after_legacy_receipts() {
         turn: actor["turnId"].as_str().unwrap().into(),
     };
     let target = oracle["agents"][1]["id"].as_str().unwrap();
-    let actor_id = context.agent.clone();
-    let old_args =
-        json!({"agent_id":target,"text":"legacy instruction","request_id":"legacy-opaque"});
-    let signature = studio_runtime_store::sha256_hex(
-        studio_runtime_store::python_json_compact(
-            &json!({"tool":"orchestration_send","arguments":old_args}),
-        )
-        .as_bytes(),
-    );
-    let old = json!({"id":"legacy-request","agent":context.agent,"threadId":context.thread,"turnId":context.turn,"callId":"old-call","tool":"orchestration_send","arguments":old_args,"signature":signature,"epoch":context.epoch,"accountKey":context.account,"connectionId":context.connection,"stage":"completed","outcome":"applied","created":1.0,"updated":1.0});
-    store.transaction(move |tx| {
-        tx.execute_batch("DELETE FROM runtime_tool_requests; DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL); CREATE TABLE runtime_tool_results(id TEXT PRIMARY KEY,result TEXT NOT NULL); CREATE TABLE runtime_tool_request_aliases(agent TEXT,alias TEXT,request TEXT,PRIMARY KEY(agent,alias,request));")?;
-        tx.execute("INSERT INTO runtime_tool_requests(id,record) VALUES('legacy-request',?1)", [old.to_string()])?;
-        tx.execute("INSERT INTO runtime_tool_request_aliases VALUES(?1,'legacy-opaque','legacy-request')", [&actor_id])?;
-        tx.execute("INSERT INTO runtime_tool_results VALUES('legacy-request',?1)", [json!({"success":true,"contentItems":[{"type":"inputText","text":"legacy reply"}]}).to_string()])?;
-        tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES('abc-1','old','{}',0)", [])?;
-        Ok(())
-    }).await.unwrap();
-    drop(store);
-    let store = Arc::new(
-        RuntimeStore::open(Some(directory.path()))
-            .await
-            .expect("migrate legacy database"),
-    );
+    let first_id = RequestIdentity::issue_root();
+    let second_id = RequestIdentity::issue_root();
     let frame = |call: &str, request_id: &str, text: &str| {
         Frame::Request(RequestFrame {
             id: RequestId::String(format!("rpc-{call}")),
@@ -581,7 +560,7 @@ async fn receipt_domain_opaque_send_replays_after_legacy_receipts() {
             fields: Default::default(),
         })
     };
-    let first_frame = frame("send-one", "abc-1", "one instruction");
+    let first_frame = frame("send-one", &first_id, "one instruction");
     let ports = Arc::new(
         managed_tool_ports(
             &store,
@@ -592,21 +571,6 @@ async fn receipt_domain_opaque_send_replays_after_legacy_receipts() {
         .await
         .unwrap(),
     );
-    let CallbackDecision::Answer(old_reply) = dispatch_with_managed_tools(
-        Arc::clone(&store),
-        &context,
-        &frame("legacy-replay", "legacy-opaque", "legacy instruction"),
-        request_time(),
-        ports.clone(),
-    )
-    .await
-    .unwrap() else {
-        panic!("legacy reply")
-    };
-    let ResponseBody::Result(old_body) = old_reply.body else {
-        panic!("legacy result")
-    };
-    assert!(old_body.to_string().contains("legacy reply"));
     let CallbackDecision::Answer(first) = dispatch_with_managed_tools(
         Arc::clone(&store),
         &context,
@@ -625,7 +589,7 @@ async fn receipt_domain_opaque_send_replays_after_legacy_receipts() {
     let CallbackDecision::Answer(replay) = dispatch_with_managed_tools(
         Arc::clone(&store),
         &context,
-        &frame("send-two", "abc-1", "one instruction"),
+        &frame("send-two", &first_id, "one instruction"),
         request_time(),
         ports.clone(),
     )
@@ -638,7 +602,7 @@ async fn receipt_domain_opaque_send_replays_after_legacy_receipts() {
         dispatch_with_managed_tools(
             Arc::clone(&store),
             &context,
-            &frame("send-conflict", "abc-1", "changed instruction"),
+            &frame("send-conflict", &first_id, "changed instruction"),
             request_time(),
             ports.clone(),
         )
@@ -657,8 +621,8 @@ async fn receipt_domain_opaque_send_replays_after_legacy_receipts() {
             .unwrap(),
         1
     );
-    let third = frame("send-three", "abc-2", "concurrent instruction");
-    let fourth = frame("send-four", "abc-2", "concurrent instruction");
+    let third = frame("send-three", &second_id, "concurrent instruction");
+    let fourth = frame("send-four", &second_id, "concurrent instruction");
     let (a, b) = tokio::join!(
         dispatch_with_managed_tools(
             Arc::clone(&store),

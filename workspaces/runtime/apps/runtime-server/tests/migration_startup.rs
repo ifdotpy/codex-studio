@@ -103,11 +103,11 @@ async fn migration_startup_failure_prevents_listener_and_readiness() {
 }
 
 #[tokio::test]
-async fn migration_startup_unclassified_receipt_prevents_all_recovery() {
+async fn migration_startup_unfinished_receipts_prevent_all_recovery() {
     let state = tempfile::tempdir().expect("state");
     drop(RuntimeStore::open(Some(state.path())).await.expect("fresh"));
     let db = rusqlite::Connection::open(state.path().join("canvas.sqlite3")).expect("database");
-    db.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL); INSERT INTO runtime_operation_receipts VALUES('unsupported-operation','unsupported-signature','{}')").expect("unclassifiable source");
+    db.execute("UPDATE runtime_payload_migrations SET status='pending',complete=0 WHERE name LIKE '%receipts-tools-finish:%'", []).expect("unfinished receipt checkpoint");
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_studio-runtime-server"));
     command
         .args(["--port", "0"])
@@ -123,20 +123,14 @@ async fn migration_startup_unclassified_receipt_prevents_all_recovery() {
     assert!(!result.status.success());
     let stderr = String::from_utf8_lossy(&result.stderr);
     assert!(stderr.contains("store-open-started"), "{stderr}");
-    for expected in [
-        "runtime_operation_receipts",
-        "unsupported-operation",
-        "unsupported-signature",
-    ] {
-        assert!(
-            stderr.contains(expected),
-            "{expected} missing from startup error: {stderr}"
-        );
-    }
+    assert!(
+        stderr.contains("upgrade through an intermediate release first"),
+        "{stderr}"
+    );
     assert!(
         !stderr.contains("account-registry-open-started"),
         "provider recovery must not start: {stderr}"
     );
     assert!(!stderr.contains("listener-bound"), "{stderr}");
-    assert_eq!(db.query_row("SELECT count(*) FROM runtime_operation_receipts WHERE id='unsupported-operation' AND signature='unsupported-signature'",[],|row|row.get::<_,i64>(0)).expect("source retained"),1);
+    assert_eq!(db.query_row("SELECT status FROM runtime_payload_migrations WHERE name LIKE '%receipts-tools-finish:%'", [], |row| row.get::<_, String>(0)).expect("checkpoint retained"), "pending");
 }

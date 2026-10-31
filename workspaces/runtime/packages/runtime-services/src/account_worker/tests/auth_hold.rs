@@ -367,11 +367,10 @@ async fn held_start_survives_restart_and_starts_once_after_login() {
     }
 }
 
-/// The retired Claude auth probe wait is read once at startup into the held
-/// state, and that turn starts once after the account is Ready.
+/// A current held start survives restart and starts once after sign-in.
 #[cfg(unix)]
 #[tokio::test]
-async fn retired_claude_auth_probe_wait_becomes_a_held_start_once() {
+async fn held_claude_start_survives_restart_and_starts_once() {
     async fn restart(mut state: State) -> State {
         let root = state.root.clone();
         let agent = state.agent.clone();
@@ -392,61 +391,37 @@ async fn retired_claude_auth_probe_wait_becomes_a_held_start_once() {
     let state = State::new().await;
     let agent = agents(&state, ProviderKind::Claude, 0).await.remove(0);
     let account = Account::new(&state, ProviderKind::Claude);
-    let row = agent.clone();
-    state
-        .bridge
-        .run(move |store| async move {
-            store
-                .transaction_with(move |tx| {
-                    tx.execute(
-                        "UPDATE runtime_agents SET record=json_set(record,'$.status','waiting',\
-                         '$.error','Cannot read Claude Code sign-in status') WHERE id=?1",
-                        [&row],
-                    )?;
-                    tx.execute(
-                        "INSERT INTO runtime_usage_resumes(id,agent,record) VALUES(?1,?2,?3)",
-                        rusqlite::params![
-                            "claude-auth-probe:attempt",
-                            row,
-                            json!({"status":"auth_probe_wait","accountKey":"default","dueAt":1.0})
-                                .to_string()
-                        ],
-                    )?;
-                    Ok::<_, StoreError>(())
-                })
-                .await?;
-            Ok(())
-        })
-        .await
-        .unwrap();
+    account.sign_out();
+    let (mut peer, mut worker) = open(&state, &account).await;
+    hold(
+        &state,
+        &mut peer,
+        &worker,
+        &agent,
+        account.sign_in_message(),
+    )
+    .await;
+    worker.shutdown().await.unwrap();
+    drop(peer);
+    let held = state.record().await;
     let state = restart(state).await;
     scheduler::recover_on_startup(&state.bridge.store)
         .await
         .unwrap();
-    let migrated = state.record().await;
-    assert_eq!(migrated["status"], "failed");
-    assert_eq!(migrated["error"], account.sign_in_message());
-    let remaining = state
-        .bridge
-        .run(|store| async move {
-            Ok(store.test_reader()?.query_row(
-                "SELECT COUNT(*) FROM runtime_usage_resumes WHERE json_extract(record,'$.status')='auth_probe_wait'",
-                [],
-                |row| row.get::<_, i64>(0),
-            )?)
-        })
-        .await
-        .unwrap();
-    assert_eq!(remaining, 0, "the retired wait is read once");
+    let recovered = state.record().await;
+    assert_eq!(recovered["status"], "failed");
+    assert_eq!(recovered["error"], held["error"]);
+    assert_eq!(state.event_status("input").await, "pending");
     let state = restart(state).await;
     scheduler::recover_on_startup(&state.bridge.store)
         .await
         .unwrap();
     assert_eq!(
         state.record().await,
-        migrated,
+        recovered,
         "a second startup changes nothing"
     );
+    account.sign_in(SIGNED_IN);
     let (mut peer, mut worker) = open(&state, &account).await;
     assert_eq!(
         account.release(&state).await,

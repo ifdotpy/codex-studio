@@ -275,7 +275,7 @@ fn reserve_case(db: &mut Connection, case: &Value) {
 }
 
 #[tokio::test]
-async fn receipt_pivot_migrated_settings_resume_through_native_caller() {
+async fn stored_settings_resume_through_native_caller() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use studio_runtime_services::account_session_runtime::{
         AccountSessionError, AccountSessionFuture, AccountSessionPort, ProviderRequest,
@@ -290,7 +290,7 @@ async fn receipt_pivot_migrated_settings_resume_through_native_caller() {
             Box::pin(async { Err(AccountSessionError::Unknown) })
         }
     }
-    for status in ["acknowledged", "not_sent"] {
+    for status in ["acknowledged", "unknown"] {
         let root = tempfile::tempdir().expect("state");
         drop(
             studio_runtime_store::RuntimeStore::open(Some(root.path()))
@@ -306,28 +306,17 @@ async fn receipt_pivot_migrated_settings_resume_through_native_caller() {
         };
         let params = json!({"threadId":"thread"});
         let mut agent = case["after"].clone();
-        agent["startAttempt"]["modelSettings"] = json!({"operation":"attempt:settings", "requestId":request.request_id, "scope":scope, "method":"thread/settings/update", "params":params, "status":status});
+        agent["startAttempt"]["modelSettings"] = json!({"operation":"attempt:settings", "requestId":request.request_id, "scope":scope, "method":"thread/settings/update", "params":params, "status":status, "rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
         let db = Connection::open(root.path().join("canvas.sqlite3")).expect("database");
-        db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL); CREATE TABLE runtime_native_action_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,receipt TEXT NOT NULL,outcome TEXT NOT NULL);").expect("source schema");
         db.execute(
             "INSERT INTO runtime_agents(id,record) VALUES('lead',?1)",
             [agent.to_string()],
         )
         .expect("source agent");
-        db.execute(
-            "INSERT INTO runtime_native_action_receipts VALUES(?1,?2,?3,?4)",
-            rusqlite::params![
-                request.request_id,
-                case["row"][1].as_str().expect("signature"),
-                case["row"][2].to_string(),
-                case["row"][3].to_string()
-            ],
-        )
-        .expect("source action");
         drop(db);
         let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
             .await
-            .expect("migrate");
+            .expect("reopen");
         let broker = Broker(AtomicUsize::new(0));
         let result =
             update_action_settings(&store, &broker, &request, &ticket(), &scope, params).await;
@@ -336,7 +325,7 @@ async fn receipt_pivot_migrated_settings_resume_through_native_caller() {
             assert_eq!(broker.0.load(Ordering::SeqCst), 0);
         } else {
             assert!(matches!(result, Err(NativeError::Unknown)), "{result:?}");
-            assert_eq!(broker.0.load(Ordering::SeqCst), 1);
+            assert_eq!(broker.0.load(Ordering::SeqCst), 0);
         }
     }
 }

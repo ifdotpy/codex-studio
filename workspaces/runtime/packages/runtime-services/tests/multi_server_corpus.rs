@@ -18,34 +18,18 @@ fn applied(value: &Value) -> ExchangeOutcome {
     ))
 }
 
-/// Restore classifiable frozen transport rows in their source-era tables and
-/// run the real receipt migration. The unproven python-location row has its
-/// own migration-stop witness and is not mixed into this successful fixture.
+/// Restore receipt owners captured after the historical migration.
 pub async fn migrated_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
-    let (root, store) = store().await;
-    drop(store);
-    {
-        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
-        db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%';
-            CREATE TABLE runtime_access_receipts(client TEXT,request_id TEXT,hash TEXT,session TEXT,status TEXT,record TEXT,PRIMARY KEY(client,request_id));
-            DROP TABLE runtime_server_inbox; DROP TABLE runtime_server_outbox;
-            CREATE TABLE runtime_server_inbox(id TEXT PRIMARY KEY,signature TEXT NOT NULL,state TEXT NOT NULL,result TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,principal TEXT,actor TEXT);
-            CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,server TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL,result TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_at REAL NOT NULL DEFAULT 0,error TEXT,created_at REAL NOT NULL DEFAULT 0,completed_at REAL NOT NULL DEFAULT 0,fingerprint TEXT);")
-            .expect("source-era receipt tables");
-        for line in fixture().canvas_sql.lines().filter(|line| {
-            (line.starts_with("INSERT INTO \"runtime_access_receipts\"")
-                || line.starts_with("INSERT INTO \"runtime_server_inbox\"")
-                || line.starts_with("INSERT INTO \"runtime_server_outbox\""))
-                && !line
-                    .starts_with("INSERT INTO \"runtime_server_outbox\" VALUES('python-location'")
-        }) {
-            db.execute_batch(line).expect("frozen source row");
-        }
-    }
+    let root = tempfile::tempdir().expect("state");
+    crate::recovery_fixtures::state(
+        root.path(),
+        include_str!("multi_server/migrated-canvas.sql"),
+        include_str!("multi_server/migrated-analytics.sql"),
+    );
     let store = Arc::new(
         RuntimeStore::open(Some(root.path()))
             .await
-            .expect("migrate frozen receipts"),
+            .expect("open migrated fixture"),
     );
     (root, store)
 }
@@ -155,82 +139,6 @@ fn current_signed(
     ];
     SignedRequest::from_headers("POST", target, &headers, raw).expect("signed request")
 }
-#[tokio::test]
-async fn legacy_location_without_project_admission_stops_migration() {
-    let root = tempfile::tempdir().expect("state");
-    drop(
-        RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("bootstrap"),
-    );
-    let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
-    db.execute_batch(
-        "DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%';
-         DROP TABLE runtime_server_outbox;
-         CREATE TABLE runtime_server_outbox (
-             id TEXT PRIMARY KEY, server TEXT NOT NULL, body TEXT NOT NULL,
-             state TEXT NOT NULL, result TEXT, attempts INTEGER NOT NULL DEFAULT 0,
-             next_at REAL NOT NULL DEFAULT 0, error TEXT, created_at REAL NOT NULL DEFAULT 0,
-             completed_at REAL NOT NULL DEFAULT 0, fingerprint TEXT
-         );",
-    )
-    .expect("source-era outbox");
-    let sql = fixture()
-        .canvas_sql
-        .lines()
-        .find(|line| {
-            line.starts_with("INSERT INTO \"runtime_server_outbox\" VALUES('python-location'")
-        })
-        .expect("frozen legacy location");
-    db.execute_batch(sql).expect("source row");
-    drop(db);
-    let error = RuntimeStore::open(Some(root.path()))
-        .await
-        .err()
-        .expect("unclassifiable location must stop migration");
-    assert!(
-        format!("{error:?}").contains("python-location"),
-        "{error:?}"
-    );
-    let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
-    let count: i64 = db
-        .query_row(
-            "SELECT count(*) FROM runtime_server_outbox WHERE id='python-location'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("source retained");
-    assert_eq!(
-        count, 1,
-        "migration must not discard the unproven operation"
-    );
-}
-
-#[tokio::test]
-async fn frozen_transport_receipts_migrate_to_current_owners() {
-    let (_root, store) = migrated_store().await;
-    let db = store.test_reader().expect("reader");
-    let completed: i64 = db
-        .query_row(
-            "SELECT count(*) FROM request_results WHERE id='python-complete'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("completed receipt");
-    let pending: i64 = db
-        .query_row(
-            "SELECT count(*) FROM runtime_server_inbox WHERE id='python-running'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("pending owner");
-    assert_eq!(
-        completed, 1,
-        "completed incoming reply migrates to request_results"
-    );
-    assert_eq!(pending, 1, "unsettled incoming work remains held");
-}
-
 #[tokio::test]
 async fn tailscale_discovery_uses_only_online_untagged_same_owner_candidates() {
     let status = json!({
@@ -2984,7 +2892,7 @@ async fn pairing_receipt_replays_exactly_and_expired_or_malformed_rows_refuse() 
 }
 
 #[tokio::test]
-async fn migrated_pending_pairing_remains_unknown_without_reapplying() {
+async fn pending_pairing_stays_unknown_after_restart_without_reapplying() {
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct PairCases {
@@ -2994,38 +2902,52 @@ async fn migrated_pending_pairing_remains_unknown_without_reapplying() {
     }
     let cases: PairCases = typed_data();
     let first = cases.auth.first().expect("pair case");
-    let signed = studio_runtime_services::multi_server_auth::SignedRequest::from_headers(
+    let signed = SignedRequest::from_headers(
         &first.method,
         &first.target,
         &first.headers,
         first.raw.as_bytes(),
     )
-    .expect("original signed request");
+    .expect("signed request");
     let fingerprint = signed.fingerprint();
+    let pending_id = studio_runtime_store::multi_server_delivery::remote_result_key(
+        "access-pending",
+        &[signed.client_id()],
+        signed.request_id(),
+    );
+    let receipt_id = studio_runtime_store::multi_server_delivery::remote_result_key(
+        "access",
+        &[signed.client_id()],
+        signed.request_id(),
+    );
+    let payload = json!({"client":signed.client_id(),"request_id":signed.request_id(),"session":"session","record":{},"admission":{"id":receipt_id,"signature":fingerprint,"created":0}}).to_string();
     let (root, store) = store().await;
+    store.transaction(move |tx| {
+        tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,payload,created) VALUES(?1,'remote_delivery','request',?1,?2,?3,'unknown',?4,0)", rusqlite::params![pending_id,signed.request_id(),fingerprint,payload])?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).await.expect("save unknown pairing owner");
     drop(store);
-    {
-        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("source");
-        db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_access_receipts(client TEXT,request_id TEXT,hash TEXT,session TEXT,status TEXT,record TEXT,PRIMARY KEY(client,request_id));").expect("source-era access ledger");
-        db.execute("INSERT INTO runtime_access_receipts VALUES('new-client','request-a',?1,'session','pending','{}')", [&fingerprint]).expect("legacy pending owner");
-    }
     let store = RuntimeStore::open(Some(root.path()))
         .await
-        .expect("migrate pending owner");
-    let retry = studio_runtime_services::multi_server_auth::SignedRequest::from_headers(
+        .expect("restart");
+    let retry = SignedRequest::from_headers(
         &cases.fresh_pair.method,
         &cases.fresh_pair.target,
         &cases.fresh_pair.headers,
         cases.fresh_pair.raw.as_bytes(),
     )
-    .expect("fresh signed nonce");
+    .expect("retry");
     let before = rows(&store);
     let error = boundary()
         .handle(&store, &retry, &owner(), None, cases.now)
         .await
         .expect_err("unknown pending result");
-    assert_eq!(error.status(), 409, "migrated pending work stays unknown");
-    assert_eq!(rows(&store), before, "unknown pairing retry has no effect");
+    assert_eq!(error.status(), 409);
+    assert_eq!(
+        rows(&store),
+        before,
+        "unknown pairing must not be reapplied"
+    );
 }
 
 #[tokio::test]

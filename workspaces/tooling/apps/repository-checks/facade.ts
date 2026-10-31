@@ -924,13 +924,6 @@ export function gateSteps(root: string, name: string): GateStep[] {
         options: { allowZeroTests: true },
       },
       {
-        ...nodeTest("receipts-resume", "Receipt migration restart witness", [
-          "workspaces/tooling/apps/repository-checks/tests/receipts-resume.test.ts",
-        ]),
-        lane: "rust",
-        requires: "workspace",
-      },
-      {
         id: "provider-contracts",
         label: "provider contract drift witnesses",
         lane: "rust",

@@ -29985,6 +29985,13 @@
           }
         }
       }
+    ],
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
     ]
   },
   {
@@ -30175,6 +30182,13 @@
           }
         }
       }
+    ],
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
     ]
   },
   {
@@ -30365,6 +30379,13 @@
           }
         }
       }
+    ],
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
     ]
   },
   {
@@ -31005,7 +31026,14 @@
         "agent": "agent"
       }
     },
-    "unavailableItems": ["chat-unavailable", "chat-unapproved"]
+    "unavailableItems": ["chat-unavailable", "chat-unapproved"],
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
+    ]
   },
   {
     "path": "input-cursor",
@@ -31063,7 +31091,14 @@
         }
       }
     ],
-    "unknownCursor": "agent:missing-input"
+    "unknownCursor": "agent:missing-input",
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
+    ]
   },
   {
     "path": "concurrent-append",
@@ -31171,7 +31206,14 @@
         "at": 150.0
       },
       "created": 150.0
-    }
+    },
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
+    ]
   },
   {
     "path": "failed-turn",
@@ -31412,17 +31454,14 @@
           }
         }
       }
+    ],
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
     ]
-  },
-  {
-    "path": "malformed-turn",
-    "phase": "malformed-turn",
-    "now": 1000.0,
-    "pages": [],
-    "pageError": "invalid stored object analytics_turns/agent:thread:turn",
-    "pythonOutcome": {
-      "error": "'list' object has no attribute 'get'"
-    }
   },
   {
     "path": "malformed-reasoning-array",
@@ -31432,7 +31471,14 @@
     "pageError": "invalid stored object analytics_items/measured",
     "pythonOutcome": {
       "error": "'list' object has no attribute 'get'"
-    }
+    },
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
+    ]
   },
   {
     "path": "malformed-reasoning-empty",
@@ -31442,7 +31488,14 @@
     "pageError": "invalid stored object analytics_items/measured",
     "pythonOutcome": {
       "items": 16
-    }
+    },
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
+    ]
   },
   {
     "path": "malformed-reasoning-wrong-start",
@@ -31452,7 +31505,14 @@
     "pageError": "invalid stored object analytics_items/measured",
     "pythonOutcome": {
       "items": 16
-    }
+    },
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
+    ]
   },
   {
     "path": "deleted-asset-owner",
@@ -31462,7 +31522,14 @@
     "pageError": "This agent was deleted",
     "pythonOutcome": {
       "error": "This agent was deleted"
-    }
+    },
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
+    ]
   },
   {
     "path": "external-payload",
@@ -31683,6 +31750,13 @@
           }
         }
       }
+    ],
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [], \"_payloadBlobs\": {\"contentItems\": {\"sha256\": \"899db386e2647377309819bba133848f79f7367b24f658f1a49c517c5b8b3c41\", \"size\": 56}}}"
+      ]
     ]
   },
   {
@@ -38890,6 +38964,13 @@
           }
         }
       }
+    ],
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
     ]
   },
   {
@@ -46111,6 +46192,13 @@
           }
         }
       }
+    ],
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
     ]
   },
   {
@@ -46332,6 +46420,13 @@
           }
         }
       }
+    ],
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
     ]
   },
   {
@@ -46553,6 +46648,13 @@
           }
         }
       }
+    ],
+    "orphanReplies": [
+      [
+        "agent",
+        "call",
+        "{\"success\": true, \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}]}"
+      ]
     ]
   }
 ]
