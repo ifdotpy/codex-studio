@@ -139,7 +139,7 @@ pub struct RecoveryFields {
     pub phase: Option<String>,
     pub source: Option<RecoverySource>,
     pub stage: Option<String>,
-    pub start_attempt: Option<Box<RecoveryFields>>,
+    pub start_attempt: Option<Box<crate::start_attempt::StartAttemptView>>,
     pub submitted: Option<bool>,
     pub supervisor_identity: Option<RecoverySupervisorIdentity>,
     pub thread_id: Option<String>,
@@ -196,7 +196,7 @@ pub struct RecoveryAgentRecord {
     pub root_id: String,
     pub source: Option<RecoverySource>,
     pub stage: Option<String>,
-    pub start_attempt: Option<Box<RecoveryFields>>,
+    pub start_attempt: Option<Box<crate::start_attempt::StartAttemptView>>,
     pub start_outcome_hold: Option<Box<RecoveryFields>>,
     pub status: String,
     pub submitted: Option<bool>,
@@ -222,6 +222,13 @@ mod tests {
     use super::*;
     use serde_json::json;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn recovery_attempt_rejects_invalid_action() {
+        let raw =
+            r#"{"id":"a","rootId":"a","epoch":1,"status":"running","startAttempt":{"action":42}}"#;
+        assert!(serde_json::from_str::<RecoveryAgentRecord>(raw).is_err());
+    }
 
     #[test]
     fn safe_integer_retains_numeric_encoding() {
@@ -257,10 +264,24 @@ mod tests {
         let schema_text = include_str!("schemas/recovery-agent-record.schema.json");
         assert_eq!(
             data_encoding::HEXLOWER.encode(&Sha256::digest(schema_text.as_bytes())),
-            "6794f8060eec331c2aca3f7e93101e89db89866b08a1fd3695ff8a51ca620816",
+            "54d8698ab8b95c809ab38a107b5d755aa6f2d657a51ded7069d7aa3a9fe447d2",
             "recovery-agent-record.schema.json changed: review the typed owner and parity cases"
         );
         let schema: Value = serde_json::from_str(schema_text).expect("schema");
+        let generated = serde_json::to_string(&schemars::schema_for!(
+            crate::start_attempt::StartAttemptView
+        ))
+        .unwrap();
+        let mut owner: Value = serde_json::from_str(&generated).unwrap();
+        let defs = owner.as_object_mut().unwrap().remove("$defs").unwrap();
+        owner.as_object_mut().unwrap().remove("$schema");
+        assert_eq!(schema["$defs"]["StartAttemptView"], owner);
+        for (key, value) in defs.as_object().unwrap() {
+            assert_eq!(
+                schema["$defs"][key], *value,
+                "start attempt definition {key}"
+            );
+        }
         let samples = [
             json!(null),
             json!(true),
@@ -282,7 +303,8 @@ mod tests {
         ];
         for (schema_object, container) in [
             (&schema, None),
-            (&schema["$defs"]["RecoveryFields"], Some("startAttempt")),
+            (&schema["$defs"]["RecoveryFields"], Some("contextRepair")),
+            (&schema["$defs"]["StartAttemptView"], Some("startAttempt")),
             (
                 &schema["$defs"]["RecoverySupervisorIdentity"],
                 Some("supervisorIdentity"),
@@ -298,6 +320,17 @@ mod tests {
                 .keys()
             {
                 for sample in &samples {
+                    // JSON Schema treats 1.0 as an integer; serde's integer fields
+                    // deliberately require an integer encoding in stored attempts.
+                    if container == Some("startAttempt")
+                        && matches!(field.as_str(), "epoch" | "connectionGeneration")
+                        && sample.as_number().is_some_and(|number| {
+                            number.is_f64()
+                                && number.as_f64().is_some_and(|value| value.fract() == 0.0)
+                        })
+                    {
+                        continue;
+                    }
                     let mut record = json!({"id":"a", "rootId":"a", "epoch":1, "status":"running"});
                     if let Some(container) = container {
                         record[container] = json!({field:sample});

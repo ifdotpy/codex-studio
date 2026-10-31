@@ -246,7 +246,7 @@
         "startAttempt": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RecoveryFields"
+              "$ref": "#/$defs/StartAttemptView"
             },
             {
               "type": "null"
@@ -343,6 +343,141 @@
       },
       "title": "RecoverySupervisorIdentity",
       "type": "object"
+    },
+    "ExecutionStatus": {
+      "type": "string",
+      "enum": [
+        "unsent",
+        "pending",
+        "accepted",
+        "observed",
+        "running",
+        "unknown",
+        "rejected",
+        "completed",
+        "failed",
+        "interrupted",
+        "cancelled"
+      ]
+    },
+    "InterruptOutcome": {
+      "type": "string",
+      "enum": ["unknown", "unsent", "accepted", "rejected"]
+    },
+    "StartAttemptAction": {
+      "type": "string",
+      "enum": ["compact", "review", "capacity", "safety"]
+    },
+    "StartInterruptView": {
+      "type": "object",
+      "properties": {
+        "generation": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InterruptOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestTicket": {
+          "type": ["string", "null"]
+        },
+        "threadId": {
+          "type": ["string", "null"]
+        },
+        "turnId": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "StartAttemptView": {
+      "title": "StartAttemptView",
+      "type": "object",
+      "properties": {
+        "accountKey": {
+          "type": ["string", "null"]
+        },
+        "action": {
+          "$ref": "#/$defs/StartAttemptAction",
+          "default": null
+        },
+        "activeAtReservation": {
+          "type": ["boolean", "null"]
+        },
+        "connectionGeneration": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "connectionId": {
+          "type": ["string", "null"]
+        },
+        "created": {
+          "type": ["number", "null"],
+          "format": "double"
+        },
+        "epoch": {
+          "type": ["integer", "null"],
+          "format": "int64"
+        },
+        "events": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "executionOutcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": ["string", "null"]
+        },
+        "interrupt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StartInterruptView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nativeOperationId": {
+          "type": ["string", "null"]
+        },
+        "observedTurnId": {
+          "type": ["string", "null"]
+        },
+        "requestTicket": {
+          "type": ["string", "null"]
+        },
+        "rootRequestId": {
+          "type": ["string", "null"]
+        },
+        "submitted": {
+          "type": ["boolean", "null"]
+        },
+        "threadId": {
+          "type": ["string", "null"]
+        },
+        "turnId": {
+          "type": ["string", "null"]
+        }
+      }
     }
   },
   "additionalProperties": {
@@ -667,7 +802,7 @@
     "startAttempt": {
       "anyOf": [
         {
-          "$ref": "#/$defs/RecoveryFields"
+          "$ref": "#/$defs/StartAttemptView"
         },
         {
           "type": "null"
