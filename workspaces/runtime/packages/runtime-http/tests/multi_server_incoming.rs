@@ -1324,3 +1324,241 @@ async fn a_paired_window_reaches_the_ordinary_api_with_signed_requests() {
         revoked.status()
     );
 }
+
+/// The peer link names the QUIC connection with a secret. Requests of one connection reuse
+/// one owner check; a request without the secret cannot name a connection.
+#[tokio::test]
+async fn owner_is_checked_once_per_link_connection_and_only_for_the_link() {
+    let (root, store) = common::store().await;
+    let data = &common::fixture().data;
+    let case = &data["auth"][0];
+    let lookup = common::CountingOwner::new(case.clone());
+    let boundary =
+        MultiServerBoundary::new(data["identity"].clone(), lookup.clone()).expect("boundary");
+    let state = HttpState::new(
+        "token".into(),
+        "workspace".into(),
+        root.path().to_string_lossy().into_owned(),
+        4000,
+        Some("https://local.fixture.ts.net".into()),
+        Some(store),
+        None,
+    )
+    .with_multi_server_boundary(Arc::new(boundary))
+    .with_peer_link_token("link-secret");
+    let app = router(state).expect("router");
+    let mut identity_case = case.clone();
+    identity_case["method"] = serde_json::json!("GET");
+    identity_case["target"] = serde_json::json!("/api/multi-server/v1/identity");
+    identity_case["raw"] = serde_json::json!("");
+    identity_case["headers"] = serde_json::json!([]);
+    let send = |token: Option<&str>, connection: &str| {
+        let app = app.clone();
+        let mut request = incoming(&identity_case);
+        if let Some(token) = token {
+            request
+                .headers_mut()
+                .insert("x-studio-link-token", token.parse().expect("header"));
+        }
+        request.headers_mut().insert(
+            "x-studio-link-connection",
+            connection.parse().expect("header"),
+        );
+        async move {
+            let status = app.oneshot(request).await.expect("response").status();
+            assert_eq!(status, StatusCode::OK);
+        }
+    };
+    for _ in 0..4 {
+        send(Some("link-secret"), "connectiona").await;
+    }
+    assert_eq!(
+        lookup.calls.load(Ordering::SeqCst),
+        1,
+        "one check for the connection"
+    );
+    send(Some("link-secret"), "connectionb").await;
+    assert_eq!(
+        lookup.calls.load(Ordering::SeqCst),
+        2,
+        "a new connection is checked"
+    );
+    send(Some("wrong"), "connectiona").await;
+    send(None, "connectiona").await;
+    assert_eq!(
+        lookup.calls.load(Ordering::SeqCst),
+        4,
+        "no secret: every request is checked"
+    );
+}
+
+/// Send one signed read of the paired caller server with the given contract hash header.
+async fn peer_read_status(offered: Option<&str>, nonce: &str) -> (StatusCode, Option<String>) {
+    let receiver = paired_receiver().await;
+    let mut request = signed_api_request(
+        &receiver.caller_signing,
+        &receiver.receiver_identity,
+        receiver.origin,
+        "GET",
+        "/api/ui-summary",
+        b"",
+        &format!("{nonce:0<32}"),
+    );
+    if let Some(hash) = offered {
+        request.headers_mut().insert(
+            studio_runtime_http::API_SCHEMA_HASH_HEADER,
+            hash.parse().expect("header value"),
+        );
+    }
+    let response = receiver.app.oneshot(request).await.expect("answers");
+    let mismatch = response
+        .headers()
+        .get(studio_runtime_http::API_SCHEMA_MISMATCH_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    (response.status(), mismatch)
+}
+
+#[tokio::test]
+async fn a_peer_with_the_current_contract_hash_is_accepted() {
+    let (status, _) = peer_read_status(
+        Some(studio_runtime_http::api_schema_hash()),
+        "peercurrentnonce000000000000001",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_peer_with_an_earlier_contract_hash_is_accepted() {
+    let previous = studio_runtime_schema::api_schema::previous_api_schema_hashes()
+        .next()
+        .expect("an earlier hash");
+    assert_ne!(previous, studio_runtime_http::api_schema_hash());
+    let (status, _) = peer_read_status(Some(previous), "peerpreviousnonce00000000000001").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_peer_without_a_contract_hash_is_accepted_as_the_previous_version() {
+    let (status, _) = peer_read_status(None, "peernohashnonce00000000000000001").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_peer_with_an_unknown_contract_hash_is_refused() {
+    let older = "9aa282663c082a75fc10906d145769eec177755035b36b8611d96c949b56fa11";
+    let (status, mismatch) = peer_read_status(Some(older), "peerolderhashnonce000000000001").await;
+    assert_eq!(status, StatusCode::UPGRADE_REQUIRED);
+    assert_eq!(mismatch.as_deref(), Some("1"));
+}
+
+/// Trust a new window key as a UI client with the given trust-list `grant` field.
+async fn pair_window(
+    receiver_store: &Arc<studio_runtime_store::RuntimeStore>,
+    grant: Option<&str>,
+) -> (
+    studio_runtime_services::remote_transport::RemoteIdentity,
+    tempfile::TempDir,
+) {
+    let root = tempfile::tempdir().expect("window key root");
+    let store = Arc::new(
+        studio_runtime_store::RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("window key store opens"),
+    );
+    let identity = studio_runtime_services::federation_credentials::Credentials::default()
+        .identity(store, Some("https://window.fixture.ts.net"))
+        .await
+        .expect("window key exists");
+    let signing = load_multi_server_identity(root.path()).expect("window signing key loads");
+    let id = signing.id().to_owned();
+    let mut record = serde_json::json!({
+        "id":id,"clientId":id,"kind":"ui","status":"paired","label":"Studio UI","created":1,
+        "publicKey":identity["publicKey"],"origin":null,"serverId":null,"revoked":null,
+        "tailscaleUser":"owner@example.test"
+    });
+    if let Some(grant) = grant {
+        record["grant"] = grant.into();
+    }
+    receiver_store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, record.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("the receiver trusts the window");
+    (signing, root)
+}
+
+/// The grant comes from the server's trust list. A device with grant `observe` reads but
+/// cannot write; a device without a grant field keeps full rights.
+#[tokio::test]
+async fn a_signed_observe_device_reads_but_cannot_send() {
+    let PairedReceiver {
+        receiver_store,
+        receiver_identity,
+        origin,
+        app,
+        ..
+    } = paired_receiver().await;
+    let (observer, _observer_root) = pair_window(&receiver_store, Some("observe")).await;
+    let (full, _full_root) = pair_window(&receiver_store, None).await;
+    let body = br#"{"scope":"server","fields":{}}"#;
+    let send = |signing, method, target, body: &'static [u8], nonce| {
+        let request = signed_api_request(
+            signing,
+            &receiver_identity,
+            origin,
+            method,
+            target,
+            body,
+            nonce,
+        );
+        app.clone().oneshot(request)
+    };
+    let read = send(
+        &observer,
+        "GET",
+        "/api/ui-summary",
+        b"",
+        "observerreadnonce000000000000001",
+    )
+    .await
+    .expect("observer read answers");
+    assert_eq!(read.status(), StatusCode::OK);
+    let write = send(
+        &observer,
+        "POST",
+        "/api/sync/preferences",
+        body,
+        "observerwritenonce00000000000002",
+    )
+    .await
+    .expect("observer write answers");
+    assert_eq!(write.status(), StatusCode::FORBIDDEN);
+    let write = send(
+        &full,
+        "POST",
+        "/api/sync/preferences",
+        body,
+        "fullwritenonce000000000000000003",
+    )
+    .await
+    .expect("full write answers");
+    assert_eq!(write.status(), StatusCode::OK);
+    // Owner-only routes (pairing, grants, revoke, settings) refuse even a full device.
+    let owner_only = send(
+        &full,
+        "POST",
+        "/api/rules",
+        body,
+        "fullownerrouteno0000000000000004",
+    )
+    .await
+    .expect("owner-only answers");
+    assert_eq!(owner_only.status(), StatusCode::FORBIDDEN);
+}

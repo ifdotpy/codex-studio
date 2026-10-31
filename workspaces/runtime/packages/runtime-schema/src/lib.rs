@@ -15,6 +15,7 @@ pub mod claude_failure;
 pub mod claude_login;
 pub mod claude_options;
 mod codex_generated;
+pub mod command;
 pub mod complaint_record;
 pub mod complaints;
 pub mod continuation_snapshot;
@@ -75,7 +76,7 @@ pub mod work_item_record;
 pub mod workspace_operation;
 
 pub use delivery::DeliveryMoment;
-pub use provider_kind::ProviderKind;
+pub use provider_kind::{ProviderCapability, ProviderKind};
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;

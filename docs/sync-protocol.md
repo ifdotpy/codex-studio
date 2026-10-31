@@ -41,11 +41,42 @@ Anything else is a defect, in particular:
 - a GET or pull issued because an event said that something changed;
 - a business write (`POST`, `PUT`) the user did not trigger.
 
+Connection checks are not data reads, and they carry no server data into the
+client. They are the route identity check, the check for a faster route, and
+the probe of an open stream (see [Routes and reconnect](#routes-and-reconnect)).
+
 Subscription interest updates are transport control messages. They carry typed
 references and never read data or repeat a business action.
 
 A quiet interface on a live stream sends no HTTP requests. A new feature that
 needs server data adds a stream resource and an event; it does not add a read.
+
+## Routes and reconnect
+
+The web client keeps an ordered route list for each paired server. The paired
+origin is first. The `session` event of every stream lists the origins the server
+answers on (`routes`). The client learns them and drops the ones that are no
+longer listed. A key paired over HTTPS never goes over plain HTTP.
+
+- **Identity first.** Before a learned route gets a signed request, the client
+  sends a fresh nonce to `/api/multi-server/v1/identity?nonce=...` without a key.
+  The server signs the nonce with its multi-server identity key. The client
+  verifies the signature with the server key stored at pairing. A route with the
+  right `serverId` that cannot sign gets nothing. The HTTPS paired origin needs no
+  proof (TLS binds it to its host name). The nonce size owner is
+  `IDENTITY_PROOF_NONCE_BYTES` in `multi_server_protocol.rs`.
+- **Faster route.** While a later route is in use, the client checks the earlier
+  routes on network change, on foreground, and every minute. A failed route waits
+  for a cooldown. A move replaces the stream.
+- **One retry owner.** The stream coordinator retries with jittered exponential
+  backoff, capped at 5 minutes. The count resets after the stream stays up for
+  one minute. Offline and refused (401, 403) connections wait for a wakeup.
+- **Probe, then replace.** On foreground or network change the client sends an
+  empty subscription change and waits for its acknowledgement on the stream.
+  Only a missing answer within 5 seconds replaces the stream.
+
+Owners: `servers/routes.ts` (route constants and list), `sync/resourceConnection.ts`
+(retry and probe constants), `sync/resourceEvents.ts` (the single retry loop).
 
 ## Subscriptions follow the screen
 
@@ -149,6 +180,59 @@ updates. Stream payloads are not walked against generated
 runtime validators; handlers retain structural preconditions and workspace,
 epoch, revision, and ordering checks.
 
+### Durable change source
+
+The [durable source](../workspaces/runtime/packages/runtime-store/src/durable_seq.rs)
+gives each row of the main tables a change number. `durable_rows` holds
+`(table, id, seq, deleted)`; a trigger on each opted-in table sets `seq` on insert and
+update, and a delete turns the entry into a tombstone. The main tables get no new column,
+so writers, fixtures and migrations do not change. `DURABLE_TABLES` lists the opted-in
+tables (`runtime_agents`, `runtime_requests`, `runtime_work`); a new table opts in with
+one line there.
+
+The numbers are the counter of `sync_entities`, `sync_documents` and `sync_generation`:
+the next number is one above the highest of those three and `durable_rows`. Every
+allocator uses that rule, so there is one cursor space and a cursor from any of these
+sources is valid for all of them.
+
+`changes_since(table, cursor)` returns the rows with `seq` above the cursor and the
+tombstones above it, or a snapshot when the cursor is absent, in the future, or below
+`durable_floor.floor`. The floor is the highest `seq` of a pruned tombstone.
+Tombstones live `TOMBSTONE_RETENTION_SECONDS` (90 days); a delete prunes older ones.
+
+`durable_view_log` mirrors, without payload, the `sync_entities` rows of the derived
+view collections (`VIEW_COLLECTIONS`: agent, agentSummary, agentDetail, retainedWorktree,
+questionHistory, request, work, workDetail, workResult, workDecision, workRelease).
+`view_changes_since(cursor)` lists the view ids that changed after a cursor. A parity
+test compares it with the published views.
+
+Status: the source, the shared cursor space and the view log exist. The stream still
+reads `sync_entities`, and entity publication still writes it. Old `sync_entities` rows
+are deleted by a later migration.
+
+### Transcript pages at read time
+
+`runtime_items` is a durable table: its triggers keep a `durable_rows` entry for each item.
+Migration `2026-10-30-transcript-read` installs them. It does not number the old rows,
+because the live table has about 1.5 million of them. The online migration
+`runtime_items_seq` (`transcript_seq_backfill`, started at every boot, see
+[online migrations](online-migrations.md)) numbers them in short batches. When it
+completes, it runs `transcript_copy_missing_from_owner`. Only when that returns nothing does
+it set `sync_entity_meta` key `transcript_copies` to `retired`. When an item is missing, the
+key stays unset and the writer keeps the transcript copies in `sync_entities`. A state
+without items retires the copies in the migration itself. No migration deletes the old rows.
+
+With the key set, `pull_scope` writes nothing. A conversation's change number is the
+highest `seq` of its agent row, its items, and any deleted item or agent. The page is
+built from `runtime_items` for each pull that is newer than the cursor. The server remembers
+the item hashes of the pages it sent (memory only, 256 pages). A cursor that matches a
+remembered page gets a delta in the existing transcript frame format. Any other cursor gets
+the full page. Pages are never cached in `sync_entities`.
+
+The first frame of a stream with a chat open also carries the newest window of the
+`SYNC_TRANSCRIPT_RECENT_CHATS` most recently changed other chats, as ordinary transcript
+snapshots. They are not subscribed. A client that opens one of them already has its tail.
+
 ### Entity publication
 
 The renderer reads chats and cards only from their `sync_entities` rows, and a
@@ -246,8 +330,8 @@ shares its complete merged terminal view with followers as a snapshot only after
 persistence succeeds. Raw server intervals retain delta semantics.
 Saved terminal history and explicit retries remain user actions.
 
-The existing native EventSource transport and RxDB projection cache remain in
-use. Adding a separate query cache is unnecessary for this contract. The Rust HTTP adapter
+The existing native EventSource transport and the in-memory projection cache
+remain in use. Adding a separate query cache is unnecessary for this contract. The Rust HTTP adapter
 owns SSE framing; the renderer and server compare the same generated schema
 identity before continuing with live updates.
 

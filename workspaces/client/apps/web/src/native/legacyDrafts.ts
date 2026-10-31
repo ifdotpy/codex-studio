@@ -3,9 +3,14 @@ import { serverDatabaseSuffix } from "../servers/environment";
 import { readDraftJournal } from "../sync/draftJournal";
 import { readLocalDraftRecord } from "../sync/draftStorage";
 import type { DraftVersion } from "../sync/drafts";
+import {
+  THIN_CACHE_DATABASE,
+  indexedDbKeyValue,
+  type UnsentValue,
+} from "../sync/thinCache";
 
 // Read the previous browser stores without starting replication or writing to
-// them. Keep the original records until the native receipt has been committed.
+// them (the RxDB database and the thin store that took over its unsent rows). Keep the original records until the native receipt has been committed.
 export async function readLegacyDrafts(
   workspace: string,
 ): Promise<DraftVersion[]> {
@@ -40,6 +45,15 @@ export async function readLegacyDrafts(
     } finally {
       db.close();
     }
+  }
+  // The sync client moves the previous store here when it first opens.
+  if (databases.some((db) => db.name === THIN_CACHE_DATABASE)) {
+    const unsent = await indexedDbKeyValue()!.entries(
+      "unsent",
+      `${workspace}${serverDatabaseSuffix}|drafts|`,
+    );
+    for (const [, value] of unsent)
+      versions.push(JSON.parse((value as UnsentValue).row.payload));
   }
   for (const entry of readDraftJournal(scope)) versions.push(entry.version);
   const prefix = `codex-chat-draft:${workspace}:`;

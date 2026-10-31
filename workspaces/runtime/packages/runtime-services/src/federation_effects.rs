@@ -52,13 +52,64 @@ impl OriginObservation {
     }
 }
 
+/// Fields only the unified `studio-multi-server-v1` scheme signs. `None` on a
+/// request signed with the retired federation scheme.
+#[derive(Clone, Copy)]
+pub struct UnifiedFields<'a> {
+    pub server_id: &'a str,
+    pub request_id: &'a str,
+}
+
 pub struct SignedRequest<'a> {
     pub action: FederationAction,
+    /// The sender state id: `X-Studio-Client` (unified) or `X-Studio-Federation-State` (retired).
     pub peer_id: &'a str,
     pub timestamp: i64,
     pub nonce: &'a str,
     pub signature: &'a str,
     pub raw: &'a [u8],
+    pub unified: Option<UnifiedFields<'a>>,
+}
+
+impl SignedRequest<'_> {
+    /// The bytes the sender signed. The unified scheme binds the recipient (`local_id`),
+    /// the sender and the request id. The retired scheme is accepted for one release.
+    fn signing_bytes(&self, local_id: &str) -> Result<Vec<u8>> {
+        let Some(unified) = self.unified else {
+            return Ok(transport::federation_signing_bytes(
+                "POST",
+                self.action.path(),
+                self.timestamp,
+                self.nonce,
+                self.raw,
+            ));
+        };
+        if unified.server_id != local_id {
+            return Err(Error::Forbidden("request is addressed to another server"));
+        }
+        Ok(transport::multi_server_signing_bytes(
+            transport::MultiServerSigningInput {
+                method: "POST",
+                target: self.action.path(),
+                server_id: unified.server_id,
+                client_id: self.peer_id,
+                timestamp: &self.timestamp.to_string(),
+                nonce: self.nonce,
+                request_id: unified.request_id,
+                body: self.raw,
+            },
+        ))
+    }
+
+    fn validate_nonce(&self, now: i64) -> Result<()> {
+        if let Some(unified) = self.unified {
+            transport::validate_multi_server_nonce(self.nonce, self.timestamp, now)?;
+            transport::validate_identifier(unified.request_id)?;
+        } else {
+            transport::validate_federation_nonce(self.nonce, self.timestamp, now)?;
+        }
+        Ok(())
+    }
 }
 #[derive(Clone, Copy)]
 pub enum FederationAction {
@@ -124,6 +175,20 @@ fn consume_nonce(
     Ok(())
 }
 
+/// The caller of a federation request as a principal. Call it only after the signature
+/// check passed: the peer id is then the verified key holder, not a header claim.
+fn verified_peer(peer_id: &str) -> Result<crate::principal::Principal> {
+    use crate::principal::{CommandClass, Principal, access};
+    let principal = Principal::Federated {
+        peer: peer_id.to_owned(),
+    };
+    if access(&principal, CommandClass::Federation).passes_edge() {
+        Ok(principal)
+    } else {
+        Err(Error::Forbidden("federation is not permitted"))
+    }
+}
+
 /// Consumer entry point for the HTTP adapter. Refuses before writing if origin observation is absent.
 pub async fn handle(
     store: Arc<RuntimeStore>,
@@ -153,15 +218,17 @@ pub async fn handle(
     let nonce = request.nonce.to_owned();
     let timestamp = request.timestamp;
     let signature = request.signature.to_owned();
-    let raw = request.raw.to_vec();
+    let nonce_check = request.validate_nonce(now as i64);
+    let signing = request.signing_bytes(identity.id());
     let identity_for_effect = Arc::clone(&identity);
     let result=store.transaction_with(move |tx| {
         let state=snapshot(tx,&peer_id,"",now)?;
         state.authorize(matches!(action,FederationAction::Status))?;
         if let (Some(observed),Some(expected))=(&observed,&state.peer.whois_user)
             && observed.to_lowercase()!=expected.to_lowercase() { return Err(Error::Forbidden("origin identity mismatch")); }
-        transport::validate_federation_nonce(&nonce,timestamp,now as i64)?;
-        transport::verify_signature(&state.peer.public_key,&transport::federation_signing_bytes("POST",action.path(),timestamp,&nonce,&raw),&signature)?;
+        nonce_check?;
+        transport::verify_signature(&state.peer.public_key,&signing?,&signature)?;
+        let _principal = verified_peer(&peer_id)?;
         match action {
             FederationAction::Pair => return Err(Error::Invalid("action")),
             FederationAction::Message=>core::validate("MessageRequest",&body,"body")?,
@@ -219,18 +286,13 @@ async fn handle_pair(
     if body.state_id == identity.id() {
         return Err(Error::Forbidden("cannot pair a server with itself"));
     }
-    transport::validate_federation_nonce(request.nonce, request.timestamp, now as i64)?;
+    request.validate_nonce(now as i64)?;
     transport::verify_signature(
         &body.public_key,
-        &transport::federation_signing_bytes(
-            "POST",
-            FederationAction::Pair.path(),
-            request.timestamp,
-            request.nonce,
-            request.raw,
-        ),
+        &request.signing_bytes(identity.id())?,
         request.signature,
     )?;
+    let _principal = verified_peer(request.peer_id)?;
     let whois_status = if let Some(observed_user) = &observed {
         if body
             .tailscale_user
@@ -687,8 +749,12 @@ pub(crate) fn acknowledge_outbox(
     };
     crate::event_write::settle_request(tx, &admitted, None, &reply)?;
     tx.execute(
-        "DELETE FROM runtime_federation_outbox WHERE id=?1 AND peer_id=?2",
-        params![id, peer],
+        "DELETE FROM runtime_outbox WHERE id=?1",
+        params![studio_runtime_store::remote_outbox::RemoteOutbox::id(
+            studio_runtime_store::remote_outbox::RemoteEffect::FederationMessage,
+            peer,
+            id
+        )],
     )
     .map_err(StoreError::from)?;
     Ok(true)

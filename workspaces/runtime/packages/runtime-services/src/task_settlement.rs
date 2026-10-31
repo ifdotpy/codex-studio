@@ -15,13 +15,13 @@
 //! backend start. [`absent_command_checks`] and [`close_absent_commands`] apply
 //! the second rule with a background terminal list that the account worker
 //! reads from the live provider.
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::Transaction;
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, CachedSql, RuntimeStore, StoreError, StoreResult,
-    TaskId, TaskRecord, TaskRepository, truthy,
+    AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError, StoreResult, TaskId,
+    TaskRecord, TaskRepository, truthy,
 };
 
 /// The status of a task whose turn ended before the provider reported its end.
@@ -81,14 +81,9 @@ fn owner_settles(agent: &Value) -> bool {
 }
 
 fn completed_turn(tx: &rusqlite::Connection, agent: &str, turn: &str) -> StoreResult<bool> {
-    Ok(tx
-        .query_row_cached(
-            "SELECT 1 FROM runtime_completed_turns WHERE id=?1",
-            [format!("{agent}:{turn}")],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
+    Ok(studio_runtime_store::domain::turn_completed(
+        tx, agent, turn,
+    )?)
 }
 
 fn stored_agent(tx: &rusqlite::Connection, id: &str) -> StoreResult<Option<Value>> {
@@ -467,7 +462,8 @@ mod tests {
                     )?;
                 }
                 for id in &completed {
-                    tx.execute("INSERT INTO runtime_completed_turns(id) VALUES(?1)", [id])?;
+                    let (chat, turn) = id.split_once(':').expect("<chat>:<turn>");
+                    studio_runtime_store::domain::complete_turn(tx, chat, turn)?;
                 }
                 Ok::<_, StoreError>(())
             })

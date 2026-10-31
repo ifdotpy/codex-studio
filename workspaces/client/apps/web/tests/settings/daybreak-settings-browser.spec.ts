@@ -59,10 +59,6 @@ test("Daybreak settings", async ({ context }) => {
         "@mantine/core",
         "lucide-react",
         "@mantine/hooks",
-        "rxdb",
-        "rxdb/plugins/storage-dexie",
-        "rxdb/plugins/leader-election",
-        "rxdb/plugins/replication",
       ],
     },
     plugins: [

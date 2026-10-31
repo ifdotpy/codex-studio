@@ -156,6 +156,7 @@ async fn transcript_cases(group: usize) {
                     )
                 }),
         );
+        keep_copies(&store).await;
         seed_transcript_replies(&store, orphan_replies).await;
         let db = store.test_reader().expect("migrated snapshot reader");
         let workspace_sequence: i64 = db
@@ -339,6 +340,7 @@ async fn transcript_cases(group: usize) {
                     .await
                     .expect("reasoning restart"),
             );
+            keep_copies(&store).await;
             let replay = transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", 0)
                 .await
                 .expect("lost response retry");
@@ -424,6 +426,7 @@ async fn transcript_cases(group: usize) {
                             .await
                             .expect("restart after failed sync write"),
                     );
+                    keep_copies(&store).await;
                     assert_eq!(
                         sync_snapshot(&store),
                         before,
@@ -448,12 +451,28 @@ async fn transcript_cases(group: usize) {
                     .await
                     .expect("restart after commit failure"),
             );
+            keep_copies(&store).await;
             assert_eq!(sync_snapshot(&store), before, "commit failure leaked rows");
             let got =
                 transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", after)
                     .await
                     .expect("pull");
-            assert_pull(&got, expected, fixture_sync_high, case["phase"] == "prune");
+            // The workspace limits write and every agent, request and work number come
+            // before the transcript allocations, so the highest durable number is the shift.
+            let durable_high: i64 = store
+                .test_reader()
+                .expect("reader")
+                .query_row("SELECT COALESCE(MAX(seq),0) FROM durable_rows", [], |row| {
+                    row.get(0)
+                })
+                .expect("durable high");
+            assert_pull(
+                &got,
+                expected,
+                fixture_sync_high,
+                (durable_high - fixture_sync_high).max(1),
+                case["phase"] == "prune",
+            );
             let committed = sync_snapshot(&store);
             let replay =
                 transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", after)
@@ -468,6 +487,7 @@ async fn transcript_cases(group: usize) {
             let seq = got["checkpoint"]["seq"].as_i64().expect("cursor");
             drop(store);
             let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("restart"));
+            keep_copies(&store).await;
             let next = transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", seq)
                 .await
                 .expect("replay");
@@ -581,7 +601,13 @@ async fn seed_transcript_replies(store: &RuntimeStore, replies: Vec<(String, Str
         .expect("seed current transcript receipts");
 }
 
-fn assert_pull(got: &Value, expected: &Value, fixture_sync_high: i64, migrated_execution: bool) {
+fn assert_pull(
+    got: &Value,
+    expected: &Value,
+    fixture_sync_high: i64,
+    allocation_shift: i64,
+    migrated_execution: bool,
+) {
     let decode = |v: &Value| {
         let mut v = v.clone();
         for doc in v["documents"].as_array_mut().expect("documents") {
@@ -592,8 +618,9 @@ fn assert_pull(got: &Value, expected: &Value, fixture_sync_high: i64, migrated_e
     };
     let mut expected = decode(expected);
     // The frozen Python snapshots predate the v4 workspace limits migration.
-    // Its one startup write uses the shared allocator. Shift only newly
-    // allocated transcript sequences; persisted cursors and pruning stay exact.
+    // Its one startup write and the numbering of the restored agent, request and work
+    // rows use the shared allocator. Shift only newly allocated transcript sequences;
+    // persisted cursors and pruning stay exact.
     for document in expected["documents"].as_array_mut().expect("documents") {
         // Preserve the frozen corpus while retiring its unused wire-only map.
         document["payload"]
@@ -602,26 +629,41 @@ fn assert_pull(got: &Value, expected: &Value, fixture_sync_high: i64, migrated_e
             .remove("itemRevisions");
         let sequence = document["seq"].as_i64().expect("document sequence");
         if sequence > fixture_sync_high {
-            document["seq"] = json!(sequence + 1);
+            document["seq"] = json!(sequence + allocation_shift);
         }
     }
     let checkpoint = expected["checkpoint"]["seq"]
         .as_i64()
         .expect("checkpoint sequence");
     if checkpoint > fixture_sync_high {
-        expected["checkpoint"]["seq"] = json!(checkpoint + 1);
+        expected["checkpoint"]["seq"] = json!(checkpoint + allocation_shift);
     }
     if migrated_execution {
         // m2026_10_28_receipts_execution.rs:168-189 moves activeExecution,
         // advancing the transcript revision once after the workspace allocation.
         assert_eq!(expected["checkpoint"]["seq"], fixture_sync_high);
-        expected["checkpoint"]["seq"] = json!(fixture_sync_high + 2);
+        expected["checkpoint"]["seq"] = json!(fixture_sync_high + allocation_shift + 1);
         let documents = expected["documents"].as_array_mut().expect("documents");
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0]["seq"], fixture_sync_high);
-        documents[0]["seq"] = json!(fixture_sync_high + 2);
+        documents[0]["seq"] = json!(fixture_sync_high + allocation_shift + 1);
     }
     assert_eq!(decode(got), expected);
+}
+
+/// This corpus covers the writer that keeps transcript copies. A state that passed the
+/// migration check would build pages at read time instead, so the corpus keeps the copies.
+async fn keep_copies(store: &RuntimeStore) {
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "DELETE FROM sync_entity_meta WHERE key='transcript_copies'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("keep transcript copies");
 }
 
 fn sync_snapshot(store: &RuntimeStore) -> Value {

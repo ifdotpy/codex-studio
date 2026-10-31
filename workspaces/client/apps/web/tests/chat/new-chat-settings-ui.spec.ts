@@ -1,5 +1,6 @@
 import { waitForFixturePort } from "../playwright.ts";
 import { fixturePostBody, fixturePostResult } from "./http.ts";
+import { commandOf } from "../messages/send-command.ts";
 import { test, expect, spawnFixture, rustUiFixture } from "../playwright.ts";
 import { chooseSetupValue } from "../fixtures/setup-controls.ts";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -227,9 +228,7 @@ test("new chat controls are inline, save settings and keep the compact composer 
     ).toBe(true);
     await page.locator("#message").fill("Fixture first message");
     const send = page.waitForResponse(
-      (response) =>
-        response.url().endsWith("/api/messages") &&
-        response.request().method() === "POST",
+      (response) => commandOf(response.request(), "send") !== undefined,
     );
     await page.locator("#send").click();
     expect((await send).ok()).toBe(true);

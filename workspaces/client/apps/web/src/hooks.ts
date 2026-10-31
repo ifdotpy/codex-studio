@@ -24,10 +24,6 @@ import {
 } from "react";
 import { errorText, type PostResult } from "./api";
 import "./sync/client";
-import {
-  isProjectionDatabaseClosedError,
-  PROJECTION_DATABASE_RELOAD_MESSAGE,
-} from "./sync/entityCacheStorage";
 import "./sync/transcriptCache";
 import type { CachedTranscript } from "./sync/transcriptCache";
 type TranscriptSnapshot = NonNullable<CachedTranscript["payload"]>;
@@ -320,9 +316,7 @@ export function useSnapshot(
         }
         dispatchProjectionStatus({
           type: "startup-failed",
-          error: isProjectionDatabaseClosedError(reported)
-            ? PROJECTION_DATABASE_RELOAD_MESSAGE
-            : errorText(reported),
+          error: errorText(reported),
         });
         if (delay !== undefined)
           retry = setTimeout(() => void initialize(), delay);
@@ -338,9 +332,7 @@ export function useSnapshot(
         if (stopped) return;
         dispatchProjectionStatus({
           type: "startup-failed",
-          error: isProjectionDatabaseClosedError(error)
-            ? PROJECTION_DATABASE_RELOAD_MESSAGE
-            : errorText(error),
+          error: errorText(error),
         });
       }
     };
@@ -398,14 +390,6 @@ export function useSnapshot(
           }
         },
         (error) => {
-          if (error !== null && isProjectionDatabaseClosedError(error)) {
-            setData(null);
-            dispatchProjectionStatus({
-              type: "startup-failed",
-              error: PROJECTION_DATABASE_RELOAD_MESSAGE,
-            });
-            return;
-          }
           dispatchProjectionStatus(
             error === null
               ? { type: "projection-recovered" }

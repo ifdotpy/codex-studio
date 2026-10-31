@@ -616,9 +616,8 @@ fn small_preview(value: &OrderedValue, depth: usize) -> OrderedValue {
 }
 
 fn blob_path(root: &Path, reference: &BlobRef) -> PathBuf {
-    root.join(&reference.sha256[..2])
-        .join(&reference.sha256[2..4])
-        .join(&reference.sha256)
+    // One owner of the layout, shared with the text blobs that live beside these.
+    studio_runtime_store::text_blobs::layout(root, &reference.sha256)
 }
 
 fn payload_refs(record: &Map<String, Value>) -> Result<Map<String, Value>, PayloadBlobError> {

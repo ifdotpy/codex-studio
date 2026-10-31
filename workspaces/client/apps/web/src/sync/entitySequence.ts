@@ -27,6 +27,9 @@ export class EntitySequenceCheckpoint {
   >();
   private suppressedRequirement: number | undefined;
   private readonly coverageInvalidationListeners = new Set<() => void>();
+  private readonly advanceListeners = new Set<
+    (sequence: number, reset: boolean) => void
+  >();
 
   get value() {
     return this.sequence;
@@ -61,6 +64,7 @@ export class EntitySequenceCheckpoint {
     this.durableCheckpointValid = false;
     this.resetGeneration++;
     this.clearInFlightCoverage(false);
+    this.notifyAdvance(true);
     return true;
   }
 
@@ -76,6 +80,7 @@ export class EntitySequenceCheckpoint {
     this.durableCheckpointValid = false;
     this.resetGeneration++;
     this.clearInFlightCoverage(false);
+    this.notifyAdvance(true);
     return true;
   }
 
@@ -83,12 +88,28 @@ export class EntitySequenceCheckpoint {
     this.sequence = sequence;
     this.hasAssignment = true;
     this.durableCheckpointValid = true;
+    this.notifyAdvance();
   }
 
   /** Preserve a later ack when an older same-epoch pull completes afterward. */
   assignWithinEpoch(sequence: number): void {
     this.sequence = Math.max(this.sequence, sequence);
     this.hasAssignment = true;
+    this.notifyAdvance();
+  }
+
+  /**
+   * Call `listener` with the checkpoint after each assignment. `reset` is true when the
+   * sequence space changed (another workspace or epoch), so earlier sequences do not count.
+   */
+  onAdvance(listener: (sequence: number, reset: boolean) => void): () => void {
+    this.advanceListeners.add(listener);
+    return () => this.advanceListeners.delete(listener);
+  }
+
+  private notifyAdvance(reset = false): void {
+    for (const listener of this.advanceListeners)
+      listener(this.sequence, reset);
   }
 
   markDurableCheckpointValid(): void {
@@ -98,6 +119,7 @@ export class EntitySequenceCheckpoint {
   reset(): void {
     this.sequence = -1;
     this.resetGeneration++;
+    this.notifyAdvance(true);
     this.hasAssignment = true;
     this.durableCheckpointValid = false;
     this.clearInFlightCoverage(false);
@@ -252,12 +274,16 @@ export function createEntitySequenceScope() {
     setEntitySequenceProjection,
     getEntitySequenceCheckpoint,
     getEntitySequenceCheckpointForWorkspace,
+    onEntitySequenceAdvance: (
+      listener: (sequence: number, reset: boolean) => void,
+    ) => entitySequenceCheckpoint.onAdvance(listener),
   };
 }
 export const {
   setEntitySequenceProjection,
   getEntitySequenceCheckpoint,
   getEntitySequenceCheckpointForWorkspace,
+  onEntitySequenceAdvance,
 } = createEntitySequenceScope();
 
 export function canAcknowledgeEntitySequenceBatch(

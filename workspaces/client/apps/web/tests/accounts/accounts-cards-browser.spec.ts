@@ -207,7 +207,6 @@ async function fixture(page: Page) {
         "react/jsx-dev-runtime",
         "react-dom/client",
         "react-dom",
-        "dexie",
       ],
     },
     plugins: [

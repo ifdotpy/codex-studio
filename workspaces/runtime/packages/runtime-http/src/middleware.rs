@@ -13,6 +13,7 @@ use axum::response::{IntoResponse, Response};
 use futures_util::FutureExt;
 use studio_runtime_schema::studio_errors::EffectCertainty;
 use studio_runtime_services::federation_limits::FEDERATION_PATHS;
+use studio_runtime_services::principal::{self, Principal};
 use subtle::ConstantTimeEq;
 
 use crate::error::{
@@ -136,6 +137,32 @@ pub(crate) async fn boundary(
             "Local origin required"
         };
         return error_response(StatusCode::FORBIDDEN, message);
+    }
+    // The signed path stored its principal. Every other caller passed the token,
+    // loopback, or Tailscale Serve check above and acts as the owner. A federation
+    // request gets no principal here: its handler verifies the signature and only then
+    // builds `Federated`, never from a header.
+    let mut principal = None;
+    if api {
+        let class = matched_operation
+            .as_ref()
+            .and_then(|operation| operation.key.split_once(' '))
+            .map_or_else(
+                || crate::route_class::class_of(method.as_str(), ""),
+                |(operation_method, template)| {
+                    crate::route_class::class_of(operation_method, template)
+                },
+            )
+            .unwrap_or(principal::CommandClass::OwnerOnly);
+        match edge_check(request.extensions().get::<Principal>(), class) {
+            Ok(checked) => principal = checked,
+            Err(()) => {
+                return error_response(
+                    StatusCode::FORBIDDEN,
+                    "This caller may not run this command",
+                );
+            }
+        }
     }
     if api
         && method == Method::HEAD
@@ -270,7 +297,27 @@ pub(crate) async fn boundary(
         }
     }
 
+    if let Some(principal) = principal {
+        request.extensions_mut().insert(principal);
+    }
     next.run(request).await
+}
+
+/// The edge decision for a caller and a route class. `Ok(None)` defers a federation
+/// route to its handler, which verifies the signature before it builds `Federated`.
+pub(crate) fn edge_check(
+    signed: Option<&Principal>,
+    class: principal::CommandClass,
+) -> Result<Option<Principal>, ()> {
+    if class == principal::CommandClass::Federation && signed.is_none() {
+        return Ok(None);
+    }
+    let caller = signed.cloned().unwrap_or(Principal::Owner);
+    if principal::access(&caller, class).passes_edge() {
+        Ok(Some(caller))
+    } else {
+        Err(())
+    }
 }
 
 /// Capture value-free HTTP timing under Axum's matched route template. This

@@ -3,7 +3,7 @@ import { queueMutationMessageId } from "./queueMutationIdentity";
 
 describe("queueMutationMessageId", () => {
   it("returns the target id", () => {
-    expect(queueMutationMessageId({ action: "cancel", id: "target" })).toBe(
+    expect(queueMutationMessageId({ action: "first", id: "target" })).toBe(
       "target",
     );
   });

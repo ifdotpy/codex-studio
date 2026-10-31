@@ -3508,12 +3508,8 @@
       "fingerprint": "dd1d8d394612269617aceac79f1f00410d3ce10200c6ef7cd57c309815151a73:0"
     },
     {
-      "file": "workspaces/client/apps/web/src/sync/entityCacheStorage.test.ts",
-      "fingerprint": "bf0b6d16f3c25f33e3fd0ccd18db74085a2d5ca02d3f48067a9e0bae1aa4d696:0"
-    },
-    {
       "file": "workspaces/client/apps/web/src/sync/entityProjectionObserver.test.ts",
-      "fingerprint": "07681657de419f1cb9016ce24b9d71325f4ec541af10e2378cd4765b855b4308:0"
+      "fingerprint": "550ac06d3398d0d7cac3adb12ba747a74c5214b0b13e2b289340e2d025c23806:0"
     },
     {
       "file": "workspaces/client/apps/web/src/sync/resourceEvents.test.ts",
@@ -3586,6 +3582,10 @@
     {
       "file": "workspaces/providers/apps/claude-bridge/file-signals.test.ts",
       "fingerprint": "d04d4e2da88a000a246881d3159c28eb4760baf7dcebcc57303be02fc3af187a:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/thinCache.test.ts",
+      "fingerprint": "d8b7e8690084a50b657476ce09c22cf7aa88438157c5f099945d9c6cafe17d7d:0"
     }
   ],
   "ts-double-cast-tsx": [
@@ -3602,10 +3602,6 @@
     {
       "file": "workspaces/client/apps/desktop/layr-binary.ts",
       "fingerprint": "30c951a519de8b24758a9f9c2d334f4eb0fcda25e2c2f29d17ea27b8cd71f73a:0"
-    },
-    {
-      "file": "workspaces/client/apps/desktop/profile-export-test.ts",
-      "fingerprint": "f64c9b2d1735796952bb4bbc68d35f3586cf16328cec8bb452e1e226dc4dc7b1:0"
     },
     {
       "file": "workspaces/client/apps/desktop/restart-environment.ts",
@@ -3706,10 +3702,6 @@
     {
       "file": "workspaces/client/apps/web/tests/sidebar/ui-preference-projection-bridge.browser.spec.ts",
       "fingerprint": "716c5c047200226b22c7488fc8f03529e0a6f481c5c648d388ea911de675651b:0"
-    },
-    {
-      "file": "workspaces/client/apps/web/tests/sync/entity-schema-cache-browser.spec.ts",
-      "fingerprint": "0e72a76faffbd17201b56186b8121ccad9f978f13754779dd616131e9bfad1a4:0"
     },
     {
       "file": "workspaces/client/apps/web/tests/sync/helpers.ts",

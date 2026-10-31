@@ -1,7 +1,9 @@
 import { required } from "../teams/helpers.ts";
 import { catalogSkills } from "./skill-autocomplete-ui.fixture.ts";
 import type { BrowserContext, BrowserContextOptions } from "@playwright/test";
-import type { GetResult, PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { GetResult, PostBody } from "../../src/apiTypes.ts";
+import type { SendMessageBody } from "../../src/commands.ts";
+import { sendRoute } from "../messages/send-command.ts";
 import { fixturePostBody } from "../chat/http.ts";
 import {
   waitForFixturePort,
@@ -59,7 +61,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     page.setDefaultTimeout(10000);
     const pageErrors: string[] = [];
     const skillRequests: (string | null)[] = [];
-    const sends: PostBody<"/api/messages">[] = [];
+    const sends: SendMessageBody[] = [];
     const queues: PostBody<"/api/queue">[] = [];
     let catalogSkillCount = 0;
     let sendHandled = Promise.withResolvers<void>();
@@ -83,20 +85,14 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
       const catalog = await gate.promise;
       await route.fulfill({ json: catalog });
     });
-    await page.route("**/api/messages", async (route) => {
-      const message = fixturePostBody(
-        "/api/messages",
-        route.request().postDataJSON(),
-      );
-      sends.push(message);
-      sendHandled.resolve();
-      await route.fulfill({
-        json: {
-          id: message.id,
-          status: "accepted",
-        } satisfies PostResult<"/api/messages">,
-      });
-    });
+    await page.route(
+      "**/api/commands",
+      sendRoute(async (_route, message, reply) => {
+        sends.push(message);
+        sendHandled.resolve();
+        await reply({ id: message.id, status: "accepted" });
+      }),
+    );
     await page.route("**/api/queue", async (route) => {
       if (route.request().method() === "POST") {
         queues.push(
@@ -515,7 +511,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     await stubSessionCost(failurePage);
     failurePage.setDefaultTimeout(10000);
     let failureReads = 0;
-    const failureSends: PostBody<"/api/messages">[] = [];
+    const failureSends: SendMessageBody[] = [];
     let failureSendHandled = Promise.withResolvers<void>();
     await failurePage.route("**/api/skills?*", async (route) => {
       failureReads++;
@@ -524,20 +520,14 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
         json: { error: "Skills are offline" },
       });
     });
-    await failurePage.route("**/api/messages", async (route) => {
-      const message = fixturePostBody(
-        "/api/messages",
-        route.request().postDataJSON(),
-      );
-      failureSends.push(message);
-      failureSendHandled.resolve();
-      await route.fulfill({
-        json: {
-          id: message.id,
-          status: "accepted",
-        } satisfies PostResult<"/api/messages">,
-      });
-    });
+    await failurePage.route(
+      "**/api/commands",
+      sendRoute(async (_route, message, reply) => {
+        failureSends.push(message);
+        failureSendHandled.resolve();
+        await reply({ id: message.id, status: "accepted" });
+      }),
+    );
     await failurePage.route("**/api/queue", async (route) => {
       await route.fulfill({ json: { items: [] } });
     });
@@ -648,7 +638,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     });
     await stubSessionCost(emptyPage);
     emptyPage.setDefaultTimeout(10000);
-    const emptySends: PostBody<"/api/messages">[] = [];
+    const emptySends: SendMessageBody[] = [];
     let emptySendHandled = Promise.withResolvers<void>();
     await emptyPage.route("**/api/skills?*", (route) =>
       route.fulfill({
@@ -658,20 +648,14 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
         } satisfies GetResult<"/api/skills">,
       }),
     );
-    await emptyPage.route("**/api/messages", async (route) => {
-      const message = fixturePostBody(
-        "/api/messages",
-        route.request().postDataJSON(),
-      );
-      emptySends.push(message);
-      emptySendHandled.resolve();
-      await route.fulfill({
-        json: {
-          id: message.id,
-          status: "accepted",
-        } satisfies PostResult<"/api/messages">,
-      });
-    });
+    await emptyPage.route(
+      "**/api/commands",
+      sendRoute(async (_route, message, reply) => {
+        emptySends.push(message);
+        emptySendHandled.resolve();
+        await reply({ id: message.id, status: "accepted" });
+      }),
+    );
     await emptyPage.route("**/api/queue", async (route) => {
       await route.fulfill({ json: { items: [] } });
     });

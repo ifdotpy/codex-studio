@@ -672,7 +672,7 @@ async function main() {
     }
   });
   for (const path of [
-    "/api/messages",
+    "/api/commands",
     "/api/leads",
     "/api/conversation/delete",
   ]) {

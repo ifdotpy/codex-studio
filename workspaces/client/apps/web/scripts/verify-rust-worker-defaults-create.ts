@@ -646,7 +646,7 @@ async function main() {
       });
     }
   });
-  for (const path of ["/api/messages", "/api/conversation"]) {
+  for (const path of ["/api/commands", "/api/conversation"]) {
     await page.route(`**${path}`, async (route) => {
       if (route.request().method() !== "POST") return route.continue();
       blockedWrite = `Prompt and settings writes are disabled at ${path}.`;

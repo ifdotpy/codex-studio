@@ -2,11 +2,12 @@ import { cacheFixture } from "../cacheFixture.ts";
 import { required } from "../teams/helpers.ts";
 import { installMobileSend } from "./mobile-send.fixture.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
-import { fixtureServerOrigin, fixturePostBody } from "./browser-fixture.ts";
+import { fixtureServerOrigin } from "./browser-fixture.ts";
+import { sendReply, sentMessage } from "../messages/send-command.ts";
 import { waitForFixturePort } from "../fixture-readiness.ts";
 import type { ViteDevServer } from "vite";
 import type { BrowserContext, Route } from "@playwright/test";
-import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { MessageDelivery, SendMessageBody } from "../../src/commands.ts";
 
 import {
   readTestState,
@@ -71,20 +72,21 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     const page = await context.newPage();
     page.setDefaultTimeout(15000);
     const errors: string[] = [],
-      posts: PostBody<"/api/messages">[] = [],
+      posts: SendMessageBody[] = [],
       pending: Route[] = [];
-    let replyStatus: "hold" | PostResult<"/api/messages">["status"] = "hold";
+    let replyStatus: "hold" | MessageDelivery["status"] = "hold";
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.route("**/api/messages", (route) => {
-      const body = fixturePostBody<"/api/messages">(route.request());
+    await page.route("**/api/commands", (route) => {
+      const body = sentMessage(route.request());
+      if (!body) return route.fallback();
       posts.push(body);
       if (replyStatus === "hold") pending.push(route);
       else
         return route.fulfill({
-          json: {
+          json: sendReply({
             id: body.id,
             status: replyStatus,
-          } satisfies PostResult<"/api/messages">,
+          } satisfies MessageDelivery),
         });
       return undefined;
     });
@@ -341,7 +343,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     // An old browser receipt can still refer to a message already rejected by
     // the outbox. A reload must not trap every explicit retry on that failed ID.
     const stateDir = (await readTestState(target)).stateDir;
-    const failedBody: PostBody<"/api/messages"> = {
+    const failedBody: SendMessageBody = {
       id: "old-failed-after-reload",
       room: required(posts[0]).room,
       text: "Retry a stored terminal failure",
@@ -388,7 +390,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     await page.waitForFunction(
       ({ pendingKey, room }) => {
         // The renderer wrote this pending-send map.
-        const pending: Record<string, PostBody<"/api/messages">> = JSON.parse(
+        const pending: Record<string, SendMessageBody> = JSON.parse(
           localStorage.getItem(pendingKey) || "{}",
         );
         return !pending[room];
@@ -405,19 +407,20 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     const other = snapshot.runtime.agents.find(
       (agent) => agent.name === "Other project",
     )!;
-    const realBody: PostBody<"/api/messages"> = {
+    const realBody: SendMessageBody = {
       id: crypto.randomUUID(),
       room: other.id,
       text: "One real message across two mobile tabs",
       assets: [],
       delivery: "queue",
     };
-    await page.unroute("**/api/messages");
+    await page.unroute("**/api/commands");
     let committed = false,
       heldResponse!: Route;
-    const realPosts: PostBody<"/api/messages">[] = [];
-    await page.context().route("**/api/messages", async (route) => {
-      const request = fixturePostBody<"/api/messages">(route.request());
+    const realPosts: SendMessageBody[] = [];
+    await page.context().route("**/api/commands", async (route) => {
+      const request = sentMessage(route.request());
+      if (!request) return route.fallback();
       realPosts.push(request);
       const response = await route.fetch();
       assert.equal(response.status(), 200);

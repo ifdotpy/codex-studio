@@ -74,6 +74,14 @@ pub struct TerminalRow {
     pub output_generation: i64,
 }
 
+/// Output to append to the terminal output archive after the row commits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveAppend {
+    /// Offset of the first character, in Unicode scalars.
+    pub start: i64,
+    pub text: String,
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TerminalsRepository;
 
@@ -102,27 +110,25 @@ impl TerminalsRepository {
         .transpose()
     }
 
+    /// Retain the newest `limit` characters in the terminal row. Returns the
+    /// retained output, its offset, and the chunk the caller must append to the
+    /// output archive after the row commits (`RuntimeStore::terminal_output_append`).
     pub fn append_and_retain(
-        transaction: &rusqlite::Transaction<'_>,
-        id: &str,
         row: &TerminalRow,
         text: &str,
         limit: usize,
-    ) -> StoreResult<(String, i64)> {
-        if !text.is_empty() {
-            Self::append_output(
-                transaction,
-                id,
-                row.offset + row.output.chars().count() as i64,
-                text,
-            )?;
-        }
+    ) -> (String, i64, Option<ArchiveAppend>) {
+        let archived = (!text.is_empty()).then(|| ArchiveAppend {
+            start: row.offset + row.output.chars().count() as i64,
+            text: text.to_owned(),
+        });
         let output = row.output.clone() + text;
         let dropped = output.chars().count().saturating_sub(limit);
-        Ok((
+        (
             output.chars().skip(dropped).collect(),
             row.offset + dropped as i64,
-        ))
+            archived,
+        )
     }
 
     pub fn list(connection: &Connection) -> StoreResult<Vec<TerminalRecord>> {

@@ -112,7 +112,12 @@ export class SignedEventSource
         !response.headers.get("Content-Type")?.startsWith("text/event-stream")
       ) {
         await response.body?.cancel().catch(() => {});
-        throw new Error("The server event stream is unavailable.");
+        throw Object.assign(
+          new Error("The server event stream is unavailable."),
+          {
+            status: response.status,
+          },
+        );
       }
       if (this.stopped) {
         await response.body.cancel();
@@ -138,8 +143,13 @@ export class SignedEventSource
         if (this.reader === reader) this.reader = undefined;
       }
       if (!this.stopped) throw new Error("The server event stream closed.");
-    })().catch(() => {
-      if (!this.stopped) this.onerror?.call(this, new Event("error"));
+    })().catch((error: { status?: number }) => {
+      // The HTTP status tells a refused device from a lost connection.
+      if (!this.stopped)
+        this.onerror?.call(
+          this,
+          Object.assign(new Event("error"), { status: error?.status }),
+        );
     });
   }
   /** The reason reaches the desktop stream log. */

@@ -131,6 +131,9 @@ pub struct HttpState {
     pub(crate) multi_server_boundary:
         Option<Arc<studio_runtime_services::multi_server_pairing::MultiServerBoundary>>,
     pub(crate) peer_link_advert: Arc<std::sync::RwLock<Option<String>>>,
+    /// Secret that the backend gave to the peer link process. A request that carries it came
+    /// from the link, so its `X-Studio-Link-Connection` names a real QUIC connection.
+    pub(crate) peer_link_token: Option<Arc<str>>,
     pub account_driver:
         Option<std::sync::Arc<studio_runtime_services::account_driver::AccountDriver>>,
     pub provider_versions:
@@ -293,6 +296,7 @@ impl HttpState {
             credentials: Arc::default(),
             multi_server_boundary: None,
             peer_link_advert: Arc::new(std::sync::RwLock::new(None)),
+            peer_link_token: None,
             token,
             workspace_id,
             state_dir,
@@ -375,6 +379,12 @@ impl HttpState {
     /// Advertise the running QUIC link to authenticated paired-server requests.
     pub fn with_peer_link_advert(mut self, advert: Arc<std::sync::RwLock<Option<String>>>) -> Self {
         self.peer_link_advert = advert;
+        self
+    }
+
+    /// Trust the connection identity that the peer link process sends with this secret.
+    pub fn with_peer_link_token(mut self, token: &str) -> Self {
+        self.peer_link_token = Some(token.into());
         self
     }
 
@@ -1179,9 +1189,9 @@ mod tests {
         for encoding in ["identity", "br"] {
             let (mut state, store, _directory) = state_with_store().await;
             state.validators =
-                crate::validation::Registry::compile(&[("POST".into(), "/api/messages".into())])
+                crate::validation::Registry::compile(&[("POST".into(), "/api/commands".into())])
                     .expect("validator");
-            let app = super::with_boundary(Router::new().route("/api/messages", post(move || async move {
+            let app = super::with_boundary(Router::new().route("/api/commands", post(move || async move {
                 store.transaction(|tx| {
                     SyncDocumentsRepository::put_entity(tx, "agent", "agent", serde_json::json!({"id": "agent", "name":"Agent", "status":"idle", "source":"managed", "tail": "entity content ".repeat(512)}), false)?;
                     Ok(())
@@ -1193,14 +1203,14 @@ mod tests {
             })), state);
             let request = Request::builder()
                 .method("POST")
-                .uri("/api/messages")
+                .uri("/api/commands")
                 .header("host", "127.0.0.1:4620")
                 .header("x-canvas-token", "token")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::ACCEPT_ENCODING, encoding)
                 .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
                 .body(Body::from(
-                    r#"{"id":"00000000-0000-4000-8000-000000000000","room":"fixture","text":"hello"}"#,
+                    r#"{"id":"00000000-0000-4000-8000-000000000000","client":"fixture","number":1,"kind":"send","target":"fixture","body":{"text":"hello"}}"#,
                 ))
                 .expect("request");
             let response = app.oneshot(request).await.expect("mutation response");

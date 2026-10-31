@@ -51,7 +51,7 @@ impl AccountSessionPort for InterruptBroker {
             )
             .expect("stopped agent exists");
         let agent: Value = serde_json::from_str(&raw).expect("agent record");
-        assert_eq!(agent["status"], "paused");
+        assert_eq!(agent["status"], "running", "stop does not pause");
         let interrupt = &agent["startAttempt"]["interrupt"];
         if request.method == Method::TurnInterrupt {
             assert_eq!(interrupt["outcome"], "unknown");
@@ -166,8 +166,12 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
 
     let (status, response) = call(
         &app,
-        "/api/stop",
-        json!({"id":"agent", "descendants":false}),
+        "/api/commands",
+        json!({
+            "id": studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            "client": "test", "number": 1, "kind": "stop", "target": "agent",
+            "body": {"descendants": false}
+        }),
     )
     .await;
 
@@ -187,7 +191,8 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
         calls.len()
     );
     drop(state);
-    assert_eq!(response["stopped"], json!(["agent"]));
+    assert_eq!(response["ref_kind"], "agent");
+    assert_eq!(response["ref_id"], "agent");
     assert_eq!(
         calls.iter().map(|call| call.method).collect::<Vec<_>>(),
         [
@@ -338,7 +343,7 @@ async fn production_delete_route_interrupts_and_settles_active_turn() {
         ]
     );
     assert!(agent["deletedAt"].is_number() || agent["deletedAt"] == true);
-    assert_eq!(agent["status"], "paused");
+    assert_eq!(agent["status"], "running", "stop does not pause");
     assert_eq!(agent["inFlight"], false);
     assert!(agent["turnId"].is_null());
     assert_eq!(agent["startAttempt"]["interrupt"]["outcome"], "accepted");
