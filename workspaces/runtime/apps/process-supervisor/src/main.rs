@@ -1,9 +1,7 @@
 //! Explicit standalone entry point; service installation remains an operator action.
-<<<<<<< head
 #[cfg(test)]
 extern crate studio_test_deps;
-||||||| base
-=======
+
 /// Only a coverage run (`layr retest` sets `LLVM_PROFILE_FILE`) installs this. Tests end the
 /// supervisor with SIGTERM first, and a normal exit writes the coverage profile; SIGKILL
 /// leaves none. Without the variable SIGTERM keeps its default action.
@@ -24,7 +22,6 @@ fn exit_on_sigterm() {
         std::process::exit(0);
     });
 }
->>>>>>> 59544c0
 
 fn main() -> std::process::ExitCode {
     #[cfg(unix)]
