@@ -67,8 +67,6 @@ vi.mock("../api", () => ({
   receiveStreamSession: vi.fn(),
   clearStreamSession: vi.fn(),
   clearSchemaUpdateAttemptAfterMatch: vi.fn(),
-  receiveStreamSession: vi.fn(),
-  clearStreamSession: vi.fn(),
   matchingApiSchemaResponseGeneration: () => 0,
   markApiSchemaMismatch: vi.fn(),
   onApiSchemaMismatch: () => () => {},

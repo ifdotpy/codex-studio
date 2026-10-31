@@ -115,7 +115,6 @@ function ServersFixture({ light = false }: { light?: boolean }) {
               retry: undefined,
               revoke: () => {},
               allowAgain: () => {},
-              addAgain: () => {},
             }}
           />
         </Tabs.Panel>

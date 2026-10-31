@@ -9,7 +9,6 @@ const mocks = vi.hoisted(() => ({
   access: vi.fn(),
   snapshots: [] as unknown[],
   setLocalServerDetails: vi.fn(),
-  reconcile: vi.fn(async (_snapshot: unknown) => {}),
   stateCalls: 0,
   snapshotOverride: undefined as unknown,
   fields: {} as Record<string, unknown>,
@@ -35,18 +34,6 @@ vi.mock("./ServerServicesContext", () => ({
       mocks.read = read;
       return Object.assign(() => {}, { refresh: () => read?.() });
     },
-}));
-vi.mock("./automaticAccessStore", () => ({
-  automaticAccessStore: () => ({ initialize: async () => {} }),
-}));
-vi.mock("./automaticUiAccess", () => ({
-  AutomaticUiAccess: class {
-    reconcile(snapshot: unknown) {
-      return mocks.reconcile(snapshot);
-    }
-    retry() {}
-    stop() {}
-  },
 }));
 vi.mock("./registry", () => ({
   readServers: () => [],
@@ -76,7 +63,6 @@ afterEach(() => {
   mocks.snapshots.length = 0;
   mocks.access.mockReset();
   mocks.setLocalServerDetails.mockReset();
-  mocks.reconcile.mockClear();
   mocks.stateCalls = 0;
   mocks.snapshotOverride = undefined;
   mocks.fields = {};
@@ -89,7 +75,7 @@ it("uses stream snapshots without a fallback HTTP read", async () => {
   vi.stubGlobal("location", { origin: "http://owner.invalid" });
   const setItem = vi.fn();
   vi.stubGlobal("localStorage", { getItem: () => null, setItem });
-  useServerDiscovery(true, vi.fn());
+  useServerDiscovery(true);
   cleanups = mocks.effects.flatMap((effect) => {
     const cleanup = effect();
     return cleanup ? [cleanup] : [];
@@ -115,7 +101,6 @@ it("uses stream snapshots without a fallback HTTP read", async () => {
     discoverySnapshot: snapshot,
   } as ResourceVersion);
   expect(mocks.access).not.toHaveBeenCalled();
-  expect(mocks.reconcile).not.toHaveBeenCalled();
   expect(mocks.snapshots).toContainEqual(
     expect.objectContaining({ localServerId: "owner" }),
   );
@@ -144,7 +129,7 @@ it("uses stream snapshots without a fallback HTTP read", async () => {
   mocks.fields = { '["server-alias:workspace"]': { value: "NEW" } };
   mocks.stateCalls = 0;
   const effectsBefore = mocks.effects.length;
-  useServerDiscovery(true, vi.fn(), true, { local: "workspace" });
+  useServerDiscovery(true, true, { local: "workspace" });
   for (const effect of mocks.effects.slice(effectsBefore)) {
     const cleanup = effect();
     if (cleanup) cleanups.push(cleanup);
@@ -155,10 +140,6 @@ it("uses stream snapshots without a fallback HTTP read", async () => {
     servers: [{ id: "peer" }, { id: "other" }],
   };
   mocks.stateCalls = 0;
-  const discovery = useServerDiscovery(true, vi.fn());
-  discovery.addAgain("peer");
-  expect(mocks.reconcile).toHaveBeenCalledOnce();
-  expect(mocks.reconcile.mock.calls[0]?.[0]).toMatchObject({
-    servers: [{ id: "peer" }],
-  });
+  const discovery = useServerDiscovery(true);
+  expect(discovery).not.toHaveProperty("addAgain");
 });

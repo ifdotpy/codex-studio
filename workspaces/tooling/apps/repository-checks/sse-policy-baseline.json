@@ -212,10 +212,6 @@
     "callee": "new NativeServerCredentials().fetch"
   },
   {
-    "file": "servers/automaticAccessStore.ts",
-    "callee": "indexedDB.open"
-  },
-  {
     "file": "servers/browserCredentials.ts",
     "callee": "fetch"
   },

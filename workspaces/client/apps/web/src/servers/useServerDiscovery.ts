@@ -15,19 +15,12 @@ import {
   type DiscoverySnapshot,
 } from "./discoveryModel";
 import type { ServerAccessRequest } from "./accessContract";
-import { AutomaticUiAccess } from "./automaticUiAccess";
-import { automaticAccessStore } from "./automaticAccessStore";
-import {
-  readServers,
-  setLocalServerDetails,
-  type StudioServer,
-} from "./registry";
+import { readServers, setLocalServerDetails } from "./registry";
 import { serverCredentialAdapter } from "./transport";
 import { refreshServerName } from "./serverNames";
 export const DISCOVERY_REFRESH_EVENT = "studio-server-discovery-refresh";
 export function useServerDiscovery(
   enabled: boolean,
-  add: (server: StudioServer) => void,
   localAvailable = true,
   workspaceIds: Record<string, string | undefined> = {},
 ) {
@@ -37,7 +30,6 @@ export function useServerDiscovery(
   const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(null);
   const [, setPreferenceRevision] = useState(0);
   const [error, setError] = useState("");
-  const [accessError, setAccessError] = useState("");
   const [busy, setBusy] = useState(false);
   const [checkedAt, setCheckedAt] = useState<number | null>(null);
   useEffect(() => {
@@ -52,59 +44,7 @@ export function useServerDiscovery(
     window.addEventListener(preferenceEvent, changed);
     return () => window.removeEventListener(preferenceEvent, changed);
   }, []);
-  const addRef = useRef(add);
-  addRef.current = add;
   const active = useRef(false);
-  const attempts = useRef<ReturnType<typeof automaticAccessStore> | null>(null);
-  if (!attempts.current)
-    attempts.current = automaticAccessStore((attempt) =>
-      serverCredentialAdapter().hasPairAttempt({
-        requestId: attempt.pairRequestId,
-        serverId: attempt.serverId,
-        origin: attempt.origin,
-        inviteId: attempt.invitation?.inviteId,
-      }),
-    );
-  const controller = useRef<AutomaticUiAccess | null>(null);
-  if (!controller.current)
-    controller.current = new AutomaticUiAccess(attempts.current, {
-      current: async () => {
-        // Revalidate permission before/after automatic pairing. A cached stream
-        // snapshot cannot authorize a remote credential change.
-        const value = await serverAccess("GET");
-        return discoverySnapshot(value);
-      },
-      existing: readServers,
-      lock: async (key, run) => {
-        if (!navigator.locks)
-          throw new Error(
-            "Automatic UI access needs a browser with Web Locks support.",
-          );
-        await navigator.locks.request(`studio-automatic-ui-access:${key}`, run);
-      },
-      add: (server) => {
-        if (active.current) addRef.current(server);
-      },
-      pair: (...args) => serverCredentialAdapter().pair(...args),
-      hasPairAttempt: (attempt) =>
-        serverCredentialAdapter().hasPairAttempt(attempt),
-      invite: async (server, requestId) => {
-        const session = await refreshSession();
-        const value = await serverAccess(
-          "POST",
-          {
-            action: "ui_invite",
-            serverId: server.id,
-            requestId,
-          },
-          15000,
-          session.token,
-        );
-        if (!("invitation" in value))
-          throw new Error("The server invitation response is invalid.");
-        return value.invitation;
-      },
-    });
   const [pending, setPending] = useState<ServerAccessRequest | null>(null);
   const busyRef = useRef(false);
   const management = new ServerManagementRequests(
@@ -137,7 +77,6 @@ export function useServerDiscovery(
         return;
       }
       const session = await refreshSession();
-      if (body.action === "revoke") controller.current?.cancel(body.clientId);
       await serverAccess(
         "POST",
         body,
@@ -214,7 +153,6 @@ export function useServerDiscovery(
     active.current = true;
     return () => {
       active.current = false;
-      controller.current?.stop();
     };
   }, [localAvailable]);
   const run = async (request: ServerAccessRequest) => {
@@ -277,7 +215,7 @@ export function useServerDiscovery(
   return {
     snapshot: effectiveSnapshot,
     checkedAt,
-    error: [error, accessError].filter(Boolean).join("\n"),
+    error,
     busy,
     actions: {
       find: () => {
@@ -326,22 +264,5 @@ export function useServerDiscovery(
           void run(pending);
         }
       : undefined,
-    addAgain: (id: string) => {
-      try {
-        controller.current?.retry(id);
-        if (snapshot)
-          void controller.current
-            ?.reconcile({
-              ...snapshot,
-              servers: snapshot.servers.filter((server) => server.id === id),
-            })
-            .then(
-              () => setAccessError(""),
-              (failure) => setAccessError(errorText(failure)),
-            );
-      } catch (failure) {
-        setError(errorText(failure));
-      }
-    },
   };
 }
