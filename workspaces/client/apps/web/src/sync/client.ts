@@ -240,10 +240,8 @@ export function createSyncClient(options: SyncClientOptions) {
     const draftConflicts = createDraftConflictHandler();
     const drafts = createDraftStore(
       `${name}:drafts`,
-      unsent,
       draftConflicts.conflictHandler,
     );
-    await drafts.restore();
     const outbox = new LocalCollection(`${name}:outbox`, {
       durable: {
         put: (row) =>

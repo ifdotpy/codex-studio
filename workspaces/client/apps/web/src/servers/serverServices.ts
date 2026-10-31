@@ -2,10 +2,7 @@ import { watchServerName } from "./serverNames";
 import { createSessionCostCache } from "../usage/sessionCostCache";
 import { createUploads, UPLOAD_DATABASE_NAME } from "../sync/uploads";
 import { createServerAudio } from "../native/serverAudio";
-import {
-  createRecordingStorage,
-  DICTATION_DATABASE_NAME,
-} from "../dictation/storage";
+import { createRecordingStorage } from "../dictation/storage";
 import {
   createLocalDraftStorage,
   LOCAL_DRAFT_DATABASE_NAME,
@@ -72,7 +69,7 @@ export function createServerServices(server: StudioServer) {
     api.pending.observeClientSeq(sequence);
   });
   const audio = createServerAudio();
-  const sessionCosts = createSessionCostCache(storage);
+  const sessionCosts = createSessionCostCache();
   const transcripts = createTranscriptCache();
   const tokenRates = createTokenRateCache();
   let runtime:
@@ -168,9 +165,7 @@ export function createServerServices(server: StudioServer) {
     audio,
     sessionCosts,
     chatCreations: createChatCreationStore(storage),
-    recordings: createRecordingStorage(
-      storageNameForServer(transport.owner.id, DICTATION_DATABASE_NAME),
-    ),
+    recordings: createRecordingStorage(),
     localDrafts,
     uploads,
     storageEventKey: createStorageEventKey(

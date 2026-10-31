@@ -1,5 +1,4 @@
 import { randomUUID } from "../uuid";
-import { serverStorageName } from "../servers/environment";
 export type Recording = {
   id: string;
   chatId: string;
@@ -13,69 +12,27 @@ export type Recording = {
   error?: string | undefined;
   deletedAt?: number | undefined;
 };
-export const DICTATION_DATABASE_NAME = "codex-studio-dictation";
-export function createRecordingStorage(databaseName: string) {
-  const database = () =>
-    new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(databaseName, 1);
-      request.onupgradeneeded = () => {
-        request.result.createObjectStore("recordings", { keyPath: "id" });
-        request.result.createObjectStore("chunks", {
-          keyPath: ["id", "index"],
-        });
-      };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  async function transaction<T>(
-    stores: string[],
-    mode: IDBTransactionMode,
-    action: (tx: IDBTransaction) => IDBRequest<T>,
-  ): Promise<T> {
-    const db = await database();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(stores, mode);
-      const request = action(tx);
-      tx.oncomplete = () => {
-        db.close();
-        resolve(request.result);
-      };
-      tx.onerror = tx.onabort = () => {
-        db.close();
-        reject(tx.error || Error("Cannot save the recording."));
-      };
-    });
-  }
+export function createRecordingStorage() {
+  const records = new Map<string, Recording>();
+  const chunks = new Map<string, Map<number, Int16Array>>();
   async function listRecordings(chatId: string) {
-    const all = await transaction<Recording[]>(
-      ["recordings"],
-      "readonly",
-      (tx) => tx.objectStore("recordings").getAll(),
-    );
-    return all
+    return [...records.values()]
       .filter((row) => row.chatId === chatId && !row.deletedAt)
       .sort((a, b) => b.created - a.created);
   }
   async function saveRecording(row: Recording) {
-    await transaction(["recordings"], "readwrite", (tx) =>
-      tx.objectStore("recordings").put(row),
-    );
+    records.set(row.id, { ...row });
   }
   async function saveChunk(row: Recording, index: number, pcm: Int16Array) {
-    await transaction(["recordings", "chunks"], "readwrite", (tx) => {
-      tx.objectStore("chunks").put({ id: row.id, index, pcm });
-      return tx.objectStore("recordings").put(row);
-    });
+    let parts = chunks.get(row.id);
+    if (!parts) chunks.set(row.id, (parts = new Map()));
+    parts.set(index, pcm.slice());
+    records.set(row.id, { ...row });
   }
   async function deleteRecording(id: string) {
-    await transaction(["recordings", "chunks"], "readwrite", (tx) => {
-      tx.objectStore("chunks").delete(
-        IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]),
-      );
-      return tx.objectStore("recordings").delete(id);
-    });
+    records.delete(id);
+    chunks.delete(id);
   }
-  // Keep deleted audio for one day so Undo also survives a reload.
   async function trashRecording(row: Recording) {
     await updateRecording({
       id: row.id,
@@ -92,20 +49,8 @@ export function createRecordingStorage(databaseName: string) {
     });
   }
   async function deletedRecordings(chatId: string) {
-    const all = await transaction<Recording[]>(
-      ["recordings"],
-      "readonly",
-      (tx) => tx.objectStore("recordings").getAll(),
-    );
-    const expired = all.filter(
-      (row) => row.deletedAt && Date.now() - row.deletedAt >= 86400000,
-    );
-    for (const row of expired) await deleteRecording(row.id);
-    return all.filter(
-      (row) =>
-        row.chatId === chatId &&
-        row.deletedAt &&
-        Date.now() - row.deletedAt < 86400000,
+    return [...records.values()].filter(
+      (row) => row.chatId === chatId && row.deletedAt,
     );
   }
   function wav(chunks: Int16Array[], sampleRate: number) {
@@ -136,56 +81,27 @@ export function createRecordingStorage(databaseName: string) {
     return new Blob([output], { type: "audio/wav" });
   }
   async function recordingAudio(row: Recording) {
-    const chunks = await transaction<{ pcm: Int16Array }[]>(
-      ["chunks"],
-      "readonly",
-      (tx) =>
-        tx
-          .objectStore("chunks")
-          .getAll(
-            IDBKeyRange.bound([row.id, 0], [row.id, Number.MAX_SAFE_INTEGER]),
-          ),
-    );
-    return wav(
-      chunks.map((chunk) => chunk.pcm),
-      row.sampleRate,
-    );
+    const parts = [...(chunks.get(row.id) ?? new Map()).entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([, pcm]) => pcm);
+    return wav(parts, row.sampleRate);
   }
-
-  // Late transcription responses must not recreate a deleted recording.
   async function updateRecording(
     row: Pick<Recording, "id" | "chatId"> & Partial<Recording>,
     attempt?: string,
   ) {
-    await transaction(["recordings"], "readwrite", (tx) => {
-      const records = tx.objectStore("recordings");
-      const request = records.get(row.id);
-      request.onsuccess = () => {
-        if (
-          request.result?.chatId === row.chatId &&
-          (!attempt || request.result.transcriptionAttempt === attempt)
-        )
-          records.put({ ...request.result, ...row });
-      };
-      return request;
-    });
+    const current = records.get(row.id);
+    if (
+      current?.chatId === row.chatId &&
+      (!attempt || current.transcriptionAttempt === attempt)
+    )
+      records.set(row.id, { ...current, ...row });
   }
-
   async function beginTranscription(row: Recording, attempt: string) {
-    const existing = await transaction<Recording | undefined>(
-      ["recordings"],
-      "readwrite",
-      (tx) => {
-        const records = tx.objectStore("recordings");
-        const request = records.get(row.id);
-        request.onsuccess = () => {
-          if (request.result?.chatId === row.chatId)
-            records.put({ ...request.result, transcriptionAttempt: attempt });
-        };
-        return request;
-      },
-    );
-    return existing?.chatId === row.chatId;
+    const current = records.get(row.id);
+    if (current?.chatId !== row.chatId) return false;
+    records.set(row.id, { ...current, transcriptionAttempt: attempt });
+    return true;
   }
 
   return {
@@ -215,4 +131,4 @@ export const {
   recordingAudio,
   updateRecording,
   beginTranscription,
-} = createRecordingStorage(serverStorageName(DICTATION_DATABASE_NAME));
+} = createRecordingStorage();
