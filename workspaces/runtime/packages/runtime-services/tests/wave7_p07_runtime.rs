@@ -340,6 +340,12 @@ async fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
             let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
             seed(&store, &case["before"]).await;
             let before = agent(&store);
+            // The seed can hold an unfinished turn; a rollback keeps exactly these rows.
+            let turns_before: i64 = store
+                .test_reader()
+                .expect("read")
+                .query_row("SELECT count(*) FROM turns", [], |r| r.get(0))
+                .expect("count");
             let sql = format!(
                 "CREATE TRIGGER p07_fail {timing} {op} ON {table} BEGIN SELECT RAISE(ABORT,'p07 injected crash'); END;"
             );
@@ -370,7 +376,7 @@ async fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
                     .expect("read")
                     .query_row("SELECT count(*) FROM turns", [], |r| r.get::<_, i64>(0))
                     .expect("count"),
-                0
+                turns_before
             );
             store
                 .transaction(|tx| {

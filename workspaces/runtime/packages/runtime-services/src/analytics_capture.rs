@@ -941,7 +941,7 @@ pub fn decide(
     if q.source == CaptureSource::Live && !q.model {
         let hour = (at / 3600.).floor() as i64 * 3600;
         result.notifications.push(
-            json!({"id":python_json_compact(&json!([q.agent["id"],method,hour])),"agent":q.agent["id"],"root":meta["rootId"],"method":method,"hour":hour,"count":1,"bytes":python_json_compact(p).len()}),
+            json!({"id":python_json_compact(&json!([q.agent["id"],method,hour])),"agent":q.agent["id"],"root":meta["rootId"],"method":method,"hour":hour,"count":1,"bytes":p.to_string().len()}),
         );
     }
     if method == "thread/tokenUsage/updated" {
@@ -1175,7 +1175,7 @@ fn protocol_item(
                 let s = item["error"]
                     .as_str()
                     .map(str::to_owned)
-                    .unwrap_or_else(|| python_json_compact(&item["error"]));
+                    .unwrap_or_else(|| item["error"].to_string());
                 row["error"] = json!(s.chars().take(2000).collect::<String>());
             }
             let supplied = number(&item["durationMs"]);

@@ -114,7 +114,7 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
             );
             let principal = crate::principal::Principal::Agent {
                 id: snapshot.context().agent.as_str().to_owned(),
-                epoch: u64::try_from(self.context.epoch).unwrap_or_default(),
+                epoch: self.context.epoch,
             };
             let now_ms = (now * 1000.0) as i64;
             let (_, result) = crate::commands::execute_agent_send(
@@ -160,7 +160,13 @@ fn followup_error(error: crate::commands::CommandError) -> crate::managed_host_t
         CommandError::Coordination(CoordinationError::RequiresDependency(name)) => {
             Error::Unavailable(name)
         }
-        _ => Error::Invalid("Agent input was refused"),
+        CommandError::Forbidden
+        | CommandError::TooOld
+        | CommandError::Invalid(_)
+        | CommandError::Conflict(_)
+        | CommandError::NotFound
+        | CommandError::Lifecycle(_)
+        | CommandError::Coordination(_) => Error::Invalid("Agent input was refused"),
     }
 }
 
@@ -570,7 +576,7 @@ impl crate::native_review::ReviewCreator for UnavailableReviewCreator {
         &self,
         _: &Transaction<'_>,
         _: &Value,
-        _: &Value,
+        _: &studio_runtime_schema::creation_intent::CreationIntent,
     ) -> crate::native_actions::Result<Value> {
         Err(crate::native_actions::NativeError::Unavailable(
             "agent-create/worker-driver",

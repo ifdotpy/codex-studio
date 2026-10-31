@@ -3146,79 +3146,48 @@ fn default_registry_bytes(codex_home: &Path) -> Result<Vec<u8>, AccountDriverErr
     let home = codex_home
         .to_str()
         .ok_or(AccountDriverError::InvalidRegistry)?;
-    let text = |value: &str| studio_runtime_store::python_json(&Value::String(value.to_owned()));
-    let optional = |value: Option<&String>| value.map_or_else(|| "null".to_owned(), |v| text(v));
-    let mut row = vec![
-        ("id", text("default")),
-        (
-            "provider",
-            text(studio_runtime_schema::ProviderKind::Codex.key()),
-        ),
-        ("home", text(home)),
-        ("label", text("Codex")),
-        ("source", text("Codex CLI")),
-    ];
+    use studio_runtime_schema::account_registry::{AccountRecord, AccountRegistry, AccountStatus};
+    let mut row = AccountRecord {
+        id: "default".into(),
+        home: home.into(),
+        label: "Codex".into(),
+        source: "Codex CLI".into(),
+        status: AccountStatus::SignedOut,
+        provider: studio_runtime_schema::ProviderKind::Codex,
+        account_id: None,
+        email: None,
+        error: None,
+        plan: None,
+        deleted: None,
+        disconnected: None,
+        duplicate_of: None,
+        auth_error_kind: None,
+        credential_identity: None,
+        organization_name: None,
+        claude_options: None,
+        start_throttle: None,
+        organization_mismatch: None,
+    };
     match read_codex_auth(codex_home) {
-        CodexAuth::Missing => row.extend([
-            ("accountId", "null".to_owned()),
-            ("email", "null".to_owned()),
-            ("plan", "null".to_owned()),
-            ("status", text("signedOut")),
-        ]),
-        CodexAuth::Unreadable => row.extend([
-            ("accountId", "null".to_owned()),
-            ("email", "null".to_owned()),
-            ("plan", "null".to_owned()),
-            ("status", text("error")),
-            ("error", text(CODEX_AUTH_ERROR)),
-        ]),
-        CodexAuth::Parsed(metadata) => row.extend([
-            ("accountId", optional(metadata.account_id.as_ref())),
-            ("email", optional(metadata.email.as_ref())),
-            ("plan", optional(metadata.plan.as_ref())),
-            (
-                "status",
-                text(if metadata.status == AuthStatus::Ready {
-                    "ready"
-                } else {
-                    "signedOut"
-                }),
-            ),
-            (
-                "_credentialIdentity",
-                optional(metadata.credential_identity.as_ref()),
-            ),
-        ]),
+        CodexAuth::Missing => {}
+        CodexAuth::Unreadable => {
+            row.status = AccountStatus::Error;
+            row.error = Some(CODEX_AUTH_ERROR.into());
+        }
+        CodexAuth::Parsed(metadata) => {
+            row.account_id = metadata.account_id;
+            row.email = metadata.email;
+            row.plan = metadata.plan;
+            row.status = if metadata.status == AuthStatus::Ready {
+                AccountStatus::Ready
+            } else {
+                AccountStatus::SignedOut
+            };
+            row.credential_identity = metadata.credential_identity;
+        }
     }
-    let document = python_object(&[
-        (
-            "version",
-            studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION.to_string(),
-        ),
-        ("defaultAccountKey", text("default")),
-        (
-            "accounts",
-            python_object(&[("default", python_object(&row))]),
-        ),
-        ("logins", "{}".to_owned()),
-        ("deleteReceipts", "{}".to_owned()),
-    ]);
-    Ok(document.into_bytes())
-}
-
-/// `json.dumps` of a dict whose values are already encoded, in entry order.
-fn python_object(entries: &[(&str, String)]) -> String {
-    let body = entries
-        .iter()
-        .map(|(key, value)| {
-            format!(
-                "{}: {value}",
-                studio_runtime_store::python_json(&Value::String((*key).to_owned()))
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("{{{body}}}")
+    serde_json::to_vec(&AccountRegistry::with_default_account(row))
+        .map_err(|_| AccountDriverError::WriteRegistry)
 }
 
 fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetadata) {
@@ -5096,22 +5065,35 @@ exit 0
     }
 
     #[test]
+    fn default_registry_uses_serde_json_encoding() {
+        let bytes = default_registry_bytes(Path::new("雪")).expect("default registry");
+        let text = std::str::from_utf8(&bytes).expect("UTF-8 registry");
+        assert!(text.contains("雪"));
+        assert!(!text.contains(": "));
+    }
+
+    #[test]
     fn default_registry_uses_current_identity_format_and_is_never_replaced() {
         let fixture = TestDir::new();
         let home = fixture.path.join("codex-\u{e9}");
         let path = fixture.path.join("state/accounts/registry.json");
         assert_eq!(create_default_registry(&path, &home), Ok(true));
-        let expected = format!(
-            "{{\"version\": {version}, \"defaultAccountKey\": \"default\", \"accounts\": {{\"default\": \
-             {{\"id\": \"default\", \"provider\": \"{provider}\", \"home\": \"{}\", \"label\": \"Codex\", \"source\": \
-             \"Codex CLI\", \"accountId\": null, \"email\": null, \"plan\": null, \"status\": \
-             \"signedOut\"}}}}, \"logins\": {{}}, \"deleteReceipts\": {{}}}}",
-            fixture.path.join("codex-\\u00e9").display(),
-            version = studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
-            provider = studio_runtime_schema::ProviderKind::Codex.key(),
-        );
         let written = fs::read(&path).expect("read created registry");
-        assert_eq!(String::from_utf8_lossy(&written), expected);
+        let registry: studio_runtime_schema::account_registry::AccountRegistry =
+            serde_json::from_slice(&written).expect("typed registry");
+        assert_eq!(registry.default_account_key, "default");
+        assert_eq!(
+            registry.accounts["default"].0.home,
+            home.to_str().expect("home")
+        );
+        let old = format!(
+            r#"{{"version":{},"defaultAccountKey":"default","accounts":{{"default":{{"id":"default","provider":"codex","home":"/old","label":"Codex","source":"Codex CLI","accountId":null,"email":null,"plan":null,"status":"signedOut"}}}},"logins":{{}},"deleteReceipts":{{}}}}"#,
+            studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION
+        );
+        assert!(
+            serde_json::from_str::<studio_runtime_schema::account_registry::AccountRegistry>(&old)
+                .is_ok()
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

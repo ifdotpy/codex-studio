@@ -289,6 +289,7 @@ pub(crate) fn legacy_pair(invitation: &Value, request_id: &str) -> Result<Creden
     Ok(credential)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn signature(
     vault: &dyn Vault,
     credential: &Credential,
@@ -533,7 +534,9 @@ mod tests {
         );
         // A completed import receipt survives later credential changes.
         let mut newer = vault.read().unwrap().into_value();
-        newer["servers"]["server"] = new_pair(&invitation, "later").unwrap().into_value();
+        newer["servers"]["server"] = new_pair(&invitation, "later", &generate_device().unwrap())
+            .unwrap()
+            .into_value();
         vault.write(&VaultState::from_value(newer.clone())).unwrap();
         import(&vault, &source).unwrap();
         assert_eq!(vault.read().unwrap().into_value(), newer);
@@ -626,7 +629,7 @@ mod tests {
             .into_value();
         signs_for(&vault, &fresh, &public_bytes(&device.public_key));
         // A key-less credential of another client id is refused.
-        let mut other = fresh.clone();
+        let mut other = fresh;
         other["clientId"] = json!("other");
         assert!(
             signature(

@@ -318,7 +318,7 @@ impl RecoveryStore {
                     }
                     if let Some(turn) = latest {
                         let turn_id = turn["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
-                        if !studio_runtime_store::domain::turn_completed(tx, &id, turn_id)? {
+                        if !studio_runtime_store::domain::turn_completed(tx, id, turn_id)? {
                             return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                         }
                     }
@@ -743,7 +743,7 @@ impl CompletionWriter for LifecycleCompletionWriter {
                     updated["activeTools"] = json!([]);
                     updated["lastCompletedTurn"] = turn["id"].clone();
                     updated["lastCompletedTurnStatus"] = turn["status"].clone();
-                    studio_runtime_store::domain::complete_turn(tx, &id, turn_id)?;
+                    studio_runtime_store::domain::complete_turn(tx, id, turn_id)?;
                     updated
                 };
                 if !normal {

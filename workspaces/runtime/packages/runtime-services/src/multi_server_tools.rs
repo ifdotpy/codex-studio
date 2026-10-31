@@ -237,7 +237,9 @@ fn access_step(error: AccessError) -> Step {
     match error {
         AccessError::Store(error) => Step::Store(error),
         AccessError::Sqlite(error) => Step::Store(error.into()),
-        other => Step::Refused(other.to_string()),
+        other @ (AccessError::Refused { .. } | AccessError::Stored { .. }) => {
+            Step::Refused(other.to_string())
+        }
     }
 }
 
@@ -1496,7 +1498,7 @@ pub(crate) fn validate_exec(
         object.iter().all(|(key, value)| {
             valid_environment_name(key) && value.as_str().is_some_and(|value| !value.contains('\0'))
         })
-    }) && crate::event_write::python_json(&environment).len() <= 128 * 1024;
+    }) && environment.to_string().len() <= 128 * 1024;
     if !valid_environment {
         return Err(
             "Supply env additions with valid names and string values, at most 128 KiB".into(),

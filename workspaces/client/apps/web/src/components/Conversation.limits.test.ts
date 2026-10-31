@@ -11,6 +11,7 @@ import {
 } from "react";
 
 const h = vi.hoisted(() => ({ effects: [] as Array<() => unknown> }));
+vi.mock("../usePendingCommands", () => ({ usePendingCommands: () => [] }));
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
   useState: (initial: unknown) => [

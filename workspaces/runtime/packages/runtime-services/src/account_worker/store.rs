@@ -114,6 +114,10 @@ pub(crate) struct JournalSettlement {
     notification: Option<crate::notification_dispatch::NotificationSettlement>,
 }
 
+/// The payload key that marks a worker call. The VM provider stores its
+/// obligations under the same owner and kind with a different shape.
+const PROVIDER_CALL_TAG: &str = "family";
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "family", content = "payload", rename_all = "snake_case")]
 pub(super) enum ProviderCall {
@@ -496,7 +500,7 @@ pub(super) fn has_pending_thread_start(
     connection: &rusqlite::Connection,
     agent: &str,
 ) -> Result<bool, WorkerError> {
-    Ok(Outbox::for_owner::<ProviderCall>(connection,OwnerKind::Agent,agent,OutboxKind::ProviderCall).map_err(|error| if let studio_runtime_store::outbox::OutboxError::Json(_) = error {
+    Ok(Outbox::for_owner_tagged::<ProviderCall>(connection,OwnerKind::Agent,agent,OutboxKind::ProviderCall,PROVIDER_CALL_TAG).map_err(|error| if let studio_runtime_store::outbox::OutboxError::Json(_) = error {
         invalid(agent)
     } else {
         outbox_error(error)
@@ -533,9 +537,14 @@ fn supersede_thread_calls(
     tx: &studio_runtime_store::Transaction<'_>,
     agent_id: &str,
 ) -> Result<bool, WorkerError> {
-    let rows =
-        Outbox::for_owner::<ProviderCall>(tx, OwnerKind::Agent, agent_id, OutboxKind::ProviderCall)
-            .map_err(outbox_error)?;
+    let rows = Outbox::for_owner_tagged::<ProviderCall>(
+        tx,
+        OwnerKind::Agent,
+        agent_id,
+        OutboxKind::ProviderCall,
+        PROVIDER_CALL_TAG,
+    )
+    .map_err(outbox_error)?;
     let mut superseded = false;
     for row in rows {
         let ProviderCall::Account(call) = &row.payload else {
@@ -718,11 +727,12 @@ pub(super) fn recover_vm_actor_requests(
         return Ok(Vec::new());
     }
     let mut recovered = Vec::new();
-    for row in Outbox::for_owner::<ProviderCall>(
+    for row in Outbox::for_owner_tagged::<ProviderCall>(
         connection,
         OwnerKind::Agent,
         agent,
         OutboxKind::ProviderCall,
+        PROVIDER_CALL_TAG,
     )
     .map_err(outbox_error)?
     {
@@ -4692,6 +4702,22 @@ mod pending_thread_start_tests {
             tx.commit().expect("commit");
             assert!(!has_pending_thread_start(&db, "lead").expect("settled"));
         }
+    }
+    /// The VM provider keeps its unknown launch under the same owner and kind
+    /// as the worker's calls, with its own payload shape (no `family`). A
+    /// worker read must skip it, not fail the agent's preparation with
+    /// `invalid stored sync object account_worker/<agent>`.
+    #[test]
+    fn vm_provider_obligations_do_not_fail_worker_call_reads() {
+        let db = database();
+        db.execute(
+            "INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,payload,created) VALUES('vm-hold','provider_call','agent','lead','request','signature','unknown',?1,1)",
+            [r#"{"vmLaunch":{"identity":{"agentId":"lead","epoch":6},"signature":"signature","status":"submitted"}}"#],
+        )
+        .expect("vm obligation");
+        assert!(!has_pending_thread_start(&db, "lead").expect("skips the vm obligation"));
+        submit(&db, "account", "lead", Method::ThreadStart);
+        assert!(has_pending_thread_start(&db, "lead").expect("still sees the thread start"));
     }
     #[test]
     fn old_account_unknown_cannot_be_replaced_by_another_account() {

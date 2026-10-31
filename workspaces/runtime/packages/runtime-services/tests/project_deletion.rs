@@ -77,7 +77,6 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment for
         &self,
         _: &RuntimeStore,
         _: &studio_runtime_store::AgentRecord,
-        _: &Value,
         _: &str,
     ) -> Result<
         Box<dyn studio_runtime_services::monitor_runtime::WorkspaceAdmission + Send + Sync>,
@@ -171,10 +170,19 @@ fn creation(path: &str, bound: bool) -> agents_create::Creation {
         workspace: Some("worktree".into()),
         catalog: true,
         project_binding: bound,
-        intent: if bound {
-            json!({"model":"gpt-fixture","project_id":path,"project_server_id":"owner"})
-        } else {
-            json!({"model":"gpt-fixture"})
+        intent: studio_runtime_schema::creation_intent::CreationIntent {
+            model: studio_runtime_schema::queue_command::Field::Value("gpt-fixture".into()),
+            project_id: if bound {
+                studio_runtime_schema::queue_command::Field::Value(path.into())
+            } else {
+                Default::default()
+            },
+            project_server_id: if bound {
+                studio_runtime_schema::queue_command::Field::Value("owner".into())
+            } else {
+                Default::default()
+            },
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -254,7 +262,7 @@ async fn project_deletion_includes_a_create_that_wins_the_writer() {
     };
     let mut request = creation(path, false);
     request.catalog = false;
-    request.intent = json!({});
+    request.intent = Default::default();
     agents_create::lead(&context, request)
         .await
         .expect("creation before deletion");
@@ -341,7 +349,7 @@ async fn project_deletion_registry_only_remove_allows_fresh_creation() {
     };
     let mut request = creation(path, false);
     request.catalog = false;
-    request.intent = json!({});
+    request.intent = Default::default();
     agents_create::lead(&context, request)
         .await
         .expect("fresh create retains registry-only remove compatibility");
@@ -446,7 +454,7 @@ async fn seed_parent(store: &Arc<RuntimeStore>, path: &str) {
     };
     let mut request = creation(path, false);
     request.catalog = false;
-    request.intent = json!({});
+    request.intent = Default::default();
     agents_create::lead(&context, request)
         .await
         .expect("parent");
@@ -487,7 +495,12 @@ async fn agent_creation_assigns_task_and_replays_without_reassignment() {
         workspace: Some("shared".into()),
         account: Some("default".into()),
         prompt: "Task".into(),
-        intent: json!({"model":"gpt-fixture","effort":null,"task_id":"task"}),
+        intent: studio_runtime_schema::creation_intent::CreationIntent {
+            model: studio_runtime_schema::queue_command::Field::Value("gpt-fixture".into()),
+            effort: studio_runtime_schema::queue_command::Field::Null,
+            task_id: Some("task".into()),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let created = agents_create::agent(&context, request.clone())
@@ -544,7 +557,13 @@ async fn project_deletion_fences_prepared_spawn_and_includes_prior_spawn() {
                     workspace: Some("shared".into()),
                     account: Some("default".into()),
                     prompt: "Task".into(),
-                    intent: json!({"model":"gpt-fixture","effort":null}),
+                    intent: studio_runtime_schema::creation_intent::CreationIntent {
+                        model: studio_runtime_schema::queue_command::Field::Value(
+                            "gpt-fixture".into(),
+                        ),
+                        effort: studio_runtime_schema::queue_command::Field::Null,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             )

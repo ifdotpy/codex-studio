@@ -371,8 +371,10 @@ async fn command(
             "Supply a command request identity",
         ));
     }
-    let mut message =
-        crate::generated::ManagedMessageBody::new(body.request_id, body.id, command.into());
+    let text: String = command.into();
+    let wire = json!({"id": body.request_id, "room": body.id, "text": text});
+    let mut message: crate::generated::ManagedMessageBody =
+        serde_json::from_value(wire).map_err(|_| ApiError::internal())?;
     message.delivery = Some(studio_runtime_schema::DeliveryMoment::CurrentTurn);
     let receipt = super::messages::send_message(state, message).await?;
     serde_json::to_value(receipt.0)

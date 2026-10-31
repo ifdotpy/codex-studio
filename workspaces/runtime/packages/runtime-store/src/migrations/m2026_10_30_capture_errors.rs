@@ -58,6 +58,11 @@ mod tests {
             [r#"{"count":2,"last":{"at":"1792320464","operation":"capture","error":"failure"}}"#],
         )
         .expect("legacy");
+        db.execute(
+            "DELETE FROM analytics_meta WHERE key='migration_catalog'",
+            [],
+        )
+        .expect("legacy catalog");
         for _ in 0..2 {
             let store = crate::RuntimeStore::open(Some(root.path()))
                 .await
@@ -70,6 +75,11 @@ mod tests {
             drop(store);
         }
         db.execute("UPDATE analytics_meta SET value=json_set(value,'$.last.at','bad') WHERE key='captureErrors'", []).expect("invalid");
+        db.execute(
+            "DELETE FROM analytics_meta WHERE key='migration_catalog'",
+            [],
+        )
+        .expect("legacy catalog");
         assert!(crate::RuntimeStore::open(Some(root.path())).await.is_err());
         let value: String = db.query_row("SELECT json_extract(value,'$.last.at') FROM analytics_meta WHERE key='captureErrors'", [], |row| row.get(0)).expect("source");
         assert_eq!(value, "bad");

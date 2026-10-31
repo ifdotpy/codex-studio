@@ -3,6 +3,14 @@
 use super::*;
 
 #[test]
+fn exec_environment_limit_counts_utf8_json_bytes() {
+    let valid = json!({"cwd":"/", "command":"echo", "env":{"VALUE":"雪".repeat(40_000)}});
+    assert!(validate_exec(&valid, false).is_ok());
+    let too_large = json!({"cwd":"/", "command":"echo", "env":{"VALUE":"雪".repeat(44_000)}});
+    assert!(validate_exec(&too_large, false).is_err());
+}
+
+#[test]
 fn export_request_keeps_canonical_wire_bytes() {
     let request = ExportRequest {
         cwd: Some("/workspace".into()),

@@ -456,6 +456,10 @@ mod tests {
                     "INSERT INTO runtime_agents(id,record) VALUES('child',?1)",
                     [agents()[1].to_string()],
                 )?;
+                // The state was opened once, so the chat and turn rows follow the writes.
+                for agent in agents() {
+                    crate::domain::project(tx, agent["id"].as_str().expect("id"), &agent)?;
+                }
                 for sql in trigger_sql {
                     tx.execute_batch(&sql)?;
                 }

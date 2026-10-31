@@ -1625,7 +1625,7 @@ impl CommandSnapshot {
         Ok(format!(
             "Use your native write_stdin tool for session {}. Send exactly this JSON string as chars: {}.",
             self.process,
-            crate::event_write::python_json(&json!(text))
+            serde_json::to_string(text)?
         ))
     }
     pub fn listed(&self, page: &Value) -> Result<bool> {

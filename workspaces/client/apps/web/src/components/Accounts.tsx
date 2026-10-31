@@ -505,7 +505,6 @@ export function AccountTransferStatus({
   opened = true,
   onClose = () => {},
   error,
-  retryStart,
   onAction,
 }: {
   transfer?: NonNullable<Agent["accountTransfer"]> | undefined;
@@ -514,7 +513,6 @@ export function AccountTransferStatus({
   opened?: boolean;
   onClose?: () => void;
   error?: string;
-  retryStart?: (() => void) | undefined;
   onAction: (action: "retry" | "cancel") => void;
 }) {
   const waiting = Number(transfer?.waitingCount || 0);
@@ -567,20 +565,10 @@ export function AccountTransferStatus({
           ) : (
             <p role="status">Starting transfer…</p>
           )}
-          {retryStart && (
-            <Button onClick={retryStart} disabled={!!pending}>
-              Retry
-            </Button>
-          )}
         </div>
       ) : (
         <div className="account-menu-note" role="status">
           {error && <p role="alert">{error}</p>}
-          {retryStart && (
-            <Button onClick={retryStart} disabled={!!pending}>
-              Retry
-            </Button>
-          )}
           <ArrowRightLeft size={14} />
           <div>
             {transfer.status !== GeneratedApiAccountTransferStatus.pending && (
@@ -671,22 +659,18 @@ export function AccountTransferChip({
   )
     return null;
   const blocked = Array.isArray(transfer.blocked) ? transfer.blocked : [];
-  const left =
-    Number(transfer.total ?? 0) - Number(transfer.completed ?? 0) ||
-    Number(transfer.nativeHistoryPending ?? 0);
-  const label = blocked.length
-    ? "Account move blocked"
-    : `Moving account${left > 0 ? ` · ${left} left` : ""}`;
+  // The chat shows its new account at once. Only a failed move shows here.
+  if (!blocked.length) return null;
+  const label = "Account move blocked";
   const details = [
     ...blocked.map((member) => `${member.name || "Agent"}: ${member.reason}`),
-    ...(transfer.waiting && !blocked.length ? [String(transfer.waiting)] : []),
     "Open the model settings to retry or cancel.",
   ].join("\n");
   return (
     <Tooltip label={details} multiline w={320} withinPortal>
       <span
         className="account-transfer-chip"
-        data-blocked={blocked.length ? "" : undefined}
+        data-blocked=""
         role="status"
         aria-label={`${label}. ${details}`}
       >
@@ -702,14 +686,12 @@ export function AccountTransferConfirmation({
   onClose,
   target,
   sourceProvider,
-  extend = false,
   onConfirm,
 }: {
   opened: boolean;
   onClose: () => void;
   target: Account | null;
   sourceProvider: string;
-  extend?: boolean | undefined;
   onConfirm: () => Promise<void>;
 }) {
   const [pending, setPending] = useState(false);
@@ -725,20 +707,17 @@ export function AccountTransferConfirmation({
       onClose={() => {
         if (!pending) onClose();
       }}
-      title={extend ? "Add agents to this transfer" : "Transfer this chat"}
+      title="Transfer this chat"
       closeOnClickOutside={!pending}
       closeOnEscape={!pending}
       withCloseButton={!pending}
     >
       <p>
-        {extend
-          ? "Add descendants to the pending team transfer to"
-          : "Transfer this chat to"}{" "}
-        <strong>{target?.email || target?.label}</strong>?
+        Transfer this chat to <strong>{target?.email || target?.label}</strong>?
       </p>
       <p>
-        Active turns move immediately and continue on the destination. Same
-        provider subagents move too; other providers stay on their accounts.
+        Active turns move immediately and continue on the destination. Subagents
+        keep their accounts.
       </p>
       {target && sourceProvider !== target.provider && (
         <p>The destination model uses the saved chat context.</p>
@@ -773,7 +752,7 @@ export function AccountTransferConfirmation({
           }
         }}
       >
-        {extend ? "Add agents" : "Transfer chat"}
+        Transfer chat
       </Button>
     </Modal>
   );
@@ -786,7 +765,6 @@ export default function Accounts({
   changeAccount,
   onError,
   onModalOpenChange,
-  onTransferStarted,
   managerOnly = false,
   renderPicker,
   externalCommand,
@@ -798,7 +776,6 @@ export default function Accounts({
   agent?: Agent;
   accountKey?: string;
   onModalOpenChange?: (opened: boolean) => void;
-  onTransferStarted?: () => void;
   managerOnly?: boolean;
   renderPicker?: (
     selectAccount: (key: string) => void,
@@ -836,7 +813,6 @@ export default function Accounts({
     sourceProvider: string;
     agentId: string;
     requestId: string;
-    extend: boolean;
   } | null>(null);
   const [disconnectChoice, setDisconnectChoice] = useState<Account | null>(
     null,
@@ -1040,9 +1016,7 @@ export default function Accounts({
       (transferring && account.id !== teamTransfer?.targetAccountKey)
     )
       return;
-    const extendTransfer =
-      transferring && account.id === teamTransfer?.targetAccountKey;
-    if (account.id === accountKey && !extendTransfer) return;
+    if (account.id === accountKey) return;
     if (pinned && owner) {
       onModalOpenChange?.(true);
       setTransferChoice({
@@ -1050,7 +1024,6 @@ export default function Accounts({
         sourceProvider: selected?.provider || owner.provider || "",
         agentId: owner.id,
         requestId: randomUUID(),
-        extend: !!extendTransfer,
       });
     } else if (!pinned)
       void action(account.id, async () => {
@@ -1639,7 +1612,6 @@ export default function Accounts({
         opened={!!transferChoice}
         target={transferChoice?.target || null}
         sourceProvider={transferChoice?.sourceProvider || ""}
-        extend={transferChoice?.extend}
         onClose={() => {
           setTransferChoice(null);
           onModalOpenChange?.(false);
@@ -1651,7 +1623,6 @@ export default function Accounts({
             account_key: transferChoice.target.id,
             request_id: transferChoice.requestId,
           });
-          onTransferStarted?.();
         }}
       />
       <Modal

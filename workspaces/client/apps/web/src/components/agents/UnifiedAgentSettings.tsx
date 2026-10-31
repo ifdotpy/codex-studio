@@ -25,7 +25,6 @@ export function UnifiedAgentSettings({
   const { post } = useServerApi();
 
   const [accountModalOpen, setAccountModalOpen] = useState(false);
-  const [transferRequest, setTransferRequest] = useState(0);
   const updateAccountModalOpen = useCallback(
     (opened: boolean) => {
       setAccountModalOpen(opened);
@@ -38,7 +37,6 @@ export function UnifiedAgentSettings({
       state={state}
       showTransferStatus={showTransferStatus}
       onModalOpenChange={updateAccountModalOpen}
-      onTransferStarted={() => setTransferRequest((value) => value + 1)}
       agent={settings.agent}
       accountKey={settings.agent.accountKey || "default"}
       onError={notify}
@@ -57,7 +55,6 @@ export function UnifiedAgentSettings({
             onAccountChange={selectAccount}
             accountDisabled={disabled}
             accountModalOpen={accountModalOpen}
-            transferOpenRequest={transferRequest}
           />
           {showAccountExclusions && (
             <AccountExclusionsControl

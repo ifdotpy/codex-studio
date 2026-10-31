@@ -319,6 +319,7 @@ test("transfer actions retain response identity and retry the same request after
     updated: 2,
     members: {},
     canRetry: true,
+    blocked: [{ id: "lead", name: "Lead", reason: "Receipt missing" }],
   } satisfies PostResult<"/api/agents/account-transfer">;
   const agent: Agent = { ...initial, accountTransfer: operation };
   const transfer = () => {
@@ -364,6 +365,7 @@ test("a remote transfer does not open the modal", () => {
       id: "remote",
       status: TransferStatus.pending,
       scope: TransferScope.team,
+      blocked: [{ id: "lead", name: "Lead", reason: "Receipt missing" }],
     },
   };
   render(agent);

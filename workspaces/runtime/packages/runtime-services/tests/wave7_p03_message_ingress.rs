@@ -539,12 +539,13 @@ fn snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)> {
         .expect("names")
         .map(|name| {
             let name = name.expect("name");
-            let mut query = connection
-                .prepare(
-                    &studio_runtime_store::agent_columns::select_declared_sql(&connection, &name)
-                        .expect("columns"),
-                )
-                .expect("table");
+            let mut sql =
+                studio_runtime_store::agent_columns::select_declared_sql(&connection, &name)
+                    .expect("columns");
+            if name == "sync_entity_meta" {
+                sql.push_str(" WHERE key != 'migration_catalog'");
+            }
+            let mut query = connection.prepare(&sql).expect("table");
             let count = query.column_count();
             let mut rows: Vec<String> = query
                 .query_map([], |row| {

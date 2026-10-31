@@ -782,7 +782,9 @@ async fn publish_session_roots(
         #[cfg(test)]
         studio_runtime_store::analytics::take_cost_read_witness();
         let rows = ids.into_iter().map(|id| {
-        let value=studio_runtime_services::costs::session_cost_with_account_profiles(&source,&id,&profiles).unwrap_or_else(|error| {
+        let value=studio_runtime_services::costs::session_cost_with_account_profiles(&source,&id,&profiles)
+        .and_then(|cost| serde_json::to_value(cost).map_err(|_| studio_runtime_services::costs::CostsError::Computation))
+        .unwrap_or_else(|error| {
             // A completed pricing attempt with no usable catalog is an unavailable
             // estimate (ready + null total), rather than work still loading.
             let pricing_state = match error {

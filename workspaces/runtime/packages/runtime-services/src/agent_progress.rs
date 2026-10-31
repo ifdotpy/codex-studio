@@ -33,6 +33,45 @@ pub(crate) struct AgentProgress {
     pub stall: Option<AgentStall>,
 }
 
+fn command_progress(
+    record: &studio_runtime_store::MonitorRecord,
+) -> Option<(&str, &str, f64, &str)> {
+    matches!(
+        record.status,
+        MonitorStatus::Starting | MonitorStatus::Running
+    )
+    .then(|| {
+        (
+            record.id.as_str(),
+            record.command.as_str().lines().next().unwrap_or_default(),
+            record.created.seconds(),
+            record
+                .tail
+                .as_str()
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or_default(),
+        )
+    })
+}
+
+pub(crate) fn publish_monitor_owner_change(
+    transaction: &Transaction<'_>,
+    before: &studio_runtime_store::MonitorRecord,
+    after: &studio_runtime_store::MonitorRecord,
+) -> StoreResult<()> {
+    if command_progress(before) != command_progress(after)
+        || !transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='agent' AND id=?1 AND deleted=0)",
+            [&after.agent], |row| row.get::<_, bool>(0),
+        )?
+    {
+        publish_owner(transaction, &after.agent)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn derive<'a>(
     connection: &Connection,
     record: &serde_json::Value,
@@ -71,33 +110,17 @@ pub(crate) fn derive<'a>(
                     continue;
                 }
             };
-            if monitor.agent != agent.id
-                || !matches!(
-                    monitor.status,
-                    MonitorStatus::Starting | MonitorStatus::Running
-                )
-            {
+            if monitor.agent != agent.id {
                 continue;
             }
-            commands.push(AgentCommandProgress {
-                monitor_id: monitor.id,
-                stage: monitor
-                    .command
-                    .as_str()
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .to_owned(),
-                started_at: monitor.created.seconds(),
-                last_output_line: monitor
-                    .tail
-                    .as_str()
-                    .lines()
-                    .rev()
-                    .find(|line| !line.trim().is_empty())
-                    .unwrap_or_default()
-                    .to_owned(),
-            });
+            if let Some((id, stage, started_at, last_output_line)) = command_progress(&monitor) {
+                commands.push(AgentCommandProgress {
+                    monitor_id: id.to_owned(),
+                    stage: stage.to_owned(),
+                    started_at,
+                    last_output_line: last_output_line.to_owned(),
+                });
+            }
         }
     }
     let assignment = assignments.into_iter().find(|task| {
@@ -185,7 +208,21 @@ pub(crate) fn publish_owner(transaction: &Transaction<'_>, agent_id: &str) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::trace::{TraceEvent, TraceEventCodes};
     use serde_json::json;
+    use std::cell::Cell;
+
+    thread_local! { static AGENT_PUBLICATIONS: Cell<usize> = const { Cell::new(0) }; }
+    fn trace_agent_publication(event: TraceEvent<'_>) {
+        if let TraceEvent::Stmt(statement, _) = event
+            && statement.expanded_sql().is_some_and(|sql| {
+                sql.starts_with("SELECT hash,deleted FROM sync_entities")
+                    && sql.contains("collection='agent'")
+            })
+        {
+            AGENT_PUBLICATIONS.with(|count| count.set(count.get() + 1));
+        }
+    }
 
     #[test]
     fn stored_review_boundary_progress_refuses_present_invalid_updated() {
@@ -451,7 +488,80 @@ mod tests {
             let view: serde_json::Value = serde_json::from_str(&raw).expect("test fixture value");
             assert_eq!(view["value"]["commandProgress"][0]["lastOutputLine"],"last gate passed");
             assert_eq!(AgentRepository::get(tx,&AgentId::from("worker"))?.expect("test fixture value").status,AgentStatus::Running);
+            let (before, actor) = crate::monitor_runtime::snapshot(tx, "m")?;
+            let mut repeated = before.decision();
+            repeated.record.tail = "first\nlast gate passed\nlast gate passed".to_owned().try_into().expect("tail");
+            AGENT_PUBLICATIONS.with(|count| count.set(0));
+            tx.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_agent_publication));
+            crate::monitor_runtime::apply(tx, &before, &actor, &repeated, 21.0)?;
+            tx.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+            assert_eq!(AGENT_PUBLICATIONS.with(Cell::get), 0, "unchanged progress should not republish the owner");
+            tx.execute("DELETE FROM sync_entities WHERE collection='agent' AND id='worker'", []).map_err(studio_runtime_store::StoreError::from)?;
+            let (before, actor) = crate::monitor_runtime::snapshot(tx, "m")?;
+            let mut repair = before.decision();
+            repair.record.tail = "last gate passed\nlast gate passed".to_owned().try_into().expect("tail");
+            crate::monitor_runtime::apply(tx, &before, &actor, &repair, 22.0)?;
+            let restored: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='agent' AND id='worker' AND deleted=0)", [], |row| row.get(0)).map_err(studio_runtime_store::StoreError::from)?;
+            assert!(restored, "missing owner projection must be repaired");
             Ok::<(),crate::monitor_policy::MonitorError>(())
         }).await.expect("test fixture value");
+    }
+
+    #[tokio::test]
+    #[ignore = "focused monitor output apply measurement"]
+    async fn monitor_output_apply_measurement() {
+        use studio_runtime_store::{
+            AgentRecord, AgentRepository, MonitorRecord, RuntimeStore, Table,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            let actor = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"worker","epoch":0,"status":"running","autoWake":true})).unwrap();
+            AgentRepository::put(tx, &actor)?;
+            let record: MonitorRecord = serde_json::from_str(r#"{"id":"m","agent":"worker","epoch":0,"status":"running","command":"test","created":5,"tail":"","requestId":"request","activityAt":5,"activityGeneration":0,"bytes":0,"cwd":"/work","interactive":false,"livenessCommand":"","log":"/work/m.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"timeout_ms":3600000,"wakeOn":"exit","operation":{"agent":"worker","epoch":0,"accountKey":"default","connectionId":"connection"}}"#).unwrap();
+            Table::new(tx).put(&record)?;
+            let start = std::time::Instant::now();
+            for _ in 0..10_000 {
+                let (before, actor) = crate::monitor_runtime::snapshot(tx, "m")?;
+                let decision = crate::monitor_policy::output(&before, before.operation().unwrap(), b"output line\n", 20.0)?;
+                crate::monitor_runtime::apply(tx, &before, &actor, &decision, 20.0)?;
+            }
+            eprintln!("10000 monitor output applies: {:?}", start.elapsed());
+            Ok::<(), crate::monitor_policy::MonitorError>(())
+        }).await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "focused monitor output transaction measurement"]
+    async fn monitor_output_transaction_measurement() {
+        use studio_runtime_store::{
+            AgentRecord, AgentRepository, MonitorRecord, RuntimeStore, Table,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            let actor = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"worker","epoch":0,"status":"running","autoWake":true})).unwrap();
+            AgentRepository::put(tx, &actor)?;
+            let record: MonitorRecord = serde_json::from_str(r#"{"id":"m","agent":"worker","epoch":0,"status":"running","command":"test","created":5,"tail":"","requestId":"request","activityAt":5,"activityGeneration":0,"bytes":0,"cwd":"/work","interactive":false,"livenessCommand":"","log":"/work/m.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"timeout_ms":3600000,"wakeOn":"exit","operation":{"agent":"worker","epoch":0,"accountKey":"default","connectionId":"connection"}}"#).unwrap();
+            Table::new(tx).put(&record)?;
+            Ok::<(), crate::monitor_policy::MonitorError>(())
+        }).await.unwrap();
+        let start = std::time::Instant::now();
+        for _ in 0..1000 {
+            store
+                .transaction_with(|tx| {
+                    let (before, actor) = crate::monitor_runtime::snapshot(tx, "m")?;
+                    let decision = crate::monitor_policy::output(
+                        &before,
+                        before.operation().unwrap(),
+                        b"output line\n",
+                        20.0,
+                    )?;
+                    crate::monitor_runtime::apply(tx, &before, &actor, &decision, 20.0)
+                })
+                .await
+                .unwrap();
+        }
+        eprintln!("1000 monitor output transactions: {:?}", start.elapsed());
     }
 }

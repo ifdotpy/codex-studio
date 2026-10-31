@@ -6,24 +6,55 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Number;
 use std::collections::BTreeMap;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountRegistry {
     #[serde(rename = "version", deserialize_with = "version")]
     _version: Number,
     pub default_account_key: String,
     pub accounts: BTreeMap<String, JsonObject<AccountRecord>>,
-    #[serde(default, deserialize_with = "present")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub logins: Option<BTreeMap<String, JsonObject<LoginReceipt>>>,
-    #[serde(default, deserialize_with = "present")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub delete_receipts: Option<BTreeMap<String, JsonObject<DeleteReceipt>>>,
-    #[serde(default, deserialize_with = "present")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub name_receipts: Option<BTreeMap<String, JsonObject<NameReceipt>>>,
-    #[serde(default, deserialize_with = "present")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub pending_accounts_change: Option<bool>,
 }
 
-#[derive(Deserialize)]
+impl AccountRegistry {
+    pub fn with_default_account(account: AccountRecord) -> Self {
+        let key = account.id.clone();
+        Self {
+            _version: crate::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION.into(),
+            default_account_key: key.clone(),
+            accounts: BTreeMap::from([(key, JsonObject(account))]),
+            logins: Some(BTreeMap::new()),
+            delete_receipts: Some(BTreeMap::new()),
+            name_receipts: None,
+            pending_accounts_change: None,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AccountRecord {
     pub id: String,
@@ -36,25 +67,41 @@ pub struct AccountRecord {
     pub provider: ProviderKind,
     pub account_id: Option<String>,
     pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
     pub plan: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub deleted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub disconnected: Option<bool>,
-    #[serde(default, deserialize_with = "present")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub duplicate_of: Option<Option<String>>,
-    #[serde(rename = "_authErrorKind")]
+    #[serde(rename = "_authErrorKind", skip_serializing_if = "Option::is_none")]
     pub auth_error_kind: Option<String>,
-    #[serde(rename = "_credentialIdentity")]
+    #[serde(
+        rename = "_credentialIdentity",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub credential_identity: Option<String>,
-    #[serde(rename = "_organizationName")]
+    #[serde(rename = "_organizationName", skip_serializing_if = "Option::is_none")]
     pub organization_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_options: Option<JsonObject<ClaudeOptionsRecord>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub start_throttle: Option<JsonObject<AccountStartThrottle>>,
-    #[serde(default, deserialize_with = "present")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub organization_mismatch: Option<JsonObject<OrganizationMismatch>>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AccountStatus {
     Ready,
@@ -100,7 +147,7 @@ pub struct Organization {
     pub id_suffix: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LoginReceipt {
     pub request_id: String,
@@ -121,7 +168,7 @@ pub struct LoginReceipt {
     pub user_code: Option<String>,
     pub verification_url: Option<String>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LoginStatus {
     Starting,
@@ -132,13 +179,13 @@ pub enum LoginStatus {
     Error,
     Uncertain,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeleteReceipt {
     pub account_key: String,
     pub deleted_at: Number,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NameReceipt {
     pub account_key: String,

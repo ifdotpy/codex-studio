@@ -159,7 +159,7 @@ impl MessageAdmission for PreparedAdmission {
         if unsupported_operation {
             return Err(CoordinationError::AdmissionDenied(format!(
                 "A workspace operation is active in this directory: {}",
-                studio_runtime_store::python_json(&Value::Array(blockers)),
+                Value::Array(blockers),
             )));
         }
         Ok(blockers)
@@ -315,14 +315,14 @@ mod tests {
             json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true,
                 "autoWake":true,"cwd":project}),
             // A failed provisioning keeps its reservation; its cwd is the source.
-            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"lead","parentId":"lead","epoch":0,"status":"failed",
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child-雪","rootId":"lead","parentId":"lead","epoch":0,"status":"failed",
                 "autoWake":true,"cwd":project,"worktree":true,"worktreeReady":false,
                 "workspaceOperation":"provision","workspaceReservationId":operation,
                 "worktreePreparation":"preparing"}),
             json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"inside","rootId":"inside","epoch":0,"status":"idle","autoWake":true,
                 "cwd":destination.join("project")}),
         ];
-        let record = json!({"id":operation,"kind":"provision","agent":"child","epoch":0,
+        let record = json!({"id":operation,"kind":"provision","agent":"child-雪","epoch":0,
             "phase":"recovery_required","cwd":destination});
         store
             .transaction_with_error(move |tx| {
@@ -337,7 +337,7 @@ mod tests {
             })
             .await
             .expect("seed agents");
-        for (recipient, admitted) in [("lead", true), ("child", true), ("inside", false)] {
+        for (recipient, admitted) in [("lead", true), ("child-雪", true), ("inside", false)] {
             let prepared = store
                 .read_async("tests/message-admission", move |connection| {
                     PreparedAdmission::read(connection, recipient)
@@ -351,7 +351,17 @@ mod tests {
                 .read_async("tests/message-admission", move |tx| {
                     let agent =
                         AgentRepository::get(tx, &AgentId::from(recipient))?.expect("recipient");
-                    Ok::<_, CoordinationError>(prepared.workspace(tx, &agent).is_ok())
+                    let result = prepared.workspace(tx, &agent);
+                    if recipient == "inside" {
+                        assert!(
+                            result
+                                .as_ref()
+                                .expect_err("blocked")
+                                .to_string()
+                                .contains("child-雪")
+                        );
+                    }
+                    Ok::<_, CoordinationError>(result.is_ok())
                 })
                 .await
                 .expect("admission");

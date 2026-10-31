@@ -138,7 +138,6 @@ pub trait ManagedCreationEnvironment: Send + Sync {
         &self,
         store: &RuntimeStore,
         actor: &AgentRecord,
-        args: &Value,
         request_id: &str,
     ) -> Result<
         Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
@@ -178,15 +177,9 @@ const MAX_SPAWN_DIRECTORY_CHARS: usize = 4096;
 /// Python `codex_runtime.spawn_directory` for a host worker: `None` keeps the
 /// parent's folder; a relative path starts at the parent's folder; the
 /// resolved path must be an existing folder.
-fn spawn_directory(parent: &str, requested: Option<&Value>) -> Result<Option<String>, Error> {
-    let requested = match requested {
-        None | Some(Value::Null) => return Ok(None),
-        Some(Value::String(value)) => value,
-        Some(_) => {
-            return Err(
-                crate::managed_host_tools::Error::Invalid("cwd must be a folder path").into(),
-            );
-        }
+fn spawn_directory(parent: &str, requested: Option<&str>) -> Result<Option<String>, Error> {
+    let Some(requested) = requested else {
+        return Ok(None);
     };
     let trimmed = event_write::python_strip(requested);
     if trimmed.is_empty() || trimmed.chars().count() > MAX_SPAWN_DIRECTORY_CHARS {
@@ -276,7 +269,7 @@ pub(crate) struct ResolvedWorkerSettings {
 pub(crate) struct WorkerSettingsRequest<'a> {
     pub parent: &'a Value,
     pub root: &'a Value,
-    pub spec: &'a Value,
+    pub spec: &'a studio_runtime_schema::creation_intent::CreationIntent,
     pub profile: Option<&'a studio_runtime_store::ProfileRecord>,
     pub role: &'a str,
     pub requested_account_key: Option<&'a str>,
@@ -299,13 +292,14 @@ pub(crate) async fn resolve_worker_settings(
     } = request;
     let defaults = &root["workerDefaults"];
     let profile_model = profile.map(|profile| profile.model.as_str());
-    let review =
-        (role == "reviewer").then(|| crate::native_review::execution_settings(parent, root, spec));
+    let review = (role == "reviewer")
+        .then(|| crate::native_review::execution_settings(parent, root, &spec.model, &spec.effort));
     let requested_model = spec
-        .get("model")
-        .and_then(Value::as_str)
+        .model
+        .value()
+        .map(String::as_str)
         .or(profile_model)
-        .or_else(|| review.as_ref().and_then(|(model, _, _)| model.as_str()))
+        .or_else(|| review.as_ref().and_then(|(model, _, _)| model.as_deref()))
         .or_else(|| defaults.get("model").and_then(Value::as_str))
         .or_else(|| root.get("model").and_then(Value::as_str))
         .unwrap_or(crate::agents_create::DEFAULT_LEAD_MODEL);
@@ -370,7 +364,7 @@ pub(crate) async fn resolve_worker_settings(
         && root.get("model").is_none()
         && defaults.get("model").is_none()
         && profile_model.is_none()
-        && spec.get("model").is_none()
+        && spec.model.is_missing()
         && !adapter.owns_model(requested_model)
     {
         adapter.default_model()
@@ -378,29 +372,31 @@ pub(crate) async fn resolve_worker_settings(
         requested_model
     };
     let profile_effort = profile.and_then(|profile| profile.effort);
-    let mut effort = if spec.get("effort").is_some() {
-        spec.get("effort").and_then(Value::as_str)
+    let mut effort = if !spec.effort.is_missing() {
+        spec.effort.value().map(String::as_str)
     } else if let Some(effort) = profile_effort {
         Some(effort.as_str())
     } else if let Some((_, effort, _)) = &review {
-        effort.as_str()
+        effort.as_deref()
     } else {
         defaults.get("effort").and_then(Value::as_str)
     };
     let fast_mode = spec
-        .get("fast_mode")
-        .and_then(Value::as_bool)
+        .fast_mode
+        .value()
+        .copied()
         .or_else(|| review.as_ref().and_then(|(_, _, fast)| *fast))
         .or_else(|| defaults.get("fastMode").and_then(Value::as_bool))
         .unwrap_or(false);
     let daybreak = spec
-        .get("daybreak_enabled")
-        .and_then(Value::as_bool)
+        .daybreak_enabled
+        .value()
+        .copied()
         .or_else(|| defaults.get("daybreakEnabled").and_then(Value::as_bool))
         .unwrap_or(false);
     // An inherited effort unsupported by the selected model uses its native default.
     // A request or profile explicitly choosing an effort remains a validation error.
-    if spec.get("effort").is_none()
+    if spec.effort.is_missing()
         && profile_effort.is_none()
         && effort.is_some()
         && matches!(
@@ -442,7 +438,7 @@ struct Draft {
     id: String,
     prompt: String,
     task_id: Option<String>,
-    intent: Value,
+    intent: studio_runtime_schema::creation_intent::CreationIntent,
     worktree: bool,
     workspace: String,
     worker_base_main_ref: Option<String>,
@@ -508,56 +504,47 @@ pub(crate) async fn spawn_agents(
             studio_runtime_store::AgentIndexedReads::slots_by_account(read)
         })
         .await?;
-    for (index, spec) in specs.iter().enumerate() {
-        if !spec.is_object() {
-            return Err(crate::managed_host_tools::Error::Invalid(
-                "Every worker needs a name, task and valid role",
-            )
-            .into());
-        }
-        let profile = if let Some(profile_id) = spec.get("profile_id").filter(|value| {
-            !value.is_null() && value.as_str().is_none_or(|value| !value.is_empty())
-        }) {
-            let profile_id =
-                profile_id
-                    .as_str()
-                    .ok_or(crate::managed_host_tools::Error::Invalid(
-                        "Unknown worker profile",
-                    ))?;
-            let profile_id = profile_id.to_owned();
-            Some(
-                store
-                    .read_async("runtime-services/managed_child_create", move |read| {
-                        studio_runtime_store::Table::<studio_runtime_store::ProfileRecord>::new(
-                            read,
-                        )
-                        .get(&profile_id)
-                    })
-                    .await?
-                    .ok_or(crate::managed_host_tools::Error::Invalid(
-                        "Unknown worker profile",
-                    ))?,
-            )
-        } else {
-            None
-        };
+    for (index, raw_spec) in specs.iter().enumerate() {
+        let spec: studio_runtime_schema::creation_intent::CreationIntent =
+            serde_json::from_value(raw_spec.clone()).map_err(|_| {
+                crate::managed_host_tools::Error::Invalid("Invalid worker creation settings")
+            })?;
+        let profile =
+            if let Some(profile_id) = spec.profile_id.value().filter(|value| !value.is_empty()) {
+                let profile_id = profile_id.to_owned();
+                Some(
+                    store
+                        .read_async("runtime-services/managed_child_create", move |read| {
+                            studio_runtime_store::Table::<studio_runtime_store::ProfileRecord>::new(
+                                read,
+                            )
+                            .get(&profile_id)
+                        })
+                        .await?
+                        .ok_or(crate::managed_host_tools::Error::Invalid(
+                            "Unknown worker profile",
+                        ))?,
+                )
+            } else {
+                None
+            };
         let name = spec
-            .get("name")
-            .and_then(Value::as_str)
+            .name
+            .as_deref()
             .filter(|text| !text.trim().is_empty() && text.trim().chars().count() <= MAX_NAME_CHARS)
             .ok_or(crate::managed_host_tools::Error::Invalid(
                 "Every worker needs a name, task and valid role",
             ))?;
         let prompt = spec
-            .get("prompt")
-            .and_then(Value::as_str)
+            .prompt
+            .as_deref()
             .filter(|text| {
                 !text.trim().is_empty() && text.trim().chars().count() <= MAX_PROMPT_CHARS
             })
             .ok_or(crate::managed_host_tools::Error::Invalid(
                 "Every worker needs a name, task and valid role",
             ))?;
-        let role = spec.get("role").and_then(Value::as_str).unwrap_or_else(|| {
+        let role = spec.role.map(|role| role.as_str()).unwrap_or_else(|| {
             profile
                 .as_ref()
                 .map(|profile| match profile.role {
@@ -572,8 +559,8 @@ pub(crate) async fn spawn_agents(
             )
             .into());
         }
-        if let Some(task) = spec.get("task_id") {
-            let task = task.as_str().filter(|value| !value.is_empty()).ok_or(
+        if let Some(task) = spec.task_id.as_deref() {
+            let task = Some(task).filter(|value| !value.is_empty()).ok_or(
                 crate::managed_host_tools::Error::Invalid("task_id must be a task id"),
             )?;
             if actor_record.is_lead != Some(true) {
@@ -589,9 +576,8 @@ pub(crate) async fn spawn_agents(
                 .into());
             }
         }
-        let requested_base_ref = if let Some(base_ref) = spec.get("base_ref") {
-            let value = base_ref
-                .as_str()
+        let requested_base_ref = if let Some(base_ref) = spec.base_ref.as_deref() {
+            let value = Some(base_ref)
                 .filter(|value| !value.trim().is_empty() && value.chars().count() <= 1024)
                 .ok_or(crate::managed_host_tools::Error::Invalid(
                     "base_ref must be a branch, tag, or commit",
@@ -600,25 +586,15 @@ pub(crate) async fn spawn_agents(
         } else {
             None
         };
-        if let Some(base_ref) = requested_base_ref
-            && (base_ref.is_empty() || base_ref.chars().count() > 1024)
-        {
-            return Err(crate::managed_host_tools::Error::Invalid(
-                "base_ref must be a branch, tag, or commit",
-            )
-            .into());
-        }
-        if spec
-            .get("server")
-            .is_some_and(|value| event_write::truthy(Some(value)))
-        {
+        if spec.server.as_ref().is_some_and(|value| !value.is_empty()) {
             return Err(Error::Unavailable("multi-server/worker-call"));
         }
         let vm_actor = parent_value.get("executionMode").and_then(Value::as_str) == Some("vm");
         if vm_actor
-            && (spec.get("workspace").is_some_and(|value| value != "layr")
+            && (spec.workspace.is_some_and(|value| value.as_str() != "layr")
                 || spec
-                    .get("environment")
+                    .environment
+                    .as_deref()
                     .is_some_and(|value| value != "linux"))
         {
             return Err(crate::managed_host_tools::Error::Invalid(
@@ -633,10 +609,7 @@ pub(crate) async fn spawn_agents(
             .into());
         }
         let vm_directory = if vm_actor {
-            Some(vm_child_directory(
-                parent_cwd,
-                spec.get("cwd").and_then(Value::as_str),
-            )?)
+            Some(vm_child_directory(parent_cwd, spec.cwd.as_deref())?)
         } else {
             None
         };
@@ -645,19 +618,19 @@ pub(crate) async fn spawn_agents(
         let alternate_directory = if vm_actor {
             None
         } else {
-            spawn_directory(parent_cwd, spec.get("cwd"))?
+            spawn_directory(parent_cwd, spec.cwd.as_deref())?
                 .filter(|directory| directory.as_str() != parent_cwd)
         };
         let child_directory = alternate_directory.as_deref().unwrap_or(parent_cwd);
-        if role == "reviewer" && spec.get("workspace").is_some() {
+        if role == "reviewer" && spec.workspace.is_some() {
             return Err(crate::managed_host_tools::Error::Invalid(
                 "workspace applies to implementers; reviewers use the shared folder with read-only access",
             )
             .into());
         }
         let workspace = spec
-            .get("workspace")
-            .and_then(Value::as_str)
+            .workspace
+            .map(|mode| mode.as_str())
             .unwrap_or_else(|| default_workspace(role, vm_actor, &parent_value));
         validate_vm_parent_workspace(workspace, vm_actor)?;
         if workspace == "layr-native" && !crate::layr_native::is_native(&parent_value) {
@@ -681,7 +654,7 @@ pub(crate) async fn spawn_agents(
         let in_git = !vm_actor
             && role == "implementer"
             && crate::host_worker_create::inside_git_work_tree(Path::new(child_directory));
-        let explicit_workspace = spec.get("workspace").and_then(Value::as_str);
+        let explicit_workspace = spec.workspace.map(|mode| mode.as_str());
         if !vm_actor && explicit_workspace == Some("worktree") && !in_git {
             return Err(crate::managed_host_tools::Error::Invalid(
                 "workspace \"worktree\" requires a Git repository",
@@ -694,7 +667,7 @@ pub(crate) async fn spawn_agents(
             )
             .into());
         }
-        if workspace == "shared" && spec.get("base_ref").is_some() {
+        if workspace == "shared" && spec.base_ref.is_some() {
             return Err(crate::managed_host_tools::Error::Invalid(
                 "base_ref cannot be used with workspace \"shared\"",
             )
@@ -710,16 +683,16 @@ pub(crate) async fn spawn_agents(
         .then_some(NO_GIT_WORKTREE_NOTE);
         let worktree = worktree && in_git;
         let id = child_id(request_id, index);
-        let requested_account_key = spec.get("account_key").and_then(Value::as_str);
+        let requested_account_key = spec.account_key.as_deref();
         let workspace_admission =
-            environment.prepare_workspace(store, &actor_record, spec, request_id)?;
+            environment.prepare_workspace(store, &actor_record, request_id)?;
         let resolved = resolve_worker_settings(
             store,
             environment,
             WorkerSettingsRequest {
                 parent: &parent_value,
                 root: &root_value,
-                spec,
+                spec: &spec,
                 profile: profile.as_ref(),
                 role,
                 requested_account_key,
@@ -770,7 +743,7 @@ pub(crate) async fn spawn_agents(
             in_git
         };
         let body = json!({"account_key":account_key,"name":name,"model":model,"effort":effort,
-            "prompt":prompt,"workspace_explicit":spec.get("workspace").is_some(),
+            "prompt":prompt,"workspace_explicit":spec.workspace.is_some(),
             "_workspaceInGit":workspace_in_git});
         let draft = crate::host_worker_create::prepare_work_item(
             &body,
@@ -806,8 +779,8 @@ pub(crate) async fn spawn_agents(
             crate::agents_create::set_vm_workspace_fields(&mut record, host_cwd);
             record["cwd"] = json!(child_cwd);
             record["layrSubpath"] = json!(subpath);
-            if let Some(base_state) = spec.get("base_ref") {
-                record["layrBaseState"] = base_state.clone();
+            if let Some(base_state) = &spec.base_ref {
+                record["layrBaseState"] = json!(base_state);
             }
         }
         if let Some(note) = workspace_note {
@@ -825,7 +798,7 @@ pub(crate) async fn spawn_agents(
         record["workerBaseBehindMain"] = json!(behind_main);
         // Python's AgentFactory persists these keys on every row (including
         // rows without a selected profile): codex_runtime.py:5014-5015.
-        record["profileId"] = spec.get("profile_id").cloned().unwrap_or(Value::Null);
+        record["profileId"] = json!(spec.profile_id.value());
         record["profileInstructions"] = json!("");
         if let Some(profile) = &profile {
             record["profileInstructions"] = json!(profile.instructions);
@@ -841,10 +814,7 @@ pub(crate) async fn spawn_agents(
             record,
             id,
             prompt: prompt.trim().to_owned(),
-            task_id: spec
-                .get("task_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            task_id: spec.task_id.clone(),
             intent: spec.clone(),
             worktree,
             workspace: if vm_workspace { "layr" } else { workspace }.to_owned(),
@@ -891,7 +861,7 @@ pub(crate) async fn spawn_agents(
                 children.push(project_child(&saved.value(), draft.task_id.as_deref(), draft.worktree));
                 continue;
             }
-            crate::child_permissions::inherit_claude_permissions(&mut draft.record, &current_parent, &current_root.value(), &draft.intent).map_err(crate::managed_host_tools::Error::Invalid)?;
+            crate::child_permissions::inherit_claude_permissions(&mut draft.record, &current_parent, &current_root.value(), draft.intent.permission_mode).map_err(crate::managed_host_tools::Error::Invalid)?;
             let mut text = draft.prompt.clone();
             if draft.worktree {
                 text.push_str(&format!("\n\n[Studio worker base] Commit {} from ref {}.", draft.record["workerBaseCommit"].as_str().unwrap_or_default(), draft.record["workerBaseRef"].as_str().unwrap_or("HEAD")));
@@ -1447,7 +1417,7 @@ pub(crate) async fn request_review(
         directory.clone(),
     )
     .map_err(|_| crate::managed_host_tools::Error::Invalid("Invalid native review request"))?;
-    let child_id = plan.spec().get("id").and_then(Value::as_str).ok_or(
+    let child_id = plan.spec().id.value().map(String::as_str).ok_or(
         crate::managed_host_tools::Error::Invalid("Invalid native review request"),
     )?;
     let saved_id = child_id.to_owned();
@@ -1469,9 +1439,13 @@ pub(crate) async fn request_review(
         .and_then(Value::as_str)
         .unwrap_or("default");
     let spec = plan.spec();
-    let model = spec.get("model").and_then(Value::as_str).ok_or(
-        crate::managed_host_tools::Error::Invalid("Invalid native review model"),
-    )?;
+    let model =
+        spec.model
+            .value()
+            .map(String::as_str)
+            .ok_or(crate::managed_host_tools::Error::Invalid(
+                "Invalid native review model",
+            ))?;
     let (account_key, account) =
         environment.select_worker_account(crate::provider_callbacks::WorkerAccountRequest {
             parent_account_key: account_key,
@@ -1485,17 +1459,9 @@ pub(crate) async fn request_review(
         })?;
     // Review is read-only in the parent's managed workspace. Its requested
     // repository is validated separately and may differ from the actor's cwd.
-    let workspace_admission = environment.prepare_workspace(
-        store,
-        &actor_record,
-        &json!({"workspace":"shared"}),
-        request_id,
-    )?;
-    let effort = spec.get("effort").and_then(Value::as_str);
-    let fast_mode = spec
-        .get("fast_mode")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let workspace_admission = environment.prepare_workspace(store, &actor_record, request_id)?;
+    let effort = spec.effort.value().map(String::as_str);
+    let fast_mode = spec.fast_mode.value().copied().unwrap_or(false);
     let (base_ref, base_commit, _, _) =
         crate::host_worker_create::resolve_worker_base(Path::new(&directory), None)
             .map_err(map_create_error)?;
@@ -1509,7 +1475,7 @@ pub(crate) async fn request_review(
     )
     .await?;
     let body = json!({"account_key":account_key,"name":"Review","model":model,
-            "effort":effort,"prompt":spec.get("prompt").and_then(Value::as_str).unwrap_or(""),
+            "effort":effort,"prompt":spec.prompt.as_deref().unwrap_or(""),
             "_workspaceInGit":parent_value.get("workspaceInGit").and_then(Value::as_bool).unwrap_or(false),
     });
     let prepared = crate::host_worker_create::prepare_work_item(
@@ -1613,10 +1579,10 @@ impl crate::native_review::ReviewCreator for ReviewCreator<'_> {
         &self,
         tx: &Transaction<'_>,
         actor: &Value,
-        spec: &Value,
+        spec: &studio_runtime_schema::creation_intent::CreationIntent,
     ) -> crate::native_actions::Result<Value> {
         if actor.get("id") != Some(&Value::String(self.actor.id.0.clone()))
-            || spec.get("id") != Some(&Value::String(self.draft.typed.id.0.clone()))
+            || spec.id.value() != Some(&self.draft.typed.id.0)
         {
             return Err(crate::native_actions::NativeError::Changed);
         }

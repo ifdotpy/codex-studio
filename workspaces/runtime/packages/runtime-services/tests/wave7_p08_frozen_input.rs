@@ -25,6 +25,10 @@ async fn seeded(path: &Path, case: &Value) -> RuntimeStore {
     let store = RuntimeStore::open(Some(path))
         .await
         .expect("fresh current store");
+    seed(store, case).await
+}
+
+async fn seed(store: RuntimeStore, case: &Value) -> RuntimeStore {
     let agent = studio_runtime_store::AgentRecord::from_value(case["agent"].clone())
         .expect("fixture agent");
     let attempt = case["attempt"].to_string();
@@ -349,6 +353,9 @@ async fn retry_attempt_owner_preserves_nullable_identity_and_frozen_receipt() {
 async fn retry_metadata_admission_and_frozen_assets_keep_legacy_evidence() {
     use studio_runtime_store::ClaudeRetryRepository;
     let root = tempfile::tempdir().expect("scratch");
+    let template = studio_runtime_store::TestStoreTemplate::new()
+        .await
+        .expect("template");
     let case = fixtures()
         .into_iter()
         .find(|case| case["retry"] != true)
@@ -371,7 +378,14 @@ async fn retry_metadata_admission_and_frozen_assets_keep_legacy_evidence() {
         ),
         ("malformed", Some("{"), None),
     ] {
-        let store = seeded(&root.path().join(name), &case).await;
+        let store = seed(
+            template
+                .open(&root.path().join(name))
+                .await
+                .expect("fixture"),
+            &case,
+        )
+        .await;
         let raw = raw.map(str::to_owned);
         let expected_for_read = expected.clone();
         store
@@ -427,7 +441,14 @@ async fn retry_metadata_admission_and_frozen_assets_keep_legacy_evidence() {
         ("missing-first", json!(["absent", "one"]), true),
         ("invalid-first", json!(["one", "absent"]), false),
     ] {
-        let store = seeded(&root.path().join(name), &case).await;
+        let store = seed(
+            template
+                .open(&root.path().join(name))
+                .await
+                .expect("fixture"),
+            &case,
+        )
+        .await;
         let mut attempt = case["attempt"].clone();
         attempt["events"] = ids;
         store.transaction(move |tx| {

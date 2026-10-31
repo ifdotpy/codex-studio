@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use studio_runtime_schema::queue_command::QueueCommand;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, QueueWriteRepository,
-    SchedulerRepository, StoreError, SyncDocumentsRepository, Transaction, WorkItemsRepository,
+    SchedulerRepository, StoreError, Transaction, WorkItemsRepository,
 };
 use thiserror::Error;
 
@@ -57,12 +57,6 @@ pub enum QueueWriteError {
     InvalidRequest(&'static str),
     #[error("{0}")]
     Conflict(&'static str),
-    /// A running turn holds the message. The caller interrupts that turn and
-    /// the user withdraws the message again when the turn has ended.
-    #[error(
-        "A running turn holds this message. It is being interrupted; withdraw it again when the turn ends"
-    )]
-    HeldByTurn,
     #[error("invalid stored object {object}/{id}")]
     InvalidStoredObject { object: &'static str, id: String },
     #[error("Not implemented: requires cross-server/remote-events")]
@@ -486,7 +480,6 @@ pub fn publish_queue(
                 QueueWriteError::Json(error) => StoreError::Json(error),
                 QueueWriteError::InvalidRequest(_)
                 | QueueWriteError::Conflict(_)
-                | QueueWriteError::HeldByTurn
                 | QueueWriteError::InvalidStoredObject { .. }
                 | QueueWriteError::RemoteEventsUnavailable => StoreError::InvalidSyncObject {
                     scope: "queue".into(),

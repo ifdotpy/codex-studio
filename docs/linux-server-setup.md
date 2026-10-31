@@ -30,6 +30,7 @@ Only `just deliver-server` changes this host's live Linux server release.
 It builds a commit snapshot, selects it through `current`, restarts the backend,
 checks health, and stops an unhealthy release for operator recovery. The new
 process may have migrated the store, so delivery does not restart an older binary.
+The delivery drop-in sets `MALLOC_ARENA_MAX=2` to limit glibc allocation arenas.
 Startup can take up to 30 minutes while the same process remains active without
 restarting; inspect the delivery journal and store before choosing recovery. Keep the state directory
 identity and never start a second backend against it. Do not interrupt active
