@@ -414,21 +414,45 @@ pub(crate) fn ensure_project(
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or(path);
-    let project = json!({
-        "id":path,
-        "path":path,
-        "name":name,
-        "created":crate::event_write::unix_time().map_err(|error| StoreError::SchemaMismatch(error.to_string()))?,
-        "accountKey":account,
-        "accountRevision":1,
-        "homeServerId":server,
-        "locations":[{"serverId":server,"path":path,"projectId":path}],
-        "locationsRevision":0,
-        "peerTeams":[]
-    });
-    let live: studio_runtime_schema::project_record::ProjectLive =
-        serde_json::from_str(&project.to_string()).map_err(StoreError::from)?;
-    let stored = studio_runtime_schema::project_record::ProjectRecord::Live(Box::new(live));
+    let created = crate::event_write::unix_time()
+        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+    let project = studio_runtime_schema::project_record::ProjectLive {
+        id: path.to_owned(),
+        path: path.to_owned(),
+        name: Some(name.to_owned()),
+        created: serde_json::Number::from_f64(created),
+        account_key: Some(account.to_owned()),
+        account_revision: Some(1),
+        home_server_id: Some(server.to_owned()),
+        locations: vec![studio_runtime_schema::project_record::ProjectLocation {
+            server_id: server.to_owned(),
+            path: path.to_owned(),
+            project_id: path.to_owned(),
+            git_origin: None,
+            requested_path: None,
+        }],
+        locations_revision: Some(0),
+        peer_teams: vec![],
+        account_groups: vec![],
+        account_keys: vec![],
+        project_aliases: vec![],
+        account_groups_revision: None,
+        updated: None,
+        sidebar_hidden: None,
+        peer_teams_revision: None,
+        organization_revision: None,
+        folders: vec![],
+        worker_base_ref: None,
+        worker_base_revision: None,
+        worker_environment: None,
+        worker_environment_revision: None,
+        workspace_policy: None,
+        workspace_policy_revision: None,
+        location_intents: Default::default(),
+        registration: None,
+    };
+    let stored =
+        studio_runtime_schema::project_record::ProjectRecord::Live(Box::new(project.clone()));
     transaction
         .execute(
             "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
