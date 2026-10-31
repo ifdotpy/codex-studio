@@ -693,18 +693,6 @@ pub fn assert_delegation(agent: &AgentRecord) -> Result<(), EventWriteError> {
 
 pub fn recovery_pending(agent: &AgentRecord) -> bool {
     let extra = &agent.extra;
-<<<<<<< head
-    let matches = |recovery: &Value| {
-        recovery.get("epoch").and_then(Value::as_i64) == Some(agent.epoch)
-            && recovery.get("accountKey").and_then(Value::as_str)
-                == Some(agent.account_key.as_str())
-            && recovery.get("threadId").and_then(Value::as_str) == agent.thread_id.as_deref()
-||||||| base
-    let matches = |recovery: &Value| {
-        recovery.get("epoch").and_then(Value::as_i64) == Some(agent.epoch)
-            && recovery.get("accountKey").and_then(Value::as_str) == Some(agent.account_key.as_str())
-            && recovery.get("threadId").and_then(Value::as_str) == agent.thread_id.as_deref()
-=======
     let matches = |recovery: &studio_runtime_schema::recovery_record::RecoveryFields| {
         recovery
             .epoch
@@ -713,7 +701,6 @@ pub fn recovery_pending(agent: &AgentRecord) -> bool {
             == Some(agent.epoch)
             && recovery.account_key.as_deref() == Some(agent.account_key.as_str())
             && recovery.thread_id.as_deref() == agent.thread_id.as_deref()
->>>>>>> origin/main
     };
     let root = agent.restart_recovery.as_deref().is_some_and(|recovery| {
         recovery.stage.as_deref() == Some("pending")

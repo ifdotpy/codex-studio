@@ -214,9 +214,13 @@ impl Corpus {
 }
 fn rows(store: &RuntimeStore, table: &str) -> Vec<Value> {
     let db = store.test_reader().expect("fixture operation");
-    let mut stmt = db
-        .prepare(&format!("SELECT record FROM {table} ORDER BY rowid"))
-        .expect("fixture operation");
+    // Federation messages are rows of the shared outbox.
+    let sql = if table == "runtime_federation_outbox" {
+        "SELECT json_extract(payload,'$.record') FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='federation_message' ORDER BY rowid".to_owned()
+    } else {
+        format!("SELECT record FROM {table} ORDER BY rowid")
+    };
+    let mut stmt = db.prepare(&sql).expect("fixture operation");
     stmt.query_map([], |r| r.get::<_, String>(0))
         .expect("fixture operation")
         .map(|r| serde_json::from_str(&r.expect("fixture operation")).expect("fixture operation"))
@@ -232,7 +236,12 @@ fn counts(store: &RuntimeStore) -> Value {
         "runtime_events",
     ];
     json!(tables.map(|t| {
-        db.query_row(&format!("SELECT count(*) FROM {t}"), [], |r| {
+        let sql = if t == "runtime_federation_outbox" {
+            "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='federation_message'".to_owned()
+        } else {
+            format!("SELECT count(*) FROM {t}")
+        };
+        db.query_row(&sql, [], |r| {
             r.get::<_, i64>(0)
         })
         .expect("fixture operation")
@@ -1608,7 +1617,10 @@ async fn oversized_batches() {
         let peer_id = corpus.peer().to_owned();
         store.transaction(move |tx| {
             match table {
-                Table::Outbox => tx.execute("INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES('large',?1,?2)",params![peer_id,raw])?,
+                Table::Outbox => {
+                    studio_runtime_store::remote_outbox::RemoteOutbox::put(tx,studio_runtime_store::remote_outbox::RemoteEffect::FederationMessage,&peer_id,"large","signature",studio_runtime_schema::persistence::OutboxStatus::Pending,Some(0),serde_json::from_str::<Value>(&raw).expect("record"),0)?;
+                    0
+                }
                 Table::Inbox => tx.execute("INSERT INTO runtime_federation_inbox(peer_id,message_id,record) VALUES(?1,'large',?2)",params![peer_id,raw])?,
                 Table::Settings | Table::Peer | Table::Room => unreachable!(),
             };

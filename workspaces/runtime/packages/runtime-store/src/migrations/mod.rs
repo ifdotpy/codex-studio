@@ -39,10 +39,7 @@ mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
-<<<<<<< head
 mod m2026_10_30_one_outbox;
-||||||| base
-=======
 mod m2026_10_30_branch_phase;
 mod m2026_10_30_capture_errors;
 mod m2026_10_30_complaint_record;
@@ -54,7 +51,6 @@ mod m2026_10_30_project_teams;
 mod m2026_10_30_radio_room;
 mod m2026_10_30_request_record;
 mod m2026_10_30_retire_graph_agents;
->>>>>>> origin/main
 mod m2026_10_30_rule_monitor_records;
 mod m2026_10_30_start_wait;
 mod m2026_10_30_task_records;
