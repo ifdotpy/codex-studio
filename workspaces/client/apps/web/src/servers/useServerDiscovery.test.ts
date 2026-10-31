@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   read: undefined as undefined | ((version?: ResourceVersion) => Promise<void>),
   access: vi.fn(),
   snapshots: [] as unknown[],
+  setLocalServerDetails: vi.fn(),
 }));
 vi.mock("react", () => ({
   useEffect: (effect: () => void | (() => void)) => mocks.effects.push(effect),
@@ -37,6 +38,7 @@ vi.mock("./automaticUiAccess", () => ({
 vi.mock("./registry", () => ({
   readServers: () => [],
   writeServers: () => {},
+  setLocalServerDetails: mocks.setLocalServerDetails,
   LOCAL_NAME_KEY: "local-name",
   SERVER_REGISTRY_EVENT: "registry-changed",
   serveOrigin: (origin: string) => origin,
@@ -60,6 +62,7 @@ afterEach(() => {
   mocks.effects.length = 0;
   mocks.snapshots.length = 0;
   mocks.access.mockReset();
+  mocks.setLocalServerDetails.mockReset();
   mocks.read = undefined;
   vi.unstubAllGlobals();
 });
@@ -67,7 +70,8 @@ afterEach(() => {
 it("uses stream snapshots without a fallback HTTP read", async () => {
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("location", { origin: "http://owner.invalid" });
-  vi.stubGlobal("localStorage", { getItem: () => null, setItem: vi.fn() });
+  const setItem = vi.fn();
+  vi.stubGlobal("localStorage", { getItem: () => null, setItem });
   useServerDiscovery(true, vi.fn());
   cleanups = mocks.effects.flatMap((effect) => {
     const cleanup = effect();
@@ -85,7 +89,7 @@ it("uses stream snapshots without a fallback HTTP read", async () => {
     clients: [],
     servers: [],
     invites: [],
-    settings: { autoPair: true },
+    settings: { autoPair: true, aliases: { local: "OWN" } },
   };
   mocks.access.mockResolvedValue(snapshot);
   await mocks.read?.({
@@ -97,6 +101,11 @@ it("uses stream snapshots without a fallback HTTP read", async () => {
   expect(mocks.snapshots).toContainEqual(
     expect.objectContaining({ localServerId: "owner" }),
   );
+  expect(mocks.setLocalServerDetails).toHaveBeenCalledWith({
+    label: "Owner",
+    alias: "OWN",
+  });
+  expect(setItem).not.toHaveBeenCalled();
   await mocks.read?.();
   expect(mocks.access).not.toHaveBeenCalled();
   const newer = {

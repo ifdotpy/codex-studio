@@ -4,14 +4,6 @@
     "callee": "localStorage.getItem"
   },
   {
-    "file": "App.tsx",
-    "callee": "globalThis.localStorage"
-  },
-  {
-    "file": "App.tsx",
-    "callee": "globalThis.localStorage"
-  },
-  {
     "file": "api.test.ts",
     "callee": "syncGet"
   },
@@ -418,18 +410,6 @@
   {
     "file": "servers/useServerDiscovery.ts",
     "callee": "serverCredentialAdapter().fetch"
-  },
-  {
-    "file": "servers/useServerDiscovery.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useServerDiscovery.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useServerDiscovery.ts",
-    "callee": "localStorage.getItem"
   },
   {
     "file": "servers/useUiPreferenceSync.test.ts",

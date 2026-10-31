@@ -23,12 +23,9 @@ import {
 } from "./automaticAccessStore";
 import {
   readServers,
-  writeServers,
-  LOCAL_NAME_KEY,
-  SERVER_REGISTRY_EVENT,
+  setLocalServerDetails,
   type StudioServer,
 } from "./registry";
-import { LOCAL_ALIAS_KEY } from "./serverAliases";
 import { serverCredentialAdapter } from "./transport";
 import { refreshServerName } from "./serverNames";
 export const DISCOVERY_REFRESH_EVENT = "studio-server-discovery-refresh";
@@ -171,31 +168,16 @@ export function useServerDiscovery(
   const apply = async (state: Parameters<typeof discoverySnapshot>[0]) => {
     const next = discoverySnapshot(state);
     if (!active.current && !localAvailable) return;
-    if (
-      next?.localLabel &&
-      localStorage.getItem(LOCAL_NAME_KEY) !== next.localLabel
-    ) {
-      localStorage.setItem(LOCAL_NAME_KEY, next.localLabel);
-      window.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
-    }
-    if (next?.aliases) {
-      const aliases =
-        effectiveDiscoveryAliases(
-          next.aliases,
-          Object.fromEntries(
-            ["local", ...readServers().map((server) => server.id)].map((id) => [
-              id,
-              workspaceIds[id],
-            ]),
-          ),
-          readPreferenceFields("user"),
-        ) ?? next.aliases;
-      if (aliases.local) localStorage.setItem(LOCAL_ALIAS_KEY, aliases.local);
-      const paired = readServers().map((server) =>
-        aliases[server.id] ? { ...server, alias: aliases[server.id] } : server,
-      );
-      writeServers(paired);
-    }
+    const alias = effectiveDiscoveryAliases(
+      next?.aliases,
+      workspaceIds,
+      readPreferenceFields("user"),
+    )?.local;
+    if (next?.localLabel || alias)
+      setLocalServerDetails({
+        ...(next?.localLabel ? { label: next.localLabel } : {}),
+        ...(alias ? { alias } : {}),
+      });
     setSnapshot(next);
     setCheckedAt(Date.now() / 1000);
     setExcluded(excludedServers());

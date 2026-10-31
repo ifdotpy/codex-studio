@@ -61,12 +61,7 @@ import { useServerFrame } from "./servers/frameBridge";
 import { serverParentOrigin } from "./servers/environment";
 import type { ServerCommand } from "./servers/navigation";
 import ServerAccountsPanel from "./servers/ServerAccountsPanel";
-import {
-  localServer,
-  viewServer,
-  readServerAliases,
-  SERVER_REGISTRY_EVENT,
-} from "./servers/registry";
+import { localServer, viewServer, readServerAliases } from "./servers/registry";
 import {
   useServerAliases,
   DEFAULT_LOCAL_SERVER_ALIAS,
@@ -684,13 +679,6 @@ export default function App({ active = true }: { active?: boolean }) {
   const narrowTeam =
     !(teamHasSidebar ? teamFitsWithSidebar : teamFitsWithoutSidebar) ||
     !rowLayout.teamCanInline;
-  useEffect(() => {
-    if (!workspaceId) return;
-    const key = `studio-server-workspace-id:${serverViewId || "local"}`;
-    if (globalThis.localStorage.getItem(key) === workspaceId) return;
-    globalThis.localStorage.setItem(key, workspaceId);
-    window.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
-  }, [workspaceId, serverViewId]);
   const dataRef = useRef(data);
   dataRef.current = data;
   const [pendingConversationDelete, setPendingConversationDelete] =
