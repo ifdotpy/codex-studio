@@ -23,8 +23,10 @@ export const commitScopes = [
   "native",
   "web",
   "desktop",
+  "providers",
   "tooling",
   "vm",
+  "layr",
   "release",
   "deps",
 ] as const;

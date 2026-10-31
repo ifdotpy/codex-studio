@@ -91,7 +91,8 @@ and selection owner.
 Commit subjects and pull request titles follow Conventional Commits:
 `type(scope): summary` or `type: summary`. Types: `feat`, `fix`, `perf`, `revert`,
 `docs`, `test`, `refactor`, `build`, `ci`, `chore`, `style`. Optional scopes:
-`runtime`, `client`, `native`, `web`, `desktop`, `tooling`, `vm`, `release`, `deps`.
+`runtime`, `client`, `native`, `web`, `desktop`, `providers`, `tooling`, `vm`, `layr`,
+`release`, `deps`.
 Pull requests merge by squash, so the title becomes the commit on main.
 [`conventional-commit.ts`](workspaces/tooling/apps/repository-checks/conventional-commit.ts)
 owns the rule; the `pr-title` workflow and the `commit-msg` hook run it.

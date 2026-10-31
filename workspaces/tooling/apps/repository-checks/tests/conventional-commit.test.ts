@@ -8,6 +8,8 @@ test("accepts Conventional Commit subjects", () => {
     "feat: Add the release gate",
     "fix(runtime): Keep the request identity",
     "feat(client)!: Drop the old sync path",
+    "fix(providers): Keep the steer",
+    "build(layr): Warm the line",
     "Merge pull request #1 from ifdotpy/x",
     'Revert "feat: Add x"',
   ]) {
