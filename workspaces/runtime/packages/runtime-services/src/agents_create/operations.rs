@@ -3768,7 +3768,7 @@ mod tests {
             id: Some("child".to_owned()), parent: Some("root".to_owned()),
             profile: Some("profile".to_owned()), prompt: "Review".to_owned(),
             workspace: Some("shared".to_owned()),
-            intent: json!({"id":"child","parent":"root","profile_id":"profile","prompt":"Review","workspace_mode":"shared"}),
+            intent: json!({"id":"child","parent":"root","profile_id":"profile","prompt":"Review","workspaceMode":"shared"}),
             ..Creation::default()
         }).await.expect("child creation");
         assert_eq!(result["accountKey"], "claude-local");
@@ -3807,7 +3807,7 @@ mod tests {
             }
         };
         let request = |id: &str, role: &str, extra: Value| {
-            let mut intent = json!({"id":id,"parent":"root","role":role,"prompt":"Task","workspace_mode":"shared"});
+            let mut intent = json!({"id":id,"parent":"root","role":role,"prompt":"Task","workspaceMode":"shared"});
             intent
                 .as_object_mut()
                 .expect("object")
@@ -4966,13 +4966,9 @@ mod tests {
             validate: std::sync::Arc::new(|_, _| true),
         };
         let child = |id: &str, workspace: Option<&str>| {
-            let mut intent =
-                json!({"id":id,"parent":"root","prompt":"Task","workspace_mode":"worktree"});
-            if workspace.is_none() {
-                intent
-                    .as_object_mut()
-                    .expect("object")
-                    .remove("workspace_mode");
+            let mut intent = json!({"id":id,"parent":"root","prompt":"Task"});
+            if let Some(workspace) = workspace {
+                intent["workspaceMode"] = json!(workspace);
             }
             Creation {
                 id: Some(id.to_owned()),
