@@ -14,8 +14,8 @@ pub(super) type Accounts = BTreeMap<String, ProviderKind>;
 type Patches = Vec<(String, ProviderKind)>;
 
 /// Existing analytics metadata key proving provider identity migration completed; format tag.
-const ANALYTICS_PROVIDER_FORMAT_KEY: &str = "providerIdentityFormat";
-const PROVIDER_IDENTITY_FORMAT: &str = "2026-10-26";
+pub(crate) const ANALYTICS_PROVIDER_FORMAT_KEY: &str = "providerIdentityFormat";
+pub(crate) const PROVIDER_IDENTITY_FORMAT: &str = "2026-10-26";
 /// The only historical registry version accepted by the dated migration.
 const LEGACY_REGISTRY_FORMAT_VERSION: u32 = 1;
 
@@ -332,23 +332,20 @@ pub(crate) fn validate_2026_10_26(root: &Path, accounts: &Accounts) -> StoreResu
     use studio_runtime_schema::studio_errors::{
         MigrationPhase, MigrationRollbackOutcome, MigrationTarget,
     };
-    for (database, tables, target) in [
+    for (database, tables, target, id) in [
         (
             "canvas.sqlite3",
             CANVAS_TABLES.as_slice(),
             MigrationTarget::Canvas,
+            super::CANVAS_PROVIDER_ID,
         ),
         (
             "analytics.sqlite3",
             &["analytics_agents"][..],
             MigrationTarget::Analytics,
+            super::ANALYTICS_PROVIDER_ID,
         ),
     ] {
-        let definition = super::catalog()
-            .find(|entry| entry.target == target)
-            .ok_or(StoreError::RecordContract(
-                "provider target missing from migration catalog",
-            ))?;
         let result = (|| -> StoreResult<()> {
             let db =
                 Connection::open_with_flags(root.join(database), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -371,7 +368,7 @@ pub(crate) fn validate_2026_10_26(root: &Path, accounts: &Accounts) -> StoreResu
         })();
         result.map_err(|source| {
             super::failure(
-                definition.id,
+                id,
                 target,
                 MigrationPhase::Validate,
                 MigrationRollbackOutcome::NotRequired,
@@ -440,34 +437,6 @@ pub fn migrate_canvas_2026_10_26(tx: &Transaction<'_>, accounts: &Accounts) -> S
     Ok(())
 }
 
-pub(crate) fn migrate_analytics_2026_10_26(
-    tx: &Transaction<'_>,
-    accounts: &Accounts,
-) -> StoreResult<()> {
-    if !analytics_needs_migration(tx)? {
-        return Ok(());
-    }
-    let agents = table_updates(tx, "analytics_agents", accounts)?;
-    let usage = legacy_orphan_usage_updates(tx)?;
-    for (id, raw) in agents {
-        tx.execute(
-            "UPDATE analytics_agents SET record=?1 WHERE rowid=?2",
-            rusqlite::params![raw, id],
-        )?;
-    }
-    for (id, raw) in usage {
-        tx.execute(
-            "UPDATE analytics_usage SET record=?1 WHERE rowid=?2",
-            rusqlite::params![raw, id],
-        )?;
-    }
-    tx.execute(
-        "INSERT INTO analytics_meta(key,value) VALUES(?1,?2)",
-        [ANALYTICS_PROVIDER_FORMAT_KEY, PROVIDER_IDENTITY_FORMAT],
-    )?;
-    Ok(())
-}
-
 fn analytics_needs_migration(db: &Connection) -> StoreResult<bool> {
     let format: Option<String> = db
         .query_row(
@@ -487,14 +456,6 @@ fn analytics_needs_migration(db: &Connection) -> StoreResult<bool> {
 mod tests {
     use crate::{RuntimeStore, StoreError};
     use serde_json::{Value, json};
-
-    fn registry(root: &std::path::Path) {
-        std::fs::create_dir_all(root.join("accounts")).expect("accounts directory");
-        std::fs::write(root.join("accounts/registry.json"), json!({
-            "version":1,"defaultAccountKey":"claude-account","logins":{},
-            "accounts":{"claude-account":{"id":"claude-account","provider":"claude","home":"/fixture","label":"Fixture","source":"fixture","status":"ready"}}
-        }).to_string()).expect("registry");
-    }
 
     fn legacy_table(tx: &crate::Transaction<'_>) -> Result<(), StoreError> {
         let triggers = tx
@@ -581,136 +542,6 @@ mod tests {
                 "{id}"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn migration_2026_10_26_runs_through_store_open_and_reopen() {
-        let root = tempfile::tempdir().expect("state directory");
-        let store = RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("fresh state");
-        registry(root.path());
-        store.transaction(|tx| {
-            legacy_table(tx)?;
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('legacy',?1)",
-                [json!({"compactions":0,"id":"legacy","rootId":"legacy","epoch":7,"status":"idle","accountKey":"claude-account",
-                    "accountHistory":[{"accountKey":"claude-account","provider":null,"threadId":"thread-exact"},{"accountKey":"retired"}],
-                    "lazyAccountTransfer":{"id":"transfer-exact","sourceStateExact":true,"sourceState":{"model":"m"}},
-                    "receipt":{"id":"request-exact","outcome":"unknown"}}).to_string()])?;
-            tx.execute("INSERT INTO runtime_account_transfers(id,record) VALUES('transfer-exact',?1)",
-                [r#"{"id":"transfer-exact","targetAccountKey":"claude-account","members":{"z":{"provider":null,"settings":{},"providerReceipts":[{"operation":"operation-exact","certainty":"unknown","ticket":{"id":7}}]},"a":{"provider":"claude"}}}"#])?;
-            tx.execute("INSERT INTO runtime_analytics_projection(record) VALUES(?1)", [json!({"Analytics":{"observation":{"agent":{"id":"projection-agent","provider":null},"delivery":{"request":"exact"}}}}).to_string()])?;
-            Ok::<_,StoreError>(())
-        }).await.expect("legacy fixture");
-        store.analytics_transaction(|tx,_| {
-            tx.execute("DELETE FROM analytics_meta WHERE key=?1",[super::ANALYTICS_PROVIDER_FORMAT_KEY])?;
-            tx.execute("INSERT INTO analytics_agents(id,record) VALUES('analytic',?1)",
-                [json!({"id":"analytic","provider":null,"accountHistory":[{"accountKey":"claude-account"}]}).to_string()])?;
-            Ok::<_,StoreError>(())
-        }).await.expect("legacy analytics");
-        let generation: i64 = store
-            .test_reader()
-            .expect("reader")
-            .query_row(
-                "SELECT value FROM runtime_agent_record_generation WHERE id=1",
-                [],
-                |row| row.get(0),
-            )
-            .expect("generation");
-        drop(store);
-        let store = RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("migrated state");
-        let raw: String = store
-            .test_reader()
-            .expect("reader")
-            .query_row(
-                "SELECT record FROM runtime_agents WHERE id='legacy'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("agent");
-        let value: Value = serde_json::from_str(&raw).expect("agent JSON");
-        assert_eq!(value["provider"], "codex");
-        assert_eq!(value["accountHistory"][0]["provider"], "claude");
-        assert_eq!(value["accountHistory"][1]["provider"], "codex");
-        assert_eq!(
-            value["lazyAccountTransfer"]["sourceState"]["provider"],
-            "codex"
-        );
-        assert_eq!(value["lazyAccountTransfer"]["id"], "transfer-exact");
-        let reader = store.test_reader().expect("reader");
-        assert_eq!(
-            reader
-                .query_row(
-                    "SELECT value FROM runtime_agent_record_generation WHERE id=1",
-                    [],
-                    |row| row.get::<_, i64>(0)
-                )
-                .expect("generation"),
-            generation
-        );
-        let transfer: String = reader
-            .query_row(
-                "SELECT record FROM runtime_account_transfers WHERE id='transfer-exact'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("transfer");
-        assert!(
-            transfer.find("\"z\"").expect("z") < transfer.find("\"a\"").expect("a"),
-            "member order preserved"
-        );
-        let transfer: Value = serde_json::from_str(&transfer).expect("transfer JSON");
-        assert_eq!(transfer["targetProvider"], "claude");
-        assert_eq!(transfer["members"]["z"]["settings"]["provider"], "codex");
-        assert_eq!(
-            transfer["members"]["z"]["providerReceipts"],
-            json!([{"operation":"operation-exact","certainty":"unknown","ticket":{"id":7}}])
-        );
-        let projection: String = reader
-            .query_row(
-                "SELECT record FROM runtime_analytics_projection",
-                [],
-                |row| row.get(0),
-            )
-            .expect("projection");
-        let projection: Value = serde_json::from_str(&projection).expect("projection JSON");
-        assert_eq!(
-            projection["Analytics"]["observation"]["agent"]["provider"],
-            "codex"
-        );
-        let analytic: String = store
-            .analytics
-            .lock()
-            .expect("analytics")
-            .query_row(
-                "SELECT record FROM analytics_agents WHERE id='analytic'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("analytics agent");
-        let analytic: Value = serde_json::from_str(&analytic).expect("analytics JSON");
-        assert_eq!(analytic["provider"], "codex");
-        assert_eq!(analytic["accountHistory"][0]["provider"], "claude");
-        assert_eq!(
-            value["receipt"],
-            json!({"id":"request-exact","outcome":"unknown"})
-        );
-        drop(store);
-        let store = RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("repeat open");
-        let reopened: String = store
-            .test_reader()
-            .expect("reader")
-            .query_row(
-                "SELECT record FROM runtime_agents WHERE id='legacy'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("agent");
-        assert_eq!(raw, reopened, "repeat migration changes no stored bytes");
     }
 
     #[tokio::test]

@@ -1,6 +1,8 @@
 //! Analytics projection retirement and metadata-only column transitions.
 //! Remove after supported installs/restores no longer admit these source layouts.
-use crate::{StoreResult, Transaction};
+use crate::StoreResult;
+#[cfg(test)]
+use crate::Transaction;
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 
@@ -67,6 +69,7 @@ pub(super) fn preflight(db: &Connection) -> StoreResult<()> {
 /// The projection table owns its three triggers and index; the six usage
 /// triggers must go first because SQLite does not remove cross-table triggers.
 /// IF EXISTS makes a retry after a committed open perform no schema changes.
+#[cfg(test)]
 pub(crate) fn migrate_2026_10_22_drop_python_cost_projection(
     db: &Transaction<'_>,
 ) -> StoreResult<()> {
@@ -82,6 +85,7 @@ pub(crate) fn migrate_2026_10_22_drop_python_cost_projection(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn aggregate_columns(db: &Connection) -> StoreResult<()> {
     if crate::schema::table_exists(db, "analytics_cost_rows")? {
         let columns = db

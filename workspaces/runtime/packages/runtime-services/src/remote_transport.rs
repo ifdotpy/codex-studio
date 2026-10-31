@@ -1848,60 +1848,8 @@ pub(crate) mod tests {
     }
 
     pub(crate) async fn runtime_store_fixture() -> (tempfile::TempDir, PathBuf, Arc<RuntimeStore>) {
-        use std::fs;
-
         let directory = tempfile::tempdir().expect("owned test directory");
         let root = directory.path().to_path_buf();
-        fs::create_dir_all(&root).expect("temporary state directory creates");
-        let snapshot: serde_json::Value = serde_json::from_str(include_str!(
-            "../../runtime-store/src/runtime-state-schema.json"
-        ))
-        .expect("committed state schema parses");
-        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-            let path = root.join(name);
-            let connection =
-                studio_runtime_store::Connection::open(path).expect("fixture database opens");
-            studio_runtime_store::sqlite_durability::configure_writer(&connection)
-                .expect("fixture pragmas apply");
-            connection
-                .execute_batch("BEGIN;")
-                .expect("fixture pragmas apply");
-            let mut statements = snapshot[name]["sqlite_master"]
-                .as_array()
-                .expect("fixture schema entries")
-                .iter()
-                .filter_map(|entry| {
-                    Some((
-                        entry["type"].as_str()?,
-                        entry["name"].as_str()?,
-                        entry["sql"].as_str()?,
-                    ))
-                })
-                .collect::<Vec<_>>();
-            statements.sort_by_key(|(kind, _, _)| match *kind {
-                "table" => 0,
-                "index" => 1,
-                "view" => 2,
-                _ => 3,
-            });
-            for (_, name, sql) in statements {
-                let exists: bool = connection
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
-                        [name],
-                        |row| row.get(0),
-                    )
-                    .expect("fixture schema lookup");
-                if !exists {
-                    connection
-                        .execute_batch(sql)
-                        .expect("schema object creates");
-                }
-            }
-            connection
-                .execute_batch("COMMIT;")
-                .expect("fixture schema commits");
-        }
         let store = RuntimeStore::open(Some(&root))
             .await
             .expect("schema fixture opens");

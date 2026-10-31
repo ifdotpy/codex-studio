@@ -4265,38 +4265,6 @@ mod tests {
     #[tokio::test]
     async fn conversation_catalog_account_is_not_the_child_worker_default() {
         let root = tempfile::tempdir().expect("temporary state");
-        let schema: Value = serde_json::from_str(include_str!(
-            "../../../runtime-store/src/runtime-state-schema.json"
-        ))
-        .expect("schema");
-        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-            let connection = Connection::open(root.path().join(name)).expect("database");
-            connection
-                .execute_batch("PRAGMA journal_mode=WAL;")
-                .expect("WAL");
-            let mut entries = schema[name]["sqlite_master"]
-                .as_array()
-                .expect("schema entries")
-                .clone();
-            entries.sort_by_key(|entry| match entry["type"].as_str() {
-                Some("table") => 0,
-                Some("index") => 1,
-                Some("view") => 2,
-                _ => 3,
-            });
-            for entry in entries {
-                let exists: bool = connection
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
-                        [entry["name"].as_str().expect("object name")],
-                        |row| row.get(0),
-                    )
-                    .expect("schema object lookup");
-                if let Some(sql) = entry["sql"].as_str().filter(|_| !exists) {
-                    connection.execute_batch(sql).expect("schema statement");
-                }
-            }
-        }
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("runtime store");
@@ -4676,48 +4644,16 @@ mod tests {
     async fn creation_rechecks_replay_and_previous_eligibility_after_controlled_interleaving() {
         let directory = tempfile::tempdir().expect("owned test directory");
         let root = directory.path().to_path_buf();
-        std::fs::create_dir_all(&root).expect("temporary state");
-        let schema: Value = serde_json::from_str(include_str!(
-            "../../../runtime-store/src/runtime-state-schema.json"
-        ))
-        .expect("schema");
-        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-            let connection = Connection::open(root.join(name)).expect("database");
-            connection
-                .execute_batch("PRAGMA journal_mode=WAL;")
-                .expect("WAL");
-            let mut entries = schema[name]["sqlite_master"]
-                .as_array()
-                .expect("schema entries")
-                .clone();
-            entries.sort_by_key(|entry| match entry["type"].as_str() {
-                Some("table") => 0,
-                Some("index") => 1,
-                Some("view") => 2,
-                _ => 3,
-            });
-            for entry in entries {
-                let exists: bool = connection
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
-                        [entry["name"].as_str().expect("object name")],
-                        |row| row.get(0),
-                    )
-                    .expect("schema object lookup");
-                if let Some(sql) = entry["sql"].as_str().filter(|_| !exists) {
-                    connection.execute_batch(sql).expect("schema statement");
-                }
-            }
-        }
         let store = std::sync::Arc::new(
             RuntimeStore::open(Some(&root))
                 .await
                 .expect("runtime store"),
         );
         let registry_path = root.join("accounts/registry.json");
-        std::fs::create_dir_all(registry_path.parent().expect("registry parent"))
+        tokio::fs::create_dir_all(registry_path.parent().expect("registry parent"))
+            .await
             .expect("create registry directory");
-        std::fs::write(
+        tokio::fs::write(
             &registry_path,
             json!({
                 "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
@@ -4728,6 +4664,7 @@ mod tests {
             })
             .to_string(),
         )
+        .await
         .expect("write fixture account registry");
         let driver = std::sync::Arc::new(
             crate::account_driver::AccountDriver::open(&registry_path)

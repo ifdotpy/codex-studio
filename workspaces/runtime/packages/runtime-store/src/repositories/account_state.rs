@@ -752,43 +752,6 @@ mod tests {
     }
 
     #[test]
-    fn workspace_limits_migrate_once_without_overwriting_account_entities() {
-        let mut db = Connection::open_in_memory().expect("SQLite");
-        db.execute_batch("CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id)); CREATE TABLE sync_documents(seq INTEGER); CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0); CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,result TEXT);").expect("migration fixture");
-        crate::receipt_schema::create(&db).expect("account state");
-        let tx = db.transaction().expect("transaction");
-        let newer = json!({"accountKey":"alpha","at":2.0,"data":{"accountId":"newer"}});
-        let beta = json!({"accountKey":"beta","at":1.0,"data":{"accountId":"beta"}});
-        crate::SyncDocumentsRepository::put_entity(&tx,"workspace","current",json!({"stateDir":"fixture","rateLimitsByAccount":{"alpha":{"accountKey":"alpha","at":1.0},"beta":beta},"rateLimits":{"accountKey":"default","at":1.0}}),false).expect("workspace");
-        crate::SyncDocumentsRepository::put_entity(&tx, "rateLimit", "alpha", newer.clone(), false)
-            .expect("existing account");
-        crate::migrations::m2026_10_26_canvas::migrate_workspace_limits(&tx).expect("migration");
-        let seq = crate::SyncDocumentsRepository::entity_sequence(&tx).expect("sequence");
-        crate::migrations::m2026_10_26_canvas::migrate_workspace_limits(&tx)
-            .expect("repeat migration");
-        assert_eq!(
-            crate::SyncDocumentsRepository::entity_sequence(&tx).expect("sequence"),
-            seq
-        );
-        let raw: String = tx
-            .query_row(
-                "SELECT payload FROM sync_entities WHERE collection='workspace'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("workspace");
-        assert_eq!(
-            serde_json::from_str::<Value>(&raw).expect("JSON")["value"],
-            json!({"stateDir":"fixture"})
-        );
-        let restored = limits_snapshots(&tx).expect("restored accounts");
-        assert!(restored.diagnostics.is_empty());
-        assert_eq!(restored.snapshots.len(), 2);
-        assert!(restored.snapshots.contains(&("alpha".to_owned(), newer)));
-        assert!(restored.snapshots.contains(&("beta".to_owned(), beta)));
-    }
-
-    #[test]
     fn reads_due_authentication_recovery_keys() {
         let db = Connection::open_in_memory().expect("SQLite");
         db.execute_batch("CREATE TABLE runtime_usage_resumes(id TEXT PRIMARY KEY, agent TEXT NOT NULL, record TEXT NOT NULL)").expect("table");

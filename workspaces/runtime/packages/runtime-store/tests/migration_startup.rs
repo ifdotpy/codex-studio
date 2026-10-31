@@ -6,6 +6,28 @@ use studio_runtime_schema::studio_errors::{
 use studio_runtime_store::{RuntimeStore, StoreError};
 
 #[tokio::test]
+async fn sync_schema_is_ready_before_model_preferences_migrate() {
+    let state = tempfile::tempdir().expect("state");
+    let store = RuntimeStore::open(Some(state.path())).await.expect("fresh");
+    store.transaction(|tx| {
+        studio_runtime_store::SyncDocumentsRepository::put_preferences(tx, "server", r#"{"collection":"uiPreferences","id":"server","value":{"fields":{"[\"studio-model-whitelist-v1\"]":{"value":true,"timestamp":1,"writer":"test"}}}}"#)?;
+        Ok(())
+    }).await.expect("legacy preferences");
+    drop(store);
+    let db = Connection::open(state.path().join("canvas.sqlite3")).expect("canvas");
+    db.execute_batch(
+        "DROP TABLE durable_rows; DELETE FROM sync_entity_meta WHERE key='migration_catalog';",
+    )
+    .expect("older completed schema");
+    drop(db);
+    drop(
+        RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("schema is prepared before model migration"),
+    );
+}
+
+#[tokio::test]
 async fn migration_startup_upgrades_registry_before_store_is_available() {
     let state = tempfile::tempdir().expect("state");
     let store = RuntimeStore::open(Some(state.path())).await.expect("fresh");
@@ -48,110 +70,6 @@ async fn migration_startup_analytics_failure_rolls_back_the_entire_target() {
         marker, None,
         "provider changes must roll back with aggregate failure"
     );
-}
-
-#[tokio::test]
-async fn migration_startup_preserves_completed_analytics_and_restarts_failed_canvas() {
-    let state = tempfile::tempdir().expect("state");
-    let store = RuntimeStore::open(Some(state.path())).await.expect("fresh");
-    store
-        .transaction(|tx| {
-            let raw: String = tx.query_row(
-                "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'",
-                [],
-                |row| row.get(0),
-            )?;
-            let mut payload: Value = serde_json::from_str(&raw)?;
-            payload["value"]["rateLimitsByAccount"] = json!({});
-            studio_runtime_store::SyncDocumentsRepository::put_entity(
-                tx,
-                "workspace",
-                "current",
-                payload["value"].take(),
-                false,
-            )?;
-            Ok(())
-        })
-        .await
-        .expect("old workspace source with its matching hash");
-    drop(store);
-    let canvas = Connection::open(state.path().join("canvas.sqlite3")).expect("canvas");
-    canvas.execute_batch("DELETE FROM sync_entity_meta WHERE key='migration_catalog'; CREATE TRIGGER fail_migration BEFORE UPDATE ON sync_entities WHEN NEW.collection='workspace' BEGIN SELECT RAISE(ABORT,'injected migration failure'); END;").expect("Canvas fault");
-    let before: String = canvas
-        .query_row(
-            "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("before");
-    let analytics = Connection::open(state.path().join("analytics.sqlite3")).expect("analytics");
-    analytics
-        .execute(
-            "DELETE FROM analytics_meta WHERE key IN ('providerIdentityFormat','migration_catalog')",
-            [],
-        )
-        .expect("old analytics");
-    let error = RuntimeStore::open(Some(state.path()))
-        .await
-        .err()
-        .expect("Canvas failure");
-    assert!(matches!(
-        error,
-        StoreError::Migration {
-            target: MigrationTarget::Canvas,
-            phase: MigrationPhase::Apply,
-            rollback: MigrationRollbackOutcome::RolledBack,
-            ..
-        }
-    ));
-    assert_eq!(
-        canvas
-            .query_row(
-                "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'",
-                [],
-                |row| row.get::<_, String>(0)
-            )
-            .expect("unchanged"),
-        before
-    );
-    let marker: String = analytics
-        .query_row(
-            "SELECT value FROM analytics_meta WHERE key='providerIdentityFormat'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("completed analytics remains");
-    assert_eq!(marker, "2026-10-26");
-    let analytics_version: i64 = analytics
-        .pragma_query_value(None, "data_version", |row| row.get(0))
-        .expect("analytics revision");
-    canvas
-        .execute_batch("DROP TRIGGER fail_migration")
-        .expect("remove injected fault");
-    let store = RuntimeStore::open(Some(state.path()))
-        .await
-        .expect("safe continuation");
-    let after: String = canvas
-        .query_row(
-            "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("converted workspace");
-    assert!(
-        serde_json::from_str::<Value>(&after)
-            .expect("JSON")
-            .pointer("/value/rateLimitsByAccount")
-            .is_none()
-    );
-    assert_eq!(
-        analytics
-            .pragma_query_value(None, "data_version", |row| row.get::<_, i64>(0))
-            .expect("analytics revision"),
-        analytics_version,
-        "completed analytics is not rewritten"
-    );
-    drop(store);
 }
 
 #[tokio::test]
@@ -397,145 +315,4 @@ async fn migration_terminal_empty_source_is_complete_before_new_turns_arrive() {
             .expect("same checkpoint");
         assert_eq!(current, checkpoint);
     }
-}
-
-#[tokio::test]
-async fn migration_terminal_errors_convert_only_exact_persisted_evidence_before_open_returns() {
-    use studio_runtime_store::analytics_capture::{
-        AnalyticsCaptureRepository as Repo, CaptureTable,
-    };
-    for thread in [Some("thread"), None, Some("foreign")] {
-        let state = tempfile::tempdir().expect("state");
-        let store = RuntimeStore::open(Some(state.path())).await.expect("fresh");
-        store
-            .analytics_transaction::<_, StoreError>(move |tx, _| {
-                tx.execute(
-                    "DELETE FROM analytics_meta WHERE key IN ('terminalErrorRepairV1','migration_catalog')",
-                    [],
-                )?;
-                Repo::write(tx, CaptureTable::Turns, &turn("thread"))?;
-                if thread.is_none() {
-                    Repo::write(tx, CaptureTable::Turns, &turn("other"))?;
-                }
-                Ok(())
-            })
-            .await
-            .expect("historical turns");
-        let notice = json!({"id":"a:native-notice:error:turn","agent":"a","turnId":"turn","threadId":thread,"nativeError":{"message":"native failure"},"at":3});
-        store
-            .transaction(move |tx| {
-                tx.execute(
-                    "INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'a',?2,3)",
-                    rusqlite::params![notice["id"].as_str(), notice.to_string()],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("exact persisted notice");
-        drop(store);
-        let store = RuntimeStore::open(Some(state.path()))
-            .await
-            .expect("complete migration barrier");
-        let db = Connection::open(state.path().join("analytics.sqlite3")).expect("analytics");
-        let record: String = db
-            .query_row(
-                "SELECT record FROM analytics_turns WHERE id='a:thread:turn'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("turn");
-        let value: Value = serde_json::from_str(&record).expect("turn JSON");
-        let exact = thread == Some("thread");
-        assert_eq!(value["status"], if exact { "failed" } else { "running" });
-        if exact {
-            assert_eq!(value["terminalSource"], "liveNoticeRepair");
-            assert_eq!(value["durationMs"], 2000.);
-        }
-        let checkpoint: String = db
-            .query_row(
-                "SELECT value FROM analytics_meta WHERE key='terminalErrorRepairV1'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("completed checkpoint");
-        let checkpoint_value: Value = serde_json::from_str(&checkpoint).expect("checkpoint JSON");
-        assert_eq!(checkpoint_value["cursor"], checkpoint_value["end"]);
-        assert_eq!(checkpoint_value["repaired"], u64::from(exact));
-        assert_eq!(
-            checkpoint_value["ambiguous"],
-            if exact {
-                0
-            } else if thread.is_none() {
-                2
-            } else {
-                1
-            }
-        );
-        drop(store);
-        drop(
-            RuntimeStore::open(Some(state.path()))
-                .await
-                .expect("idempotent reopen"),
-        );
-        assert_eq!(
-            db.query_row(
-                "SELECT record FROM analytics_turns WHERE id='a:thread:turn'",
-                [],
-                |row| row.get::<_, String>(0)
-            )
-            .expect("same turn"),
-            record
-        );
-        assert_eq!(
-            db.query_row(
-                "SELECT value FROM analytics_meta WHERE key='terminalErrorRepairV1'",
-                [],
-                |row| row.get::<_, String>(0)
-            )
-            .expect("same checkpoint"),
-            checkpoint
-        );
-    }
-}
-
-#[tokio::test]
-async fn migration_terminal_preflight_checks_later_pages_before_any_target_write() {
-    let state = tempfile::tempdir().expect("state");
-    drop(RuntimeStore::open(Some(state.path())).await.expect("fresh"));
-    let mut db = Connection::open(state.path().join("analytics.sqlite3")).expect("analytics");
-    let tx = db.transaction().expect("fixture");
-    tx.execute(
-        "DELETE FROM analytics_meta WHERE key IN ('providerIdentityFormat','terminalErrorRepairV1')",
-        [],
-    )
-    .expect("pending provider target");
-    for index in 0..65 {
-        let value = turn(&format!("thread-{index}"));
-        let raw = if index == 64 {
-            "not-json".into()
-        } else {
-            value.to_string()
-        };
-        tx.execute(
-            "INSERT INTO analytics_turns(id,agent,root,at,record) VALUES(?1,'a','a',1,?2)",
-            rusqlite::params![value["id"].as_str(), raw],
-        )
-        .expect("source row");
-    }
-    tx.commit().expect("fixture committed");
-    let error = RuntimeStore::open(Some(state.path()))
-        .await
-        .err()
-        .expect("later page source refusal");
-    assert!(matches!(
-        error,
-        StoreError::Migration {
-            id: "2026-10-26-terminal-errors",
-            target: MigrationTarget::Analytics,
-            phase: MigrationPhase::Validate,
-            rollback: MigrationRollbackOutcome::NotRequired,
-            ..
-        }
-    ));
-    assert_eq!(db.query_row("SELECT count(*) FROM analytics_meta WHERE key IN ('providerIdentityFormat','terminalErrorRepairV1')",[],|row|row.get::<_,i64>(0)).expect("no partial checkpoints"),0);
 }

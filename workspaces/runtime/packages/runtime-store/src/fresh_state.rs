@@ -15,6 +15,7 @@ use crate::{StoreError, StoreResult};
 
 const SNAPSHOT: &str = include_str!("runtime-state-schema.json");
 const CORE_DATABASES: [&str; 2] = ["canvas.sqlite3", "analytics.sqlite3"];
+pub(crate) const TERMINAL_ERROR_REPAIR_KEY: &str = "terminalErrorRepairV1";
 /// The process supervisor's journal (`codex_process_supervisor.Journal` and
 /// `supervisor_journal::SupervisorJournal`). The supervisor owns it once it exists.
 const SUPERVISOR_DATABASE: &str = "supervisor.sqlite3";
@@ -240,7 +241,7 @@ fn build_staging(staging: &Path, final_root: &Path) -> StoreResult<()> {
     crate::schema::register_python_trigger_functions(&canvas)?;
     let transaction = canvas.transaction_with_behavior(TransactionBehavior::Immediate)?;
     crate::bootstrap::prepare_sync_schema(&transaction)?;
-    seed_python_lazy_markers(&transaction, staging)?;
+    seed_python_lazy_markers(staging)?;
     seed_workspace(&transaction, final_root)?;
     transaction.commit()?;
     drop(canvas);
@@ -252,23 +253,11 @@ fn build_staging(staging: &Path, final_root: &Path) -> StoreResult<()> {
 }
 
 /// Seed the retained generation and analytics tracking markers.
-fn seed_python_lazy_markers(
-    transaction: &rusqlite::Transaction<'_>,
-    staging: &Path,
-) -> StoreResult<()> {
+fn seed_python_lazy_markers(staging: &Path) -> StoreResult<()> {
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    transaction.execute(
-        "INSERT INTO runtime_agent_record_generation(id,value) VALUES(1,0)",
-        [],
-    )?;
-    transaction.execute(
-        "INSERT INTO runtime_scheduler_agent_change_state VALUES(1,0,0,0,0)",
-        [],
-    )?;
-
     let analytics = Connection::open(staging.join("analytics.sqlite3"))?;
     analytics.execute(
         "INSERT OR IGNORE INTO analytics_meta(key,value) VALUES('trackingSince',?1)",
@@ -280,6 +269,7 @@ fn seed_python_lazy_markers(
 fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreResult<Connection> {
     let mut connection = Connection::open(path)?;
     crate::sqlite_durability::configure_writer(&connection)?;
+    crate::schema::register_python_trigger_functions(&connection)?;
     let transaction = connection.transaction()?;
 
     let catalog =
@@ -320,6 +310,29 @@ fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreRes
             "fresh schema user_version is missing",
         ))?;
     transaction.pragma_update(None, "user_version", version)?;
+    if schema_name == "canvas.sqlite3" {
+        crate::bootstrap::prepare_runtime_event_indexes(&transaction)?;
+        crate::AgentRepository::prepare_change_journal(&transaction)?;
+        crate::MonitorsRepository::prepare_indexes(&transaction)?;
+        crate::migrations::seed_receipt_finish_markers(&transaction)?;
+    } else {
+        crate::schema::ensure_analytics_limits_index(&transaction)?;
+        transaction.execute("INSERT INTO analytics_usage_revision_clock VALUES(0)", [])?;
+        transaction.execute(
+            "INSERT INTO analytics_meta(key,value) VALUES(?1,?2)",
+            [
+                crate::migrations::ANALYTICS_PROVIDER_FORMAT_KEY,
+                crate::migrations::PROVIDER_IDENTITY_FORMAT,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO analytics_meta(key,value) VALUES(?1,?2)",
+            [
+                TERMINAL_ERROR_REPAIR_KEY,
+                r#"{"ambiguous":0,"cursor":0,"end":0,"repaired":0}"#,
+            ],
+        )?;
+    }
     transaction.commit()?;
     Ok(connection)
 }
@@ -332,6 +345,7 @@ pub fn test_canvas() -> Connection {
         .expect("in-memory canvas");
     crate::schema::register_python_trigger_functions(&connection).expect("projection functions");
     let tx = connection.transaction().expect("fixture transaction");
+    crate::bootstrap::prepare_sync_schema(&tx).expect("sync schema");
     crate::migrations::prepare_canvas_fixture(&tx).expect("current canvas format");
     tx.commit().expect("fixture commits");
     connection

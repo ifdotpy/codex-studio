@@ -575,26 +575,26 @@ mod tests {
         )
     }
 
-    /// A pre-2026-10-20 state migrates once at open; every reader sees the
-    /// agents unchanged, and a second open changes nothing.
+    /// The current volatile migration moves legacy fields from otherwise
+    /// current agent rows, preserving readers and the change journal.
     #[tokio::test]
-    async fn migration_2026_10_20_moves_fields_once_and_readers_see_the_same_agents() {
+    async fn migration_2026_10_30_moves_legacy_volatile_fields_once() {
         let root = tempfile::tempdir().expect("state directory");
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("store opens");
         store
             .transaction(|tx| {
-                for object in schema_objects().filter(|(_, kind, _)| *kind == "trigger") {
-                    tx.execute_batch(&format!("DROP TRIGGER IF EXISTS {}", object.0))?;
-                }
-                tx.execute_batch(&format!("DROP TABLE {AGENT_VOLATILE_TABLE}"))?;
                 for agent in agents() {
                     tx.execute(
                         "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                         params![agent["id"].as_str(), agent.to_string()],
                     )?;
                 }
+                tx.execute(
+                    "DELETE FROM sync_entity_meta WHERE key='migration_catalog'",
+                    [],
+                )?;
                 Ok(())
             })
             .await
