@@ -693,7 +693,7 @@ mod tests {
                 for id in ["agent-a", "agent-b"] {
                     studio_runtime_store::AgentRepository::put(
                         transaction,
-                        &AgentRecord::from_value(agent(id))?,
+                        &studio_runtime_store::AgentRecord::from_value(agent(id))?,
                     )?;
                 }
                 Ok(())
@@ -838,7 +838,7 @@ mod catalog_wait_tests {
                 // The start attempt belongs to the turn row, which the repository writes.
                 studio_runtime_store::AgentRepository::put(
                     transaction,
-                    &AgentRecord::from_value(agent)?,
+                    &studio_runtime_store::AgentRecord::from_value(agent)?,
                 )
             })
             .await
