@@ -18,6 +18,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, ContinuationRepository, ContinuationTable,
@@ -1463,7 +1464,7 @@ fn enqueue_turn_result(
         status: agent.status.clone(),
         result,
         cwd: agent.cwd.clone(),
-        branch: serde_json::from_value(value.get("branch").cloned().unwrap_or(Value::Null))?,
+        branch: Option::<String>::deserialize(value.get("branch").unwrap_or(&Value::Null))?,
         workspace: workspace_summary(value),
         stall: progress.stall,
     };

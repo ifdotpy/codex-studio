@@ -1,6 +1,7 @@
 //! Normalize legacy work rows before reading them as checked work items.
 use crate::{StoreError, StoreResult};
 use rusqlite::{OptionalExtension, Transaction, params};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_schema::{persistence::MigrationStatus, work_item_record::WorkItem};
 
@@ -82,10 +83,9 @@ pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
         for key in ["updated", "version", "dependencies", "releases"] {
             let valid = fields.get(key).is_none_or(|v| match key {
                 "updated" => v.is_number(),
-                "version" => serde_json::from_value::<
-                    studio_runtime_schema::work_item_record::WorkItemVersion,
-                >(v.clone())
-                .is_ok(),
+                "version" => {
+                    studio_runtime_schema::work_item_record::WorkItemVersion::deserialize(v).is_ok()
+                }
                 "dependencies" => v
                     .as_array()
                     .is_some_and(|items| items.iter().all(Value::is_string)),
