@@ -2112,6 +2112,16 @@ fn seed_backlog_rows(
                 FROM seq CROSS JOIN source"),
             (count as i64, source, each_account, record),
         )?;
+    tx.execute(
+        &format!(
+            "{sequence}
+                INSERT INTO chats(id,state,status,auto_wake,usage_resume_enabled,execution_mode,turn_epoch)
+                SELECT printf('00000000-0000-4000-8000-%012d', seq.i),
+                       state,status,auto_wake,usage_resume_enabled,execution_mode,turn_epoch
+                FROM seq CROSS JOIN chats WHERE chats.id=?2"
+        ),
+        (count as i64, source),
+    )?;
     let columns = studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
         .map(|field| format!("\"{field}\""))
         .join(",");

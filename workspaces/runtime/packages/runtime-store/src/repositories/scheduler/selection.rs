@@ -858,7 +858,8 @@ impl SchedulerRepository {
     pub fn pending_agents(connection: &Connection) -> StoreResult<Vec<(String, i64)>> {
         let mut statement = connection.prepare_cached(
             "SELECT a.id,json_extract(a.record,'$.epoch') FROM runtime_agents a \
-             WHERE a.status='queued' AND a.auto_wake=1 \
+             WHERE a.status='queued' \
+             AND EXISTS(SELECT 1 FROM chats ch WHERE ch.id=a.id AND ch.auto_wake=1) \
              AND COALESCE(a.in_flight,0)=0 \
              AND COALESCE(a.native_failure_hold,0)=0 \
              AND COALESCE(a.remote_worker,0)=0 \
@@ -2057,6 +2058,9 @@ mod account_wake_index_tests {
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         connection
+            .execute_batch(&crate::domain::tables_sql())
+            .expect("domain tables create");
+        connection
     }
 
     fn put_agent(connection: &Connection, id: &str, value: serde_json::Value) {
@@ -2066,6 +2070,7 @@ mod account_wake_index_tests {
                 rusqlite::params![id, value.to_string()],
             )
             .expect("agent fixture inserts");
+        crate::domain::project(connection, id, &value).expect("chat fixture follows the record");
     }
 
     fn install_index(connection: &mut Connection) {

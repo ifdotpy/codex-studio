@@ -301,6 +301,9 @@ mod tests {
         connection
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
+        connection
+            .execute_batch(&crate::domain::tables_sql())
+            .expect("domain tables create");
         AgentIndexedReads::prepare_index(&connection).expect("indexes create");
         connection
     }
@@ -312,6 +315,10 @@ mod tests {
                 params![record["id"].as_str().expect("id"), record.to_string()],
             )
             .expect("agent inserts");
+        if record.get("status").is_some() {
+            crate::domain::project(connection, record["id"].as_str().expect("id"), &record)
+                .expect("chat follows the record");
+        }
     }
 
     fn plan(connection: &Connection, sql: &str, parameters: &[&str]) -> String {
