@@ -637,8 +637,8 @@ mod tests {
                 json!({"diff":"full","turnId":"turn"}),
             ),
             (
-                "invalid",
-                json!({"afterRestore":true}),
+                "restored",
+                json!({"afterRestore":"true"}),
                 StatusCode::OK,
                 json!({"diff":"","turnId":null}),
             ),
@@ -718,7 +718,7 @@ mod tests {
         store.transaction_with(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
             for (id, created) in [("a", 1), ("b", 2), ("c", 3)] {
-                tx.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":if id == "a" { "wrong" } else { id },"agent":"agent","created":created,"tail":"large tail","arguments":{},"error":"detail"}).to_string()))?;
+                tx.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":if id == "a" { "wrong" } else { id },"agent":"agent","created":created,"kind":"command","type":"commandExecution","name":"commandExecution","itemId":"item","turnId":"turn","status":"completed","tail":"large tail","arguments":"{}","error":"detail"}).to_string()))?;
             }
             Ok::<_, StoreError>(())
         }).await.expect("seed");

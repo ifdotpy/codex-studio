@@ -196,7 +196,7 @@ mod tests {
                 .expect("detail ref");
         store.transaction_with(|tx| {
             AgentRepository::put(tx,&AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"chat","parentId":"chat","epoch":1,"status":"idle"}))?)?;
-            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",rusqlite::params!["worker-command",json!({"id":"worker-command","agent":"worker","kind":"command","status":"running","created":1}).to_string()])?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",rusqlite::params!["worker-command",json!({"id":"worker-command","agent":"worker","kind":"command","type":"commandExecution","name":"commandExecution","itemId":"command","turnId":"turn","status":"running","created":1}).to_string()])?;
             Ok::<_, StoreError>(())
         }).await.expect("worker command source");
         let tasks_ref: ResourceRef =

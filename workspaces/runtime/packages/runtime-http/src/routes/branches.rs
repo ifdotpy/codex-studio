@@ -1877,7 +1877,7 @@ mod tests {
                     "message",
                     "source",
                     &json!({
-                        "id":"message","role":"assistant","turnId":format!("turn-{selected}")
+                        "id":"message","role":"assistant","text":"message","turnId":format!("turn-{selected}")
                     }),
                     1.0,
                     "message",

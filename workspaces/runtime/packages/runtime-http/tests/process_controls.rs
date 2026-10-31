@@ -630,7 +630,7 @@ async fn fixture(behavior: &'static str) -> (tempfile::TempDir, axum::Router, Ar
                 owner.as_object_mut().unwrap().remove("connectionCheck");
             }
         }
-        let task=json!({"id":"owner:command","agent":"owner","kind":"command","itemId":"command",
+        let task=json!({"id":"owner:command","agent":"owner","kind":"command","type":"commandExecution","name":"commandExecution","itemId":"command",
             "processId":"42","status":"running","ownerEpoch":1,"sourceAccountKey":"default",
             "sourceConnectionId":"actual-uuid","sourceThreadId":"thread","turnId":"turn","created":1});
         tx.execute("INSERT INTO runtime_agents(id,record) VALUES('owner',?)",[owner.to_string()])?;
