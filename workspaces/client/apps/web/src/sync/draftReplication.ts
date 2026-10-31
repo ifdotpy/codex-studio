@@ -197,6 +197,7 @@ export function createDraftReplication(
   const push = (): Promise<void> => {
     if (pushing) {
       pushAgain = true;
+      void options.push.waitBeforePersist?.();
       return pushing;
     }
     clearTimeout(pushRetry);

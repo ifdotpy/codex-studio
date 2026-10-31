@@ -15,8 +15,6 @@ import { createFileDialogs } from "../native/fileDialogs";
 import { watchResourceReads } from "../sync/subscriptions/reads";
 import { createAccountLimitsCache } from "../usage/accountUsage";
 import { createBrowserDrafts } from "../sync/drafts";
-import { createDraftJournal } from "../sync/draftJournal";
-import { createDraftStorage } from "../sync/draftStorage";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
 import { indexedDbKeyValue } from "../sync/thinCache";
@@ -121,8 +119,6 @@ export function createServerServices(server: StudioServer) {
         startDraftReplication: (...args) =>
           synchronization().sync.startDraftReplication(...args),
       },
-      journal: createDraftJournal(storage),
-      storage: createDraftStorage(storage),
     }));
   };
   const localDrafts = createLocalDraftStorage(

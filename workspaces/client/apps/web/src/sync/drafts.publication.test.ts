@@ -36,7 +36,10 @@ afterEach(() => {
 
 it("publishes one complete draft query batch and cancels a pending publication on close", async () => {
   vi.useFakeTimers();
+  const interval = vi.spyOn(globalThis, "setInterval");
   vi.stubGlobal("document", { hidden: true });
+  const write = vi.fn();
+  vi.stubGlobal("localStorage", { setItem: write });
   vi.stubGlobal("window", {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
@@ -46,7 +49,6 @@ it("publishes one complete draft query batch and cancels a pending publication o
   const useDrafts = createBrowserDrafts({
     api: {
       saved: (_key, fallback) => fallback,
-      save: vi.fn(),
       isApiSchemaMismatch: () => false,
       onApiSchemaMismatch: () => () => {},
     },
@@ -76,17 +78,6 @@ it("publishes one complete draft query batch and cancels a pending publication o
           >
         >,
     },
-    journal: {
-      readDraftJournal: () => [],
-      writeDraftJournal: vi.fn(),
-      forgetDraftJournal: vi.fn(),
-    },
-    storage: {
-      readLocalDrafts: () => ({}),
-      readLocalDraftRecord: () => null,
-      writeLocalDraftRecord: vi.fn(),
-      copyLocalDraftScope: vi.fn(),
-    },
   });
   const drafts = useDrafts();
   const first = vi.fn(() => expect(drafts.getDraft("b")).toBe("complete"));
@@ -97,6 +88,7 @@ it("publishes one complete draft query batch and cancels a pending publication o
     const stop = effect();
     if (stop) cleanup = stop;
   }
+  expect(interval).not.toHaveBeenCalled();
   for (let turn = 0; turn < 20 && !receive; turn++) await Promise.resolve();
   expect(receive).toBeTypeOf("function");
   const row = (session: string, text: string) => ({
@@ -117,6 +109,9 @@ it("publishes one complete draft query batch and cancels a pending publication o
   await vi.advanceTimersByTimeAsync(50);
   expect(first).toHaveBeenCalledOnce();
   expect(second).toHaveBeenCalledOnce();
+  drafts.setDrafts({ a: "complete", b: "complete", c: "edited" });
+  expect(drafts.getDraft("c")).toBe("edited");
+  expect(write).not.toHaveBeenCalled();
   receive([row("a", "closed")]);
   cleanup?.();
   cleanup = undefined;

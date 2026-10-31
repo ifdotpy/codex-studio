@@ -1,9 +1,8 @@
 import type { Page } from "@playwright/test";
 import type { components } from "../../src/generated/api.ts";
-import type { LocalDraftRecord } from "../../src/sync/draftStorage.ts";
 import { fixtureOrigin } from "./performance-fixture.ts";
 import type {} from "./draft-render-performance.fixture.tsx";
-// Real draft hook, local durability, and consumer commits with 500 saved chats.
+// Real draft hook and consumer commits with 500 server drafts.
 import { fileURLToPath } from "node:url";
 import {
   API_SCHEMA_HASH_HEADER,
@@ -96,11 +95,6 @@ test("Draft Render Performance Browser @performance", async ({
       }
       const result = await page.evaluate(
         async ({ workspaceId }) => {
-          // These records are written by this fixture and the draft store under test.
-          const readPersistedText = (raw: string | null) => {
-            const record: Pick<LocalDraftRecord, "text"> = JSON.parse(raw!);
-            return record.text;
-          };
           const baseCommits = window.commits,
             baseRenders = window.renders,
             baseComposerCommits = window.composerCommits,
@@ -126,22 +120,6 @@ test("Draft Render Performance Browser @performance", async ({
               ...old,
               "chat-0": "typed " + i,
             }));
-            const local = localStorage.getItem(
-              "codex-chat-draft:" + workspaceId + ":chat-0",
-            );
-            const persisted = readPersistedText(local);
-            if (persisted !== "typed " + i)
-              throw new Error(
-                "Each edit must synchronously reach its local chat record",
-              );
-            if (
-              !Object.keys(localStorage).some(
-                (k) =>
-                  k.includes(":pending:") &&
-                  readPersistedText(localStorage.getItem(k)) === "typed " + i,
-              )
-            )
-              throw new Error("Each edit must synchronously reach the journal");
             setTimes.push(performance.now() - at);
             await new Promise((r) => setTimeout(r, 40));
           }
@@ -172,13 +150,13 @@ test("Draft Render Performance Browser @performance", async ({
       );
       assert.equal(
         result.chatWrites,
-        20,
-        "Each edit writes only its per-chat record",
+        0,
+        "Edits do not write per-chat browser records",
       );
       assert.equal(
         result.journalWrites,
-        20,
-        "Each input keeps its synchronous journal write",
+        0,
+        "Edits do not write a browser journal",
       );
       assert.equal(
         result.commits,
