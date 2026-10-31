@@ -529,8 +529,6 @@ pub enum AnswerAuthority {
     Agent,
 }
 
-const REDACTED: &str = "[redacted]";
-
 fn decision_name(decision: Decision) -> &'static str {
     match decision {
         Decision::Accept => "accept",
@@ -610,7 +608,7 @@ pub fn provider_answer(
             ) {
                 for (name, field) in properties {
                     if secret_field(field) && object.contains_key(name) {
-                        object.insert(name.clone(), json!(REDACTED));
+                        object.insert(name.clone(), json!(QuestionAnswer::REDACTED));
                     }
                 }
             }
@@ -631,7 +629,7 @@ pub fn provider_answer(
                 .map(|question| QuestionAnswer {
                     id: question.id.clone(),
                     answer: if question.is_secret {
-                        vec![REDACTED.to_owned()]
+                        vec![QuestionAnswer::REDACTED.to_owned()]
                     } else {
                         data["answers"][question.id.as_str()]
                             .get("answers")

@@ -424,16 +424,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             radio_runtime::route_question_answer(
                 db,
                 &prepared,
-<<<<<<< head
-                &studio_runtime_store::approvals::from_legacy_record(
-                    "q",
-                    &case["body"]["question"],
-                )?,
-||||||| base
-                &case["body"]["question"],
-=======
                 &question,
->>>>>>> origin/feat/approval-entity
                 case["body"]["text"].as_str().unwrap_or("answer"),
                 None,
                 1000.0,
@@ -735,21 +726,6 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
     seed(&store, &case["before"]).await;
     assert!(radio_runtime::holds_floor(&store.test_reader().expect("read"), "a").expect("floor"));
     let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
-<<<<<<< head
-    let question = case["body"]["question"].clone();
-    store.transaction_with(move |db|->Result<(),ProjectsError> {
-        assert_eq!(radio_runtime::route_question_answer(db,&prepared,&studio_runtime_store::approvals::from_legacy_record("q",&question)?,"answer",None,1000.0)?, radio_runtime::QuestionAnswerRoute::ConsumedByRadio);
-        db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;
-        Ok(())
-    }).await.expect("P04 caller commits both writes");
-||||||| base
-    let question = case["body"]["question"].clone();
-    store.transaction_with(move |db|->Result<(),ProjectsError> {
-        assert_eq!(radio_runtime::route_question_answer(db,&prepared,&question,"answer",None,1000.0)?, radio_runtime::QuestionAnswerRoute::ConsumedByRadio);
-        db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;
-        Ok(())
-    }).await.expect("P04 caller commits both writes");
-=======
     let question: studio_runtime_schema::approvals::Approval =
         serde_json::from_value(case["body"]["question"].clone()).expect("typed approval fixture");
     store
@@ -780,7 +756,6 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
         })
         .await
         .expect("P04 caller commits both writes");
->>>>>>> origin/feat/approval-entity
     drop(store);
     let store = std::sync::Arc::new(
         RuntimeStore::open(Some(root.path()))

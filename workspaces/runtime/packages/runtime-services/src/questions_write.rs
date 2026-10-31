@@ -151,24 +151,6 @@ pub fn answer_async_question(
             .map(|question| QuestionAnswer {
                 id: question.id.clone(),
                 answer: if question.secret {
-<<<<<<< head
-                    vec!["[redacted]".to_owned()]
-                } else {
-                    question.answers.clone()
-                },
-            })
-            .collect(),
-    };
-    match &row.state {
-        ApprovalState::Pending => {}
-||||||| base
-    }
-    let signature = crate::provider_callbacks::answer_signature(data);
-    if let Some(previous) = record.get("answerSignature").and_then(Value::as_str) {
-        if previous != signature {
-            return Err(QuestionsWriteError::Conflict(
-                "This request already has a different answer",
-=======
                     vec![QuestionAnswer::REDACTED.to_owned()]
                 } else {
                     question.answers.clone()
@@ -178,7 +160,6 @@ pub fn answer_async_question(
     };
     match &row.state {
         ApprovalState::Pending if row.hidden.is_none() => {}
->>>>>>> origin/feat/approval-entity
         ApprovalState::Answering { answer, .. }
         | ApprovalState::Answered { answer, .. }
         | ApprovalState::Unknown { answer, .. } => {
@@ -197,18 +178,8 @@ pub fn answer_async_question(
                 "Answer delivery is uncertain. Do not resend; inspect the agent conversation",
             ));
         }
-<<<<<<< head
-        ApprovalState::Closed { .. } => {
-||||||| base
-        if record.get("status").and_then(Value::as_str) == Some("answered") {
-            return Ok(AsyncQuestionAnswerResult {
-                response: json!({"status":"answered","replayed":true}),
-                event_inserted: false,
-            });
-=======
         // Closed, or deleted while pending.
         ApprovalState::Pending | ApprovalState::Closed { .. } => {
->>>>>>> origin/feat/approval-entity
             return Err(QuestionsWriteError::InvalidRequest(
                 "Request is no longer pending",
             ));
@@ -342,13 +313,7 @@ pub fn defer_question(
             "Only a question can be deferred",
         ));
     }
-<<<<<<< head
-    if !matches!(row.state, ApprovalState::Pending) {
-||||||| base
-    if record.get("status").and_then(Value::as_str) != Some(PENDING) {
-=======
     if !matches!(row.state, ApprovalState::Pending) || row.hidden.is_some() {
->>>>>>> origin/feat/approval-entity
         return Err(QuestionsWriteError::InvalidRequest(
             "This question is no longer pending",
         ));
@@ -393,14 +358,6 @@ pub fn delete_question(
     Ok(json!({"id":id,"status":"deleted"}))
 }
 
-<<<<<<< head
-/// Whether a question may be hidden. `false` means it is hidden already.
-pub(crate) fn delete_allowed(
-    row: &Approval,
-||||||| base
-pub(crate) fn state_only_delete_allowed(
-    record: &Value,
-=======
 /// Hides an agent question. Returns None for any other id: provider cards are
 /// deleted through the callback runtime.
 pub fn delete_agent_question(
@@ -422,71 +379,6 @@ pub(crate) fn delete_allowed(
     reject_pending_native: bool,
 ) -> Result<bool, QuestionsWriteError> {
     if !is_question(row) {
-        return Err(QuestionsWriteError::InvalidRequest(
-            "Only a question can be deleted",
-        ));
-    }
-    if agent_deleted {
-        return Err(QuestionsWriteError::InvalidRequest(
-            "This agent was deleted",
-        ));
-    }
-    if row.hidden.is_some() {
-        return Ok(false);
-    }
-    if reject_pending_native
-        && matches!(row.state, ApprovalState::Pending)
-        && !matches!(row.request, Request::AgentQuestion { .. })
-    {
-        return Err(QuestionsWriteError::QuestionAnswerUnavailable);
-    }
-    if matches!(
-        row.state,
-        ApprovalState::Answering { .. } | ApprovalState::Unknown { .. }
-    ) {
-        return Err(QuestionsWriteError::InvalidRequest(
-            "Question delivery is uncertain; wait for its receipt",
-        ));
-    }
-    Ok(true)
-}
-
-/// History stays: a deleted question is hidden, its state is kept.
-pub(crate) fn hide(row: &mut Approval, at: f64) {
-    row.hidden = Some(Hidden {
-        at: Timestamp(at),
-        by: Principal::Owner,
-    });
-    if let Some(deferral) = row.deferral.as_mut() {
-        deferral.active = false;
-    }
-}
-
-// Value-based helpers of the provider card path. Removed with that path (cluster 4).
-pub(crate) fn state_only_delete_allowed(
-    record: &Value,
->>>>>>> origin/feat/approval-entity
-    agent_deleted: bool,
-    reject_pending_native: bool,
-) -> Result<bool, QuestionsWriteError> {
-<<<<<<< head
-    if !is_question(row) {
-||||||| base
-    if !is_question(record) {
-=======
-    let is_question = match record.get("method").and_then(Value::as_str) {
-        Some("agent/asyncQuestion" | "item/tool/requestUserInput") => true,
-        Some("mcpServer/elicitation/request") => {
-            record
-                .get("params")
-                .and_then(|params| params.get("mode"))
-                .and_then(Value::as_str)
-                == Some("form")
-        }
-        _ => false,
-    };
-    if !is_question {
->>>>>>> origin/feat/approval-entity
         return Err(QuestionsWriteError::InvalidRequest(
             "Only a question can be deleted",
         ));
@@ -785,57 +677,6 @@ fn is_question(row: &Approval) -> bool {
         Request::AgentQuestion { .. } | Request::Question { .. } => true,
         Request::Elicitation { .. } => {
             row.detail.params.0.get("mode").and_then(Value::as_str) == Some("form")
-<<<<<<< head
-||||||| base
-fn request(
-    transaction: &Transaction<'_>,
-    id: &str,
-    validate: &impl Fn(&Value) -> bool,
-) -> Result<Value, QuestionsWriteError> {
-    let raw = QuestionsWriteRepository::request(transaction, id)?
-        .ok_or(QuestionsWriteError::InvalidRequest("Unknown question"))?;
-    let record: Value =
-        serde_json::from_str(&raw).map_err(|_| invalid_stored("runtime_requests", id))?;
-    if record.get("id").and_then(Value::as_str) != Some(id) || !validate(&record) {
-        return Err(invalid_stored("runtime_requests", id));
-    }
-    Ok(record)
-}
-
-fn put_request(
-    transaction: &Transaction<'_>,
-    id: &str,
-    record: &Value,
-    validate: &impl Fn(&Value) -> bool,
-) -> Result<(), QuestionsWriteError> {
-    if !validate(record) {
-        return Err(invalid_stored("runtime_requests", id));
-    }
-    QuestionsWriteRepository::put_request(transaction, id, &event_write::python_json(record))?;
-    // The renderer reads requests as entities: publish the stored change with it.
-    let view = crate::sync_views::project_persisted_record("request", record)
-        .ok_or_else(|| invalid_stored("runtime_requests", id))?;
-    SyncDocumentsRepository::put_entity(
-        transaction,
-        "request",
-        id,
-        view,
-        record["status"] != PENDING,
-    )?;
-    Ok(())
-}
-
-fn is_question(record: &Value) -> bool {
-    match record.get("method").and_then(Value::as_str) {
-        Some("agent/asyncQuestion" | "item/tool/requestUserInput") => true,
-        Some("mcpServer/elicitation/request") => {
-            record
-                .get("params")
-                .and_then(|params| params.get("mode"))
-                .and_then(Value::as_str)
-                == Some("form")
-=======
->>>>>>> origin/feat/approval-entity
         }
         _ => false,
     }
