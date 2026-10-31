@@ -4,28 +4,9 @@ import {
   mergePreferenceFields,
   prunePreferenceFields,
   type PreferenceFields,
-  migratePreferenceFields,
   preferenceScope,
   storageFields,
 } from "./uiPreferenceMerge";
-function storage(values: Record<string, string>): Storage {
-  return {
-    get length() {
-      return Object.keys(values).length;
-    },
-    key: (i) => Object.keys(values)[i] || null,
-    getItem: (key) => values[key] ?? null,
-    setItem: (key, value) => {
-      values[key] = value;
-    },
-    removeItem: (key) => {
-      delete values[key];
-    },
-    clear: () => {
-      for (const key of Object.keys(values)) delete values[key];
-    },
-  };
-}
 describe("UI preference fields", () => {
   it("merges independent edits and rejects older versions", () => {
     const theme = { value: "dark", timestamp: 10, writer: "a" };
@@ -41,27 +22,6 @@ describe("UI preference fields", () => {
     const a = { theme: { value: "light", timestamp: 10, writer: "a" } };
     const b = { theme: { value: "dark", timestamp: 10, writer: "b" } };
     expect(mergePreferenceFields(a, b)).toEqual(mergePreferenceFields(b, a));
-  });
-  it("migrates explicit choices once and preserves server fields", () => {
-    const key = '["codex-studio-preferences-v1","theme"]';
-    const prior = { [key]: { value: "dark", timestamp: 9, writer: "server" } };
-    const local = storage({
-      "codex-studio-preferences-v1": '{"theme":"light","mainFontSize":18}',
-      "codex.terminal.height": "800",
-      "codex-sidebar-collapsed": "true",
-    });
-    const migrated = migratePreferenceFields(local, prior, "user", "device");
-    expect(migrated[key]).toEqual(prior[key]);
-    assert.ok(
-      migrated['["codex-studio-preferences-v1","mainFontSize"]'] != null,
-    );
-    expect(
-      migrated['["codex-studio-preferences-v1","mainFontSize"]'].value,
-    ).toBe(18);
-    expect(migratePreferenceFields(local, migrated, "user", "other")).toEqual(
-      migrated,
-    );
-    expect(Object.keys(migrated)).toHaveLength(2);
   });
   it("keeps project leaves separate and device geometry local", () => {
     expect(

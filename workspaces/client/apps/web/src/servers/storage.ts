@@ -4,6 +4,40 @@ import {
   type IndexedStorage,
 } from "../storageKeys";
 import { serverViewId } from "./environment";
+import { preferenceCacheKey, preferenceScope } from "../sync/uiPreferenceMerge";
+
+const preferenceValues = new Map<string, string>();
+let preferenceKeys: readonly string[] = Object.freeze([]);
+export const preferenceMemory: IndexedStorage = {
+  [storageKeySnapshot]: () => preferenceKeys,
+  get length() {
+    return preferenceValues.size;
+  },
+  key: (index) => preferenceKeys[index] ?? null,
+  getItem: (key) => preferenceValues.get(key) ?? null,
+  setItem(key, value) {
+    const added = !preferenceValues.has(key);
+    preferenceValues.set(key, value);
+    if (added) preferenceKeys = Object.freeze([...preferenceValues.keys()]);
+  },
+  removeItem(key) {
+    if (preferenceValues.delete(key))
+      preferenceKeys = Object.freeze([...preferenceValues.keys()]);
+  },
+  clear() {
+    preferenceValues.clear();
+    preferenceKeys = Object.freeze([]);
+  },
+};
+
+function isPreferenceKey(key: string) {
+  return (
+    !!preferenceScope(key) ||
+    key.startsWith(`${preferenceCacheKey}:`) ||
+    key === "studio-ui-preference-writer-v1" ||
+    key === "mantine-color-scheme-value"
+  );
+}
 
 type StorageWriteObserver = (
   key: string,
@@ -22,20 +56,31 @@ export function scopedStorage(
   shared = new Set<string>(),
 ): Storage {
   let sourceKeys: readonly string[] | undefined;
+  let sourcePreferenceKeys: readonly string[] | undefined;
   let selectedKeys: readonly string[] = [];
   let sharedKeys: string[] = [];
   const keys = () => {
-    const all = storageKeys(storage());
-    if (!prefix) return all;
+    const diskKeys = storageKeys(storage());
+    const memoryKeys = storageKeys(preferenceMemory);
     if (
-      all !== sourceKeys ||
+      diskKeys !== sourceKeys ||
+      memoryKeys !== sourcePreferenceKeys ||
       sharedKeys.length !== shared.size ||
       sharedKeys.some((key) => !shared.has(key))
     ) {
-      sourceKeys = all;
+      sourceKeys = diskKeys;
+      sourcePreferenceKeys = memoryKeys;
       sharedKeys = [...shared];
       selectedKeys = Object.freeze(
-        all.filter((key) => key.startsWith(prefix) || shared.has(key)),
+        [
+          ...diskKeys.filter((key) => {
+            const logical = key.startsWith(prefix)
+              ? key.slice(prefix.length)
+              : key;
+            return !isPreferenceKey(logical);
+          }),
+          ...memoryKeys,
+        ].filter((key) => key.startsWith(prefix) || shared.has(key)),
       );
     }
     return selectedKeys;
@@ -55,10 +100,9 @@ export function scopedStorage(
       return logicalKeys;
     },
     get length() {
-      return prefix ? keys().length : storage().length;
+      return keys().length;
     },
     key(index) {
-      if (!prefix) return storage().key(index);
       const key = keys()[index];
       return key === undefined
         ? null
@@ -67,21 +111,38 @@ export function scopedStorage(
           : key.slice(prefix.length);
     },
     getItem(key) {
-      return storage().getItem(shared.has(key) ? key : prefix + key);
+      // Temporary routing until request fences no longer use scoped storage.
+      return (isPreferenceKey(key) ? preferenceMemory : storage()).getItem(
+        shared.has(key) ? key : prefix + key,
+      );
     },
     setItem(key, value) {
       const previous = this.getItem(key);
-      storage().setItem(shared.has(key) ? key : prefix + key, value);
+      (isPreferenceKey(key) ? preferenceMemory : storage()).setItem(
+        shared.has(key) ? key : prefix + key,
+        value,
+      );
       writeObserver?.(key, value, previous, this);
     },
     removeItem(key) {
       const previous = this.getItem(key);
-      storage().removeItem(shared.has(key) ? key : prefix + key);
+      (isPreferenceKey(key) ? preferenceMemory : storage()).removeItem(
+        shared.has(key) ? key : prefix + key,
+      );
       writeObserver?.(key, null, previous, this);
     },
     clear() {
-      if (prefix) keys().forEach((key) => storage().removeItem(key));
-      else storage().clear();
+      if (prefix)
+        keys().forEach((key) => {
+          const logical = shared.has(key) ? key : key.slice(prefix.length);
+          (isPreferenceKey(logical) ? preferenceMemory : storage()).removeItem(
+            key,
+          );
+        });
+      else {
+        storage().clear();
+        preferenceMemory.clear();
+      }
     },
   };
   let logicalSource: readonly string[] | undefined;
@@ -91,9 +152,17 @@ export function scopedStorage(
 // Prefix for browser records owned by one server; local records keep their old keys.
 export const serverStoragePrefix = (owner: string | null) =>
   owner && owner !== "local" ? `:server:${owner}:` : "";
+const localStore = () => globalThis.localStorage;
+export function preferenceStorageForServer(id: string) {
+  return scopedStorage(
+    localStore,
+    serverStoragePrefix(id),
+    new Set(["codex-studio-preferences-v1", "mantine-color-scheme-value"]),
+  );
+}
 const prefix = serverStoragePrefix(serverViewId);
 export const serverLocalStorage = scopedStorage(
-  () => globalThis.localStorage,
+  localStore,
   prefix,
   new Set(["codex-studio-preferences-v1", "mantine-color-scheme-value"]),
 );

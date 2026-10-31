@@ -19,6 +19,7 @@ import {
   onDesktopNavigate,
 } from "../native/notifications";
 import { orderPreferenceServers } from "./preferenceServerOrder";
+import { preferenceMemory } from "./storage";
 import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { useUiPreferenceSync } from "./useUiPreferenceSync";
 import {
@@ -143,10 +144,7 @@ function MultiServerShell({
       )),
     [paired, registryRevision, navigation],
   );
-  const [selected, setSelected] = useState(
-    () =>
-      localStorage.getItem("studio-selected-server") || servers[0]?.id || "",
-  );
+  const [selected, setSelected] = useState(() => servers[0]?.id || "");
   const current = servers.some((server) => server.id === selected)
     ? selected
     : servers[0]?.id || "";
@@ -222,7 +220,7 @@ function MultiServerShell({
   const [preferences, setPreferences] = useState(() => {
     try {
       return parseStudioPreferences(
-        localStorage.getItem(studioPreferencesStorageKey) || "null",
+        preferenceMemory.getItem(studioPreferencesStorageKey) || "null",
       );
     } catch {
       return defaultStudioPreferences;
@@ -251,7 +249,6 @@ function MultiServerShell({
   };
   const select = useCallback((id: string) => {
     setSelected(id);
-    localStorage.setItem("studio-selected-server", id);
     setMobileOpen(false);
     requestAnimationFrame(() => {
       if (currentRef.current !== id) return;
@@ -564,7 +561,7 @@ function MultiServerShell({
     const apply = () => {
       try {
         const next = parseStudioPreferences(
-          localStorage.getItem(studioPreferencesStorageKey) || "null",
+          preferenceMemory.getItem(studioPreferencesStorageKey) || "null",
         );
         setPreferences(next);
         publishPreferences(next);

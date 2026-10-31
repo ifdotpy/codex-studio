@@ -22,7 +22,7 @@ import {
 import type { Snapshot } from "../types";
 import "../sync/subscriptions/events";
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
-import { serverStorageEventKey } from "./storage";
+import { preferenceMemory, serverStorageEventKey } from "./storage";
 export function useServerFrame(
   data: Snapshot | null,
   opened: string | null,
@@ -190,8 +190,8 @@ export function useServerFrame(
           const value = JSON.stringify(
             normalizeStudioPreferences(event.data.preferences),
           );
-          if (localStorage.getItem(studioPreferencesStorageKey) !== value) {
-            localStorage.setItem(studioPreferencesStorageKey, value);
+          if (preferenceMemory.getItem(studioPreferencesStorageKey) !== value) {
+            preferenceMemory.setItem(studioPreferencesStorageKey, value);
             window.dispatchEvent(
               new StorageEvent("storage", {
                 key: studioPreferencesStorageKey,

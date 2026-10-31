@@ -4,10 +4,6 @@ import { NativeServerCredentials } from "./native/serverCredentials";
 import { hasNativeClient } from "./native/client";
 import { isNativeFrame } from "./native/frame";
 import {
-  bootstrapPreferenceCache,
-  applyCachedPreferenceAppearance,
-} from "./sync/uiPreferenceStore";
-import {
   DesktopServerCredentials,
   nativeCredentialBridge,
 } from "./servers/desktopCredentials";
@@ -36,8 +32,6 @@ import { initializeNativeClose } from "./native/close";
 
 async function mount() {
   await initializeNativeClose();
-  bootstrapPreferenceCache();
-  applyCachedPreferenceAppearance();
   const nativeCredentials = nativeCredentialBridge();
   setServerCredentialAdapter(
     nativeCredentials

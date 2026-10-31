@@ -85,26 +85,6 @@ export function storageFields(
   if (value === null) return {};
   return { [JSON.stringify([key])]: value };
 }
-export function migratePreferenceFields(
-  storage: Storage,
-  prior: PreferenceFields,
-  scope: PreferenceScope,
-  writer: string,
-): PreferenceFields {
-  const result = { ...prior };
-  for (let i = 0; i < storage.length; i++) {
-    const key = storage.key(i)!;
-    if (preferenceScope(key) !== scope) continue;
-    for (const [name, value] of Object.entries(
-      storageFields(key, storage.getItem(key)),
-    )) {
-      // A legacy choice has no edit time. It fills absent fields and cannot replace server intent.
-      if (!result[name]) result[name] = { value, timestamp: 0, writer };
-    }
-  }
-  return result;
-}
-
 export const itemPreferenceFieldCap = 3000;
 export function prunePreferenceFields(
   fields: PreferenceFields,

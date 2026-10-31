@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { preferenceCacheKey } from "../sync/uiPreferenceMerge";
 import {
   readServers,
   writeServers,
   SERVER_REGISTRY_KEY,
   type StudioServer,
 } from "./registry";
-import { readPreferenceFields } from "../sync/uiPreferenceStore";
+import {
+  readPreferenceFields,
+  receivePreferenceFields,
+} from "../sync/uiPreferenceStore";
+import { preferenceMemory } from "./storage";
 
 const mocks = vi.hoisted(() => ({
   effects: [] as (() => void | (() => void))[],
@@ -54,6 +57,7 @@ function mount(
   });
 }
 beforeEach(() => {
+  preferenceMemory.clear();
   mocks.effects.length = 0;
   mocks.streams.length = 0;
   mocks.fetch.mockClear();
@@ -123,12 +127,9 @@ it("leaves preference transport to mounted server projections", () => {
 
 it("applies a server preference using the streamed workspace identity", () => {
   const key = JSON.stringify(["server-label:paired-workspace"]);
-  localStorage.setItem(
-    `${preferenceCacheKey}:user`,
-    JSON.stringify({
-      [key]: { value: "Remote name", timestamp: 1, writer: "remote" },
-    }),
-  );
+  receivePreferenceFields("user", {
+    [key]: { value: "Remote name", timestamp: 1, writer: "remote" },
+  });
   mount();
   expect(readServers()[0]?.label).toBe("Remote name");
   expect(

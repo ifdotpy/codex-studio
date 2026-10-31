@@ -17,24 +17,13 @@ const allowed: Record<string, string> = {
     "request identity of a pending MCP action, kept for a lost reply",
   "components/shell/MonitorRestart.tsx":
     "request body of a pending monitor restart, kept for a lost reply",
-  "servers/MultiServerApp.tsx": "selected server and Studio preferences",
-  "servers/ServerManager.tsx":
-    "local server alias and the pending pairing attempt",
   "servers/automaticAccessStore.ts":
     "servers removed from the automatic UI list",
-  "servers/frameBridge.ts": "Studio preferences sent from a server frame",
-  "servers/preferenceServerOrder.ts":
-    "workspace id of each server, for the preference order",
   "servers/projectLocations.ts": "paired server list, for project locations",
-  "servers/registry.ts":
-    "paired server list and the local server name and alias",
   "servers/routes.ts": "routes that a paired server reported, for each server",
   "servers/serverServices.ts": "server-scoped storage for each server view",
   "servers/storage.ts":
     "server-scoped storage that drafts, queues, uploads, and caches use",
-  "servers/useUiPreferenceSync.ts":
-    "workspace id and local server name, for preference sync",
-  "sync/uiPreferenceStore.ts": "UI preferences of this user",
 };
 
 const root = fileURLToPath(new URL(".", import.meta.url));

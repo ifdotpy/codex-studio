@@ -304,26 +304,6 @@
     "callee": "new NativeServerCredentials().fetch"
   },
   {
-    "file": "servers/MultiServerApp.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/MultiServerApp.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/MultiServerApp.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/MultiServerApp.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/ServerManager.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
     "file": "servers/automaticAccessStore.ts",
     "callee": "indexedDB.open"
   },
@@ -352,40 +332,12 @@
     "callee": "adapter.fetch"
   },
   {
-    "file": "servers/frameBridge.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/frameBridge.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
     "file": "servers/mutationIdentity.test.ts",
     "callee": "globalThis.fetch"
   },
   {
-    "file": "servers/preferenceServerOrder.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
     "file": "servers/projectLocations.ts",
     "callee": "globalThis.localStorage"
-  },
-  {
-    "file": "servers/registry.ts",
-    "callee": "globalThis.localStorage"
-  },
-  {
-    "file": "servers/registry.ts",
-    "callee": "globalThis.localStorage"
-  },
-  {
-    "file": "servers/registry.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/registry.ts",
-    "callee": "localStorage.getItem"
   },
   {
     "file": "servers/routes.ts",
@@ -481,23 +433,11 @@
   },
   {
     "file": "servers/useServerDiscovery.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useServerDiscovery.ts",
     "callee": "localStorage.setItem"
   },
   {
     "file": "servers/useServerDiscovery.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useServerDiscovery.ts",
     "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useServerDiscovery.ts",
-    "callee": "localStorage.getItem"
   },
   {
     "file": "servers/useServerDiscovery.ts",
@@ -509,46 +449,6 @@
   },
   {
     "file": "servers/useUiPreferenceSync.test.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.test.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.test.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
     "callee": "localStorage.getItem"
   },
   {
@@ -657,39 +557,7 @@
   },
   {
     "file": "sync/uiPreferenceStore.test.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "sync/uiPreferenceStore.test.ts",
     "callee": "localStorage.getItem"
-  },
-  {
-    "file": "sync/uiPreferenceStore.test.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "sync/uiPreferenceStore.test.ts",
-    "callee": "localStorage.clear"
-  },
-  {
-    "file": "sync/uiPreferenceStore.test.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "sync/uiPreferenceStore.test.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "sync/uiPreferenceStore.test.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "sync/uiPreferenceStore.ts",
-    "callee": "globalThis.localStorage"
-  },
-  {
-    "file": "sync/uiPreferenceStore.ts",
-    "callee": "globalThis.localStorage"
   },
   {
     "file": "sync/uploads.ts",
