@@ -68,12 +68,11 @@ fn purpose(method: &str) -> Option<u32> {
         "desktop.openExternal"
         | crate::desktop::SIGN_IN_OPEN_METHOD
         | crate::desktop::SIGN_IN_PREPARE_METHOD => EXTERNAL_LINK_PURPOSE,
-        "desktop.saveBegin" | "desktop.savePreview" => 5,
+        "desktop.saveBegin" => 5,
         "desktop.fileAction" => 6,
-        "desktop.requestMicrophone" | "desktop.reserveMicrophone" => 7,
+        "desktop.requestMicrophone" => 7,
         "desktop.prepareTranscription" => 8,
         "desktop.cancelTranscription" => 9,
-        "desktop.copyText" => 10,
         "desktop.showVaultKeys" => 11,
         _ => return None,
     })
@@ -233,15 +232,11 @@ async fn prepare_sign_in(
     Ok(Value::String(url))
 }
 
-pub async fn dispatch(
-    request: Request,
-    backend: Option<&crate::backend::Backend>,
-    previews: Option<&crate::file_preview::Previews>,
-) -> Response {
+pub async fn dispatch(request: Request, backend: Option<&crate::backend::Backend>) -> Response {
     let result = async {
         if matches!(
             request.method.as_str(),
-            "desktop.saveDeclare" | "desktop.saveChunk" | "desktop.saveCancel"
+            "desktop.saveChunk" | "desktop.saveCancel"
         ) {
             return crate::file_save::command(&request.method, &request.params["value"]);
         }
@@ -286,19 +281,12 @@ pub async fn dispatch(
             "desktop.showVaultKeys" => return crate::vault_keys::show(&value).await,
             "desktop.saveBegin" => return crate::file_save::command(&request.method, &value),
             "desktop.requestMicrophone" => return crate::media::request_microphone().await,
-            "desktop.reserveMicrophone" => return crate::media::reserve_microphone(Instant::now()),
             "desktop.prepareTranscription" => return crate::speech::prepare(Instant::now()),
             "desktop.cancelTranscription" => return crate::speech::cancel(&value),
             _ => {}
         }
         #[cfg(target_os = "macos")]
         {
-            if request.method == "desktop.savePreview" {
-                let (name, bytes) = previews
-                    .ok_or("The preview service is unavailable.")?
-                    .snapshot(&value)?;
-                return save_snapshot(name, bytes).await;
-            }
             if request.method == "desktop.fileAction" {
                 let backend = backend.ok_or("The native backend is unavailable.")?;
                 let file = crate::file_actions::resolve(backend, value).await?;
@@ -418,10 +406,7 @@ fn read_selected_files(paths: Value) -> Result<Value, String> {
 mod mac {
     use super::*;
     use objc2::{MainThreadMarker, rc::autoreleasepool};
-    use objc2_app_kit::{
-        NSOpenPanel, NSPasteboard, NSPasteboardTypeString, NSSavePanel, NSWorkspace,
-        NSWorkspaceOpenConfiguration,
-    };
+    use objc2_app_kit::{NSOpenPanel, NSSavePanel, NSWorkspace, NSWorkspaceOpenConfiguration};
     use objc2_foundation::{NSArray, NSError, NSString, NSURL};
 
     // Native callbacks may finish after their caller disconnects; reply delivery is best effort.
@@ -504,7 +489,6 @@ mod mac {
                     "desktop.pickDirectory" => pick_directory(),
                     "desktop.pickAttachments" => pick_files(),
                     "desktop.saveChoose" => save_choose(&value),
-                    "desktop.copyText" => copy_text(&value),
                     "desktop.revealPath" => reveal(&value),
                     "desktop.openExternal" | crate::desktop::SIGN_IN_OPEN_METHOD => {
                         let address = match external_url(&value) {
@@ -549,20 +533,6 @@ mod mac {
         receive
             .await
             .map_err(|_| "The native action stopped without a result.".to_owned())?
-    }
-    fn copy_text(value: &Value) -> Result<Value, String> {
-        let text = value
-            .as_str()
-            .filter(|s| s.len() <= 8 * 1024 * 1024)
-            .ok_or("Copy accepts at most 8 MiB of text.")?;
-        let clipboard = NSPasteboard::generalPasteboard();
-        clipboard.clearContents();
-        if clipboard.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString })
-        {
-            Ok(Value::Null)
-        } else {
-            Err("The system clipboard did not accept the text.".into())
-        }
     }
     fn save_choose(value: &Value) -> Result<Value, String> {
         let mtm = MainThreadMarker::new().ok_or("The save dialog requires the main thread.")?;
@@ -659,7 +629,7 @@ mod tests {
                 "value":{"url":"https://example.com/authorize", "requestId":"card-1"}
             }),
         };
-        let response = dispatch(request, None, None).await;
+        let response = dispatch(request, None).await;
         assert!(response.error.is_none(), "{:?}", response.error);
         let preparation = response.result.unwrap();
         assert!(preparation.as_str().is_some_and(|id| id.len() >= 32));
@@ -678,7 +648,6 @@ mod tests {
                 params: serde_json::json!({"_nativeWindow":"main","value":{"preparation":preparation,"requestId":"card-1"}}),
             },
             None,
-            None,
         ).await;
         assert_eq!(canceled.result, Some(Value::Bool(true)));
     }
@@ -693,12 +662,12 @@ mod tests {
             method: crate::desktop::SIGN_IN_OPEN_METHOD.into(),
             params,
         };
-        let first = dispatch(make_request(params.clone()), None, None).await;
+        let first = dispatch(make_request(params.clone()), None).await;
         assert_eq!(
             first.error.unwrap().message,
             "This sign-in belongs to another server view."
         );
-        let replay = dispatch(make_request(params.clone()), None, None).await;
+        let replay = dispatch(make_request(params.clone()), None).await;
         assert!(
             replay
                 .error
@@ -712,7 +681,7 @@ mod tests {
             serde_json::json!("forged"),
         ] {
             params["value"]["preparation"] = invalid;
-            let response = dispatch(make_request(params.clone()), None, None).await;
+            let response = dispatch(make_request(params.clone()), None).await;
             assert!(
                 response
                     .error
@@ -818,10 +787,8 @@ mod tests {
             "desktop.openExternal",
             crate::desktop::SIGN_IN_OPEN_METHOD,
             "desktop.revealPath",
-            "desktop.copyText",
             "desktop.showVaultKeys",
             "desktop.saveBegin",
-            "desktop.savePreview",
             "desktop.fileAction",
         ] {
             let reply = dispatch(
@@ -831,11 +798,36 @@ mod tests {
                     params: serde_json::json!({"value":"https://example.com"}),
                 },
                 None,
-                None,
             )
             .await;
             assert!(reply.error.is_some());
         }
+        let retired = dispatch(
+            Request {
+                id: "retired".into(),
+                method: "desktop.copyText".into(),
+                params: serde_json::json!({"value":"text"}),
+            },
+            None,
+        )
+        .await;
+        assert_eq!(
+            retired.error.unwrap().message,
+            "This native action is not available."
+        );
+        let retired = dispatch(
+            Request {
+                id: "retired".into(),
+                method: "desktop.reserveMicrophone".into(),
+                params: serde_json::json!({}),
+            },
+            None,
+        )
+        .await;
+        assert_eq!(
+            retired.error.unwrap().message,
+            "This native action is not available."
+        );
         for address in [
             "file:///etc/passwd",
             "javascript:alert(1)",

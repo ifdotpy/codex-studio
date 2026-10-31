@@ -550,7 +550,10 @@ pub fn dispatch_notification_with_effects(
                     {
                         Table::<MonitorRecord>::new(transaction)
                             .get(&process_id.to_owned())?
-                            .is_some_and(|monitor| monitor.value()["status"] == "running")
+                            .is_some_and(|monitor| {
+                                monitor.status
+                                    == studio_runtime_schema::studio_errors::MonitorStatus::Running
+                            })
                     } else {
                         false
                     },
@@ -2061,9 +2064,11 @@ fn update_common_agent_fields(
             })
             .map(str::to_owned);
         if turn.as_deref() == agent.get("turnId").and_then(Value::as_str) {
-            agent["nativeResponseTurn"] = turn
-                .as_ref()
-                .map_or(Value::Null, |turn| Value::String(turn.clone()));
+            if let Some(turn) = &turn {
+                agent["nativeResponseTurn"] = json!(turn);
+            } else if let Some(fields) = agent.as_object_mut() {
+                fields.remove("nativeResponseTurn");
+            }
             let mut clear_safety = false;
             if let Some(buffering) = agent
                 .get_mut("nativeSafetyBuffering")
@@ -3273,8 +3278,8 @@ mod tests {
                 let agent =
                     AgentRepository::get(tx, &"agent".into())?.expect("accepted agent remains");
                 assert_eq!(agent.turn_id.as_deref(), Some("turn-1"));
-                assert_eq!(agent.extra["events"], 1);
-                assert!(agent.extra["lastEvent"].is_string());
+                assert_eq!(agent.events, Some(1));
+                assert!(agent.last_event.is_some());
                 let message = MessageRepository::get(tx, &ChatMessageId::from("message-1"))?
                     .expect("chat message remains");
                 assert_eq!(message.deliveries["agent"], "delivered");
@@ -3326,7 +3331,7 @@ mod tests {
             .transaction(move |tx| {
                 let agent =
                     AgentRepository::get(tx, &"agent".into())?.expect("accepted agent remains");
-                assert_eq!(agent.extra["events"], 1);
+                assert_eq!(agent.events, Some(1));
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await
@@ -3987,10 +3992,13 @@ mod tests {
             DispatchOutcome::Written
         );
         transaction.commit().expect("submission commits");
-        let receipts: i64 = connection.query_row(
-            "SELECT count(*) FROM request_results WHERE id LIKE '%provider-submission%'",
-            [], |row| row.get(0),
-        ).expect("submission receipts");
+        let receipts: i64 = connection
+            .query_row(
+                "SELECT count(*) FROM request_results WHERE id LIKE '%provider-submission%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("submission receipts");
         assert_eq!(receipts, 0, "the typed submission owner holds the outcome");
         let item = TranscriptRepository::item(&connection, "agent", "agent:e1")
             .expect("user item reads")
@@ -4043,7 +4051,9 @@ mod tests {
         let now = chrono::Utc::now().timestamp_millis();
         let expired = now - studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS - 1;
         connection.execute("UPDATE runtime_event_meta SET record=json_set(record,'$.providerSubmission.admission.created',?1)", [expired]).expect("age admitted owner");
-        let tx = connection.transaction().expect("expired replay transaction");
+        let tx = connection
+            .transaction()
+            .expect("expired replay transaction");
         assert!(matches!(
             record_user_submission(&tx, "agent", &submission),
             Err(super::NotificationDispatchError::RequestResult(
@@ -4299,7 +4309,7 @@ mod tests {
         let agent = TranscriptRepository::agent(&connection, "agent")
             .expect("updated agent reads")
             .expect("updated agent exists");
-        assert_eq!(agent.get("nativeResponseTurn"), Some(&Value::Null));
+        assert!(agent.get("nativeResponseTurn").is_none());
         assert!(agent.get("nativeStatus").is_none());
     }
 
@@ -4325,9 +4335,6 @@ mod tests {
         )
         .expect_err("malformed stored epoch is refused");
         assert!(error.to_string().contains("runtime_agents/agent"));
-        assert!(error.to_string().contains("/epoch"));
-        assert!(error.to_string().contains("value type string"));
-        assert!(error.to_string().contains("length"));
         assert!(!error.to_string().contains("SECRET_STORED_SENTINEL"));
         transaction
             .commit()

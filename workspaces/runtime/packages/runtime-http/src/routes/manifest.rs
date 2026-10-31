@@ -27,10 +27,6 @@ pub(crate) fn registered_dependencies() -> Vec<&'static str> {
 }
 
 impl Dependency {
-    #[allow(
-        dead_code,
-        reason = "later route groups declare capability dependencies"
-    )]
     pub(crate) const fn new(name: &'static str) -> Self {
         Self(name)
     }
@@ -52,7 +48,6 @@ pub(crate) enum OperationStatus {
 }
 
 impl OperationStatus {
-    #[allow(dead_code, reason = "later route groups declare partial operations")]
     pub(crate) const fn partial(dependencies: &'static [Dependency]) -> Self {
         Self::Partial { dependencies }
     }
@@ -70,10 +65,6 @@ impl OperationStatus {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "partial route slices use this to bind 501 behavior"
-    )]
     fn matches_dependencies(self, dependencies: &[Dependency]) -> bool {
         matches!(self, Self::Partial { dependencies: declared }
             if !dependencies.is_empty()
@@ -83,10 +74,6 @@ impl OperationStatus {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "partial route slices use this registered-operation helper"
-)]
 pub(crate) fn dependency_unavailable(
     method: &str,
     path: &str,
@@ -175,10 +162,6 @@ impl RouteRegistration {
 
 macro_rules! method_registration {
     ($function:ident, $method:literal, $filter:path) => {
-        #[allow(
-            dead_code,
-            reason = "later route groups use method-specific registration"
-        )]
         pub(crate) fn $function<H, T>(
             path: &'static str,
             status: OperationStatus,
@@ -198,12 +181,6 @@ macro_rules! method_registration {
 
 method_registration!(get, "GET", MethodFilter::GET);
 method_registration!(post, "POST", MethodFilter::POST);
-method_registration!(put, "PUT", MethodFilter::PUT);
-method_registration!(delete, "DELETE", MethodFilter::DELETE);
-method_registration!(patch, "PATCH", MethodFilter::PATCH);
-method_registration!(options, "OPTIONS", MethodFilter::OPTIONS);
-method_registration!(head, "HEAD", MethodFilter::HEAD);
-method_registration!(trace, "TRACE", MethodFilter::TRACE);
 
 pub(crate) struct RouteGroup {
     registrations: Vec<RouteRegistration>,
@@ -224,9 +201,10 @@ impl RouteGroup {
 }
 
 #[cfg(test)]
-pub(crate) fn operation_manifest() -> Result<Vec<Operation>, RegistrationError> {
+pub(crate) fn operation_manifest() -> Result<Vec<Operation>, Box<dyn std::error::Error>> {
     let groups = super::groups();
-    let authority = crate::schema::operations().map_err(|_| RegistrationError::InvalidAuthority)?;
+    let authority =
+        crate::schema::operations().map_err(|error| std::io::Error::other(error.to_string()))?;
     super::compose::validate(&groups, authority)?;
 
     let mut implemented = groups

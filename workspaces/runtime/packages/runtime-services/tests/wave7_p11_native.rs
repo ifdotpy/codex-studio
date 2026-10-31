@@ -61,6 +61,40 @@ fn corpus() -> &'static Value {
             }
         }
         roots(&mut data);
+        fn normalize_agents(value: &mut Value) {
+            match value {
+                Value::Object(fields) => {
+                    if fields.contains_key("id")
+                        && fields.contains_key("rootId")
+                        && fields.contains_key("epoch")
+                        && fields.contains_key("status")
+                    {
+                        for key in [
+                            "parentId",
+                            "threadId",
+                            "turnId",
+                            "events",
+                            "lastEvent",
+                            "activity",
+                            "activeTools",
+                            "tail",
+                            "lastAnswer",
+                            "contextUsage",
+                            "tokensUsed",
+                            "tokenUsageAccounting",
+                        ] {
+                            if fields.get(key).is_some_and(Value::is_null) {
+                                fields.remove(key);
+                            }
+                        }
+                    }
+                    fields.values_mut().for_each(normalize_agents);
+                }
+                Value::Array(values) => values.iter_mut().for_each(normalize_agents),
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+            }
+        }
+        normalize_agents(&mut data);
         for case in data["actions"].as_array_mut().expect("actions") {
             case["after"]["startAttempt"]["rootRequestId"] = case["request"]["requestId"].clone();
         }
@@ -160,9 +194,11 @@ fn db(case: &Value) -> Connection {
     studio_runtime_store::receipt_schema::create(&db).expect("receipt target schema");
     db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
-    db.execute(
-        "INSERT INTO runtime_agents(id,record) VALUES('lead',?1)",
-        [case["agent"].to_string()],
+    studio_runtime_store::agent_volatile::put(
+        &db,
+        case["agent"]["id"].as_str().expect("agent id"),
+        &case["agent"],
+        false,
     )
     .expect("Python-written agent");
     db
@@ -192,12 +228,12 @@ fn row(db: &Connection) -> Value {
 }
 fn actor(db: &Connection) -> Value {
     serde_json::from_str(
-        &db.query_row(
-            "SELECT record FROM runtime_agents WHERE id='lead'",
-            [],
-            |r| r.get::<_, String>(0),
+        &studio_runtime_store::AgentRepository::get_raw(
+            db,
+            &studio_runtime_store::AgentId::from("lead"),
         )
-        .expect("agent"),
+        .expect("agent")
+        .expect("row"),
     )
     .expect("agent JSON")
 }
@@ -840,17 +876,16 @@ fn review_reservation_accepts_provider_progress_after_preparation() {
         let mut db = db(&json!({"agent":case["actor"]}));
         let mut current = case["actor"].clone();
         current[field] = match field {
-            "events" | "lastEvent" | "tokensUsed" => json!(23),
-            "tail" | "lastAnswer" => json!("new provider output"),
+            "events" | "tokensUsed" => json!(23),
+            "lastEvent" | "tail" | "lastAnswer" => json!("new provider output"),
             "activity" => json!({"phase":"thinking","at":23}),
             "activeTools" => json!([]),
-            _ => json!({"totalTokens":23}),
+            "contextUsage" => json!({"tokens":23,"window":100,"at":23}),
+            "tokenUsageAccounting" => json!("total"),
+            _ => unreachable!(),
         };
-        db.execute(
-            "UPDATE runtime_agents SET record=?1 WHERE id='lead'",
-            [current.to_string()],
-        )
-        .expect("provider progress");
+        studio_runtime_store::agent_volatile::put(&db, "lead", &current, false)
+            .expect("provider progress");
         let tx = db.transaction().expect("begin");
         native_review::reserve(&tx, &plan, &Creator(case["child"].clone()))
             .unwrap_or_else(|error| panic!("progress field {field} refused the review: {error}"));
@@ -885,11 +920,7 @@ fn a_worker_review_checks_lead_settings_but_accepts_lead_progress() {
         .expect("plan");
         let mut db = db(&json!({"agent":parent}));
         root[field] = value;
-        db.execute(
-            "INSERT INTO runtime_agents(id,record) VALUES('root',?1)",
-            [root.to_string()],
-        )
-        .expect("lead change");
+        studio_runtime_store::agent_volatile::put(&db, "root", &root, false).expect("lead change");
         let mut child = case["child"].clone();
         child["rootId"] = json!("root");
         let tx = db.transaction().expect("begin");
@@ -1190,7 +1221,7 @@ fn stored_native_action_errors_name_the_table_and_row() {
         pointer.is_empty(),
         "missing required fields fail at the row root"
     );
-    assert!(reason.starts_with("required;"));
+    assert!(reason.starts_with("record_decode;"));
     assert!(!reason.contains("SECRET_STORED_SENTINEL"));
     drop(tx);
     db.execute(

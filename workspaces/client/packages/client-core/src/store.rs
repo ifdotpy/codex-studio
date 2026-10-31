@@ -103,15 +103,6 @@ impl Store {
     fn execute(&mut self, request: &Request) -> rusqlite::Result<Response> {
         let id = request.id.clone();
         match request.method.as_str() {
-            "markdown.parse" => Ok(crate::markdown::dispatch(request)),
-            method
-                if method == "system.uuid"
-                    || method == "text.sentences"
-                    || method == "locale.language_name"
-                    || method.starts_with("url.") =>
-            {
-                Ok(crate::platform::dispatch(request))
-            }
             method if method.starts_with("drafts.") => {
                 Ok(crate::draft_store::dispatch(&mut self.connection, request))
             }
@@ -124,13 +115,6 @@ impl Store {
             method if method.starts_with("outbox.") => {
                 Ok(crate::outbox::dispatch(&mut self.connection, request))
             }
-            "system.info" => Ok(Response::success(
-                id,
-                json!({
-                    "name": "Codex Studio", "core": "rust", "protocol": 2,
-                    "migration": "in_progress"
-                }),
-            )),
             "draft.get" => {
                 let lookup: DraftLookup<'_> = project(&request.params);
                 let (Some(workspace), Some(room)) = (lookup.workspace, lookup.room) else {

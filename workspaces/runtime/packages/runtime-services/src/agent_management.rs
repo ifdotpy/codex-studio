@@ -898,7 +898,7 @@ fn next_epoch(agent: &Agent) -> Result<i64, ManagementError> {
 }
 fn workspace_dependency(agent: &Agent) -> Result<(), ManagementError> {
     if agent.record.get("executionMode").and_then(Value::as_str) == Some("vm")
-        || ["worktreeReady", "worktreeCleanup", "cleanedWorktree"]
+        || ["worktreeReady", "cleanedWorktree"]
             .iter()
             .any(|key| agent.flag(key))
     {
@@ -1613,8 +1613,12 @@ mod lifecycle_scope_parity_tests {
                 (
                     "runtime_monitors".to_owned(),
                     vec![
-                        json!({"id":"worker-monitor","agent":"worker","status":"running"}),
-                        json!({"id":"unrelated-monitor","agent":"other-lead","status":"running"}),
+                        crate::monitor_policy::complete_test_monitor(
+                            json!({"id":"worker-monitor","agent":"worker","status":"running"}),
+                        ),
+                        crate::monitor_policy::complete_test_monitor(
+                            json!({"id":"unrelated-monitor","agent":"other-lead","status":"running"}),
+                        ),
                     ],
                 ),
                 (

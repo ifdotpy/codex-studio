@@ -698,21 +698,6 @@ impl RuntimeOrchestrationEffects {
         }
     }
 
-    pub fn with_browser_callback(
-        store: Arc<RuntimeStore>,
-        browser_callback: Arc<dyn BrowserCallbackEffect>,
-    ) -> Self {
-        Self {
-            store,
-            browser_callback,
-            default_account: "default".to_owned(),
-            known_accounts: Vec::new(),
-            lifecycle_ports: None,
-            update_offer: Arc::new(crate::peer_updates::Offer::installed()),
-            projects_changed: None,
-        }
-    }
-
     pub fn with_project_accounts(
         store: Arc<RuntimeStore>,
         browser_callback: Arc<dyn BrowserCallbackEffect>,
@@ -1125,7 +1110,7 @@ impl RuntimeOrchestrationEffects {
                 })?;
                 if parent.epoch as i64 != parent_epoch
                     || parent.auto_wake != Some(true)
-                    || studio_runtime_store::truthy(parent.extra.get("deletedAt"))
+                    || parent.is_deleted()
                 {
                     return Err(refused(409, "parent_stopped", "The home team was stopped"));
                 }
@@ -1145,7 +1130,7 @@ impl RuntimeOrchestrationEffects {
                     || worker.extra.get("remoteWorker") != Some(&expected_remote)
                     || !studio_runtime_store::truthy(worker.extra.get("movedTo"))
                     || worker.auto_wake != Some(true)
-                    || studio_runtime_store::truthy(worker.extra.get("deletedAt"))
+                    || worker.is_deleted()
                 {
                     return Err(refused(409, "worker_stopped", "The worker was stopped"));
                 }
@@ -1719,11 +1704,7 @@ fn is_descendant_of(
     )?;
     let mut seen = std::collections::HashSet::new();
     while let Some(agent) = current {
-        let parent = agent
-            .extra
-            .get("parentId")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let parent = agent.parent_id.as_deref().unwrap_or_default();
         if parent == ancestor_id {
             return Ok(true);
         }
@@ -2126,7 +2107,7 @@ impl RuntimeOrchestrationEffects {
                 })?;
                 if typed.epoch != parent_epoch
                     || typed.auto_wake != Some(true)
-                    || studio_runtime_store::truthy(typed.extra.get("deletedAt"))
+                    || typed.is_deleted()
                 {
                     return applied(&json!({"stored":false,"reason":"The parent was stopped"}));
                 }
@@ -2164,13 +2145,16 @@ impl RuntimeOrchestrationEffects {
                             "The result worker is unavailable",
                         )
                     })?;
-                    proxy.extra.insert(
-                        "lastAnswer".to_owned(),
+                    proxy.last_answer = Some(
                         details
                             .get("result")
                             .or_else(|| details.get("reason"))
-                            .cloned()
-                            .unwrap_or_else(|| json!("")),
+                            .map(|value| {
+                                value
+                                    .as_str()
+                                    .map_or_else(|| value.to_string(), str::to_owned)
+                            })
+                            .unwrap_or_default(),
                     );
                     proxy
                         .extra
@@ -2395,7 +2379,7 @@ fn receive_exec_event(
     else {
         return applied(&json!({"stored": false, "detail": "The lead no longer exists"}));
     };
-    if studio_runtime_store::truthy(lead.extra.get("deletedAt")) {
+    if lead.is_deleted() {
         return applied(&json!({"stored": false, "detail": "The lead was deleted"}));
     }
     let record = payload

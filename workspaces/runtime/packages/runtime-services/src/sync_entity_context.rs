@@ -96,11 +96,11 @@ pub(crate) fn agent_view_contexts(
                 .query_map([], |row| row.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?
             {
-                if let Ok(record) = serde_json::from_str::<Value>(&raw)
-                    && let Some(owner) = record.get("agent").and_then(Value::as_str)
-                    && lead_set.contains(owner)
+                if let Ok(record) =
+                    serde_json::from_str::<studio_runtime_store::MonitorRecord>(&raw)
+                    && lead_set.contains(record.agent.as_str())
                 {
-                    monitor_agents.insert(owner.to_owned());
+                    monitor_agents.insert(record.agent);
                 }
             }
         }

@@ -1392,7 +1392,7 @@ mod managed_work_port_tests {
             .transaction(move |tx| {
                 let mut worker =
                     AgentRepository::get(tx, &"worker".into())?.expect("worker fixture exists");
-                worker.extra.insert("cwd".into(), json!(cwd));
+                worker.cwd = Some(cwd);
                 worker.extra.insert("yoloMode".into(), json!(true));
                 AgentRepository::put(tx, &worker)?;
                 Ok(())
@@ -1450,16 +1450,11 @@ mod managed_work_port_tests {
                 let monitor = studio_runtime_store::MonitorsRepository::get(tx, &id)?
                     .expect("gate monitor exists");
                 assert_eq!(
-                    std::path::Path::new(
-                        monitor.value()["log"]
-                            .as_str()
-                            .expect("monitor log path is text")
-                    )
-                    .parent(),
+                    std::path::Path::new(&monitor.log).parent(),
                     Some(log_root.as_path())
                 );
-                assert_eq!(monitor.value()["timeout_ms"], 4321);
-                assert_eq!(monitor.value()["agent"], "worker");
+                assert_eq!(monitor.timeout_ms.get(), 4321);
+                assert_eq!(monitor.agent, "worker");
                 studio_runtime_services::monitor_runtime::finish_in_transaction(
                     tx,
                     &id,
@@ -1567,7 +1562,7 @@ mod managed_work_port_tests {
             .transaction(move |tx| {
                 let mut lead =
                     AgentRepository::get(tx, &"lead".into())?.expect("lead fixture exists");
-                lead.extra.insert("cwd".into(), json!(cwd));
+                lead.cwd = Some(cwd);
                 lead.extra.insert("yoloMode".into(), json!(true));
                 AgentRepository::put(tx, &lead)?;
                 Ok(())

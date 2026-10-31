@@ -10,7 +10,7 @@ use axum::Extension;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use serde_json::{Number, Value, json};
+use serde_json::{Number, Value};
 use std::sync::Arc;
 use studio_runtime_services::rules::{self, RuleAction, RulesError};
 use studio_runtime_store::{RuleRecord, RulesRepository, StoreError};
@@ -26,9 +26,7 @@ pub(crate) fn routes() -> RouteGroup {
     ])
 }
 
-pub(crate) async fn list(
-    State(state): State<HttpState>,
-) -> Result<Json<crate::generated::RuleList>, ApiError> {
+pub(crate) async fn list(State(state): State<HttpState>) -> Result<Json<RuleList>, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let records = store
         .read_async("runtime-http/routes/rules", move |connection| {
@@ -37,14 +35,12 @@ pub(crate) async fn list(
         })
         .await?;
 
-    let output = records
-        .into_iter()
-        .map(|rule| rule.value())
-        .collect::<Vec<_>>();
-    let response = json!({"rules": output});
-    Ok(Json(super::generated_json::<crate::generated::RuleList>(
-        response,
-    )?))
+    Ok(Json(RuleList { rules: records }))
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct RuleList {
+    rules: Vec<RuleRecord>,
 }
 
 // OpenAPI validation owns the wire shape; numeric fields retain JSON number spelling.
@@ -63,9 +59,9 @@ struct RuleWire {
     interval_seconds: Option<Number>,
     at: Option<Number>,
     #[serde(default)]
-    stall_timeout_seconds: studio_runtime_schema::queue_command::Field<Number>,
+    stall_timeout_seconds: Option<Number>,
     #[serde(rename = "stall_timeout_seconds", default)]
-    stall_alias: studio_runtime_schema::queue_command::Field<Number>,
+    stall_alias: Option<Number>,
     minimum_workers: Option<Number>,
     duration_minutes: Option<Number>,
     event: Option<crate::generated::RuleBodyEvent>,
@@ -130,14 +126,16 @@ async fn update(
             validate_agent(agent.id().as_ref(), &agent_value)?;
             let old =
                 RulesRepository::get(connection, &prepare_rule_id).map_err(store_api_error)?;
-            let old_value = old.as_ref().map(|old| old.value());
-            let path = if matches!(prepare_action, RuleAction::Resume { .. })
-                && old_value.as_ref().and_then(|value| string(value, "kind")) == Some("file")
-            {
-                old_value
-                    .as_ref()
-                    .and_then(|value| string(value, "path"))
-                    .map(str::to_owned)
+            let path = if matches!(prepare_action, RuleAction::Resume { .. }) {
+                old.as_ref().and_then(|rule| match &rule.kind {
+                    studio_runtime_schema::rule_record::RuleKind::File { path } => {
+                        Some(path.clone())
+                    }
+                    studio_runtime_schema::rule_record::RuleKind::Interval
+                    | studio_runtime_schema::rule_record::RuleKind::Once
+                    | studio_runtime_schema::rule_record::RuleKind::Event
+                    | studio_runtime_schema::rule_record::RuleKind::LowWorkers { .. } => None,
+                })
             } else if matches!(prepare_action, RuleAction::Save { .. })
                 && prepare_body.kind.as_deref() == Some("file")
             {
@@ -148,7 +146,7 @@ async fn update(
             } else {
                 None
             };
-            Ok::<_, ApiError>((agent_value, old_value, path))
+            Ok::<_, ApiError>((agent_value, old, path))
         })
         .await?;
     let prepared_fingerprint = match prepared_path.as_deref() {
@@ -163,86 +161,104 @@ async fn update(
             let agent_value = agent.value();
             validate_agent(agent.id().as_ref(), &agent_value)?;
             if agent_value != prepared_agent {
-                return Err(ApiError::new(StatusCode::CONFLICT, "Agent changed while updating its rule"));
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "Agent changed while updating its rule",
+                ));
             }
             let old = RulesRepository::get(transaction, &rule_id).map_err(store_api_error)?;
-            let old_value = old.as_ref().map(|old| old.value());
-            if old_value != prepared_old {
-                return Err(ApiError::new(StatusCode::CONFLICT, "Rule changed while applying this update"));
+            if old != prepared_old {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "Rule changed while applying this update",
+                ));
             }
-            if let (Some(old), Some(value)) = (&old, &old_value) {
-                if string(value, "id") != Some(old.id().as_ref()) {
-                    return Err(invalid_rule(old.id().as_ref()));
+            if old.as_ref().is_some_and(|rule| rule.agent != agent_id) {
+                return Err(ApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "This rule belongs to another agent",
+                ));
+            }
+            if old.as_ref().is_some_and(|rule| rule.in_flight) {
+                if matches!(action, RuleAction::Save { .. }) {
+                    return Err(ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "Pause the rule and wait for its current check before editing",
+                    ));
                 }
-                if string(value, "agent") != Some(agent_id.as_str()) {
-                    return Err(ApiError::new(StatusCode::BAD_REQUEST, "This rule belongs to another agent"));
+                if matches!(action, RuleAction::Resume { .. }) {
+                    return Err(ApiError::new(
+                        StatusCode::BAD_REQUEST,
+                        "Wait for the current rule check before resuming",
+                    ));
                 }
             }
-            if matches!(action, RuleAction::Save { .. }) && old_value.as_ref().and_then(|v| v.get("inFlight")).and_then(Value::as_bool) == Some(true) {
-                return Err(ApiError::new(StatusCode::BAD_REQUEST, "Pause the rule and wait for its current check before editing"));
-            }
-            if matches!(action, RuleAction::Resume { .. }) && old_value.as_ref().and_then(|v| v.get("inFlight")).and_then(Value::as_bool) == Some(true) {
-                return Err(ApiError::new(StatusCode::BAD_REQUEST, "Wait for the current rule check before resuming"));
-            }
-            let cancel_ids = if matches!(action, RuleAction::Pause { .. } | RuleAction::Delete { .. }) {
-                RulesRepository::active_check_ids(transaction, &rule_id).map_err(store_api_error)?
-            } else {
-                Vec::new()
-            };
+            let cancel_ids =
+                if matches!(action, RuleAction::Pause { .. } | RuleAction::Delete { .. }) {
+                    RulesRepository::active_check_ids(transaction, &rule_id)
+                        .map_err(store_api_error)?
+                } else {
+                    Vec::new()
+                };
             let result = match &action {
-                RuleAction::Delete { .. } | RuleAction::Pause { .. } | RuleAction::Resume { .. } => {
-                    let (Some(_old), Some(mut value)) = (old, old_value) else {
+                RuleAction::Delete { .. }
+                | RuleAction::Pause { .. }
+                | RuleAction::Resume { .. } => {
+                    let Some(mut rule) = old else {
                         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Unknown rule"));
                     };
                     if matches!(action, RuleAction::Delete { .. }) {
                         RulesRepository::delete(transaction, &rule_id).map_err(store_api_error)?;
-                        json!({"deleted": rule_id})
+                        RuleWriteResponse::Deleted(crate::generated::DeletedRuleReceipt {
+                            deleted: rule_id.clone(),
+                        })
                     } else {
-                        if matches!(action, RuleAction::Resume { .. }) && agent_value.get("autoWake").and_then(Value::as_bool) != Some(true) {
-                            return Err(ApiError::new(StatusCode::BAD_REQUEST, "Resume the agent before its rules"));
-                        }
-                        // A manual pause or resume replaces a pause that the tick made
-                        // while the owner could not run, so the tick no longer resumes it.
-                        let owner_held = value.get("ownerHold").is_some_and(|hold| !hold.is_null());
-                        if let Some(object) = value.as_object_mut() {
-                            object.remove("restartCheck");
-                            object.remove("ownerHold");
-                        }
-                        let desired = if matches!(action, RuleAction::Resume { .. }) { "active" } else { "paused" };
-                        if !owner_held
-                            && string(&value, "kind") == Some("low_workers")
-                            && string(&value, "status") == Some(desired)
-                            && value.get("epoch") == agent_value.get("epoch")
+                        use studio_runtime_schema::rule_record::{RuleKind, RuleStatus};
+                        if matches!(action, RuleAction::Resume { .. })
+                            && agent_value.get("autoWake").and_then(Value::as_bool) != Some(true)
                         {
-                            value
-                        } else {
-                            let interval = value.get("intervalSeconds").and_then(Value::as_f64).unwrap_or(60.0);
-                            let kind = string(&value, "kind").unwrap_or("").to_owned();
-                            let file_update = (matches!(action, RuleAction::Resume { .. }) && kind == "file").then(|| (
-                                now,
-                                prepared_fingerprint.clone().unwrap_or(Value::Null),
-                                value.get("fileGeneration").and_then(Value::as_u64).unwrap_or(0).saturating_add(1),
+                            return Err(ApiError::new(
+                                StatusCode::BAD_REQUEST,
+                                "Resume the agent before its rules",
                             ));
-                            if let Some(object) = value.as_object_mut() {
-                                object.insert("status".into(), json!(desired));
-                                object.insert("epoch".into(), agent_value["epoch"].clone());
-                                object.insert("nextAt".into(), number(now + interval)?);
-                                object.insert("error".into(), Value::Null);
-                                if let Some((activity, fingerprint, generation)) = file_update {
-                                    object.insert("fileActivityAt".into(), number(activity)?);
-                                    object.insert("fingerprint".into(), fingerprint);
-                                    object.insert("fileGeneration".into(), json!(generation));
-                                    object.insert("stallWakeGeneration".into(), json!(generation.saturating_sub(1)));
-                                }
-                                if kind == "low_workers" {
-                                    object.insert("lowSince".into(), Value::Null);
-                                    object.insert("alerted".into(), Value::Bool(false));
-                                }
-                            }
-                            let stored = RuleRecord::from_value(value.clone()).map_err(|_| ApiError::internal())?;
-                            RulesRepository::put(transaction, &stored).map_err(store_api_error)?;
-                            value
                         }
+                        let owner_held = rule.owner_hold.take().is_some();
+                        rule.restart_check = None;
+                        let desired = if matches!(action, RuleAction::Resume { .. }) {
+                            RuleStatus::Active
+                        } else {
+                            RuleStatus::Paused
+                        };
+                        if owner_held
+                            || !matches!(rule.kind, RuleKind::LowWorkers { .. })
+                            || rule.status != desired
+                            || rule.epoch.get() != agent.epoch
+                        {
+                            rule.status = desired;
+                            rule.epoch =
+                                agent.epoch.try_into().map_err(|_| ApiError::internal())?;
+                            rule.next_at = number(now + rule.interval_seconds.get() as f64)?;
+                            rule.error = None;
+                            if matches!(action, RuleAction::Resume { .. })
+                                && matches!(rule.kind, RuleKind::File { .. })
+                            {
+                                let generation = rule.file_generation.get().saturating_add(1);
+                                rule.file_activity_at = Some(number(now)?);
+                                rule.fingerprint = prepared_fingerprint;
+                                rule.file_generation =
+                                    generation.try_into().map_err(|_| ApiError::internal())?;
+                                rule.stall_wake_generation = generation
+                                    .saturating_sub(1)
+                                    .try_into()
+                                    .map_err(|_| ApiError::internal())?;
+                            }
+                            if matches!(rule.kind, RuleKind::LowWorkers { .. }) {
+                                rule.low_since = None;
+                                rule.alerted = Some(false);
+                            }
+                            RulesRepository::put(transaction, &rule).map_err(store_api_error)?;
+                        }
+                        RuleWriteResponse::Record(Box::new(rule))
                     }
                 }
                 RuleAction::Save { data: body, .. } => {
@@ -250,78 +266,88 @@ async fn update(
                     let command = body.command.as_deref().unwrap_or("");
                     let raw_path = body.path.as_deref();
                     let liveness = body.liveness_command.as_deref().unwrap_or("").trim();
-                    if kind == "file" && raw_path.is_none_or(|path| path.trim().is_empty()) { return Err(located("path")); }
-                    let interval = body.interval_seconds.as_ref().and_then(Number::as_u64).unwrap_or(60);
-                    let stall_field = if body.stall_timeout_seconds.is_missing() { &body.stall_alias } else { &body.stall_timeout_seconds };
-                    let stall = stall_field.value().and_then(Number::as_u64).unwrap_or(1800);
-                    let text = body.text.as_deref().unwrap_or("Check this event and continue the original task.").trim();
-                    let name = body.name.as_deref().map(str::trim).unwrap_or("");
-                    let checked = rules::CheckedRuleSave::new(rules::RuleSaveInput {
-                        kind: kind.to_owned(),
-                        minimum: Ok(Some(body.minimum_workers.clone().unwrap_or_else(|| 8.into()))),
-                        duration: Ok(Some(body.duration_minutes.clone().unwrap_or_else(|| 30.into()))),
-                        interval: Ok(interval as i64),
-                        stall: Ok(stall as i64),
-                        at: rules::RuleTimeInput::Checked(checked_at.ok_or_else(ApiError::internal)?),
-                        event: body.event.as_ref().map_or("worker_completed", |event| event.as_str()).to_owned(),
-                        command: Ok(command.to_owned()),
-                        liveness: Ok(liveness.to_owned()),
-                        name: Ok(name.to_owned()),
-                        text: Ok(text.to_owned()),
-                    }, now, agent_value.get("isLead").and_then(Value::as_bool) == Some(true), rules::RuleSaveOrder::Http).map_err(rule_save_error)?;
-                    let checked = checked.fields();
-                    let kind = checked.kind.as_str();
-                    let interval = checked.interval;
-                    let at = checked.at;
-                    let stall = checked.kind.stall();
-                    let text = &checked.text;
-                    let name = &checked.name;
-                    let command = &checked.command;
-                    let liveness = checked.kind.liveness();
-                    let path = if kind == "file" { prepared_path.clone() } else { None };
-                    let fingerprint = if kind == "file" { prepared_fingerprint.clone() } else { None };
-                    let old_record = old_value.as_ref();
-                    let value = json!({
-                        "id": rule_id, "agent": agent_id,
-                        "rootId": agent_value.get("rootId").cloned().unwrap_or_else(|| json!(agent_id)),
-                        "epoch": agent_value["epoch"], "name": name, "kind": kind,
-                        "intervalSeconds": interval, "nextAt": at, "at": at,
-                        "path": path, "event": checked.event.as_str(),
-                        "command": command, "stallTimeoutSeconds": if kind == "file" { stall } else { 0 },
-                        "livenessCommand": liveness, "fileActivityAt": old_record.and_then(|v| v.get("fileActivityAt")).cloned().unwrap_or(json!(now)),
-                        "fileGeneration": old_record.and_then(|v| v.get("fileGeneration")).cloned().unwrap_or(json!(0)),
-                        "stallWakeGeneration": old_record.and_then(|v| v.get("stallWakeGeneration")).cloned().unwrap_or(json!(-1)),
-                        "text": text, "status": if agent_value.get("autoWake").and_then(Value::as_bool) == Some(true) { "active" } else { "paused" },
-                        "created": old_record.and_then(|v| v.get("created")).cloned().unwrap_or(json!(now)),
-                        "inFlight": false, "checks": old_record.and_then(|v| v.get("checks")).cloned().unwrap_or(json!(0)),
-                        "wakes": old_record.and_then(|v| v.get("wakes")).cloned().unwrap_or(json!(0)),
-                        "fingerprint": fingerprint,
-                        "minimumWorkers": if kind == "low_workers" { json!(checked.kind.minimum()) } else { Value::Null },
-                        "durationMinutes": if kind == "low_workers" { json!(checked.kind.duration()) } else { Value::Null },
-                        "lowSince": Value::Null, "alerted": Value::Bool(false),
-                    });
-                    let value = strip_null_low_worker_fields(value, kind);
-                    if let Some(old) = old_record.filter(|old| kind == "low_workers" && low_worker_rule_unchanged(old, &value)) {
-                        old.clone()
-                    } else {
-                        let mut value = value;
-                        if kind == "low_workers" { value["nextAt"] = json!(now); }
-                        let stored = RuleRecord::from_value(value.clone()).map_err(|_| ApiError::internal())?;
-                        RulesRepository::put(transaction, &stored).map_err(store_api_error)?;
-                        value
+                    if kind == "file" && raw_path.is_none_or(|path| path.trim().is_empty()) {
+                        return Err(located("path"));
                     }
+                    let interval = body
+                        .interval_seconds
+                        .as_ref()
+                        .and_then(Number::as_u64)
+                        .unwrap_or(60);
+                    let stall = body
+                        .stall_timeout_seconds
+                        .as_ref()
+                        .or(body.stall_alias.as_ref())
+                        .and_then(Number::as_u64)
+                        .unwrap_or(1800);
+                    let text = body
+                        .text
+                        .as_deref()
+                        .unwrap_or("Check this event and continue the original task.")
+                        .trim();
+                    let name = body.name.as_deref().map(str::trim).unwrap_or("");
+                    let checked = rules::CheckedRuleSave::new(
+                        rules::RuleSaveInput {
+                            kind: kind.to_owned(),
+                            minimum: Ok(Some(
+                                body.minimum_workers.clone().unwrap_or_else(|| 8.into()),
+                            )),
+                            duration: Ok(Some(
+                                body.duration_minutes.clone().unwrap_or_else(|| 30.into()),
+                            )),
+                            interval: Ok(interval as i64),
+                            stall: Ok(stall as i64),
+                            at: rules::RuleTimeInput::Checked(
+                                checked_at.ok_or_else(ApiError::internal)?,
+                            ),
+                            event: body
+                                .event
+                                .as_ref()
+                                .map_or("worker_completed", |event| event.as_str())
+                                .to_owned(),
+                            command: Ok(command.to_owned()),
+                            liveness: Ok(liveness.to_owned()),
+                            name: Ok(name.to_owned()),
+                            text: Ok(text.to_owned()),
+                        },
+                        now,
+                        agent_value.get("isLead").and_then(Value::as_bool) == Some(true),
+                        rules::RuleSaveOrder::Http,
+                    )
+                    .map_err(rule_save_error)?;
+                    let validated = checked;
+                    let checked = validated.fields();
+                    let kind = checked.kind.as_str();
+                    let low_workers = kind == "low_workers";
+                    let previous = old.as_ref();
+                    let mut rule = rules::persisted_rule(
+                        &validated,
+                        rules::RuleRecordContext {
+                            id: &rule_id,
+                            actor: &agent,
+                            previous,
+                            path: prepared_path.as_deref(),
+                            fingerprint: prepared_fingerprint,
+                            now,
+                        },
+                    )
+                    .map_err(rule_save_error)?;
+                    if let Some(previous) =
+                        previous.filter(|old| low_workers && low_worker_rule_unchanged(old, &rule))
+                    {
+                        rule = previous.clone();
+                    } else {
+                        if low_workers {
+                            rule.next_at = number(now)?;
+                        }
+                        RulesRepository::put(transaction, &rule).map_err(store_api_error)?;
+                    }
+                    RuleWriteResponse::Record(Box::new(rule))
                 }
             };
-            if result.get("deleted").is_some() {
-                super::generated_json::<crate::generated::DeletedRuleReceipt>(result)
-                    .map(RuleWriteResponse::Deleted)
-            } else {
-                super::generated_json::<crate::generated::RuleRecordResponse>(result)
-                    .map(|value| RuleWriteResponse::Record(Box::new(value)))
-            }
-                .map(|result| (result, cancel_ids))
+            Ok::<_, ApiError>((result, cancel_ids))
         })
-    .await?;
+        .await?;
     if !cancel_ids.is_empty() {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let ids = cancel_ids;
@@ -360,7 +386,7 @@ async fn update(
 #[serde(untagged)]
 enum RuleWriteResponse {
     Deleted(crate::generated::DeletedRuleReceipt),
-    Record(Box<crate::generated::RuleRecordResponse>),
+    Record(Box<RuleRecord>),
 }
 
 fn rule_save_error(error: rules::RuleSaveError) -> ApiError {
@@ -473,10 +499,6 @@ fn invalid_agent(id: &str) -> ApiError {
     ApiError::invalid_stored("agents", id)
 }
 
-fn invalid_rule(id: &str) -> ApiError {
-    ApiError::invalid_stored("rules", id)
-}
-
 fn validate_agent(id: &str, value: &Value) -> Result<(), ApiError> {
     if string(value, "id") != Some(id)
         || value.get("epoch").and_then(Value::as_u64).is_none()
@@ -489,31 +511,10 @@ fn validate_agent(id: &str, value: &Value) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn strip_null_low_worker_fields(mut value: Value, kind: &str) -> Value {
-    if kind != "low_workers"
-        && let Some(object) = value.as_object_mut()
-    {
-        for key in ["minimumWorkers", "durationMinutes", "lowSince", "alerted"] {
-            object.remove(key);
-        }
-    }
-    value
+fn low_worker_rule_unchanged(old: &RuleRecord, new: &RuleRecord) -> bool {
+    old.kind == new.kind && old.name == new.name && old.text == new.text && old.epoch == new.epoch
 }
-
-fn low_worker_rule_unchanged(old: &Value, new: &Value) -> bool {
-    [
-        "kind",
-        "name",
-        "text",
-        "minimumWorkers",
-        "durationMinutes",
-        "epoch",
-    ]
-    .into_iter()
-    .all(|key| old.get(key) == new.get(key))
-}
-
-async fn file_fingerprint(path: &Path) -> Option<Value> {
+async fn file_fingerprint(path: &Path) -> Option<(i64, u64, u64)> {
     let metadata = tokio::fs::metadata(path).await.ok()?;
     let modified = metadata
         .modified()
@@ -528,7 +529,7 @@ async fn file_fingerprint(path: &Path) -> Option<Value> {
     };
     #[cfg(not(unix))]
     let inode = 0_u64;
-    Some(json!([modified, metadata.len(), inode]))
+    Some((i64::try_from(modified).ok()?, metadata.len(), inode))
 }
 
 fn resolve_workspace_path(agent: &Value, input: &str) -> Result<String, ApiError> {
@@ -553,10 +554,8 @@ fn now_seconds() -> Result<f64, ApiError> {
         .map_err(|_| ApiError::internal())
 }
 
-fn number(value: f64) -> Result<Value, ApiError> {
-    Number::from_f64(value)
-        .map(Value::Number)
-        .ok_or_else(ApiError::internal)
+fn number(value: f64) -> Result<Number, ApiError> {
+    Number::from_f64(value).ok_or_else(ApiError::internal)
 }
 
 fn new_rule_id() -> String {

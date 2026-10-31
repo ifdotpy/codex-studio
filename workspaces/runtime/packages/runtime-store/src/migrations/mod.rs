@@ -37,7 +37,9 @@ mod m2026_10_28_usage_revision;
 mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
+mod m2026_10_30_agent_volatile;
 mod m2026_10_30_domain_model;
+mod m2026_10_30_rule_monitor_records;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -541,6 +543,34 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
+            id: "2026-10-30-agent-volatile-complete",
+            introduced: MigrationDate {
+                year: 2026,
+                month: 10,
+                day: 30,
+            },
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent volatile fields before complete typed writes",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_agent_volatile::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-retired-auth-probe-receipts",
+            introduced: MigrationDate {
+                year: 2026,
+                month: 10,
+                day: 30,
+            },
+            target: MigrationTarget::Canvas,
+            supported_source: "Retired Claude auth probe receipts in any status",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_26_canvas::remove_auth_probe_receipts(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-29-model-choices",
             introduced: OCTOBER_29,
             target: MigrationTarget::Canvas,
@@ -578,6 +608,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_29_request_results_v2::message_revision(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-rule-monitor-records",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Rule and monitor records before strict typed state",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_rule_monitor_records::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -1071,7 +1111,7 @@ pub(crate) fn supervisor(db: &mut Connection) -> StoreResult<()> {
 
 #[cfg(test)]
 pub(crate) fn m2026_10_30_domain_model_for_tests(tx: &Transaction<'_>) -> StoreResult<()> {
-    m2026_10_30_domain_model::apply(tx)
+    crate::domain::backfill(tx)
 }
 
 #[cfg(any(test, feature = "test-support"))]

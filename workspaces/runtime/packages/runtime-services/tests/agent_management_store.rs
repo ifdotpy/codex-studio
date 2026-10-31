@@ -15,6 +15,18 @@ use studio_runtime_services::{
 use studio_runtime_store::{RuntimeStore, Transaction, agent_management};
 use tokio::sync::Notify;
 
+fn monitor_fixture(fields: &Value) -> Value {
+    let mut monitor = json!({"epoch":1,"requestId":"test","turnId":null,"activityAt":1.0,
+        "activityGeneration":0,"bytes":0,"command":"","created":1.0,"cwd":"/",
+        "interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("test.log"),"stallTimeoutSeconds":0,
+        "stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit"});
+    monitor
+        .as_object_mut()
+        .expect("valid fixture")
+        .extend(fields.as_object().expect("valid fixture").clone());
+    monitor
+}
+
 fn template(root: &Path) {
     let schema: Value = serde_json::from_str(include_str!(
         "../../runtime-store/tests/fixtures/live-state-schema.json"
@@ -517,10 +529,10 @@ async fn lifecycle_effect_refusals_preserve_rows_and_projections() {
                     .transaction(move |tx| {
                         tx.execute(
                             "INSERT INTO runtime_monitors(id,record) VALUES('live-monitor',?1)",
-                            [
-                                json!({"id":"live-monitor","agent":"worker","status":status})
-                                    .to_string(),
-                            ],
+                            [monitor_fixture(
+                                &json!({"id":"live-monitor","agent":"worker","status":status}),
+                            )
+                            .to_string()],
                         )?;
                         Ok(())
                     })
@@ -791,7 +803,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
                 let id = format!("monitor-{index:06}");
                 monitor.execute(params![
                     id,
-                    json!({"id":id,"agent":agent,"status":"completed","created":index as f64})
+                    monitor_fixture(&json!({"id":id,"agent":agent,"status":"completed","created":index as f64}))
                         .to_string()
                 ])?;
                 event.execute(params![format!("event-{index:06}"), agent, index as f64])?;

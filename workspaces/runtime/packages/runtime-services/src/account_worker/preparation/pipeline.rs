@@ -896,7 +896,7 @@ pub(crate) async fn workspace(
     resources: &PreparationResources,
     intent: &TurnIntent,
 ) -> Result<crate::workspace_ready::ReadyToken, WorkerError> {
-    workspace_with_vm_action(store, resources, intent, false).await
+    Box::pin(workspace_with_vm_action(store, resources, intent, false)).await
 }
 
 /// The stored agent of a turn being prepared; a missing row is invalid.
@@ -964,7 +964,7 @@ async fn workspace_with_vm_action(
             })?;
             // Python's `codex_runtime.py:6405-6413` calls VM preparation from
             // `prepare_locked` before connecting the provider for every VM turn.
-            let prepared = if record.extra.get("isLead").and_then(Value::as_bool) == Some(true) {
+            let prepared = if record.is_lead == Some(true) {
                 crate::vm_preparation::prepare_lead(
                     &store,
                     Arc::clone(&guest),
@@ -1017,9 +1017,8 @@ async fn workspace_with_vm_action(
                 .ok_or_else(|| refusal("workspace-readiness/vm-host-project-required".into()))?
         } else {
             ready
-                .extra
-                .get("cwd")
-                .and_then(Value::as_str)
+                .cwd
+                .as_deref()
                 .filter(|value| value.starts_with('/'))
                 .ok_or_else(|| refusal("workspace-state/vm-cwd".into()))?
         };
@@ -1033,9 +1032,12 @@ async fn workspace_with_vm_action(
         );
     }
     // Git provisioning acquires its own short transactions. No store transaction is held here.
-    match crate::workspace_ready_git::prepare(Arc::clone(&store), intent.agent_id.clone())
-        .await
-        .map_err(|e| refusal(e.to_string()))?
+    match Box::pin(crate::workspace_ready_git::prepare(
+        Arc::clone(&store),
+        intent.agent_id.clone(),
+    ))
+    .await
+    .map_err(|e| refusal(e.to_string()))?
     {
         crate::workspace_ready::WorkspaceDecision::Ready { token } => Ok(token),
         crate::workspace_ready::WorkspaceDecision::Refuse(e) => Err(refusal(e.to_string())),
@@ -1375,12 +1377,15 @@ pub(crate) async fn prepare_monitor_command(
     .await
 }
 
-fn validate_monitor_actor(record: &studio_runtime_store::AgentRecord, epoch: u64) -> Result<(), WorkerError> {
+fn validate_monitor_actor(
+    record: &studio_runtime_store::AgentRecord,
+    epoch: u64,
+) -> Result<(), WorkerError> {
     if crate::legacy_image_workspace::is_legacy(&record.value()) {
         return Err(refusal("This legacy workspace is finished".into()));
     }
     if u64::try_from(record.epoch).ok() != Some(epoch)
-        || record.extra.get("deletedAt").is_some_and(|value| !value.is_null())
+        || record.deleted_at.is_some()
         || record.auto_wake != Some(true)
     {
         return Err(refusal("monitor-preparation/actor-changed".into()));
@@ -1502,7 +1507,7 @@ async fn prepare_native_snapshot(
     let record = agent_record.value();
     let intent = TurnIntent {
         agent_id: agent_id.into(),
-        epoch: decode(record["epoch"].clone(), "agent/epoch")?,
+        epoch: agent_record.epoch,
         attempt_id: attempt_id.into(),
         account_key: agent_record.account_key.clone(),
         provider: studio_runtime_providers::ProviderKind::of_record(&record)
@@ -2437,7 +2442,7 @@ mod daybreak_tests {
         assert!(validate_monitor_actor(&record, 7).is_ok());
         assert!(validate_monitor_actor(&record, 8).is_err());
         let mut deleted = record;
-        deleted.extra.insert("deletedAt".into(), json!(1));
+        deleted.deleted_at = Some((1) as f64);
         assert!(validate_monitor_actor(&deleted, 7).is_err());
     }
 

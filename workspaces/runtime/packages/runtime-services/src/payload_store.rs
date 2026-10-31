@@ -115,7 +115,7 @@ pub async fn upload(
         .transaction_with(move |transaction| {
             let agent = AgentRepository::get(transaction, &AgentId::from(agent_id.as_str()))?
                 .ok_or(PayloadStoreError::UnknownAgent)?;
-            if crate::event_write::truthy(agent.extra.get("deletedAt")) {
+            if agent.is_deleted() {
                 return Err(PayloadStoreError::DeletedAgent);
             }
 

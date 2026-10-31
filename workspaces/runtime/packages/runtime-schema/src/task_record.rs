@@ -1,5 +1,5 @@
 //! Checked persisted task shell, with open extension data retained for recovery evidence.
-use crate::{queue_command::Field, records::agent_projection::NonnegativeNumber};
+use crate::{queue_command::Field, stored_record::NonnegativeNumber};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;

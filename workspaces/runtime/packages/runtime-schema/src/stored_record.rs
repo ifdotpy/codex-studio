@@ -34,6 +34,52 @@ impl<'de> Deserialize<'de> for StoredJsonInteger {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct AgentCounter(StoredJsonInteger);
+impl AgentCounter {
+    /// Original numeric spelling, retained for persisted wire compatibility.
+    pub fn as_number(&self) -> &serde_json::Number {
+        self.0.number()
+    }
+    /// Integer value after safe-range validation.
+    pub fn as_i64(&self) -> i64 {
+        // AgentCounter accepts only finite JSON numbers within the safe-integer range.
+        self.0.number().as_f64().expect("finite agent counter") as i64
+    }
+}
+impl<'de> Deserialize<'de> for AgentCounter {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let number = StoredJsonInteger::deserialize(deserializer)?;
+        if number.number().as_f64().is_some_and(|value| {
+            (0.0..=crate::shared_values::MAX_SAFE_INTEGER as f64).contains(&value)
+        }) {
+            Ok(Self(number))
+        } else {
+            Err(serde::de::Error::custom("integer outside safe range"))
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct NonnegativeNumber(serde_json::Number);
+impl NonnegativeNumber {
+    pub fn number(&self) -> &serde_json::Number {
+        &self.0
+    }
+}
+impl<'de> Deserialize<'de> for NonnegativeNumber {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let number = serde_json::Number::deserialize(deserializer)?;
+        if number.as_f64().is_some_and(|value| value >= 0.0) {
+            Ok(Self(number))
+        } else {
+            Err(serde::de::Error::custom("number must be nonnegative"))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde::{Deserialize, Serialize};

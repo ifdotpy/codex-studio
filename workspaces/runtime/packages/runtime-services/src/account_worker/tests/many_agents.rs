@@ -53,7 +53,7 @@ async fn make_workers(state: &State, agents: &[String]) {
             scheduler::lifecycle_transaction_with(s.as_ref(), move |tx| {
                 for id in &agents {
                     let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
-                    row.extra.insert("isLead".into(), json!(false));
+                    row.is_lead = Some(false);
                     AgentRepository::put(tx, &row)?;
                 }
                 Ok(())

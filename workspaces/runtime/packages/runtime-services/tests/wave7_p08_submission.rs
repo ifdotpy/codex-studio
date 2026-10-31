@@ -359,9 +359,11 @@ fn assert_current_receipts(db: &rusqlite::Connection) {
     assert_eq!(owner.attempt_id.as_deref(), Some("attempt"));
     assert_eq!(owner.first_event_id, "one");
     assert_eq!(owner.publication_outcome, DispatchOutcome::Written);
-    assert!(RequestResults::admitted_result(db, &owner.admission)
-        .expect("retained result read")
-        .is_none());
+    assert!(
+        RequestResults::admitted_result(db, &owner.admission)
+            .expect("retained result read")
+            .is_none()
+    );
     for event in ["one", "two"] {
         let raw: String = db.query_row("SELECT json_extract(record,'$.providerSubmission') FROM runtime_event_meta WHERE id=?1",[event],|r| r.get(0)).expect("event owner");
         let event_owner: Owner = serde_json::from_str(&raw).expect("typed event owner");

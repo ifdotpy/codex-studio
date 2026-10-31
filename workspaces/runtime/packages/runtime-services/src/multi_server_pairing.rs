@@ -187,43 +187,6 @@ impl MultiServerBoundary {
         .await
     }
 
-    /// Authenticate an already paired server operation and consume its nonce
-    /// before the orchestration receiver claims the stable request identity.
-    pub async fn authorize_operation_incoming(
-        &self,
-        store: Arc<RuntimeStore>,
-        request: &SignedRequest,
-        address: &str,
-        logins: &[String],
-        now: f64,
-    ) -> Result<String, AccessError> {
-        if !request.is_orchestration() {
-            return Err(refused(
-                400,
-                "invalid_request",
-                "Invalid cross-server request",
-            ));
-        }
-        self.authorize_server_request_incoming(store, request, address, logins, now)
-            .await
-    }
-
-    /// Authenticate a signed operation from an already paired server and
-    /// consume its nonce before applying the operation's durable effect.
-    pub async fn authorize_server_request_incoming(
-        &self,
-        store: Arc<RuntimeStore>,
-        request: &SignedRequest,
-        address: &str,
-        logins: &[String],
-        now: f64,
-    ) -> Result<String, AccessError> {
-        let prepared = self
-            .prepare_server_request_incoming(Arc::clone(&store), request, address, logins, now)
-            .await?;
-        self.commit_prepared_server_request(&store, &prepared).await
-    }
-
     /// Verify a signed server request and observe its owner without consuming its nonce.
     pub async fn prepare_server_request_incoming(
         &self,

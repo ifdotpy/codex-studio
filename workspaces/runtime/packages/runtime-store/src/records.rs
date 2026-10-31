@@ -147,11 +147,229 @@ pub enum AgentExecutionMode {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentActiveTool {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentActivity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nonnegative_time",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<AgentActiveTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dismissed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_started: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_buffering_ui: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentContextUsage {
+    pub tokens: Option<u64>,
+    pub window: Option<u64>,
+    pub at: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentArchive {
+    pub at: f64,
+    #[serde(deserialize_with = "deserialize_safe_counter")]
+    pub epoch: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleanup_pending: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unknown_tool_requests: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unassigned_work: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanedWorktree {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relative: Option<String>,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<(Option<i64>, Option<String>, Option<f64>)>,
+    pub bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub missing: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeSafetyBuffering {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_key: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nonnegative_time",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub connection_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dismissed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub faster_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_started: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_buffering_ui: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeStatusPhase {
+    Safety,
+    Retrying,
+    Auth,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phase: Option<NativeStatusPhase>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_nonnegative_time",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AgentSandbox {
+    ReadOnly {
+        #[serde(rename = "networkAccess", skip_serializing_if = "Option::is_none")]
+        network_access: Option<bool>,
+    },
+    DangerFullAccess,
+    WorkspaceWrite {
+        #[serde(rename = "writableRoots", skip_serializing_if = "Option::is_none")]
+        writable_roots: Option<Vec<String>>,
+        #[serde(rename = "networkAccess", skip_serializing_if = "Option::is_none")]
+        network_access: Option<bool>,
+        #[serde(
+            rename = "excludeTmpdirEnvVar",
+            skip_serializing_if = "Option::is_none"
+        )]
+        exclude_tmpdir_env_var: Option<bool>,
+        #[serde(rename = "excludeSlashTmp", skip_serializing_if = "Option::is_none")]
+        exclude_slash_tmp: Option<bool>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentRecord {
     pub id: AgentId,
     pub root_id: AgentId,
+    #[serde(deserialize_with = "deserialize_agent_epoch")]
     pub epoch: i64,
     pub status: AgentStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_archive: Option<AgentArchive>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<AgentSandbox>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleaned_worktree: Option<CleanedWorktree>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_safety_buffering: Option<NativeSafetyBuffering>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_status: Option<NativeStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_lead: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_mode: Option<studio_runtime_schema::records::WorkspaceMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_counter",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub compactions: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_ready: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval_policy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_response_turn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parked_event: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_safe_counter",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub events: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_event: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<AgentActivity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_tools: Option<Vec<AgentActiveTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_answer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_usage: Option<AgentContextUsage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_used: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_usage_accounting: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_flight: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -185,6 +403,48 @@ pub struct AgentRecord {
     pub native_release: Option<NativeRelease>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+fn deserialize_agent_epoch<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<i64, D::Error> {
+    let epoch = i64::deserialize(deserializer)?;
+    if (0..=studio_runtime_schema::shared_values::MAX_SAFE_INTEGER).contains(&epoch) {
+        Ok(epoch)
+    } else {
+        Err(serde::de::Error::custom("agent epoch outside safe range"))
+    }
+}
+
+fn deserialize_safe_counter<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u64, D::Error> {
+    let value = u64::deserialize(deserializer)?;
+    if value <= studio_runtime_schema::shared_values::MAX_SAFE_INTEGER as u64 {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom("counter outside safe range"))
+    }
+}
+
+pub(crate) fn deserialize_optional_safe_counter<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(transparent)]
+    struct Safe(#[serde(deserialize_with = "deserialize_safe_counter")] u64);
+    Ok(Option::<Safe>::deserialize(deserializer)?.map(|value| value.0))
+}
+
+fn deserialize_nonnegative_time<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<f64>, D::Error> {
+    let value = Option::<f64>::deserialize(deserializer)?;
+    if value.is_none_or(|time| time.is_finite() && time >= 0.0) {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom("timestamp must be nonnegative"))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -453,6 +713,10 @@ macro_rules! start_attempt_setters {
 }
 
 impl AgentRecord {
+    pub fn is_deleted(&self) -> bool {
+        self.deleted_at.is_some_and(|at| at != 0.0)
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_defaults() -> Self {
         Self {
@@ -460,6 +724,32 @@ impl AgentRecord {
             root_id: AgentId::from(""),
             epoch: 0,
             status: AgentStatus::Unknown,
+            parent_id: None,
+            deleted_at: None,
+            agent_archive: None,
+            sandbox: None,
+            cleaned_worktree: None,
+            native_safety_buffering: None,
+            native_status: None,
+            is_lead: None,
+            workspace_mode: None,
+            model: None,
+            cwd: None,
+            name: None,
+            compactions: None,
+            worktree_ready: None,
+            approval_policy: None,
+            native_response_turn: None,
+            parked_event: None,
+            events: None,
+            last_event: None,
+            activity: None,
+            active_tools: None,
+            tail: None,
+            last_answer: None,
+            context_usage: None,
+            tokens_used: None,
+            token_usage_accounting: None,
             in_flight: None,
             auto_wake: None,
             usage_resume_enabled: None,
@@ -561,58 +851,13 @@ impl AgentRecord {
     }
 
     /// Consume the typed record while moving its fields into a JSON object.
-    pub fn into_value(self) -> Value {
-        let mut value = Value::Object(self.extra.into_iter().collect());
-        value["id"] = Value::String(self.id.0);
-        value["rootId"] = Value::String(self.root_id.0);
-        value["epoch"] = Value::from(self.epoch);
-        value["status"] = Value::String(self.status.as_str().to_owned());
-        if let Some(in_flight) = self.in_flight {
-            value["inFlight"] = Value::Bool(in_flight);
-        }
-        if let Some(auto_wake) = self.auto_wake {
-            value["autoWake"] = Value::Bool(auto_wake);
-        }
-        if let Some(enabled) = self.usage_resume_enabled {
-            value["usageResumeEnabled"] = Value::Bool(enabled);
-        }
-        if let Some(mode) = self.execution_mode {
-            value["executionMode"] = crate::projection_value(&mode);
-        }
-        if let Some(epoch) = self.turn_epoch {
-            value["turnEpoch"] = Value::from(epoch);
-        }
-        value["accountKey"] = Value::String(self.account_key);
-        if let Some(thread) = self.thread_id {
-            value["threadId"] = Value::String(thread);
-        }
-        if let Some(turn) = self.turn_id {
-            value["turnId"] = Value::String(turn);
-        }
-        if let Some(job) = &self.title_job {
-            value["titleJob"] = crate::projection_value(job);
-        }
-        if let Some(hold) = &self.start_outcome_hold {
-            value["startOutcomeHold"] = crate::projection_value(hold);
-        }
-        if !self.fired_events.is_empty() {
-            value["firedEvents"] = crate::projection_value(&self.fired_events);
-        }
-        if let Some(field) = &self.native_review_thread {
-            value["nativeReviewThread"] = crate::projection_value(field);
-        }
-        if let Some(field) = &self.vm_launch {
-            value["vmLaunch"] = crate::projection_value(field);
-        }
-        if let Some(field) = &self.credential_copy {
-            value["credentialCopy"] = crate::projection_value(field);
-        }
-        if let Some(field) = &self.vm_auth_bootstrap {
-            value["vmAuthBootstrap"] = crate::projection_value(field);
-        }
-        if let Some(field) = &self.native_release {
-            value["nativeRelease"] = crate::projection_value(field);
-        }
+    pub fn into_value(mut self) -> Value {
+        let extra = std::mem::take(&mut self.extra);
+        let mut value = crate::projection_value(&self);
+        value
+            .as_object_mut()
+            .expect("agent is an object")
+            .extend(extra);
         value
     }
 
@@ -634,78 +879,9 @@ impl JsonRecord for AgentRecord {
     }
 
     fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
-        let mut value = parse_agent_value(row_id, encoded)?;
-        crate::agent_volatile::merge(connection, row_id, &mut value)?;
-        let projection = checked_agent_projection(row_id, &value)?;
-        let id = AgentId(projection.id);
-        let root_id = AgentId(projection.root_id);
-        let epoch = projection.epoch.as_i64();
-        let status = AgentStatus::parse(&projection.status);
-        let Value::Object(mut fields) = value else {
-            return Err(invalid_agent_field(row_id, "", "record_decode", None));
-        };
-        for key in ["id", "rootId", "epoch", "status"] {
-            fields.remove(key);
-        }
-        fn field<T: DeserializeOwned>(
-            fields: &mut serde_json::Map<String, Value>,
-            key: &str,
-        ) -> Result<Option<T>, serde_json::Error> {
-            fields
-                .remove(key)
-                .map(Option::<T>::deserialize)
-                .transpose()
-                .map(Option::flatten)
-        }
-        let decode = |_: serde_json::Error| invalid_agent_field(row_id, "", "record_decode", None);
-        let in_flight = field(&mut fields, "inFlight").map_err(decode)?;
-        let auto_wake = field(&mut fields, "autoWake").map_err(decode)?;
-        let execution_mode = field(&mut fields, "executionMode").map_err(decode)?;
-        let turn_epoch = field(&mut fields, "turnEpoch").map_err(decode)?;
-        let account_key = fields
-            .remove("accountKey")
-            .map(String::deserialize)
-            .transpose()
-            .map_err(decode)?
-            .ok_or_else(|| invalid_agent_field(row_id, "accountKey", "record_decode", None))?;
-        let thread_id = field(&mut fields, "threadId").map_err(decode)?;
-        let turn_id = field(&mut fields, "turnId").map_err(decode)?;
-        let title_job = field(&mut fields, "titleJob").map_err(decode)?;
-        let start_outcome_hold = field(&mut fields, "startOutcomeHold").map_err(decode)?;
-        let fired_events = fields
-            .remove("firedEvents")
-            .map(BTreeSet::<String>::deserialize)
-            .transpose()
-            .map_err(decode)?
-            .unwrap_or_default();
-        let native_review_thread = field(&mut fields, "nativeReviewThread").map_err(decode)?;
-        let vm_launch = field(&mut fields, "vmLaunch").map_err(decode)?;
-        let credential_copy = field(&mut fields, "credentialCopy").map_err(decode)?;
-        let vm_auth_bootstrap = field(&mut fields, "vmAuthBootstrap").map_err(decode)?;
-        let native_release = field(&mut fields, "nativeRelease").map_err(decode)?;
-        Ok(Self {
-            id,
-            root_id,
-            epoch,
-            status,
-            in_flight,
-            auto_wake,
-            usage_resume_enabled: field(&mut fields, "usageResumeEnabled").map_err(decode)?,
-            execution_mode,
-            turn_epoch,
-            account_key,
-            thread_id,
-            turn_id,
-            title_job,
-            start_outcome_hold,
-            fired_events,
-            native_review_thread,
-            vm_launch,
-            credential_copy,
-            vm_auth_bootstrap,
-            native_release,
-            extra: fields.into_iter().collect(),
-        })
+        let mut agent = parse_agent_record(row_id, encoded)?;
+        crate::agent_volatile::merge_agent(connection, row_id, &mut agent)?;
+        Ok(agent)
     }
 }
 
@@ -787,7 +963,10 @@ mod duplicate_stored_record_tests {
     }
     #[test]
     fn duplicate_stored_record_monitor() {
-        check::<MonitorRecord>(r#"{"id":"other","id":"m","future":null}"#, "m");
+        assert!(
+            serde_json::from_str::<MonitorRecord>(r#"{"id":"other","id":"m","future":null}"#)
+                .is_err()
+        );
     }
     #[test]
     fn duplicate_stored_record_asset() {
@@ -1158,6 +1337,7 @@ impl JsonRecord for MonitorRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
     const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1332,9 +1512,7 @@ impl JsonRecord for WorkItemRecord {
 /// The stored run uses the execution-history owner with unconstrained historical evidence.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
-pub struct ExecutionRunRecord(
-    crate::ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>,
-);
+pub struct ExecutionRunRecord(crate::ExecutionRun<Value, studio_runtime_schema::AgentCounter>);
 impl<'de> Deserialize<'de> for ExecutionRunRecord {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let studio_runtime_schema::json_object::JsonObject(run) =
@@ -1346,10 +1524,7 @@ impl ExecutionRunRecord {
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
         Self::deserialize(value)
     }
-    pub fn run(
-        &self,
-    ) -> &crate::ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>
-    {
+    pub fn run(&self) -> &crate::ExecutionRun<Value, studio_runtime_schema::AgentCounter> {
         &self.0
     }
 }
@@ -1421,6 +1596,7 @@ impl JsonRecord for RuleRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
+    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -2141,64 +2317,27 @@ pub(crate) fn decode_record<R: JsonRecord>(
     Ok(record)
 }
 
-/// An agent row as checked JSON with its volatile fields merged
-/// ([`crate::agent_volatile::merge`]): the schema, the [`AgentRecord`] typed
-/// fields and the row key, without building the typed record.
-pub fn decode_agent_value(
+/// Decode a complete agent from its stored row and volatile columns.
+pub fn decode_agent_record(
     connection: &Connection,
     row_id: &str,
     encoded: &str,
-) -> StoreResult<Value> {
-    let mut value = parse_agent_value(row_id, encoded)?;
-    crate::agent_volatile::merge(connection, row_id, &mut value)?;
-    checked_agent_projection(row_id, &value)?;
-    Ok(value)
+) -> StoreResult<AgentRecord> {
+    AgentRecord::decode_stored(connection, row_id, encoded)
 }
 
-pub(crate) fn parse_agent_value(row_id: &str, encoded: &str) -> StoreResult<Value> {
+pub(crate) fn parse_agent_record(row_id: &str, encoded: &str) -> StoreResult<AgentRecord> {
     #[cfg(any(test, feature = "test-support"))]
     crate::agent_volatile::publication_work::record(
         row_id,
         crate::agent_volatile::publication_work::Operation::Decode,
     );
-    let value: Value = serde_json::from_str(encoded).map_err(|_| {
-        invalid_agent_field(
-            row_id,
-            "",
-            &format!("invalid_json; record length {} bytes", encoded.len()),
-            None,
-        )
-    })?;
-    Ok(value)
-}
-
-pub(crate) fn checked_agent_projection(
-    row_id: &str,
-    value: &Value,
-) -> StoreResult<studio_runtime_schema::records::agent_projection::AgentProjection> {
-    use studio_runtime_schema::json_object::JsonObject;
-    use studio_runtime_schema::records::agent_projection::AgentProjection;
-    let JsonObject(projection) =
-        JsonObject::<AgentProjection>::deserialize(value).map_err(|_| {
-            let detail = studio_runtime_schema::first_error(AgentRecord::SCHEMA, value)
-                .ok()
-                .flatten();
-            match detail {
-                Some((pointer, reason)) => {
-                    invalid_agent_field(row_id, &pointer, &reason, Some(value))
-                }
-                None => invalid_agent_field(row_id, "", "record_decode", None),
-            }
-        })?;
-    if projection.id != row_id {
-        return Err(invalid_agent_field(
-            row_id,
-            "/id",
-            "row_id_mismatch",
-            Some(value),
-        ));
+    let agent: AgentRecord = serde_json::from_str(encoded)
+        .map_err(|_| invalid_agent_field(row_id, "", "record_decode", None))?;
+    if agent.id.0 != row_id {
+        return Err(invalid_agent_field(row_id, "/id", "row_id_mismatch", None));
     }
-    Ok(projection)
+    Ok(agent)
 }
 
 pub(crate) fn invalid_agent_field(
@@ -2784,10 +2923,12 @@ mod tests {
     fn table_upserts_reads_lists_and_inserts_only_once() {
         let connection = database();
         let table = Table::<AgentRecord>::new(&connection);
-        let first =
-            agent(json!({"accountKey":"default","id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}));
-        let second =
-            agent(json!({"accountKey":"default","id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}));
+        let first = agent(
+            json!({"accountKey":"default","id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}),
+        );
+        let second = agent(
+            json!({"accountKey":"default","id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}),
+        );
 
         assert!(table.insert_new(&first).expect("first insert succeeds"));
         assert!(!table.insert_new(&first).expect("duplicate id is ignored"));
@@ -2823,7 +2964,7 @@ mod tests {
             .expect("malformed fixture inserts");
         connection
             .execute(
-                "INSERT INTO runtime_agents(id,record) VALUES ('outer-id','{\"id\":\"inner-id\",\"rootId\":\"inner-id\",\"epoch\":0,\"status\":\"idle\"}')",
+                "INSERT INTO runtime_agents(id,record) VALUES ('outer-id','{\"id\":\"inner-id\",\"rootId\":\"inner-id\",\"epoch\":0,\"status\":\"idle\",\"accountKey\":\"default\"}')",
                 [],
             )
             .expect("mismatched fixture inserts");
@@ -2838,7 +2979,7 @@ mod tests {
                 assert!(error.to_string().contains("/id"));
                 assert!(error.to_string().contains("row_id_mismatch"));
             } else {
-                assert!(error.to_string().contains("invalid_json"));
+                assert!(error.to_string().contains("record_decode"));
                 assert!(!error.to_string().contains("{\"id\""));
             }
         }
@@ -2884,11 +3025,10 @@ mod tests {
             .expect_err("schema-invalid record is not returned");
         assert!(
             matches!(error, StoreError::InvalidSyncObjectField { ref scope, ref id, ref pointer, .. }
-            if scope == "runtime_agents" && id == "invalid-epoch" && pointer == "/rootId")
+            if scope == "runtime_agents" && id == "invalid-epoch" && pointer.is_empty())
         );
         let diagnostic = error.to_string();
-        assert!(diagnostic.contains("value type array"));
-        assert!(diagnostic.contains("length 1 items"));
+        assert!(diagnostic.contains("record_decode"));
         assert!(!diagnostic.contains("private user text"));
     }
 
@@ -3067,7 +3207,154 @@ mod agent_projection_tests {
     use serde_json::json;
 
     #[test]
-    fn checked_projection_preserves_opaque_evidence_presence_and_volatile_override() {
+    fn stored_agent_reads_typed_volatile_columns() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('a',?1)",
+            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#],
+        )
+        .unwrap();
+        db.execute("INSERT INTO runtime_agent_volatile(id,events,tail,contextUsage) VALUES('a','3','\"answer\"','{\"tokens\":20,\"window\":100,\"at\":1.5}')", []).unwrap();
+        let agent = Table::<AgentRecord>::new(&db)
+            .get(&AgentId::from("a"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(agent.events, Some(3));
+        assert_eq!(agent.tail.as_deref(), Some("answer"));
+        assert_eq!(agent.context_usage.as_ref().unwrap().tokens, Some(20));
+    }
+
+    #[test]
+    fn typed_agent_can_clear_volatile_activity() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('a',?1)",
+            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO runtime_agent_volatile(id,activity) VALUES('a',?1)",
+            [r#"{"phase":"thinking","at":1.5}"#],
+        )
+        .unwrap();
+        let mut agent = Table::<AgentRecord>::new(&db)
+            .get(&AgentId::from("a"))
+            .unwrap()
+            .unwrap();
+        agent.activity = None;
+        crate::agent_volatile::put(&db, "a", &agent.value(), false).unwrap();
+        assert!(
+            Table::<AgentRecord>::new(&db)
+                .get(&AgentId::from("a"))
+                .unwrap()
+                .unwrap()
+                .activity
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn stored_agent_rejects_malformed_archive() {
+        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","agentArchive":{"at":"bad","epoch":1}}"#;
+        assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
+    }
+
+    #[test]
+    fn stored_agent_rejects_malformed_sandbox() {
+        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","sandbox":{"type":"invalid"}}"#;
+        assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
+    }
+
+    #[test]
+    fn stored_agent_rejects_malformed_cleanup_receipt() {
+        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","cleanedWorktree":{"bytes":"bad"}}"#;
+        assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
+    }
+
+    #[test]
+    fn stored_agent_rejects_malformed_safety_buffering() {
+        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","nativeSafetyBuffering":{"showBufferingUi":"yes"}}"#;
+        assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
+    }
+
+    #[test]
+    fn stored_agent_rejects_malformed_parent_and_deletion_marker() {
+        for field in [r#""parentId":false"#, r#""deletedAt":"bad""#] {
+            let raw = format!(
+                r#"{{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default",{field}}}"#
+            );
+            assert!(serde_json::from_str::<AgentRecord>(&raw).is_err());
+        }
+    }
+
+    #[test]
+    fn stored_agent_epoch_must_be_nonnegative_and_safe() {
+        for epoch in [
+            -1_i64,
+            studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1,
+        ] {
+            let raw = format!(
+                r#"{{"id":"a","rootId":"a","epoch":{epoch},"status":"idle","accountKey":"default"}}"#
+            );
+            assert!(serde_json::from_str::<AgentRecord>(&raw).is_err());
+        }
+    }
+
+    #[test]
+    fn stored_agent_rejects_unsafe_counters_and_negative_activity_time() {
+        let raw = format!(
+            r#"{{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":{}}}"#,
+            studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1
+        );
+        assert!(serde_json::from_str::<AgentRecord>(&raw).is_err());
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
+        db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('a',?1)",
+            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO runtime_agent_volatile(id,events,activity) VALUES('a',?1,?2)",
+            [
+                format!(
+                    "{}",
+                    studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1
+                ),
+                r#"{"at":1}"#.to_string(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            Table::<AgentRecord>::new(&db)
+                .get(&AgentId::from("a"))
+                .is_err()
+        );
+        db.execute(
+            "UPDATE runtime_agent_volatile SET events='1', activity=?1 WHERE id='a'",
+            [r#"{"at":-1}"#],
+        )
+        .unwrap();
+        assert!(
+            Table::<AgentRecord>::new(&db)
+                .get(&AgentId::from("a"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn stored_agent_rejects_malformed_business_fields() {
         let db = Connection::open_in_memory().expect("database");
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
             .expect("agents");
@@ -3086,42 +3373,28 @@ mod agent_projection_tests {
             [r#"{"phase":"active","vendor":true}"#, r#""answer""#],
         )
         .expect("volatile row");
-        let value = decode_agent_value(&db, "a", &raw.to_string()).expect("merged projection");
-        let mut expected = raw;
-        expected["activity"] = json!({"phase":"active","vendor":true});
-        expected["tail"] = json!("answer");
-        assert_eq!(value, expected);
-        assert!(
-            Table::<AgentRecord>::new(&db)
-                .get(&AgentId::from("a"))
-                .is_err(),
-            "narrow business evidence remains independently checked"
-        );
+        assert!(decode_agent_record(&db, "a", &raw.to_string()).is_err());
     }
 
     #[test]
-    fn fractional_spelling_of_root_epoch_is_rejected_by_projection_and_business_decode() {
+    fn fractional_epoch_is_rejected_by_business_decode() {
         let db = Connection::open_in_memory().expect("database");
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
             .expect("agents");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile");
-        let raw = r#"{"id":"a","rootId":"r","epoch":1.0,"status":"idle"}"#;
+        let raw = r#"{"id":"a","rootId":"r","epoch":1.0,"status":"idle","accountKey":"default"}"#;
         db.execute(
             "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
             [raw],
         )
         .expect("agent");
-        assert!(decode_agent_value(&db, "a", raw).is_err());
+        assert!(decode_agent_record(&db, "a", raw).is_err());
         assert!(
             Table::<AgentRecord>::new(&db)
                 .get(&AgentId::from("a"))
                 .is_err()
         );
-        let raw = r#"{"id":"a","rootId":"r","epoch":1,"status":"idle","events":1.0,"agentArchive":{"at":1,"epoch":1.0}}"#;
-        let value = decode_agent_value(&db, "a", raw).expect("nested decimal aliases");
-        assert_eq!(value["events"], json!(1.0));
-        assert_eq!(value["agentArchive"]["epoch"], json!(1.0));
     }
 
     #[test]
@@ -3132,7 +3405,7 @@ mod agent_projection_tests {
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .unwrap();
         let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"idle", "accountKey":"default",
-            "events":1.0,"agentArchive":{"at":1.5,"epoch":1.0},"future":{"x":[1,null]},
+            "events":1,"agentArchive":{"at":1.5,"epoch":1},"future":{"x":[1,null]},
             "titleJob":{"legacy":true},"startOutcomeHold":{"stage":"held","reason":"pending"},"firedEvents":["one"]});
         db.execute(
             "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
@@ -3143,7 +3416,10 @@ mod agent_projection_tests {
             .get(&AgentId::from("a"))
             .unwrap()
             .unwrap();
-        assert_eq!(record.into_value(), raw);
+        let value = record.into_value();
+        for (key, expected) in raw.as_object().unwrap() {
+            assert_eq!(&value[key], expected);
+        }
     }
 
     #[test]
@@ -3191,7 +3467,7 @@ mod agent_projection_tests {
             json!({"id":"wrong","rootId":"r","epoch":0,"status":"idle"}),
         ] {
             let error =
-                decode_agent_value(&db, "a", &value.to_string()).expect_err("invalid projection");
+                decode_agent_record(&db, "a", &value.to_string()).expect_err("invalid agent");
             assert!(matches!(
                 error,
                 crate::StoreError::InvalidSyncObjectField { .. }

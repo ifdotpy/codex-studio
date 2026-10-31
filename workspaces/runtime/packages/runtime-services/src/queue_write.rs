@@ -88,7 +88,7 @@ pub fn action(
     if agent.id.0 != agent_id {
         return Err(invalid_stored("runtime_agents", agent_id));
     }
-    if event_write::truthy(agent.extra.get("deletedAt")) {
+    if agent.is_deleted() {
         return Err(QueueWriteError::InvalidRequest("This agent was deleted"));
     }
     if event_write::truthy(agent.extra.get("remoteWorker"))
@@ -476,16 +476,7 @@ pub fn queue_snapshot(
 }
 
 pub fn is_live(agent: &AgentRecord) -> bool {
-    !agent
-        .extra
-        .get("deletedAt")
-        .is_some_and(|value| match value {
-            Value::Null | Value::Bool(false) => false,
-            Value::Bool(true) => true,
-            Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-            Value::String(value) => !value.is_empty(),
-            Value::Array(_) | Value::Object(_) => true,
-        })
+    !agent.is_deleted()
 }
 
 /// Queue collection owner. Every relevant source write calls this before commit.

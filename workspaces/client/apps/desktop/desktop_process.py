@@ -9,6 +9,9 @@ import sys
 
 # Bounds for the OS argument vector: bytes and argument count, respectively.
 MAX_LAUNCH_BYTES = 4 * 1024 * 1024
+# Seconds one lsof probe may take. lsof walks every process and is slow under heavy load;
+# a short limit turned a busy machine into a failed recovery check.
+LSOF_TIMEOUT_SECONDS = 15
 MAX_LAUNCH_ARGUMENTS = 4096
 # Only these launch facts may leave the startup-delivery process reader. No credentials.
 STARTUP_ENVIRONMENT_KEYS = frozenset({
@@ -170,7 +173,7 @@ def recovery_interpreter_facts(pid):
     executable = _darwin_executable_path(pid)
     output = subprocess.check_output(
         ['/usr/sbin/lsof', '-nP', '-a', '-p', str(pid), '-d', 'txt', '-FfDin'],
-        text=True, stderr=subprocess.DEVNULL, timeout=2,
+        text=True, stderr=subprocess.DEVNULL, timeout=LSOF_TIMEOUT_SECONDS,
     )
     _, texts = _startup_open_files(output, None, text_name=Path(executable).name)
     if startup_backend_birth(pid) != before:
@@ -187,7 +190,7 @@ def startup_backend_facts(pid, state):
     command, environment = _split_darwin_launch(_darwin_launch_data(pid))
     output = subprocess.check_output(
         ['/usr/sbin/lsof', '-nP', '-a', '-p', str(pid), '-FfDin'],
-        text=True, stderr=subprocess.DEVNULL, timeout=2,
+        text=True, stderr=subprocess.DEVNULL, timeout=LSOF_TIMEOUT_SECONDS,
     )
     opened, texts = _startup_open_files(output, state)
     if startup_backend_birth(pid) != before:

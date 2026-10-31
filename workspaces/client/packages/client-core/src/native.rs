@@ -94,9 +94,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
         let writer = Arc::new(tokio::sync::Mutex::new(writer));
         let permits = Arc::new(tokio::sync::Semaphore::new(64));
         let mut requests = tokio::task::JoinSet::new();
-        let startup = Arc::new(tokio::sync::Mutex::new(None::<serde_json::Value>));
         let active = Arc::new(AtomicBool::new(false));
-        let previews = crate::file_preview::Previews::default();
         let mut background = tokio::task::JoinSet::new();
         let (events, mut event_receiver) = tokio::sync::mpsc::channel::<serde_json::Value>(64);
         let mut views = crate::views::Views::new(
@@ -169,15 +167,11 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 Network(Request),
                 Action(Request),
                 Desktop(Request),
-                Preview(Request),
-                RichDocument(Request),
-                Startup(Request),
                 Delivery(Request),
                 Sync(Request),
                 DraftSync(Request),
                 Speech(Request),
                 Media(Request),
-                Notify(Request),
                 Voice(Request),
                 Stored(String, tokio::sync::oneshot::Receiver<Response>),
                 Immediate(Response),
@@ -192,27 +186,16 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 }
                 // Pure computations never wait behind database writes: the UI
                 // calls several of them synchronously.
-                Ok(request) if pure(&request.method) => Work::Immediate(compute(&request)),
-                Ok(request)
-                    if matches!(
-                        request.method.as_str(),
-                        "document.render" | "document.diagram"
-                    ) =>
-                {
-                    Work::RichDocument(request)
-                }
-                Ok(request) if request.method.starts_with("preview.") => Work::Preview(request),
+                Ok(request) if request.method == "markdown.parse" => Work::Immediate(compute(&request)),
                 Ok(request) if request.method.starts_with("speech.") => Work::Speech(request),
                 Ok(request) if request.method.starts_with("media.") => Work::Media(request),
-                Ok(request) if request.method == "notifications.show" => Work::Notify(request),
                 Ok(request) if request.method.starts_with("voice.") => Work::Voice(request),
                 Ok(request) if request.method.starts_with("desktop.") => Work::Desktop(request),
-                Ok(request) if request.method == "system.start" => Work::Startup(request),
                 Ok(request) if request.method.starts_with("view.") => {
                     Work::Immediate(views.command(&request))
                 }
                 Ok(request) if request.method == "drafts.refresh" => Work::DraftSync(request),
-                Ok(request) if request.method.starts_with("sync.") => Work::Sync(request),
+                Ok(request) if request.method == "sync.open" => Work::Sync(request),
                 Ok(request) if request.method == "actions.submit" => Work::Action(request),
                 Ok(request) if request.method == "api.request" => Work::Network(request),
                 Ok(request) if request.method == "outbox.deliver" => Work::Delivery(request),
@@ -239,53 +222,19 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             let (writer, backend, sender) = (writer.clone(), backend.clone(), store_sender.clone());
             // Completed tasks must leave the set; the permit bounds active work.
             while requests.try_join_next().is_some() {}
-            let startup = startup.clone();
-            let previews = previews.clone();
             requests.spawn(async move {
                 let _permit = permit;
                 let response = match work {
-                    Work::Startup(request) => {
-                        let mut ready = startup.lock().await;
-                        let result = if let Some(value) = ready.as_ref() {
-                            Ok(value.clone())
-                        } else {
-                            backend
-                                .as_ref()
-                                .as_ref()
-                                .map(|_| serde_json::json!({"ready": true}))
-                                .map_err(Clone::clone)
-                        };
-                        match result {
-                            Ok(value) => {
-                                *ready = Some(value.clone());
-                                Response::success(request.id, value)
-                            }
-                            Err(error) => Response::failure(request.id, "backend_startup", error),
-                        }
-                    }
-                    Work::RichDocument(request) => crate::rich_document::dispatch(request).await,
-                    Work::Preview(request) => {
-                        previews
-                            .dispatch(backend.as_ref().as_ref().ok(), request)
-                            .await
-                    }
                     Work::Desktop(request) => {
                         crate::desktop::dispatch(
                             request,
                             backend.as_ref().as_ref().ok(),
-                            Some(&previews),
                         )
                         .await
                     }
                     Work::Speech(request) => crate::speech::dispatch(request).await,
                     Work::Media(request) => crate::media::dispatch(request).await,
                     Work::Voice(request) => crate::voice::dispatch(request).await,
-                    Work::Notify(request) => {
-                        match crate::notifications::notify(&request.params["value"]).await {
-                            Ok(value) => Response::success(request.id, value),
-                            Err(error) => Response::failure(request.id, "notification", error),
-                        }
-                    }
                     Work::Action(request) => match backend.as_ref() {
                         Ok(backend) => crate::actions::submit(backend, &sender, request).await,
                         Err(error) => Response::failure(request.id, "backend_config", error),
@@ -301,7 +250,10 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                         Err(error) => Response::failure(request.id, "backend_config", error),
                     },
                     Work::Sync(request) => match backend.as_ref() {
-                        Ok(backend) => crate::sync::dispatch(backend, &sender, request).await,
+                        Ok(backend) => match crate::sync::open(backend, &sender).await {
+                            Ok(value) => Response::success(request.id, value),
+                            Err(error) => Response { id: request.id, result: None, error: Some(error) },
+                        },
                         Err(error) => Response::failure(request.id, "backend_config", error),
                     },
                     Work::Delivery(request) => match backend.as_ref() {
@@ -350,10 +302,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
 fn audio_request(request: &Request) -> bool {
     request.method.starts_with("media.")
         || request.method.starts_with("voice.")
-        || matches!(
-            request.method.as_str(),
-            "desktop.requestMicrophone" | "desktop.reserveMicrophone"
-        )
+        || matches!(request.method.as_str(), "desktop.requestMicrophone")
         || (request.method == "view.subscribe"
             && matches!(
                 request.params["topic"].as_str(),
@@ -379,12 +328,6 @@ fn claim_audio_from(
     lease.is_some()
 }
 
-fn pure(method: &str) -> bool {
-    matches!(
-        method,
-        "markdown.parse" | "system.uuid" | "text.sentences" | "locale.language_name"
-    ) || method.starts_with("url.")
-}
 fn compute(request: &Request) -> Response {
     if request.id.is_empty() || request.id.len() > 128 {
         return Response::failure(
@@ -393,10 +336,7 @@ fn compute(request: &Request) -> Response {
             "Invalid request identity.",
         );
     }
-    match request.method.as_str() {
-        "markdown.parse" => crate::markdown::dispatch(request),
-        _ => crate::platform::dispatch(request),
-    }
+    crate::markdown::dispatch(request)
 }
 
 /// `STUDIO_CORE_TRACE=1` logs each packet size and time since start to stderr.
@@ -583,12 +523,10 @@ mod audio_ownership_tests {
         for method in [
             "media.captureStart",
             "media.captureStop",
-            "media.requestMicrophone",
             "voice.create",
             "voice.answer",
             "voice.close",
             "desktop.requestMicrophone",
-            "desktop.reserveMicrophone",
         ] {
             assert!(
                 audio_request(&Request {

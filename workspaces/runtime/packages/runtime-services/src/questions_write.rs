@@ -182,12 +182,12 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
         .ok_or_else(|| invalid_stored("runtime_requests", id))?;
     let agent = stored_agent(transaction, agent_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
-    if !event_write::truthy(agent.extra.get("isLead")) {
+    if agent.is_lead != Some(true) {
         return Err(QuestionsWriteError::InvalidRequest(
             "Only the orchestrator can ask the user. The subagent must contact its orchestrator.",
         ));
     }
-    if event_write::truthy(agent.extra.get("deletedAt"))
+    if agent.is_deleted()
         || record.get("epoch").and_then(Value::as_i64) != Some(agent.epoch)
         || agent.auto_wake != Some(true)
     {
@@ -340,7 +340,7 @@ pub fn defer_question(
         .ok_or_else(|| invalid_stored("runtime_requests", id))?;
     let agent = stored_agent(transaction, agent_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
-    if event_write::truthy(agent.extra.get("deletedAt")) {
+    if agent.is_deleted() {
         return Err(QuestionsWriteError::InvalidRequest(
             "This conversation was deleted",
         ));
@@ -370,11 +370,7 @@ pub fn delete_question(
         .ok_or_else(|| invalid_stored("runtime_requests", id))?;
     let agent = stored_agent(transaction, agent_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
-    if !state_only_delete_allowed(
-        &record,
-        event_write::truthy(agent.extra.get("deletedAt")),
-        true,
-    )? {
+    if !state_only_delete_allowed(&record, agent.is_deleted(), true)? {
         return Ok(json!({"id":id,"status":"deleted"}));
     }
     mark_state_only_deleted(&mut record, unix_time()?);
@@ -433,7 +429,7 @@ pub fn submit_complaint(
 ) -> Result<ComplaintWriteResult, QuestionsWriteError> {
     let actor = stored_agent(transaction, lead_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Invalid request"))?;
-    if event_write::truthy(actor.extra.get("deletedAt")) {
+    if actor.is_deleted() {
         return Err(QuestionsWriteError::InvalidRequest(
             "This agent was deleted",
         ));
@@ -441,12 +437,12 @@ pub fn submit_complaint(
     let lead = stored_agent(transaction, &actor.root_id.0)?.ok_or(
         QuestionsWriteError::InvalidRequest("A complaint needs an existing lead"),
     )?;
-    if lead.id != lead.root_id || !event_write::truthy(lead.extra.get("isLead")) {
+    if lead.id != lead.root_id || lead.is_lead != Some(true) {
         return Err(QuestionsWriteError::InvalidRequest(
             "A complaint needs an existing lead",
         ));
     }
-    if event_write::truthy(lead.extra.get("deletedAt")) {
+    if lead.is_deleted() {
         return Err(QuestionsWriteError::InvalidRequest(
             "A complaint needs an existing lead",
         ));
@@ -584,8 +580,7 @@ pub fn respond_to_complaint(
                     .iter()
                     .any(|response| response.get("author").and_then(Value::as_str) == Some(lead_id))
             });
-        let stopped =
-            event_write::truthy(lead.extra.get("deletedAt")) || lead.auto_wake != Some(true);
+        let stopped = lead.is_deleted() || lead.auto_wake != Some(true);
         let closing = match status {
             ComplaintResponseStatus::InProgress => false,
             ComplaintResponseStatus::Resolved | ComplaintResponseStatus::Declined => true,
@@ -636,7 +631,7 @@ pub fn respond_to_complaint(
         complaint_id,
         &event_write::python_json(&complaint),
     )?;
-    let event_inserted = if !event_write::truthy(reporter.extra.get("deletedAt")) {
+    let event_inserted = if !reporter.is_deleted() {
         let event = json!({
             "complaint_id": complaint_id,
             "responder": USER,

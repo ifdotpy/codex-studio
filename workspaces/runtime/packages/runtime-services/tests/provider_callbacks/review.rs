@@ -287,10 +287,11 @@ async fn resolved_answering_unknown_and_blocked_match_python() {
             record(&store, "runtime_requests", "resolve-card"),
             case["expected"]
         );
-        assert_eq!(
-            record(&store, "runtime_agents", &context.agent),
-            case["expectedActor"]
-        );
+        let mut expected_actor = case["expectedActor"].clone();
+        crate::normalize_agent_nulls(&mut expected_actor);
+        let mut actual_actor = record(&store, "runtime_agents", &context.agent);
+        crate::normalize_agent_nulls(&mut actual_actor);
+        assert_eq!(actual_actor, expected_actor);
     }
     for submitted in [false, true] {
         let (_dir, store, context) = fixture().await;

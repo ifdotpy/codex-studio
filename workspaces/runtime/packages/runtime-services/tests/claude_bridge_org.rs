@@ -3,7 +3,9 @@ use serde_json::json;
 #[test]
 fn bridge_launch_pins_organization_and_refuses_another_organization() {
     use studio_runtime_services::account_driver::claude::auth_metadata_from_output;
-    use studio_runtime_services::claude_bridge::{BridgeSnapshot, ResolvedBridge};
+    use studio_runtime_services::claude_bridge::{
+        BridgeSnapshot, ClaudeLaunchProfile, ResolvedBridge,
+    };
     let metadata = |org| {
         auth_metadata_from_output(
             &serde_json::to_vec(&json!({
@@ -18,7 +20,8 @@ fn bridge_launch_pins_organization_and_refuses_another_organization() {
     let profile = json!({"provider":"claude","status":"ready","email":first.email,
         "accountId":first.account_id,"_credentialIdentity":first.credential_identity,
         "claudeOptions":{}});
-    let snapshot = BridgeSnapshot::from_record(profile).expect("bridge snapshot parses");
+    let profile = ClaudeLaunchProfile::from_record(&profile).expect("launch profile parses");
+    let snapshot = BridgeSnapshot::from_launch(&profile).expect("bridge snapshot parses");
     let paths = || ResolvedBridge {
         node: "/fixture/node".into(),
         executable: "/fixture/claude".into(),

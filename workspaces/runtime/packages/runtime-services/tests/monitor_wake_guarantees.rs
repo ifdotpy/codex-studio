@@ -14,7 +14,7 @@ async fn fixture() -> (tempfile::TempDir, RuntimeStore, String, Operation) {
     let id = case["before"]["id"].as_str().expect("id").to_owned();
     let operation = serde_json::from_value(case["before"]["operation"].clone()).expect("operation");
     let store = fixtures::store(root.path(), "wake").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     (root, store, id, operation)
 }
 
@@ -105,7 +105,8 @@ async fn restart_surviving_command_wakes_only_on_its_real_exit() {
         MonitorsRepository::get(&store.test_reader().expect("reader"), &id)
             .expect("read monitor")
             .expect("monitor")
-            .value()["status"],
+            .status
+            .as_str(),
         "running"
     );
     monitor_runtime::reattach(
@@ -158,9 +159,15 @@ async fn restart_dead_or_unreachable_command_wakes_once_as_lost() {
     let record = MonitorsRepository::get(&store.test_reader().expect("reader"), &id)
         .expect("read")
         .expect("monitor");
-    assert_eq!(record.value()["reattachRecovery"]["proof"], reason);
     assert_eq!(
-        record.value()["status"],
+        record
+            .reattach_recovery
+            .as_ref()
+            .and_then(|recovery| recovery.proof.as_deref()),
+        Some(reason)
+    );
+    assert_eq!(
+        record.status.as_str(),
         "lost",
         "decided loss is terminal even if a late receipt arrives"
     );
@@ -402,8 +409,8 @@ async fn restart_preserves_unsubmitted_start_and_pending_approval() {
             let record = MonitorsRepository::get(&store.test_reader().expect("reader"), &id)
                 .expect("read")
                 .expect("monitor");
-            assert_eq!(record.value()["status"], status);
-            assert!(record.value().get("reattachRecovery").is_none());
+            assert_eq!(record.status.as_str(), status);
+            assert!(record.reattach_recovery.is_none());
             if status == "approval" {
                 let request =
                     studio_runtime_store::Table::<studio_runtime_store::RequestRecord>::new(
@@ -467,7 +474,7 @@ async fn unknown_submission_enters_the_same_reconciliation_and_wakes_once() {
         monitor: snapshot.record().clone(),
         actor: actor.value(),
         operation,
-        params: json!({"command":["true"],"processId":snapshot.id(), "cwd":snapshot.record()["cwd"], "timeoutMs":snapshot.record()["timeout_ms"], "sandboxPolicy":{"type":"readOnly"}}),
+        params: json!({"command":["true"],"processId":snapshot.id(), "cwd":snapshot.record().cwd, "timeoutMs":snapshot.record().timeout_ms, "sandboxPolicy":{"type":"readOnly"}}),
     };
     assert!(matches!(
         monitor_driver::start(&store, &UnknownPort, snapshot.id(), &prepared, 2001.0)
@@ -478,13 +485,14 @@ async fn unknown_submission_enters_the_same_reconciliation_and_wakes_once() {
     let monitor = MonitorsRepository::get(&store.test_reader().expect("reader"), snapshot.id())
         .expect("read")
         .expect("monitor");
-    assert_eq!(monitor.value()["status"], "running");
-    assert_eq!(monitor.value()["reattachRecovery"]["status"], "running");
-    assert!(
-        monitor.value()["reattachRecovery"]["startedAt"]
-            .as_f64()
-            .is_some()
-    );
+    assert_eq!(monitor.status.as_str(), "running");
+    assert!(matches!(
+        monitor
+            .reattach_recovery
+            .as_ref()
+            .map(|recovery| &recovery.state),
+        Some(studio_runtime_schema::monitor_record::ReattachState::Running { .. })
+    ));
     assert_eq!(fixtures::events(&store), json!([]));
     monitor_runtime::settle_reattach(&store, snapshot.id(), "provider_rejected", 2002.0)
         .await
@@ -551,7 +559,7 @@ async fn unknown_submission_reconciliation_is_retried_after_a_failed_write_and_w
         monitor: snapshot.record().clone(),
         actor: actor.value(),
         operation,
-        params: json!({"command":["true"],"processId":snapshot.id(), "cwd":snapshot.record()["cwd"], "timeoutMs":snapshot.record()["timeout_ms"], "sandboxPolicy":{"type":"readOnly"}}),
+        params: json!({"command":["true"],"processId":snapshot.id(), "cwd":snapshot.record().cwd, "timeoutMs":snapshot.record().timeout_ms, "sandboxPolicy":{"type":"readOnly"}}),
     };
     store
         .transaction(|tx| Ok(tx.execute_batch(FAIL_RECONCILE_WRITE)?))
@@ -571,8 +579,14 @@ async fn unknown_submission_reconciliation_is_retried_after_a_failed_write_and_w
     let monitor = MonitorsRepository::get(&store.test_reader().expect("reader"), snapshot.id())
         .expect("read")
         .expect("monitor");
-    assert_eq!(monitor.value()["status"], "running");
-    assert_eq!(monitor.value()["reattachRecovery"]["status"], "running");
+    assert_eq!(monitor.status.as_str(), "running");
+    assert!(matches!(
+        monitor
+            .reattach_recovery
+            .as_ref()
+            .map(|recovery| &recovery.state),
+        Some(studio_runtime_schema::monitor_record::ReattachState::Running { .. })
+    ));
     assert_eq!(fixtures::events(&store), json!([]));
     monitor_runtime::settle_reattach(&store, snapshot.id(), "provider_rejected", 2002.0)
         .await
@@ -695,25 +709,27 @@ mod orphan {
         (root, store, port, runtime, id)
     }
 
-    fn monitor(store: &RuntimeStore, id: &str) -> Value {
+    fn monitor(store: &RuntimeStore, id: &str) -> studio_runtime_store::MonitorRecord {
         MonitorsRepository::get(&store.test_reader().expect("reader"), id)
             .expect("read")
             .expect("monitor")
-            .value()
     }
 
     #[tokio::test]
     async fn running_command_without_an_exit_owner_is_reattached_and_settled_once() {
         let (_root, store, port, runtime, id) = runtime(false).await;
         runtime.tick(2001.0).await.expect("orphan check");
-        assert_eq!(
-            monitor(&store, &id)["reattachRecovery"]["status"],
-            "running"
-        );
+        assert!(matches!(
+            monitor(&store, &id)
+                .reattach_recovery
+                .as_ref()
+                .map(|recovery| &recovery.state),
+            Some(studio_runtime_schema::monitor_record::ReattachState::Running { .. })
+        ));
         assert_eq!(fixtures::events(&store), json!([]));
         runtime.tick(2002.0).await.expect("exact reattach");
         assert_eq!(port.reattaches.load(Ordering::SeqCst), 1);
-        assert_eq!(monitor(&store, &id)["status"], "lost");
+        assert_eq!(monitor(&store, &id).status.as_str(), "lost");
         assert_wake(&store, "lost");
         runtime.tick(2003.0).await.expect("idle tick");
         runtime.tick(2004.0).await.expect("idle tick");
@@ -728,8 +744,8 @@ mod orphan {
         runtime.tick(2002.0).await.expect("second tick");
         assert_eq!(port.reattaches.load(Ordering::SeqCst), 0);
         let record = monitor(&store, &id);
-        assert_eq!(record["status"], "running");
-        assert!(record.get("reattachRecovery").is_none());
+        assert_eq!(record.status.as_str(), "running");
+        assert!(record.reattach_recovery.is_none());
         assert_eq!(fixtures::events(&store), json!([]));
     }
 }

@@ -926,7 +926,7 @@ async fn store_cwd(state: &State, cwd: String) {
             store
                 .transaction_with(move |tx| {
                     let mut row = AgentRepository::get(tx, &AgentId::from(id.as_str()))?.unwrap();
-                    row.extra.insert("cwd".into(), json!(cwd));
+                    row.cwd = Some(cwd);
                     AgentRepository::put(tx, &row)?;
                     Ok(())
                 })

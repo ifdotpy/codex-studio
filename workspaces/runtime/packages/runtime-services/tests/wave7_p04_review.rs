@@ -282,7 +282,10 @@ async fn late_written_settles_card_without_reviving_completed_failed_or_replaced
         delivery(&store, &reply.identity, DeliveryOutcome::Written)
             .await
             .unwrap();
-        assert_eq!(actor(&store, &context), value, "{status}");
+        let mut actual = actor(&store, &context);
+        crate::normalize_agent_nulls(&mut actual);
+        crate::normalize_agent_nulls(&mut value);
+        assert_eq!(actual, value, "{status}");
         assert_eq!(stored(&store, &id)["status"], "answered");
     }
 }
@@ -507,6 +510,9 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
 
 #[tokio::test]
 async fn python_failures_null_decisions_and_race_winners_are_preserved() {
+    fn expected_actor(case: &serde_json::Value) -> serde_json::Value {
+        normalized_actor(&case["afterActor"])
+    }
     for case in template()["failures"].as_array().unwrap() {
         let (_root, store, context) = fixture().await;
         seed_case(&store, case).await;
@@ -526,7 +532,7 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
         };
         assert!(result.is_err());
         assert_eq!(stored(&store, id), case["after"]);
-        assert_eq!(actor(&store, &context), case["afterActor"]);
+        assert_eq!(actor(&store, &context), expected_actor(case));
         assert_writes(&before, &store, &case["writes"]);
     }
     for case in template()["invalid"].as_array().unwrap() {
@@ -544,7 +550,7 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
             assert_eq!(result.unwrap(), case["expected"]["result"]);
         }
         assert_eq!(stored(&store, id), case["after"]);
-        assert_eq!(actor(&store, &context), case["afterActor"]);
+        assert_eq!(actor(&store, &context), expected_actor(case));
         assert_writes(&before, &store, &case["writes"]);
     }
     for case in template()["races"].as_array().unwrap() {
@@ -581,7 +587,7 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
             delivery(&store, &reply.identity, DeliveryOutcome::Written)
                 .await
                 .unwrap();
-            assert_eq!(actor(&store, &context), case["winner"]["afterActor"]);
+            assert_eq!(actor(&store, &context), expected_actor(&case["winner"]));
             assert_eq!(stored(&store, id), case["pythonAfter"]["after"]);
             assert_eq!(case["pythonAfter"]["afterActor"]["status"], "running");
         }
@@ -655,11 +661,8 @@ async fn non_radio_async_answer_is_steered_and_acknowledged() {
         record.auto_wake = Some(true);
         record.thread_id = Some("thread-0".to_string());
 record.turn_id = Some("turn-0".to_string());
-for (key, value) in [
-            ("isLead", json!(true)),
-
-            ("startAttempt", json!({"id":"start","epoch":3,"submitted":true,"turnId":"turn-0","threadId":"thread-0","accountKey":"default","events":["initial"],"connectionGeneration":7})),
-        ] { record.extra.insert(key.into(), value); }
+record.is_lead = Some(true);
+record.extra.insert("startAttempt".into(), json!({"id":"start","epoch":3,"submitted":true,"turnId":"turn-0","threadId":"thread-0","accountKey":"default","events":["initial"],"connectionGeneration":7}));
         AgentRepository::put(tx, &record)?;
         Ok(())
     }).await.unwrap();

@@ -79,17 +79,19 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
     let mut monitor = template.value["monitor"].clone();
     let monitor_request = RequestIdentity::issue_root();
     monitor["requestId"] = json!(monitor_request);
+    monitor["reattachRecovery"]["proof"] = json!("legacy");
     monitor["operation"]
         .as_object_mut()
         .unwrap()
         .remove("requestId");
+    monitor = crate::monitor_policy::complete_test_monitor(monitor);
     let cwd = json!(directory.path());
     store
         .transaction_with::<_, StoreError>(move |tx| {
             for agent in &agents {
                 let mut record = studio_runtime_store::AgentRecord::from_value(agent.clone())
                     .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-                record.extra.insert("cwd".into(), cwd.clone());
+                record.cwd = cwd.as_str().map(str::to_owned);
                 record.extra.insert("hostProjectPath".into(), cwd.clone());
                 studio_runtime_store::AgentRepository::put(tx, &record)?;
                 crate::agents_create::publish_agent(tx, &record.value())?;
@@ -445,7 +447,9 @@ impl crate::provider_callbacks::MonitorInputPort for ScriptedMonitorPort {
                             let mut attempt = record["operation"].clone();
                             attempt["id"] = json!(ticket);
                             attempt["method"] = json!("command/exec/write");
-                            attempt["status"] = json!("pending");
+                            attempt["status"] = json!("submitted");
+                            attempt["created"] = json!(20.0);
+                            attempt["params"] = json!({"processId":monitor_id,"deltaBase64":"aGVsbG8=","closeStdin":false});
                             record["inputAttempt"] = attempt;
                             tx.execute(
                                 "UPDATE runtime_monitors SET record=?1 WHERE id=?2",
@@ -901,6 +905,13 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
         crate::managed_host_tools::DeliveryCertainty::Unknown,
     ] {
         let (_root, store, context) = fixture_arc().await;
+        store
+            .read_async("test/monitor-snapshot", |tx| {
+                crate::monitor_runtime::snapshot(tx, &managed_monitor_id())?;
+                Ok::<_, crate::monitor_policy::MonitorError>(())
+            })
+            .await
+            .expect("fixture monitor snapshot");
         let fake = Arc::new(ScriptedMonitorPort {
             certainty,
             calls: AtomicUsize::new(0),
@@ -1193,6 +1204,11 @@ fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)
                         ValueRef::Null => "null".to_owned(),
                         ValueRef::Integer(value) => format!("i:{value}"),
                         ValueRef::Real(value) => format!("r:{value:?}"),
+                        ValueRef::Text(value) if name == "runtime_monitors" && column == 1 => {
+                            let monitor: studio_runtime_store::MonitorRecord =
+                                serde_json::from_slice(value).unwrap();
+                            format!("t:{}", serde_json::to_string(&monitor).unwrap())
+                        }
                         ValueRef::Text(value) => format!("t:{}", String::from_utf8_lossy(value)),
                         ValueRef::Blob(value) => format!("b:{value:?}"),
                     });
@@ -1363,7 +1379,10 @@ async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() 
     .await
     .unwrap();
     FAIL_MANAGED_WORKSPACE_PREPARATION.with(|fail| fail.set(false));
-    assert_eq!(adapter_replay, saved);
+    assert_eq!(
+        serde_json::from_str::<Value>(adapter_replay.get()).unwrap(),
+        saved
+    );
 
     let replay =
         dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports.clone())
@@ -1966,11 +1985,12 @@ async fn remote_origin_search_and_monitor_context_stay_local() {
     let monitor_id_for_json = monitor_id_for_tx.clone();
     let agent_id = context.agent.clone();
     let agent_id_for_json = agent_id.clone();
+    let epoch_for_json = context.epoch;
     store
         .transaction_with::<_, StoreError>(move |tx| {
             tx.execute(
                 "UPDATE runtime_monitors SET record=?1 WHERE id=?2",
-                [json!({"id":monitor_id_for_json,"agent":agent_id_for_json,"command":"printf fixture","created":20.0,"status":"running"}).to_string(), monitor_id_for_tx],
+                [crate::monitor_policy::complete_test_monitor(json!({"id":monitor_id_for_json,"agent":agent_id_for_json,"epoch":epoch_for_json,"command":"printf fixture","created":20.0,"status":"running"})).to_string(), monitor_id_for_tx],
             )?;
             let raw: String = tx.query_row(
                 "SELECT record FROM runtime_agents WHERE id=?1",

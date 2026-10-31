@@ -61,7 +61,10 @@ async fn a_manual_pause_or_resume_replaces_the_owner_hold_pause() {
                         "status":"waiting","autoWake":true,"cwd":path.to_string_lossy(),
                         "accountKey":"default","provider":"codex","name":"Fixture lead"}))?,
                 )?;
-                RulesRepository::put(tx, &RuleRecord::from_value(owner_held_rule())?)?;
+                RulesRepository::put(
+                    tx,
+                    &serde_json::from_value::<RuleRecord>(owner_held_rule())?,
+                )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await
@@ -78,11 +81,12 @@ async fn a_manual_pause_or_resume_replaces_the_owner_hold_pause() {
         let app = router(state).unwrap();
         let (code, body) = post(&app, json!({"action":action,"id":"rule","agent":"owner"})).await;
         assert_eq!(code, 200, "{action}: {body}");
-        let stored = RulesRepository::get(&store.test_reader().unwrap(), "rule")
-            .unwrap()
-            .unwrap()
-            .value()
-            .clone();
+        let stored = serde_json::to_value(
+            RulesRepository::get(&store.test_reader().unwrap(), "rule")
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(stored["status"], status, "{action}: {stored}");
         assert!(
             stored.get("ownerHold").is_none_or(Value::is_null),

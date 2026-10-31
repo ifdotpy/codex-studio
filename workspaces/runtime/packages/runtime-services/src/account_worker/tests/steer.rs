@@ -482,8 +482,8 @@ async fn mixed_inputs(state: &State) {
             let mut sender = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
             sender.id = "mixed-child".into();
             sender.status = studio_runtime_store::AgentStatus::Completed;
-            sender.extra.insert("parentId".into(), json!(agent));
-            sender.extra.insert("isLead".into(), json!(false));
+            sender.parent_id = Some((agent).to_string());
+            sender.is_lead = Some(false);
             sender.thread_id = Some("child-thread".to_string());
             AgentRepository::put(tx, &sender)?;
             tx.execute("INSERT INTO runtime_rooms(id,record) VALUES('mixed-room',?1)",

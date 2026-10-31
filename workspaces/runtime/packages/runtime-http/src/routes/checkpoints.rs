@@ -142,9 +142,9 @@ async fn restore_owned(
                         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Preview this checkpoint before restore"));
                     }
                     let op_id = format!("restore:{agent_id}:{checkpoint_id}:{}", &studio_runtime_store::sha256_hex(expected_tree.as_bytes())[..32]);
-                    let own_reservation = (snapshot.agent.record.get("workspaceReservationId").and_then(Value::as_str) == Some(op_id.as_str())).then_some(op_id.as_str());
+                    let own_reservation = (snapshot.agent.extra.get("workspaceReservationId").and_then(Value::as_str) == Some(op_id.as_str())).then_some(op_id.as_str());
                     checkpoints::ensure_restore_available(&snapshot, own_reservation).map_err(map_error)?;
-                    let current_tree = checkpoints::snapshot_tree(&store, snapshot.agent.record["cwd"].as_str().ok_or_else(ApiError::internal)?).map_err(map_error)?;
+                    let current_tree = checkpoints::snapshot_tree(&store, snapshot.agent.cwd.as_deref().ok_or_else(ApiError::internal)?).map_err(map_error)?;
                     let signature = studio_runtime_store::sha256_hex(
                         studio_runtime_store::python_json(&json!({"agent":agent_id,"checkpoint":checkpoint_id,"expectedTree":expected_tree})).as_bytes()
                     );
@@ -162,9 +162,8 @@ async fn restore_owned(
     let expected_tree = body.expected_tree;
     let cwd = snapshot
         .agent
-        .record
-        .get("cwd")
-        .and_then(Value::as_str)
+        .cwd
+        .as_deref()
         .ok_or_else(ApiError::internal)?
         .to_owned();
     let validation_cwd = cwd.clone();
@@ -176,7 +175,7 @@ async fn restore_owned(
     .await
     .map_err(|_| ApiError::internal())??;
     let agent_id = body.agent;
-    let source = CheckpointsRepository::workspace_source(&snapshot.agent.record);
+    let source = CheckpointsRepository::workspace_source(&snapshot.agent.value());
     let account = source
         .get("accountKey")
         .and_then(Value::as_str)
@@ -202,7 +201,7 @@ async fn restore_owned(
                     let mut expected_source = old.source.value().cloned().map(Value::Object).unwrap_or(Value::Null);
                     if old.phase == OperationPhase::Completed {
                         expected_source["threadId"] = old.provider.value().and_then(|provider| provider.get("thread")).and_then(|thread| thread.get("id")).cloned().unwrap_or(Value::Null);
-                        if snapshot.agent.record["restoredCheckpoint"] != checkpoint.id {
+                        if snapshot.agent.extra["restoredCheckpoint"] != checkpoint.id {
                             return Err(ApiError::new(StatusCode::CONFLICT, "Restore state changed. Inspect the operation before retrying"));
                         }
                     }
@@ -237,7 +236,7 @@ async fn restore_owned(
                     "rootRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root()
                 })).map_err(ApiError::json)?;
                 tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2)", rusqlite::params![operation_id, serde_json::to_string(&operation).map_err(ApiError::json)?]).map_err(|error| ApiError::stored(error.into()))?;
-                let mut actor = AgentRepository::get(tx, &AgentRecord::from_value(snapshot.agent.record.clone()).map_err(|_| ApiError::internal())?.id).map_err(ApiError::stored)?
+                let mut actor = AgentRepository::get(tx, &snapshot.agent.id).map_err(ApiError::stored)?
                     .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))?.value();
                 actor["workspaceOperation"] = json!("restore");
                 actor["workspaceReservationId"] = json!(operation_id);
@@ -287,14 +286,13 @@ async fn restore_owned(
     // different to providers (and to the fake provider's documented fallback).
     let mut params = json!({
         "cwd":cwd,
-        "serviceTier": if snapshot.agent.record.get("fastMode").and_then(Value::as_bool) == Some(true) { "priority" } else { "default" },
-        "config": snapshot.agent.record.get("threadConfig").cloned().unwrap_or_else(|| json!({})),
+        "serviceTier": if snapshot.agent.extra.get("fastMode").and_then(Value::as_bool) == Some(true) { "priority" } else { "default" },
+        "config": snapshot.agent.extra.get("threadConfig").cloned().unwrap_or_else(|| json!({})),
     });
     if let Some(model) = snapshot
         .agent
-        .record
-        .get("model")
-        .and_then(Value::as_str)
+        .model
+        .as_deref()
         .filter(|model| !model.is_empty())
     {
         params["model"] = json!(model);
@@ -312,12 +310,12 @@ async fn restore_owned(
             .unwrap_or(Value::Null);
         params["config"] = snapshot
             .agent
-            .record
+            .extra
             .get("threadConfig")
             .cloned()
             .unwrap_or_else(|| json!({}));
         for key in ["approvalPolicy", "sandbox"] {
-            if let Some(value) = snapshot.agent.record.get(key) {
+            if let Some(value) = snapshot.agent.value().get(key) {
                 params[key] = value.clone();
             }
         }
@@ -330,7 +328,7 @@ async fn restore_owned(
         let provider_operation = provider_operation.clone();
         let actor = studio_runtime_services::account_worker::retained::RequestActor {
             agent: agent_id.clone(),
-            epoch: snapshot.agent.record["epoch"].as_i64().unwrap_or_default(),
+            epoch: snapshot.agent.epoch,
         };
         let params = params.clone();
         port.provider_request(
@@ -596,15 +594,10 @@ async fn restore_owned(
             let mut op = WorkspaceOperationsRepository::operation(tx, &final_op_id)
                 .map_err(ApiError::stored)?
                 .ok_or_else(ApiError::internal)?;
-            let mut agent = AgentRepository::get(
-                tx,
-                &AgentRecord::from_value(snapshot.agent.record.clone())
-                    .map_err(|_| ApiError::internal())?
-                    .id,
-            )
-            .map_err(ApiError::stored)?
-            .ok_or_else(ApiError::internal)?
-            .value();
+            let mut agent = AgentRepository::get(tx, &snapshot.agent.id)
+                .map_err(ApiError::stored)?
+                .ok_or_else(ApiError::internal)?
+                .value();
             if agent.get("workspaceReservationId").and_then(Value::as_str)
                 != Some(final_op_id.as_str())
             {

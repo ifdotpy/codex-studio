@@ -71,7 +71,8 @@ fn python_json_separated(
     }
 }
 
-fn python_quote(value: &str, ensure_ascii: bool) -> String {
+/// Quote a string using Python JSON escaping.
+pub fn python_quote(value: &str, ensure_ascii: bool) -> String {
     let mut output = String::from("\"");
     for character in value.chars() {
         match character {

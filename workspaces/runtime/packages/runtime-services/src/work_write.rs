@@ -450,10 +450,7 @@ async fn run_accepted_archive(
                 && receipt_status == WorkEffectStatus::Terminal
                 && let Some(owner) =
                     AgentRepository::get(tx, &AgentId::from(owner_for_settlement.as_str()))?
-                && owner
-                    .extra
-                    .get("deletedAt")
-                    .is_none_or(|value| value.is_null())
+                && owner.deleted_at.is_none()
             {
                 let raw: String = tx
                     .query_row(
@@ -905,12 +902,7 @@ fn accepted_archive_preflight(
             json!({"status":"kept","reason":"The archive actor changed"}),
         ));
     };
-    if actor.epoch != actor_epoch
-        || actor
-            .extra
-            .get("deletedAt")
-            .is_some_and(|value| !value.is_null())
-    {
+    if actor.epoch != actor_epoch || actor.deleted_at.is_some() {
         return Ok(Some(
             json!({"status":"kept","reason":"The archive actor changed"}),
         ));
@@ -1093,7 +1085,7 @@ pub struct SubmitWork {
 #[derive(Clone)]
 pub struct PreparedSubmissionFiles {
     owner: String,
-    cwd: Value,
+    cwd: Option<String>,
     files: Vec<String>,
     resolved: Option<Vec<CanonicalPath>>,
 }
@@ -1132,7 +1124,7 @@ pub async fn prepare_submission_files(
                 let resolved = resolve_submission_files(&owner, &files).ok();
                 PreparedSubmissionFiles {
                     owner: owner.id.0,
-                    cwd: owner.extra.get("cwd").cloned().unwrap_or(Value::Null),
+                    cwd: owner.cwd.clone(),
                     files,
                     resolved,
                 }
@@ -1242,14 +1234,14 @@ pub async fn prepare_vm_submission(
         text(&input.checks, false)?;
         let revision = python_bounded_text(&input.revision, 200)?;
         validate_submission_files(&owner, &input.files, input.prepared_files.as_ref())?;
-        if owner.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm) && owner.extra.get("workspaceMode").and_then(Value::as_str) != Some("layr-native") {
+        if owner.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm) && owner.workspace_mode != Some(studio_runtime_schema::records::WorkspaceMode::LayrNative) {
             return Ok(VmSubmissionPreparation::NotVm);
         }
         let rpc_id = format!("layr-evidence:{owner_id}:{revision}");
         let mut view = read_vm_view(tx, &input.task_id)?;
         match &view.vm_submit {
             Some(VmWorkIntent::Pending(..) | VmWorkIntent::Unknown(..) | VmWorkIntent::UnknownUnattributed(..)) => return Err(Error::Conflict("A prior layr evidence request has an unknown outcome; inspect it before retrying").into()),
-            Some(VmWorkIntent::Completed { owner, result }) if owner.request_id==rpc_id && owner.owner==owner_id && Some(owner.id.version)==work.version().and_then(serde_json::Number::as_i64) && owner.revision==revision => return Ok(VmSubmissionPreparation::Evidence{evidence:result.evidence.clone(),request_id:rpc_id.clone()}),
+            Some(VmWorkIntent::Completed { owner, result }) if owner.request_id==rpc_id && owner.owner==owner_id && Some(owner.id.version)==work.version().and_then(serde_json::Number::as_i64) && owner.revision==revision => return Ok(VmSubmissionPreparation::Evidence{evidence:result.evidence.clone(),request_id:rpc_id}),
             Some(VmWorkIntent::Completed { .. } | VmWorkIntent::NotSent(..)) | None => {}
         }
         view.vm_submit = Some(VmWorkIntent::Pending(VmOwner {request_id:rpc_id.clone(),owner:owner_id.into(),revision:revision.clone(),id:Submission { version:work.version().and_then(serde_json::Number::as_i64).ok_or_else(|| invalid("runtime_work", &input.task_id))? },public:None}));
@@ -1374,7 +1366,8 @@ pub enum VmAcceptPreparation {
 fn vm_result_needs_merge(lead_id: &str, owner: &AgentRecord) -> bool {
     owner.id.0 != lead_id
         && (owner.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
-            || owner.extra.get("workspaceMode").and_then(Value::as_str) == Some("layr-native"))
+            || owner.workspace_mode
+                == Some(studio_runtime_schema::records::WorkspaceMode::LayrNative))
         && owner.extra.get("role").and_then(Value::as_str) != Some("reviewer")
 }
 
@@ -1396,11 +1389,12 @@ pub async fn prepare_vm_accept(
         .transaction_with_error(move |tx| {
             let lead = event_write::checked_agent(tx, &agent_id)?;
             if lead.execution_mode != Some(studio_runtime_store::AgentExecutionMode::Vm)
-                && lead.extra.get("workspaceMode").and_then(Value::as_str) != Some("layr-native")
+                && lead.workspace_mode
+                    != Some(studio_runtime_schema::records::WorkspaceMode::LayrNative)
             {
                 return Ok(VmAcceptPreparation::NotVm);
             }
-            if lead.extra.get("isLead") != Some(&Value::Bool(true)) || lead.root_id.0 != agent_id {
+            if lead.is_lead != Some(true) || lead.root_id.0 != agent_id {
                 return Err(
                     Error::InvalidRequest("Only the active lead can accept a layr result").into(),
                 );
@@ -1737,7 +1731,7 @@ fn work_receipt_in(
 ) -> Result<Option<Value>, WorkWriteError> {
     let agent = AgentRepository::get(connection, &AgentId::from(agent_id))?
         .ok_or(Error::InvalidRequest("Invalid request"))?;
-    if agent.id.0 != agent_id || event_write::truthy(agent.extra.get("deletedAt")) {
+    if agent.id.0 != agent_id || agent.is_deleted() {
         return Err(Error::InvalidRequest("Invalid request").into());
     }
     let now_ms = (event_write::unix_time()? * 1000.0) as i64;
@@ -2356,10 +2350,7 @@ pub fn release_failed_work(
         {
             continue;
         }
-        let deleted = worker
-            .extra
-            .get("deletedAt")
-            .is_some_and(|value| event_write::truthy(Some(value)));
+        let deleted = worker.is_deleted();
         if worker.id == worker.root_id
             || (!deleted && worker.status.as_str() != "failed")
             || (!deleted && continuation_work_pending(&worker))
@@ -2381,12 +2372,7 @@ pub fn release_failed_work(
                 .as_str()
                 .ok_or_else(|| invalid("runtime_work", "<invalid>"))?;
             let root = AgentRepository::get(tx, &worker.root_id)?;
-            if let Some(root) = root.filter(|root| {
-                !root
-                    .extra
-                    .get("deletedAt")
-                    .is_some_and(|value| event_write::truthy(Some(value)))
-            }) {
+            if let Some(root) = root.filter(|root| !root.is_deleted()) {
                 let owner = released["releases"]
                     .as_array()
                     .and_then(|history| history.last())
@@ -2422,12 +2408,7 @@ pub fn release_failed_work(
 }
 
 fn continuation_work_pending(agent: &AgentRecord) -> bool {
-    if agent.auto_wake != Some(true)
-        || agent
-            .extra
-            .get("deletedAt")
-            .is_some_and(|value| event_write::truthy(Some(value)))
-    {
+    if agent.auto_wake != Some(true) || agent.is_deleted() {
         return false;
     }
     let default_account = json!("default");
@@ -3095,7 +3076,8 @@ fn submit(
     }
     validate_submission_files(&submitter, &input.files, input.prepared_files.as_ref())?;
     if submitter.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm)
-        || submitter.extra.get("workspaceMode").and_then(Value::as_str) == Some("layr-native")
+        || submitter.workspace_mode
+            == Some(studio_runtime_schema::records::WorkspaceMode::LayrNative)
     {
         let Some(request_id) = input.vm_evidence_request_id.as_deref() else {
             return Err(Error::Conflict(
@@ -3722,7 +3704,7 @@ fn root_agent(tx: &Transaction<'_>, agent: &AgentRecord) -> Result<AgentRecord, 
 }
 
 fn live_recipient(agent: &AgentRecord) -> bool {
-    !event_write::truthy(agent.extra.get("deletedAt"))
+    !agent.is_deleted()
         && !matches!(
             agent.status,
             studio_runtime_store::AgentStatus::Completed
@@ -3766,16 +3748,19 @@ fn validate_submission_files(
         return Ok(());
     }
     let cwd = agent
-        .extra
-        .get("cwd")
-        .filter(|cwd| cwd.as_str().is_some_and(|cwd| !cwd.is_empty()))
+        .cwd
+        .as_deref()
+        .filter(|cwd| !cwd.is_empty())
         .ok_or_else(|| invalid("runtime_agents", &agent.id.0))?;
     let Some(prepared) = prepared else {
         return Err(Error::Conflict(
             "Submission file evidence must be prepared before saving the result",
         ));
     };
-    if prepared.owner != agent.id.0 || prepared.cwd != *cwd || prepared.files != files {
+    if prepared.owner != agent.id.0
+        || prepared.cwd.as_deref() != Some(cwd)
+        || prepared.files != files
+    {
         return Err(Error::Conflict(
             "Submission file ownership changed before saving the result",
         ));
@@ -3799,9 +3784,8 @@ fn resolve_submission_files(
         return Ok(Vec::new());
     }
     let cwd = agent
-        .extra
-        .get("cwd")
-        .and_then(Value::as_str)
+        .cwd
+        .as_deref()
         .filter(|cwd| !cwd.is_empty())
         .ok_or_else(|| invalid("runtime_agents", &agent.id.0))?;
     let mut resolved = Vec::with_capacity(files.len());
@@ -5675,7 +5659,7 @@ mod actor_tests {
         store
             .transaction(move |tx| {
                 let mut agent = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
-                agent.extra.insert("cwd".into(), json!(new_cwd));
+                agent.cwd = Some(new_cwd);
                 AgentRepository::put(tx, &agent)?;
                 Ok(())
             })

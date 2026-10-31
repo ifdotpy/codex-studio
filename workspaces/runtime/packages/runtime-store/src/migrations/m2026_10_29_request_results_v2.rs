@@ -6,10 +6,13 @@ use studio_runtime_schema::persistence::{RequestReferenceKind, RequestResultStat
 pub(super) fn message_revision(tx: &Transaction<'_>) -> crate::StoreResult<()> {
     let present: bool = tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_chat_messages') WHERE name='rev')",
-        [], |row| row.get(0),
+        [],
+        |row| row.get(0),
     )?;
     if !present {
-        tx.execute_batch("ALTER TABLE runtime_chat_messages ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;")?;
+        tx.execute_batch(
+            "ALTER TABLE runtime_chat_messages ADD COLUMN rev INTEGER NOT NULL DEFAULT 1;",
+        )?;
     }
     tx.execute_batch("CREATE TRIGGER IF NOT EXISTS runtime_chat_message_revision AFTER UPDATE OF room,sender,text,created,deliveries ON runtime_chat_messages WHEN OLD.room IS NOT NEW.room OR OLD.sender IS NOT NEW.sender OR OLD.text IS NOT NEW.text OR OLD.created IS NOT NEW.created OR OLD.deliveries IS NOT NEW.deliveries BEGIN UPDATE runtime_chat_messages SET rev=OLD.rev+1 WHERE seq=NEW.seq; END;")?;
     Ok(())
@@ -132,9 +135,23 @@ mod tests {
         let tx = db.transaction().unwrap();
         super::message_revision(&tx).unwrap();
         super::message_revision(&tx).unwrap();
-        tx.execute("UPDATE runtime_chat_messages SET text='next' WHERE id='message'", []).unwrap();
-        tx.execute("UPDATE runtime_chat_messages SET text='next' WHERE id='message'", []).unwrap();
-        let rev: i64 = tx.query_row("SELECT rev FROM runtime_chat_messages WHERE id='message'", [], |row| row.get(0)).unwrap();
+        tx.execute(
+            "UPDATE runtime_chat_messages SET text='next' WHERE id='message'",
+            [],
+        )
+        .unwrap();
+        tx.execute(
+            "UPDATE runtime_chat_messages SET text='next' WHERE id='message'",
+            [],
+        )
+        .unwrap();
+        let rev: i64 = tx
+            .query_row(
+                "SELECT rev FROM runtime_chat_messages WHERE id='message'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(rev, 2);
     }
 

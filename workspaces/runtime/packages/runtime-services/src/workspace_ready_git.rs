@@ -94,7 +94,14 @@ pub(crate) async fn prepare_with_budget(
     timeout: Duration,
     queue: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
-    match prepare_attempt(Arc::clone(&store), agent_id.clone(), timeout, queue).await {
+    match Box::pin(prepare_attempt(
+        Arc::clone(&store),
+        agent_id.clone(),
+        timeout,
+        queue,
+    ))
+    .await
+    {
         Err(WorkspaceError::Deadline(step)) => {
             recovery_required(
                 store,
@@ -174,8 +181,8 @@ async fn prepare_attempt(
     queue: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
     let initial = snapshot(&store, agent_id.clone()).await?;
-    if crate::layr_native::is_native(&initial.agent.record) {
-        let ready = crate::layr_native::prepare(Arc::clone(&store), initial.agent.record.clone())
+    if crate::layr_native::is_native(&initial.agent.value()) {
+        let ready = crate::layr_native::prepare(Arc::clone(&store), initial.agent.value())
             .await
             .map_err(|error| WorkspaceError::Git(error.to_string()))?;
         let cwd = ready["cwd"].as_str().ok_or(WorkspaceError::InvalidRecord)?;
@@ -193,7 +200,7 @@ async fn prepare_attempt(
                 by: crate::workspace_ready::DeferredBy::Actor,
             });
         }
-        let value = &initial.agent.record;
+        let value = &initial.agent.value();
         if value.get("layrReady").and_then(Value::as_bool) != Some(true)
             || value
                 .get("layrProjectId")
@@ -388,7 +395,7 @@ fn establish(
     let observed = git.worktree(plan)?;
     let decision = decide_workspace(
         &context.actor,
-        &context.snapshot.agent.record,
+        &context.snapshot.agent.value(),
         context.cwd.as_deref(),
         &[],
         Some(plan),
@@ -478,7 +485,7 @@ async fn publish_verified(
             // Filesystem identity was observed before writer admission; a changed
             // stored cwd cannot borrow that observation.
 
-            let decision = decide_workspace(&actor, &current.agent.record,
+            let decision = decide_workspace(&actor, &current.agent.value(),
                 Some(cwd), &paths.reservations(current).unwrap_or_default(), Some(&transaction_identity), true, observed);
             confined && paths.reservations(current).is_some() && matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
         });
@@ -516,7 +523,7 @@ impl Context {
     fn decide(&self) -> WorkspaceDecision {
         decide_workspace(
             &self.actor,
-            &self.snapshot.agent.record,
+            &self.snapshot.agent.value(),
             self.cwd.as_deref(),
             &self.reservations,
             self.plan.as_ref(),
@@ -557,12 +564,7 @@ async fn provision_journal(
         .await?)
 }
 fn actor(snapshot: &WorkspaceSnapshot) -> Result<WorkspaceActor, WorkspaceError> {
-    let actor: WorkspaceActor = serde_json::from_value(snapshot.agent.record.clone())
-        .map_err(|_| WorkspaceError::InvalidRecord)?;
-    if actor.id != snapshot.agent.id {
-        return Err(WorkspaceError::InvalidRecord);
-    }
-    Ok(actor)
+    serde_json::from_value(snapshot.agent.value()).map_err(|_| WorkspaceError::InvalidRecord)
 }
 fn observe(
     snapshot: WorkspaceSnapshot,
@@ -632,7 +634,7 @@ fn observe(
         serde_json::from_value(operation["plan"].clone())
             .map_err(|_| WorkspaceError::InvalidRecord)?
     } else {
-        let source = &context.snapshot.agent.record;
+        let source = &context.snapshot.agent.value();
         let base = source
             .get("workerBaseCommit")
             .and_then(Value::as_str)

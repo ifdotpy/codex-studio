@@ -196,20 +196,12 @@ const UNSAFE_RUST_ALLOWLIST: [string, string][] = [
     "UserNotifications delegate class and center bindings.",
   ],
   [
-    "workspaces/client/packages/client-core/src/pdf.rs",
-    "CoreGraphics PDF page render context.",
-  ],
-  [
     "workspaces/client/packages/client-core/src/platform.rs",
     "getentropy for client random identifiers.",
   ],
   [
     "workspaces/client/packages/client-core/src/quick_look.rs",
     "Quick Look panel through AppKit initializers.",
-  ],
-  [
-    "workspaces/client/packages/client-core/src/rich_document.rs",
-    "WebKit rich document renderer delegate and bindings.",
   ],
   [
     "workspaces/client/packages/client-core/src/startup.rs",
