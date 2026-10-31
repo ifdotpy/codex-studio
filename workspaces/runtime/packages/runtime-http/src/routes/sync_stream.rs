@@ -32,8 +32,10 @@ use studio_runtime_schema::{SYNC_PROTOCOL_VERSION, SYNC_PROTOCOL_VERSION_TEXT};
 use studio_runtime_services::change_notifications::{
     ChangeSnapshot, MAX_SAFE_REVISION, SYNC_FRAME_MIN_INTERVAL,
 };
+#[cfg(test)]
+use studio_runtime_services::resource_notify::LiveDelta;
 use studio_runtime_services::resource_notify::{
-    LiveDelta, ResourceChanges, ResourceIdentity, ResourceKind, ResourceNotifications,
+    LiveEvent, ResourceChanges, ResourceIdentity, ResourceKind, ResourceNotifications,
     ResourceNotifyError,
 };
 #[cfg(test)]
@@ -194,6 +196,39 @@ fn authorize_resource(
             StatusCode::FORBIDDEN,
             "This caller may not access this resource",
         ))
+    }
+}
+
+fn progress_resource(
+    selector: studio_runtime_schema::progress_selector::ProgressSelector,
+) -> ResourceRef {
+    use studio_runtime_schema::progress_selector::{ProgressSelector, VaultJob};
+    match selector {
+        ProgressSelector::Auth { request_id } => {
+            ResourceRef::AuthProgressResource(crate::generated::AuthProgressResource {
+                kind: Default::default(),
+                request_id,
+            })
+        }
+        ProgressSelector::Vault { request_id, job } => {
+            ResourceRef::VaultJobProgressResource(crate::generated::VaultJobProgressResource {
+                kind: Default::default(),
+                request_id,
+                job: match job {
+                    VaultJob::Setup => crate::generated::VaultJobProgressResourceJob::Setup,
+                    VaultJob::Login => crate::generated::VaultJobProgressResourceJob::Login,
+                    VaultJob::Pull => crate::generated::VaultJobProgressResourceJob::Pull,
+                },
+            })
+        }
+        ProgressSelector::Rename {
+            request_id,
+            agent_id,
+        } => ResourceRef::RenameProgressResource(crate::generated::RenameProgressResource {
+            kind: Default::default(),
+            request_id,
+            agent_id,
+        }),
     }
 }
 
@@ -402,6 +437,7 @@ async fn sync_stream(
         None => return ApiError::internal().into_response(),
     };
     let change_hub = Arc::clone(&state.sync_changes);
+    let live = state.resource_notifications.subscribe_live();
     let mut changes = change_hub.subscribe();
     changes.borrow_and_update();
     let mut initial_entity_sequence =
@@ -579,6 +615,7 @@ async fn sync_stream(
     }
 
     let stream_state = ResourceStream {
+        principal: Some(principal),
         http_state: Some(state.clone()),
         vault_readiness,
         subscription: Some(subscription),
@@ -597,7 +634,7 @@ async fn sync_stream(
         draft_sequence: initial_draft_sequence,
         store: Some(store),
         changes,
-        live: state.resource_notifications.subscribe_live(),
+        live,
         notifications: state.resource_notifications,
         token_rates,
         last_token_rates,
@@ -1397,6 +1434,7 @@ async fn attach_transient_snapshots(
 }
 
 struct ResourceStream {
+    principal: Option<studio_runtime_services::principal::Principal>,
     subscription: Option<LiveSubscription>,
     http_state: Option<HttpState>,
     vault_readiness: Option<studio_runtime_services::vault::VaultReadinessWatcher>,
@@ -1418,7 +1456,7 @@ struct ResourceStream {
     changes: tokio::sync::watch::Receiver<ChangeSnapshot>,
     notifications: Arc<ResourceNotifications>,
     /// Committed model text, in memory. A lagging stream drops frames; the durable item catches up.
-    live: tokio::sync::broadcast::Receiver<LiveDelta>,
+    live: tokio::sync::broadcast::Receiver<LiveEvent>,
     token_rates: Option<tokio::sync::watch::Receiver<Arc<TokenRates>>>,
     /// Last snapshot sent by this stream; clearing it makes the next frame a full snapshot.
     last_token_rates: Option<Arc<TokenRates>>,
@@ -1581,21 +1619,22 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
     Some(())
 }
 
-/// The next live text frame for a chat that this stream has open. A lagged receiver skips
-/// ahead: the durable item carries the text that was dropped.
+/// A lagged live receiver closes the stream so its client can recover its baseline.
 async fn next_live_delta(
-    live: &mut tokio::sync::broadcast::Receiver<LiveDelta>,
+    live: &mut tokio::sync::broadcast::Receiver<LiveEvent>,
     resources: &[SubscribedResource],
-) -> Event {
+    http: Option<&HttpState>,
+    principal: Option<&studio_runtime_services::principal::Principal>,
+) -> Option<Event> {
     use tokio::sync::broadcast::error::RecvError;
     loop {
         match live.recv().await {
-            Ok(delta)
+            Ok(LiveEvent::Delta(delta))
                 if resources.iter().any(|resource| {
                     matches!(&resource.resource, ResourceRef::TranscriptResource(transcript) if transcript.agent_id == delta.agent_id)
                 }) =>
             {
-                return sse_event(
+                return Some(sse_event(
                     "live-delta",
                     None,
                     crate::generated::ResourceLiveDeltaEvent {
@@ -1604,10 +1643,21 @@ async fn next_live_delta(
                         offset: delta.offset as i64,
                         text: delta.text,
                     },
-                );
+                ));
             }
-            Ok(_) | Err(RecvError::Lagged(_)) => {}
-            Err(RecvError::Closed) => std::future::pending().await,
+            Ok(LiveEvent::Progress(selector)) => {
+                let (Some(http), Some(principal)) = (http, principal) else { continue };
+                let resource = progress_resource(selector);
+                if authorize_resource(principal, &resource).is_err() { continue; }
+                let Ok(resource) = SubscribedResource::new(resource) else { continue };
+                let cursor = http.sync_changes.snapshot();
+                let view = ResourceChanges { versions: vec![cursor.revision], cursor, resources: vec![resource], entity_reset: false, overflow: false };
+                let mut frames = VecDeque::new();
+                append_progress_frames(http, &view, &mut frames).await;
+                if let Some(frame) = frames.pop_front() { return Some(frame); }
+            }
+            Ok(_) => {}
+            Err(RecvError::Lagged(_) | RecvError::Closed) => return None,
         }
     }
 }
@@ -1642,8 +1692,8 @@ async fn next_frame(
                     subscription_frame(&mut state, update?).await?;
                     return Some((Ok(state.initial.pop_front()?), state));
                 },
-                live = next_live_delta(&mut state.live, &state.resources) => {
-                    return Some((Ok(live), state));
+                live = next_live_delta(&mut state.live, &state.resources, state.http_state.as_ref(), state.principal.as_ref()) => {
+                    return Some((Ok(live?), state));
                 },
                 changed = changed_not_before(Some(&mut state.changes), state.next_resources_frame_at) => {
                     if changed.is_err() { return None; }
@@ -1666,8 +1716,8 @@ async fn next_frame(
                     subscription_frame(&mut state, update?).await?;
                     return Some((Ok(state.initial.pop_front()?), state));
                 },
-                live = next_live_delta(&mut state.live, &state.resources) => {
-                    return Some((Ok(live), state));
+                live = next_live_delta(&mut state.live, &state.resources, state.http_state.as_ref(), state.principal.as_ref()) => {
+                    return Some((Ok(live?), state));
                 },
                 changed = changed_not_before(state.token_rates.as_mut(), state.next_token_frame_at) => {
                     if changed.is_err() { return None; }
@@ -3235,6 +3285,98 @@ mod tests {
                 is_owner.then_some("owner-secret")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn lagged_live_receiver_closes_stream() {
+        let changes =
+            Arc::new(studio_runtime_services::change_notifications::ChangeNotificationHub::new());
+        let notifications = Arc::new(ResourceNotifications::new(changes.clone()));
+        let tokens = TokenRateHub::new();
+        let stream = test_stream(&changes, &tokens, notifications.clone(), &[]);
+        for index in 0..=studio_runtime_services::resource_notify::LIVE_DELTA_CAPACITY {
+            notifications.publish_live(LiveDelta {
+                agent_id: "agent".into(),
+                item_id: "item".into(),
+                offset: index as u64,
+                text: "x".into(),
+            });
+        }
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), next_frame(stream))
+                .await
+                .expect("lag must terminate the stream")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_progress_reaches_stream_without_subscription() {
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction_with(|tx| {
+            let agent = studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,
+                "id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "name":"Original",
+                "provider":"codex", "model":"gpt-6", "prompt":"Title fixture", "cwd":"/fixture",
+                "accountKey":"default", "isLead":false, "needsTitle":true, "manualName":false, "autoWake":false
+            }))?;
+            studio_runtime_store::AgentRepository::put(tx, &agent)
+        }).await.expect("seed agent");
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router(state.clone()).expect("router");
+        let response = app.clone().oneshot(Request::builder()
+            .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%5D&tokenRates=false"))
+            .header("host", "127.0.0.1:4321")
+            .extension(ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 12345))))
+            .body(Body::empty()).expect("request")).await.expect("stream");
+        let mut stream = response.into_body().into_data_stream();
+        stream.next().await.expect("session").expect("bytes");
+        stream.next().await.expect("baseline").expect("bytes");
+        let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/rename")
+                    .header("host", "127.0.0.1:4321")
+                    .header("x-canvas-token", "token")
+                    .header("content-type", "application/json")
+                    .extension(ConnectInfo(std::net::SocketAddr::from((
+                        [127, 0, 0, 1],
+                        12345,
+                    ))))
+                    .body(Body::from(
+                        json!({"id":"agent","request_id":request_id}).to_string(),
+                    ))
+                    .expect("rename"),
+            )
+            .await
+            .expect("rename response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let frame = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = stream.next().await.expect("stream").expect("bytes");
+                if String::from_utf8_lossy(&frame).contains("event: resource-progress") {
+                    break frame;
+                }
+            }
+        })
+        .await
+        .expect("progress without subscription");
+        assert!(String::from_utf8_lossy(&frame).contains("rename-progress"));
+        assert!(String::from_utf8_lossy(&frame).contains(&request_id));
     }
 
     #[tokio::test]
@@ -5535,6 +5677,7 @@ mod tests {
         let mut changes = hub.subscribe();
         let baseline = changes.borrow_and_update().clone();
         let state = ResourceStream {
+            principal: None,
             http_state: None,
             vault_readiness: None,
             subscription: None,
@@ -5589,6 +5732,7 @@ mod tests {
         let changes = hub.subscribe();
         let baseline = changes.borrow().clone();
         let state = ResourceStream {
+            principal: None,
             http_state: None,
             vault_readiness: None,
             subscription: None,
@@ -5920,6 +6064,7 @@ mod tests {
         let changes = hub.subscribe();
         let baseline = changes.borrow().clone();
         ResourceStream {
+            principal: None,
             http_state: None,
             vault_readiness: None,
             subscription: None,
@@ -6308,6 +6453,7 @@ mod tests {
         let changes = hub.subscribe();
         let baseline = changes.borrow().clone();
         let state = ResourceStream {
+            principal: None,
             http_state: None,
             vault_readiness: None,
             subscription: None,

@@ -150,10 +150,16 @@ pub struct LiveDelta {
     pub text: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum LiveEvent {
+    Delta(LiveDelta),
+    Progress(studio_runtime_schema::progress_selector::ProgressSelector),
+}
+
 /// One instance per HTTP state's workspace; it shares the existing commit cursor.
 pub struct ResourceNotifications {
     changes: Arc<ChangeNotificationHub>,
-    live: tokio::sync::broadcast::Sender<LiveDelta>,
+    live: tokio::sync::broadcast::Sender<LiveEvent>,
     publications: Mutex<Publications>,
     // Share completed projections without holding the guard during reads.
     content: tokio::sync::Mutex<VecDeque<ContentVersion>>,
@@ -177,10 +183,17 @@ impl ResourceNotifications {
 
     /// Send a committed text delta to every stream, without a store write or a timer.
     pub fn publish_live(&self, delta: LiveDelta) {
-        let _no_subscriber = self.live.send(delta);
+        let _no_subscriber = self.live.send(LiveEvent::Delta(delta));
     }
 
-    pub fn subscribe_live(&self) -> tokio::sync::broadcast::Receiver<LiveDelta> {
+    pub fn publish_progress(
+        &self,
+        selector: studio_runtime_schema::progress_selector::ProgressSelector,
+    ) {
+        let _no_subscriber = self.live.send(LiveEvent::Progress(selector));
+    }
+
+    pub fn subscribe_live(&self) -> tokio::sync::broadcast::Receiver<LiveEvent> {
         self.live.subscribe()
     }
 
