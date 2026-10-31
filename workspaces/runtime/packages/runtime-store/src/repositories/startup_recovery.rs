@@ -209,6 +209,13 @@ fn tool_request_counts_sql() -> String {
 pub struct StartupRecoveryRepository;
 
 impl StartupRecoveryRepository {
+    pub(crate) fn prepare_monitor_index(connection: &Connection) -> StoreResult<()> {
+        if crate::schema::table_exists(connection, MONITORS.table)? {
+            connection.execute_batch(&MONITORS.definition().create_sql)?;
+        }
+        Ok(())
+    }
+
     /// Canonical DDL for the startup recovery partial indexes.
     #[doc(hidden)]
     pub fn index_definitions() -> Vec<OwnedRuntimeIndexDefinition> {
