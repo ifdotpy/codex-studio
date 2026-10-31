@@ -158,6 +158,10 @@ async fn set_agent_in_use(state: &State, thread: &str, in_use: bool) {
 /// startup recovery and detached preparations before enabling idle checks.
 async fn settled_worker() -> (State, Peer, AccountHandle) {
     let state = State::new().await;
+    settled_worker_from_state(state).await
+}
+
+async fn settled_worker_from_state(state: State) -> (State, Peer, AccountHandle) {
     let mut peer = Peer::new();
     let worker = peer.worker(state.bridge.clone()).await;
     let start = state.start(&mut peer, &worker).await;
@@ -290,6 +294,9 @@ async fn malformed_or_foreign_thread_evidence_blocks_until_a_provider_event() {
 
 #[tokio::test]
 async fn malformed_or_incomplete_work_pages_block_until_a_provider_event() {
+    let template = studio_runtime_store::TestStoreTemplate::new()
+        .await
+        .unwrap();
     for method in ["thread/queue/list", "thread/backgroundTerminals/list"] {
         for page in [
             json!({}),
@@ -300,7 +307,11 @@ async fn malformed_or_incomplete_work_pages_block_until_a_provider_event() {
             json!({"data": [null]}),
             json!([[], null]),
         ] {
-            let (state, mut peer, mut worker) = settled_worker().await;
+            let root = test_root().join(format!("worker-{}", uuid::Uuid::new_v4()));
+            let store = template.open(&root).await.unwrap();
+            let state =
+                State::new_with_store(root.clone(), seed_fixture_store(&root, store).await).await;
+            let (state, mut peer, mut worker) = settled_worker_from_state(state).await;
             set_lead(&state, false).await;
             enable_unload(&state, &mut peer).await;
             answer(

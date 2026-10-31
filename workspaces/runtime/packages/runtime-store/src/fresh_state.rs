@@ -337,6 +337,73 @@ pub fn test_canvas() -> Connection {
     connection
 }
 
+/// A migrated, disposable fresh store copied only within a single test.
+#[cfg(any(test, feature = "test-support"))]
+pub struct TestStoreTemplate {
+    canvas: Vec<u8>,
+    analytics: Vec<u8>,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl TestStoreTemplate {
+    pub async fn new() -> StoreResult<Self> {
+        let root = tempfile::tempdir()?;
+        let store = crate::RuntimeStore::open(Some(root.path())).await?;
+        store.checkpoint_wal_passive().await?;
+        drop(store);
+        Ok(Self {
+            canvas: tokio::fs::read(root.path().join("canvas.sqlite3")).await?,
+            analytics: tokio::fs::read(root.path().join("analytics.sqlite3")).await?,
+        })
+    }
+
+    pub async fn open(&self, root: &Path) -> StoreResult<crate::RuntimeStore> {
+        tokio::fs::create_dir(root).await?;
+        tokio::fs::write(root.join("canvas.sqlite3"), &self.canvas).await?;
+        tokio::fs::write(root.join("analytics.sqlite3"), &self.analytics).await?;
+        let store = crate::RuntimeStore::open(Some(root)).await?;
+        let root = store.root().to_path_buf();
+        store.transaction(move |tx| {
+            tx.execute_batch("DELETE FROM sync_identity; INSERT INTO sync_identity(id) VALUES(lower(hex(randomblob(16))))")?;
+            seed_workspace(tx, &root)
+        }).await?;
+        Ok(store)
+    }
+}
+
+#[cfg(test)]
+mod template_tests {
+    use super::TestStoreTemplate;
+
+    #[tokio::test]
+    async fn copies_have_distinct_identities_and_workspace_roots() {
+        let template = TestStoreTemplate::new().await.expect("template");
+        let root = tempfile::tempdir().expect("cases");
+        assert!(template.open(root.path()).await.is_err());
+        let first = template
+            .open(&root.path().join("first"))
+            .await
+            .expect("first");
+        let second = template
+            .open(&root.path().join("second"))
+            .await
+            .expect("second");
+        let inspect = |store: &crate::RuntimeStore| {
+            let db = store.test_reader().expect("reader");
+            let identity: String = db
+                .query_row("SELECT id FROM sync_identity", [], |row| row.get(0))
+                .expect("identity");
+            let state_dir: String = db.query_row("SELECT json_extract(payload, '$.value.stateDir') FROM sync_entities WHERE collection='workspace' AND id='current'", [], |row| row.get(0)).expect("workspace");
+            assert_eq!(
+                state_dir,
+                store.root().to_string_lossy().as_ref()
+            );
+            identity
+        };
+        assert_ne!(inspect(&first), inspect(&second));
+    }
+}
+
 fn seed_workspace(transaction: &rusqlite::Transaction<'_>, state_dir: &Path) -> StoreResult<()> {
     let value = json!({
         "connected": false,

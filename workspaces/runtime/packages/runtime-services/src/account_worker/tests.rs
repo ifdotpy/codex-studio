@@ -339,6 +339,10 @@ const FIXTURE_AGENT_EPOCH: i64 = 0;
 async fn seed_fixture_root(root: &std::path::Path) -> RuntimeStore {
     std::fs::create_dir_all(root).unwrap();
     let store = RuntimeStore::open(Some(root)).await.unwrap();
+    seed_fixture_store(root, store).await
+}
+
+async fn seed_fixture_store(root: &std::path::Path, store: RuntimeStore) -> RuntimeStore {
     let mut record = json!({"compactions":0,
         "id":FIXTURE_AGENT_ID,"rootId":FIXTURE_AGENT_ID,"epoch":FIXTURE_AGENT_EPOCH,
         "status":"queued","name":"Rust turn fixture","cwd":root,"autoWake":true,
@@ -847,9 +851,13 @@ impl State {
         Self::new_with_root(root).await
     }
     async fn new_with_root(root: PathBuf) -> Self {
+        let store = seed_fixture_root(&root).await;
+        Self::new_with_store(root, store).await
+    }
+    async fn new_with_store(root: PathBuf, store: RuntimeStore) -> Self {
         let agent = FIXTURE_AGENT_ID.to_owned();
         let epoch = FIXTURE_AGENT_EPOCH;
-        let store = Arc::new(seed_fixture_root(&root).await);
+        let store = Arc::new(store);
         let mut bridge = test_bridge(store).await;
         let retained = MATRIX
             .try_with(|context| {

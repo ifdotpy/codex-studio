@@ -16,7 +16,7 @@ pub use entity_publication::{EntityPublisher, PendingEntities, StudioErrorSource
 mod feature_schema;
 mod fresh_state;
 #[cfg(any(test, feature = "test-support"))]
-pub use fresh_state::test_canvas;
+pub use fresh_state::{TestStoreTemplate, test_canvas};
 
 /// Durable marker proving both view-scoped agent projections were seeded. Unit: metadata key.
 pub const AGENT_PROJECTIONS_SEED_MARKER: &str = "agent_projections_v1";

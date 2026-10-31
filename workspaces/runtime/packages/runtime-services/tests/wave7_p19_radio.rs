@@ -71,9 +71,34 @@ struct LegacyRule {
     epoch: Option<i64>,
     error: Option<String>,
 }
-fn corpus() -> RadioCorpus {
+async fn corpus() -> RadioCorpus {
     let bytes =
         crate::media_auth_fixtures::state_bytes(include_str!("wave7_p19/initial-state.json"));
+    let template = tempfile::tempdir().expect("radio template");
+    for (name, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+        .into_iter()
+        .zip(bytes)
+    {
+        tokio::fs::write(template.path().join(name), bytes)
+            .await
+            .expect("template database");
+    }
+    let store = RuntimeStore::open(Some(template.path()))
+        .await
+        .expect("migrate template");
+    store
+        .checkpoint_wal_passive()
+        .await
+        .expect("checkpoint template");
+    drop(store);
+    let bytes = [
+        tokio::fs::read(template.path().join("canvas.sqlite3"))
+            .await
+            .expect("canvas template"),
+        tokio::fs::read(template.path().join("analytics.sqlite3"))
+            .await
+            .expect("analytics template"),
+    ];
     let expected = if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") {
         include_str!("wave7_p19/expected-full.json")
     } else {
@@ -241,6 +266,8 @@ fn copy_template(corpus: &RadioCorpus, root: &Path) {
     for (name, contents) in &corpus.databases {
         fs::write(root.join(name), contents).expect("copy template database");
     }
+    let db = rusqlite::Connection::open(root.join("canvas.sqlite3")).expect("template identity");
+    db.execute_batch("DELETE FROM sync_identity; INSERT INTO sync_identity(id) VALUES(lower(hex(randomblob(16))))").expect("fresh identity");
 }
 async fn seed(store: &RuntimeStore, snapshot: &Value) {
     let snapshot = snapshot.clone();
@@ -576,7 +603,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
 }
 #[tokio::test]
 async fn provider_identity_radio_rejects_unknown_participant_before_enqueue() {
-    let corpus = corpus();
+    let corpus = corpus().await;
     let case = corpus
         .cases
         .iter()
@@ -610,7 +637,7 @@ async fn provider_identity_radio_rejects_unknown_participant_before_enqueue() {
 
 #[tokio::test]
 async fn python_written_radio_corpus_and_restart_replay() {
-    let corpus = corpus();
+    let corpus = corpus().await;
     for original_case in &corpus.cases {
         let root = tempfile::tempdir().expect("radio state directory");
         copy_template(&corpus, root.path());
@@ -726,7 +753,7 @@ async fn python_written_radio_corpus_and_restart_replay() {
 // SQLite rollback contract with less work performed. Reuse the rolled-back store
 // across tables, then cross each operation's restart boundary once.
 async fn failpoints_rollback_then_restart(name: &str, tables: &[&str]) {
-    let corpus = corpus();
+    let corpus = corpus().await;
     let mut case = corpus
         .cases
         .iter()
@@ -844,7 +871,7 @@ fn database_rows(store: &RuntimeStore) -> Vec<(String, Vec<Vec<SqlValue>>)> {
 
 #[tokio::test]
 async fn answered_question_releases_one_continuation_and_malformed_rows_write_nothing() {
-    let corpus = corpus();
+    let corpus = corpus().await;
     let case = corpus
         .cases
         .iter()
@@ -916,7 +943,7 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
 
 #[tokio::test]
 async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
-    let corpus = corpus();
+    let corpus = corpus().await;
     let case = corpus
         .cases
         .iter()
@@ -1105,7 +1132,7 @@ fn input(id: &str, kind: &str) -> QueueEvent {
 /// ordinary row, tagged answers included, is deliverable.
 #[tokio::test]
 async fn live_radio_turn_admits_only_its_tagged_answer_and_releases_the_rest() {
-    let corpus = corpus();
+    let corpus = corpus().await;
     let case = corpus
         .cases
         .iter()
