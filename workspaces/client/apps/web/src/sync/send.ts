@@ -1,3 +1,4 @@
+import { outboxRequests } from "../browserPersistence";
 import { serverLocalStorage as localStorage } from "../servers/storage";
 
 import { useEffect, useState } from "react";
@@ -274,7 +275,7 @@ export function retainQueuedSchemaMismatch(
 }
 
 const removalFence = (workspaceId: string, id: string) =>
-  `studio-removed-send:${JSON.stringify([workspaceId, id])}`;
+  JSON.stringify([workspaceId, id]);
 type SyncDatabaseHandle = Awaited<ReturnType<typeof syncDatabase>>;
 type OutboxDatabaseHandle = Pick<
   SyncDatabaseHandle,
@@ -304,6 +305,7 @@ export function createOutbox(options: {
   } = options.api;
   const { syncDatabase } = options;
   const localStorage = options.storage;
+  const outboxFences = outboxRequests(localStorage);
 
   const active = new Map<string, Promise<SendResult>>();
 
@@ -332,7 +334,8 @@ export function createOutbox(options: {
         const current: Intention = readIntention(record.payload, doc.id);
         if (
           current.status === "queued" &&
-          localStorage.getItem(removalFence(workspaceId, doc.id)) === "1"
+          outboxFences.get("removedSend", removalFence(workspaceId, doc.id)) ===
+            "1"
         ) {
           const cancelled = current.attempted === false;
           return {
@@ -699,7 +702,7 @@ export function createOutbox(options: {
         next.receipt = { id, status: "cancelled" };
       } else {
         if (action === "resume")
-          localStorage.removeItem(removalFence(workspaceId, id));
+          outboxFences.remove("removedSend", removalFence(workspaceId, id));
         next.status = action === "pause" ? "paused" : "queued";
       }
       return { ...record, payload: JSON.stringify(next) };
@@ -711,7 +714,7 @@ export function createOutbox(options: {
     const { db, workspaceId } = await syncDatabase();
     // The card can be removed before durableSend has inserted its document.
     // The HTTP claim checks this fence, including claims from another tab.
-    localStorage.setItem(removalFence(workspaceId, id), "1");
+    outboxFences.set("removedSend", removalFence(workspaceId, id), "1");
     const doc = await db.outbox.findOne(id).exec();
     if (!doc) return false;
     const updated = await doc.incrementalModify((record) => {

@@ -429,11 +429,7 @@
   },
   {
     "file": "sync/send.ts",
-    "callee": "syncGet"
-  },
-  {
-    "file": "sync/send.ts",
-    "callee": "localStorage.getItem"
+    "callee": "localStorage"
   },
   {
     "file": "sync/send.ts",
@@ -441,11 +437,7 @@
   },
   {
     "file": "sync/send.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "sync/send.ts",
-    "callee": "localStorage.setItem"
+    "callee": "syncGet"
   },
   {
     "file": "sync/send.ts",

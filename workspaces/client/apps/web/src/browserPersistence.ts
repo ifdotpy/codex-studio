@@ -23,6 +23,7 @@ const outboxPrefixes = {
   projectSave: "studio-peer-convert:",
   queueChange: "studio-queue-change:",
   removeSending: "studio-remove-sending:",
+  removedSend: "studio-removed-send:",
   sidebarOrder: "codex-sidebar-order:",
   serverAccess: "studio-server-access-pending",
   pairing: "studio-pairing-attempt-v1",
