@@ -275,7 +275,7 @@ The repository contains the layr source at `workspaces/runtime/apps/layr`.
 Its manifest records the base commit, its Git tree, and the SHA-256 hashes of the files.
 The guest installer verifies those hashes before a build.
 It uses Rust 1.90.0 and the committed Cargo lock file.
-The source uses Layr 0.4.0. `manifest.json` owns the exact upstream revision.
+The source uses Layr 0.5.1. `manifest.json` owns the exact upstream revision.
 It includes the `crates/layr-store` and `crates/layr-model` workspace members.
 The layr-desk source keeps its existing revision.
 
