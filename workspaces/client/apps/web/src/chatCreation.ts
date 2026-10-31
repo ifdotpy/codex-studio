@@ -1,3 +1,4 @@
+import { outboxRequestKeys, outboxRequests } from "./browserPersistence";
 import { ApiError } from "./api";
 import { serverLocalStorage } from "./servers/storage";
 import type { Json } from "./types";
@@ -22,10 +23,17 @@ export function isDefinitiveCreationRefusal(error: unknown): boolean {
 }
 
 export function createChatCreationStore(localStorage: Storage) {
+  const outbox = outboxRequests(localStorage);
+  const suffixFor = (key: string) => {
+    const prefix = outbox.key("chatCreation", "");
+    if (!key.startsWith(prefix)) throw new Error("Invalid chat request scope.");
+    return key.slice(prefix.length);
+  };
   function pendingChatCreations(key: string): Json[] {
+    const suffix = suffixFor(key);
     const requests = new Map<string, Json>();
     const read = (name: string) => {
-      const request = JSON.parse(localStorage.getItem(name) || "null");
+      const request = JSON.parse(outbox.get("chatCreation", name) || "null");
       if (request === null) return;
       if (
         typeof request !== "object" ||
@@ -39,27 +47,30 @@ export function createChatCreationStore(localStorage: Storage) {
       requests.set(request.id, request);
     };
     // Retain the old single request until its exact receipt is confirmed.
-    read(key);
-    const prefix = requestPrefix(key);
-    for (let index = 0; index < localStorage.length; index++) {
-      const name = localStorage.key(index);
-      if (name?.startsWith(prefix)) read(name);
-    }
+    read(suffix);
+    for (const name of outboxRequestKeys(
+      localStorage,
+      "chatCreation",
+      requestPrefix(suffix),
+    ))
+      read(name);
     return [...requests.values()];
   }
 
   function saveChatCreation(key: string, request: Json): void {
     // Separate records preserve other projects and requests from other tabs.
-    localStorage.setItem(
-      requestPrefix(key) + request.id,
+    outbox.set(
+      "chatCreation",
+      requestPrefix(suffixFor(key)) + request.id,
       JSON.stringify(request),
     );
   }
 
   function confirmChatCreation(key: string, id: string): void {
-    localStorage.removeItem(requestPrefix(key) + id);
-    const legacy = JSON.parse(localStorage.getItem(key) || "null");
-    if (legacy?.id === id) localStorage.removeItem(key);
+    const suffix = suffixFor(key);
+    outbox.remove("chatCreation", requestPrefix(suffix) + id);
+    const legacy = JSON.parse(outbox.get("chatCreation", suffix) || "null");
+    if (legacy?.id === id) outbox.remove("chatCreation", suffix);
   }
 
   function confirmChatCreationResponse(
@@ -72,50 +83,23 @@ export function createChatCreationStore(localStorage: Storage) {
     return true;
   }
 
-  function archiveChatCreation(
-    key: string,
-    id: string,
-    archive: "rejected" | "dismissed",
-    outcome: "not_applied" | "unknown",
-    reason: string,
-  ): void {
-    const request = pendingChatCreations(key).find((item) => item.id === id);
-    if (!request) return;
-    // Preserve the exact body before the pending record stops being tracked.
-    localStorage.setItem(
-      `${key}:${archive}:${id}`,
-      JSON.stringify({ request, outcome, reason }),
-    );
-    confirmChatCreation(key, id);
-  }
-
-  function rejectChatCreation(key: string, id: string, reason: string): void {
-    archiveChatCreation(key, id, "rejected", "not_applied", reason);
-  }
-
   /** Settle a failed attempt. A definitive refusal ends the pending request; a lost
    * response keeps it for an exact-ID retry. Returns whether it was settled. */
   function settleFailedChatCreation(
     key: string,
     id: string,
     error: unknown,
-    reason: string,
+    _reason: string,
   ): boolean {
     if (!isDefinitiveCreationRefusal(error)) return false;
-    rejectChatCreation(key, id, reason);
+    confirmChatCreation(key, id);
     return true;
   }
 
   /** The user stops tracking a request whose outcome is unknown. A chat it created
    * still appears in the chat list; Studio no longer retries this request ID. */
   function dismissChatCreation(key: string, id: string): void {
-    archiveChatCreation(
-      key,
-      id,
-      "dismissed",
-      "unknown",
-      "Dismissed by the user",
-    );
+    confirmChatCreation(key, id);
   }
 
   return {
@@ -123,7 +107,6 @@ export function createChatCreationStore(localStorage: Storage) {
     saveChatCreation,
     confirmChatCreation,
     confirmChatCreationResponse,
-    rejectChatCreation,
     settleFailedChatCreation,
     dismissChatCreation,
   };
@@ -134,7 +117,6 @@ export const {
   saveChatCreation,
   confirmChatCreation,
   confirmChatCreationResponse,
-  rejectChatCreation,
   settleFailedChatCreation,
   dismissChatCreation,
 } = createChatCreationStore(serverLocalStorage);

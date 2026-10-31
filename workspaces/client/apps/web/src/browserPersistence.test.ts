@@ -39,6 +39,15 @@ it("removes retired draft and upload data without touching identities", async ()
     ["studio-sidebar-width:scope", "20"],
     ["studio-removed-messages:chat", "old"],
     ["codex-queue-edit:scope:writer", "old"],
+    [
+      "codex-pending-creation:scope:rejected:00000000-0000-4000-8000-000000000000",
+      "old",
+    ],
+    [
+      "codex-pending-creation:scope:dismissed:00000000-0000-4000-8000-000000000000",
+      "old",
+    ],
+    ["codex-pending-creation:scope:request:active", "request"],
     ["studio-queue-change:scope:chat", "request"],
     ["studio-paired-servers-v1", "servers"],
     ["unrelated-app-key", "other"],
@@ -67,6 +76,7 @@ it("removes retired draft and upload data without touching identities", async ()
   };
   await cleanupLegacyPersistence(storage, factory);
   expect([...values.keys()]).toEqual([
+    "codex-pending-creation:scope:request:active",
     "studio-queue-change:scope:chat",
     "studio-paired-servers-v1",
     "unrelated-app-key",

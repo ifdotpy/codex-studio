@@ -45,35 +45,11 @@
   },
   {
     "file": "chatCreation.ts",
-    "callee": "localStorage.getItem"
+    "callee": "localStorage"
   },
   {
     "file": "chatCreation.ts",
-    "callee": "localStorage.length"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.key"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "chatCreation.ts",
-    "callee": "localStorage.setItem"
+    "callee": "localStorage"
   },
   {
     "file": "components/PromptNavigator.tsx",

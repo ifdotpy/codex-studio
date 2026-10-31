@@ -19,6 +19,7 @@ export function browserIndexedDB(): IDBFactory | undefined {
 
 const outboxPrefixes = {
   nativeAction: "studio-native-action:",
+  chatCreation: "codex-pending-creation:",
   projectSave: "studio-peer-convert:",
   queueChange: "studio-queue-change:",
   serverAccess: "studio-server-access-pending",
@@ -134,7 +135,14 @@ export async function cleanupLegacyPersistence(
   for (const key of keys) {
     if (!key) continue;
     const logical = key.replace(/^:server:[^:]+:/, "");
-    if (retiredKeys.some((prefix) => logical.startsWith(prefix)))
+    if (
+      retiredKeys.some((prefix) => logical.startsWith(prefix)) ||
+      (logical.startsWith(outboxPrefixes.chatCreation) &&
+        /:(?:rejected|dismissed):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          logical,
+        ) &&
+        !logical.includes(":request:"))
+    )
       storage.removeItem(key);
   }
   if (!factory) return;

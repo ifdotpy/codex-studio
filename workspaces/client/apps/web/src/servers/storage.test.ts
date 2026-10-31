@@ -55,21 +55,35 @@ it("keeps requests and synchronous drafts with their owner despite matching keys
     scopedStorage(() => raw, serverStoragePrefix(owner));
   const a = createChatCreationStore(storage("a"));
   const b = createChatCreationStore(storage("b"));
-  a.saveChatCreation("same-key", { id: "same-request", project: "a" });
-  b.saveChatCreation("same-key", { id: "same-request", project: "b" });
+  a.saveChatCreation("codex-pending-creation:same-key", {
+    id: "same-request",
+    project: "a",
+  });
+  b.saveChatCreation("codex-pending-creation:same-key", {
+    id: "same-request",
+    project: "b",
+  });
   expect(
-    b.confirmChatCreationResponse("same-key", "same-request", "other"),
+    b.confirmChatCreationResponse(
+      "codex-pending-creation:same-key",
+      "same-request",
+      "other",
+    ),
   ).toBe(false);
-  expect(b.pendingChatCreations("same-key")).toEqual([
+  expect(b.pendingChatCreations("codex-pending-creation:same-key")).toEqual([
     { id: "same-request", project: "b" },
   ]);
   expect(
-    b.confirmChatCreationResponse("same-key", "same-request", "same-request"),
+    b.confirmChatCreationResponse(
+      "codex-pending-creation:same-key",
+      "same-request",
+      "same-request",
+    ),
   ).toBe(true);
-  expect(a.pendingChatCreations("same-key")).toEqual([
+  expect(a.pendingChatCreations("codex-pending-creation:same-key")).toEqual([
     { id: "same-request", project: "a" },
   ]);
-  expect(b.pendingChatCreations("same-key")).toEqual([]);
+  expect(b.pendingChatCreations("codex-pending-creation:same-key")).toEqual([]);
   const draftsA = createLocalDraftStorage(storage("a"), "db-a");
   const draftsB = createLocalDraftStorage(storage("b"), "db-b");
   draftsA.writeLocalDraft("same-key", { request_id: "a" });
@@ -89,30 +103,15 @@ it("routes storage events only to the matching server namespace", () => {
   expect(serverStoragePrefix("local")).toBe("");
 });
 
-it("retains rejected request evidence and preserves pending requests if archiving fails", () => {
+it("settles only the selected chat creation request", () => {
   const raw = memoryStorage();
   const store = createChatCreationStore(raw);
-  const request = { id: "rejected", cwd: "/project" };
-  store.saveChatCreation("creation", request);
-  store.saveChatCreation("creation", { id: "unknown" });
-  store.rejectChatCreation(
-    "creation",
-    "rejected",
-    "Invalid request (body.model).",
-  );
-  expect(store.pendingChatCreations("creation")).toEqual([{ id: "unknown" }]);
-  expect(JSON.parse(raw.getItem("creation:rejected:rejected")!)).toEqual({
-    request,
-    outcome: "not_applied",
-    reason: "Invalid request (body.model).",
-  });
-  raw.setItem = () => {
-    throw new Error("disk full");
-  };
-  expect(() =>
-    store.rejectChatCreation("creation", "unknown", "refused"),
-  ).toThrow("disk full");
-  expect(store.pendingChatCreations("creation")).toEqual([{ id: "unknown" }]);
+  const key = "codex-pending-creation:scope";
+  store.saveChatCreation(key, { id: "rejected", cwd: "/project" });
+  store.saveChatCreation(key, { id: "unknown" });
+  store.dismissChatCreation(key, "rejected");
+  expect(store.pendingChatCreations(key)).toEqual([{ id: "unknown" }]);
+  expect(raw.length).toBe(1);
 });
 
 it("observes raw storage replacement and same-size external key changes", () => {
