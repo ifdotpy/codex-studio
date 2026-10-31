@@ -1565,20 +1565,10 @@ fn checked_owned_work(
 ) -> StoreResult<Option<studio_runtime_store::WorkItemRecord>> {
     #[cfg(test)]
     work_publication_probe::owned_decode(id);
-    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+    let Ok(record) = serde_json::from_str::<studio_runtime_store::WorkItemRecord>(raw) else {
         return Ok(None);
     };
-    if !valid_stored_value("runtime_work", id, &value) {
-        return Ok(None);
-    }
-    studio_runtime_store::WorkItemRecord::from_value(value)
-        .map(Some)
-        .map_err(|error| StoreError::InvalidSyncObjectField {
-            scope: "runtime_work".into(),
-            id: id.into(),
-            pointer: String::new(),
-            reason: error.to_string(),
-        })
+    Ok((record.id().as_ref() == id).then_some(record))
 }
 
 fn retire_if_live(
@@ -2743,6 +2733,20 @@ pub async fn push_preferences(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    #[test]
+    fn checked_work_uses_typed_shape_and_row_identity() {
+        let raw = r#"{"id":"w","status":"ready","owner":"agent"}"#;
+        let work = super::checked_owned_work("w", raw).unwrap().unwrap();
+        assert_eq!(work.id().as_ref(), "w");
+        assert!(super::checked_owned_work("other", raw).unwrap().is_none());
+        assert!(
+            super::checked_owned_work("w", r#"{"id":"w","status":false}"#)
+                .unwrap()
+                .is_none()
+        );
+        assert!(super::checked_owned_work("w", "{").unwrap().is_none());
+    }
+
     #[test]
     fn typed_monitor_projection_keeps_existing_public_bounds() {
         let record = crate::monitor_policy::complete_test_monitor(
