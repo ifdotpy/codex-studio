@@ -2619,10 +2619,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/workspace_ready/decisions.rs",
       "fingerprint": "f7837a1a8370bfc25d1b3b10f3ecbd821d474c258d502104dd609d2d27755912:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-store/tests/schema_compat.rs",
-      "fingerprint": "b1da955ee0003e853b429c698e24ee317a9291ea01148d5e68ebb387ac373423:0"
     }
   ],
   "rust-serde-default-field": [

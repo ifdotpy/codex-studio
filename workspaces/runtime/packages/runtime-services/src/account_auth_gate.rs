@@ -348,6 +348,8 @@ mod tests {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
             .unwrap();
+        db.execute_batch(&studio_runtime_store::domain::tables_sql())
+            .unwrap();
         db.execute_batch(
             "CREATE TABLE runtime_events(agent TEXT, epoch INTEGER, status TEXT, created REAL)",
         )

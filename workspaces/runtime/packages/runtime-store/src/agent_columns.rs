@@ -711,7 +711,8 @@ mod tests {
                 .query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
             let old_table = table_sql("runtime_agents_legacy_start_fixture").replace(
                 "record TEXT NOT NULL",
-                "start_attempt_submitted AS (record->>'$.startAttempt.submitted') STORED,\
+                "auto_wake AS (record->>'$.autoWake') STORED,\
+                 start_attempt_submitted AS (record->>'$.startAttempt.submitted') STORED,\
                  start_attempt_connection_generation AS (record->>'$.startAttempt.connectionGeneration') STORED,\
                  start_attempt_active_at_reservation AS (record->>'$.startAttempt.activeAtReservation') STORED,record TEXT NOT NULL",
             );
