@@ -445,19 +445,15 @@
   },
   {
     "file": "sync/localDraft.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "sync/localDraft.ts",
     "callee": "localStorage.removeItem"
   },
   {
     "file": "sync/localDraft.ts",
     "callee": "localStorage.setItem"
-  },
-  {
-    "file": "sync/localDraft.ts",
-    "callee": "indexedDB.open"
-  },
-  {
-    "file": "sync/localDraft.ts",
-    "callee": "localStorage.getItem"
   },
   {
     "file": "sync/outboxWriteFailure.test.ts",

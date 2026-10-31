@@ -61,6 +61,52 @@ export function outboxRequestKeys(
     .map((name) => name.slice(outboxPrefixes[kind].length));
 }
 
+/** Serialize queue identity changes across tabs using the existing lock database. */
+export function createQueueOutbox(storage: Storage, databaseName: string) {
+  return async function updateQueueRequest<T>(
+    suffix: string,
+    fallback: T,
+    update: (current: T) => T,
+  ): Promise<T> {
+    const key = outboxRequests(storage).key("queueChange", suffix);
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = browserIndexedDB()!.open(databaseName, 1);
+      request.onupgradeneeded = () =>
+        request.result.createObjectStore("writes");
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("writes", "readwrite");
+      let result: T;
+      let failure: unknown;
+      tx.objectStore("writes").get(key).onsuccess = () => {
+        try {
+          const raw = storage.getItem(key);
+          result = update(raw === null ? fallback : JSON.parse(raw));
+          if (result === null) storage.removeItem(key);
+          else storage.setItem(key, JSON.stringify(result));
+        } catch (error) {
+          failure = error;
+          tx.abort();
+        }
+      };
+      tx.oncomplete = () => {
+        db.close();
+        resolve(result!);
+      };
+      tx.onerror = tx.onabort = () => {
+        db.close();
+        reject(
+          failure ||
+            tx.error ||
+            new Error("Queue changes could not be saved on this device."),
+        );
+      };
+    });
+  };
+}
+
 /** Remove retired local copies without touching credentials or request fences. */
 export async function cleanupLegacyPersistence(
   storage: Pick<

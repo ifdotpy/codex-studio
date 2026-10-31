@@ -88,7 +88,7 @@ export function useMessageQueue(p: {
   const { get, syncPost, command } = useServerApi();
   const pendingCommands = usePendingCommands();
   const storage = useServerStorage();
-  const { updateLocalDraft } = useServerLocalDrafts();
+  const { updateQueueRequest } = useServerLocalDrafts();
   const serverStorageEventKey = useServerStorageEventKey();
   const readQueueRequest = useCallback(
     (suffix: string) => readStoredQueueRequest(storage, suffix),
@@ -171,7 +171,7 @@ export function useMessageQueue(p: {
   ]);
 
   const clearRequest = async (request: QueueMutation) => {
-    const next = await updateLocalDraft<unknown>(key, null, (current) =>
+    const next = await updateQueueRequest<unknown>(suffix, null, (current) =>
       isQueueMutation(current) && current.request_id === request.request_id
         ? null
         : current,
@@ -255,7 +255,7 @@ export function useMessageQueue(p: {
       request_id: randomUUID(),
     } satisfies QueueMutation;
     // Save before HTTP so a lost response or reload reuses the same operation.
-    await updateLocalDraft<unknown>(key, null, (current) => {
+    await updateQueueRequest<unknown>(suffix, null, (current) => {
       if (current !== null)
         throw new Error(
           "Retry the previous queue change before making another change.",
