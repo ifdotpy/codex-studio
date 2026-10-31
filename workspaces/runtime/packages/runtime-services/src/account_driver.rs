@@ -1231,9 +1231,9 @@ fn existing_login(
         return Ok(None);
     };
     let receipt = &receipt.0;
-    if receipt.reauth_account_key != request.account_key
-        || receipt.email_hint != request.email
-        || receipt.requested_label != request.label
+    if receipt.reauth_account_key.as_ref().and_then(Option::as_ref) != request.account_key.as_ref()
+        || receipt.email_hint.as_ref().and_then(Option::as_ref) != request.email.as_ref()
+        || receipt.requested_label.as_ref().and_then(Option::as_ref) != request.label.as_ref()
     {
         return Err(AccountMutationError::Refused(
             "This sign-in request belongs to a different account",
@@ -2076,6 +2076,19 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         state.public_snapshot()
+    }
+
+    /// Login progress for reconnects, without projecting unrelated accounts.
+    pub fn retained_progress(
+        &self,
+    ) -> Result<Vec<studio_runtime_schema::account_registry::LoginReceipt>, AccountDriverError>
+    {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        crate::account_policy::project_logins(&state.typed, &state.order)
+            .map_err(|_| AccountDriverError::InvalidRegistry)
     }
 
     /// Internal selected-account record, including the non-secret identity pin.

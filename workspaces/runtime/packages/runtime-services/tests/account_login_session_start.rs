@@ -211,7 +211,10 @@ async fn session_start_failure_is_not_sent_and_names_its_cause() {
     );
     assert_eq!(session.written.load(Ordering::SeqCst), 0);
     let stored = fixture.driver.snapshot().expect("registry");
-    assert_eq!(stored.logins[0]["error"], receipt["error"]);
+    assert_eq!(
+        stored.logins[0].error.as_ref().and_then(Option::as_deref),
+        receipt["error"].as_str()
+    );
 }
 
 #[tokio::test]

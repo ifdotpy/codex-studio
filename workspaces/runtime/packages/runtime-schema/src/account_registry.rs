@@ -147,28 +147,93 @@ pub struct Organization {
     pub id_suffix: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LoginReceipt {
     pub request_id: String,
     pub account_key: String,
     #[serde(deserialize_with = "crate::string_enum::deserialize")]
     pub status: LoginStatus,
-    pub created_at: Option<Number>,
-    pub email: Option<String>,
-    pub email_hint: Option<String>,
-    pub error: Option<String>,
-    pub expected_account_id: Option<String>,
-    pub expires_at: Option<Number>,
-    pub login_id: Option<String>,
-    pub native_completed: Option<bool>,
-    pub reauth_account_key: Option<String>,
-    pub requested_label: Option<String>,
-    pub resolved_account_key: Option<String>,
-    pub user_code: Option<String>,
-    pub verification_url: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub created_at: Option<Option<Number>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub email: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub email_hint: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub error: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expected_account_id: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expires_at: Option<Option<Number>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub login_id: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub native_completed: Option<Option<bool>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reauth_account_key: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub requested_label: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub resolved_account_key: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub user_code: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub verification_url: Option<Option<String>>,
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LoginStatus {
     Starting,
@@ -244,6 +309,13 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn login_receipt_preserves_missing_and_null_fields() {
+        let input = json!({"requestId":"r","accountKey":"a","status":"pending","email":null});
+        let receipt: LoginReceipt = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(receipt).unwrap(), input);
+    }
 
     #[test]
     fn registry_schema_constraints_are_tracked() {

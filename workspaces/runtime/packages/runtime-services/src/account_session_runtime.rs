@@ -1699,8 +1699,10 @@ impl AccountSessionPort for AccountSessionRuntime {
                             .map_err(account_error)?
                             .logins
                             .into_iter()
-                            .find(|receipt| receipt["requestId"] == request)
+                            .find(|receipt| receipt.request_id == request)
                             .ok_or(AccountSessionError::Refused("Unknown sign-in request"))?;
+                        let receipt = serde_json::to_value(receipt)
+                            .map_err(|_| AccountSessionError::Persistence)?;
                         if matches!(
                             receipt["status"].as_str(),
                             Some("ready" | "duplicate" | "cancelled" | "error")
@@ -2939,8 +2941,17 @@ mod limits_runtime_tests {
 
         let snapshot = fixture.runtime.driver.snapshot().unwrap();
         assert_eq!(snapshot.logins.len(), 1);
-        assert_eq!(snapshot.logins[0]["status"], "pending");
-        assert_eq!(snapshot.logins[0]["loginId"], "provider-login");
+        assert_eq!(
+            snapshot.logins[0].status,
+            studio_runtime_schema::account_registry::LoginStatus::Pending
+        );
+        assert_eq!(
+            snapshot.logins[0]
+                .login_id
+                .as_ref()
+                .and_then(Option::as_deref),
+            Some("provider-login")
+        );
         assert_eq!(fixture.provider.calls.load(Ordering::SeqCst), 1);
     }
 }

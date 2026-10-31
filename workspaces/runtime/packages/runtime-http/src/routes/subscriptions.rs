@@ -24,11 +24,10 @@ pub(super) async fn auth_progress(state: &HttpState, request_id: &str) -> Option
         let receipt = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/auth-progress",
             move || {
-                driver.snapshot().map(|snapshot| {
-                    snapshot
-                        .logins
+                driver.retained_progress().map(|receipts| {
+                    receipts
                         .into_iter()
-                        .find(|value| value.get("requestId").and_then(Value::as_str) == Some(&id))
+                        .find(|receipt| receipt.request_id == id)
                 })
             },
         )
@@ -36,7 +35,7 @@ pub(super) async fn auth_progress(state: &HttpState, request_id: &str) -> Option
         .ok()?
         .ok()?;
         if let Some(receipt) = receipt {
-            return Some(receipt);
+            return serde_json::to_value(receipt).ok();
         }
     }
     match &state.claude_login {

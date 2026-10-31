@@ -75,7 +75,8 @@ type RegisteredRouteGroup = (&'static str, fn() -> RouteGroup);
 pub(super) fn accounts_response(
     snapshot: studio_runtime_services::account_policy::AccountsSnapshot,
 ) -> Result<axum::Json<crate::generated::AccountsResponse>, crate::error::ApiError> {
-    use crate::generated::{Account, AccountsResponse, CodexLoginReceipt};
+    use crate::generated::{Account, AccountsResponse, CodexLoginReceipt, CodexLoginReceiptStatus};
+    use studio_runtime_schema::account_registry::LoginStatus;
 
     let accounts = snapshot
         .accounts
@@ -92,9 +93,38 @@ pub(super) fn accounts_response(
     let logins = snapshot
         .logins
         .into_iter()
-        .map(serde_json::from_value::<CodexLoginReceipt>)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| crate::error::ApiError::internal())?;
+        .map(|receipt| CodexLoginReceipt {
+            account_key: receipt.account_key,
+            created_at: receipt
+                .created_at
+                .map(|value| value.and_then(|value| value.as_f64())),
+            email: receipt.email,
+            email_hint: receipt.email_hint,
+            error: receipt.error,
+            expected_account_id: receipt.expected_account_id,
+            expires_at: receipt
+                .expires_at
+                .map(|value| value.and_then(|value| value.as_f64())),
+            login_id: receipt.login_id,
+            native_completed: receipt.native_completed,
+            reauth_account_key: receipt.reauth_account_key,
+            request_id: receipt.request_id,
+            requested_label: receipt.requested_label,
+            resolved_account_key: receipt.resolved_account_key,
+            status: match receipt.status {
+                LoginStatus::Starting => CodexLoginReceiptStatus::Starting,
+                LoginStatus::Pending => CodexLoginReceiptStatus::Pending,
+                LoginStatus::Ready => CodexLoginReceiptStatus::Ready,
+                LoginStatus::Duplicate => CodexLoginReceiptStatus::Duplicate,
+                LoginStatus::Cancelled => CodexLoginReceiptStatus::Cancelled,
+                LoginStatus::Error => CodexLoginReceiptStatus::Error,
+                LoginStatus::Uncertain => CodexLoginReceiptStatus::Uncertain,
+            },
+            user_code: receipt.user_code,
+            verification_url: receipt.verification_url,
+            additional_properties: Default::default(),
+        })
+        .collect();
 
     Ok(axum::Json(AccountsResponse {
         accounts,

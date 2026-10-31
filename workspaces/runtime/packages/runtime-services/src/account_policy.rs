@@ -372,7 +372,7 @@ pub struct AccountsSnapshot {
     /// The default account order (`defaultAccountGroups`) from the account order
     /// file, see [`crate::account_preference::AccountOrder`].
     pub default_account_groups: Vec<String>,
-    pub logins: Vec<Value>,
+    pub logins: Vec<studio_runtime_schema::account_registry::LoginReceipt>,
     pub known_account_keys: HashSet<String>,
 }
 
@@ -547,10 +547,6 @@ pub(crate) fn project_registry_typed(
         .get("accounts")
         .and_then(Value::as_object)
         .ok_or_else(|| registry_error("/accounts", "schema validation failed"))?;
-    let logins_by_key = value
-        .get("logins")
-        .and_then(Value::as_object)
-        .ok_or_else(|| registry_error("/logins", "schema validation failed"))?;
     let default_account_key = &typed.default_account_key;
     let mut accounts = Vec::new();
     let mut archived = Vec::new();
@@ -652,13 +648,7 @@ pub(crate) fn project_registry_typed(
             accounts.push(public);
         }
     }
-    let mut logins = Vec::new();
-    for key in &order.logins {
-        if let Some(mut receipt) = logins_by_key.get(key).and_then(Value::as_object).cloned() {
-            receipt.insert("requestId".into(), Value::String(key.clone()));
-            logins.push(Value::Object(receipt));
-        }
-    }
+    let logins = project_logins(typed, order)?;
     Ok(AccountsSnapshot {
         accounts,
         archived_accounts: archived,
@@ -668,6 +658,25 @@ pub(crate) fn project_registry_typed(
         logins,
         known_account_keys: known,
     })
+}
+
+pub(crate) fn project_logins(
+    typed: &studio_runtime_schema::account_registry::AccountRegistry,
+    order: &RegistryOrder,
+) -> Result<Vec<studio_runtime_schema::account_registry::LoginReceipt>, AccountPolicyError> {
+    let logins = typed
+        .logins
+        .as_ref()
+        .ok_or_else(|| registry_error("/logins", "schema validation failed"))?;
+    Ok(order
+        .logins
+        .iter()
+        .filter_map(|key| {
+            let mut receipt = logins.get(key)?.0.clone();
+            receipt.request_id = key.clone();
+            Some(receipt)
+        })
+        .collect())
 }
 
 /// Whether a non-archived registry row is in the account list. A row made by
@@ -723,7 +732,10 @@ mod tests {
         let snapshot = state.accounts();
         assert_eq!(snapshot.accounts[0].id.as_str(), Some("z"));
         assert_eq!(snapshot.accounts[1].id.as_str(), Some("default"));
-        assert_eq!(snapshot.logins[0]["requestId"], "login-r");
+        assert_eq!(snapshot.logins[0].request_id, "login-r");
+        let receipt = serde_json::to_value(&snapshot.logins[0]).unwrap();
+        assert!(receipt.get("email").is_none());
+        assert_eq!(receipt["createdAt"], serde_json::json!(1.0));
         assert!(state.has_account("default"));
         assert!(!state.has_account("missing"));
     }

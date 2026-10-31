@@ -810,17 +810,14 @@ async fn append_auth_baseline(
     if let Some(driver) = state.account_driver.clone() {
         let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-http/retained-auth-progress",
-            move || driver.snapshot(),
+            move || driver.retained_progress(),
         )
         .await
         .map_err(|_| ApiError::internal())?
         .map_err(|_| ApiError::internal())?;
-        for value in snapshot.logins {
-            let id = value
-                .get("requestId")
-                .and_then(Value::as_str)
-                .ok_or_else(ApiError::internal)?
-                .to_owned();
+        for receipt in snapshot {
+            let id = receipt.request_id.clone();
+            let value = serde_json::to_value(receipt).map_err(|_| ApiError::internal())?;
             let resource = progress_resource(ProgressSelector::Auth {
                 request_id: id.clone(),
             });

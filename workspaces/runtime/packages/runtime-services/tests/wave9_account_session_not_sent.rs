@@ -330,7 +330,10 @@ async fn unknown_login_error_remains_uncertain_and_is_never_replayed() {
     }
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);
     let snapshot = fixture.driver.snapshot().expect("persisted registry");
-    assert_eq!(snapshot.logins[0]["status"], "uncertain");
+    assert_eq!(
+        snapshot.logins[0].status,
+        studio_runtime_schema::account_registry::LoginStatus::Uncertain
+    );
     let restarted_driver = Arc::new(
         AccountDriver::open(fixture.accounts_root.join("registry.json"))
             .expect("restart from durable registry"),
