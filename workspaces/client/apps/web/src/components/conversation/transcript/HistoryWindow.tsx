@@ -1,5 +1,6 @@
 import {
   Fragment,
+  memo,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -22,6 +23,18 @@ import {
 
 type WindowAnchor = { id: string; offset: number; kind?: "message" | "row" };
 const anchors = new Map<string, WindowAnchor | null>();
+
+const HistoryRow = memo(function HistoryRow({
+  row,
+  render,
+  revealedMessage,
+}: {
+  row: HistoryGroup;
+  render: (row: HistoryGroup, revealedMessage?: string) => ReactNode;
+  revealedMessage?: string | undefined;
+}) {
+  return render(row, revealedMessage);
+});
 
 /** A viewport owns only mounted rows. The conversation scroll hook owns anchors. */
 export default function HistoryWindow({
@@ -462,7 +475,11 @@ export default function HistoryWindow({
               />
             )}
             <div className="history-window-row" data-history-row={row.id}>
-              {render(row, revealedMessage)}
+              <HistoryRow
+                row={row}
+                render={render}
+                revealedMessage={revealedMessage}
+              />
             </div>
           </Fragment>
         );

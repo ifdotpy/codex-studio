@@ -98,6 +98,10 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
     await expect
       .poll(async () => Math.abs((await offset("a500")) - 16))
       .toBeLessThan(2);
+    await page.evaluate(() => window.edit());
+    await expect(page.locator('[data-message="a500"]')).toContainText(
+      "Updated answer.",
+    );
     const original = await offset("a500");
     await page.evaluate(() => window.prepend());
     await expect

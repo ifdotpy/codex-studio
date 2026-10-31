@@ -68,6 +68,7 @@ const setDraft = (value: string) => {
   listeners.forEach((fn) => fn());
 };
 window.renderedMessages = 0;
+window.renderedMessageIds = [];
 function PreviewMessage({ m }: { m: Message }) {
   const [open, setOpen] = useState(false);
   return (
@@ -98,6 +99,16 @@ function Harness() {
   const [sent, setSent] = useState("");
   const [enabled, setEnabled] = useState(true);
   const sc = useConversationScroll("window-browser-fixture", true);
+  window.edit = () =>
+    flushSync(() =>
+      setItems((old) =>
+        old.map((item) =>
+          item.id === "a500"
+            ? { ...item, text: `${item.text}\n\nUpdated answer.` }
+            : item,
+        ),
+      ),
+    );
   window.prepend = () =>
     flushSync(() => setItems((old) => [...make(-50, 50), ...old]));
   window.latest = () => sc.setFollow(true);
@@ -231,6 +242,7 @@ function Harness() {
         onJump={window.jump}
         renderMessage={(m) => {
           window.renderedMessages++;
+          window.renderedMessageIds.push(m.id);
           if (m.id === "a500" || m.clientMessageId === "request")
             return <PreviewMessage m={m} />;
           return (
@@ -299,6 +311,8 @@ function readSavedHistory(): Message[] {
 declare global {
   interface Window {
     renderedMessages: number;
+    renderedMessageIds: string[];
+    edit: () => void;
     prepend: () => void;
     latest: () => void;
     optimistic: (many: boolean) => void;

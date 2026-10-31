@@ -1,6 +1,6 @@
 import { test } from "../playwright.ts";
 import { fixtureOrigin } from "./performance-fixture.ts";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,13 +39,18 @@ for (const variant of ["window", "content-visibility"]) {
         {
           name: "history-comparison",
           enforce: "pre",
-          transform(code, id) {
+          async transform(code, id) {
             if (id === entry)
               return {
-                code: code.replace(
-                  "return saved || make(0, 1000)",
-                  "return saved || make(0, 100)",
-                ),
+                code: code
+                  .replace(
+                    "return saved || make(0, 1000)",
+                    "return saved || make(0, 100)",
+                  )
+                  .replace(
+                    '"Answer " +',
+                    '"Answer \\n\\n```ts\\nconst result = await check();\\n```\\n\\n" +',
+                  ),
                 map: null,
               };
             if (
@@ -55,6 +60,18 @@ for (const variant of ["window", "content-visibility"]) {
               return {
                 code: `import React from "react";
 export default function HistoryWindow({rows, render}) { return <div>{rows.map(row => <div key={row.id} data-history-row={row.id} style={{contentVisibility:"auto", containIntrinsicSize:"auto 300px"}}>{render(row)}</div>)}</div>; }`,
+                map: null,
+              };
+            if (
+              variant === "window" &&
+              process.env.STUDIO_HISTORY_BASELINE &&
+              id.endsWith("/transcript/HistoryWindow.tsx")
+            )
+              return {
+                code: await readFile(
+                  process.env.STUDIO_HISTORY_BASELINE,
+                  "utf8",
+                ),
                 map: null,
               };
           },
@@ -76,6 +93,8 @@ export default function HistoryWindow({rows, render}) { return <div>{rows.map(ro
       viewport: { width: 1100, height: 900 },
     });
     try {
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
       await page.addInitScript(() => {
         (window as typeof window & { longTasks: number[] }).longTasks = [];
         new PerformanceObserver((list) =>
@@ -103,17 +122,33 @@ export default function HistoryWindow({rows, render}) { return <div>{rows.map(ro
         const longTasks = (window as typeof window & { longTasks: number[] })
           .longTasks.length;
         const frames: number[] = [];
+        let retainedRenders = 0;
         for (let i = 0; i < 20; i++) {
-          const start = performance.now();
+          const retained = new Set(
+            [...root.querySelectorAll<HTMLElement>("[data-message]")].map(
+              (node) => node.dataset.message,
+            ),
+          );
+          const state = window as typeof window & {
+            renderedMessageIds: string[];
+          };
+          state.renderedMessageIds = [];
           root.scrollTop -= 100;
           root.dispatchEvent(new Event("scroll"));
-          await new Promise<void>((resolve) =>
-            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          frames.push(
+            await new Promise<number>((resolve) =>
+              requestAnimationFrame((first) =>
+                requestAnimationFrame((second) => resolve(second - first)),
+              ),
+            ),
           );
-          frames.push(performance.now() - start);
+          retainedRenders += state.renderedMessageIds.filter((id) =>
+            retained.has(id),
+          ).length;
         }
         return {
           frames,
+          retainedRenders,
           writes,
           renders:
             (window as typeof window & { renderedMessages: number })
@@ -126,6 +161,12 @@ export default function HistoryWindow({rows, render}) { return <div>{rows.map(ro
       });
       console.log(JSON.stringify({ variant, initialMs, ...metrics }));
       assert.equal(metrics.writes, 0);
+      if (variant === "window")
+        assert.equal(
+          metrics.retainedRenders,
+          0,
+          "rows already mounted should not render again on scroll",
+        );
     } finally {
       await page.close();
       await server.close();
