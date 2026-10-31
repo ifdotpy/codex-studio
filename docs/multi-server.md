@@ -128,6 +128,37 @@ without cookies. An unsigned preflight returns only CORS policy. It gives no
 API access. An unsigned request from another origin cannot obtain a session token.
 The existing same-origin phone can obtain its session token as before.
 
+### One signature scheme
+
+Peer federation requests use the same `studio-multi-server-v1` signature as
+paired clients. A federated peer is one more kind of principal:
+
+- `X-Studio-Client` is the sender state ID. `X-Studio-Server` is the recipient
+  state ID. A request addressed to another server is refused.
+- The signed path is the federation path, for example `/api/federation/v1/message`.
+  The method is `POST`.
+- The trusted peer list (`runtime_federation_peers`) stays separate. The public
+  key of the peer comes from that list. Pairing uses the key in the pairing body.
+- The server builds the federated principal only after the signature verifies.
+- Paired clients and federated peers share one nonce table, `runtime_access_nonces`.
+  A federated peer uses the client key `federation:<peer state ID>`. The peer keeps
+  its limit of 240 nonces each minute. Migration `2026-10-30-one-nonce-table` moves
+  the rows of the old `runtime_federation_nonces` table and drops that table.
+  A nonce seen before the update stays a replay after it.
+
+Response proofs (`studio-federation-response-v1`) and message envelope signatures
+(`studio-federation-message-v1`) sign data, not requests. They do not change.
+
+Rolling update window, one release:
+
+- A sender adds the `X-Studio-Federation-*` headers (retired `studio-federation-v1`
+  signature) next to the unified headers. A peer on the previous build reads only
+  the retired headers.
+- A receiver uses the unified headers when `X-Studio-Signature` is present. Without
+  it, the receiver accepts the retired signature. Both schemes use the same nonce table.
+- Remove the retired headers, `federation_signing_bytes` and the fallback in
+  the release after this one.
+
 ### Authenticate the sync stream
 
 Use `fetch` for `GET /api/sync/stream`. Sign its exact path and query with the

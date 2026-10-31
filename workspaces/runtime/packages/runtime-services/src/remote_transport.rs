@@ -372,7 +372,12 @@ fn multi_server_request_fingerprint_normalized(
     Ok(sha256_hex(&input))
 }
 
-/// Python federation protocol: raw JSON bytes are signed with the exact method and path.
+/// Retired federation signature bytes: raw JSON bytes are signed with the exact method and path.
+///
+/// Receivers accept this scheme for one release so that peers on the previous
+/// build keep working during a rolling update. Senders still emit it next to the
+/// unified `studio-multi-server-v1` signature. Remove both in the release after
+/// the unified scheme ships (see docs/multi-server.md, "One signature scheme").
 pub fn federation_signing_bytes(
     method: &str,
     path: &str,
@@ -434,9 +439,15 @@ fn multi_server_signed_headers_normalized(
     ])
 }
 
-/// Build federation signature headers for one HTTPS request.
+/// Build the headers for one signed federation request to the peer `server_id`.
+///
+/// The request carries the unified `studio-multi-server-v1` signature (client is
+/// the sender state, server is the recipient state). It also carries the retired
+/// federation signature for one release, so a peer on the previous build still
+/// accepts it. A receiver that knows the unified headers ignores the retired ones.
 pub fn federation_signed_headers(
     identity: &RemoteIdentity,
+    server_id: &str,
     method: &str,
     url: &str,
     timestamp: i64,
@@ -449,12 +460,26 @@ pub fn federation_signed_headers(
     let signature = identity.sign(&federation_signing_bytes(
         method, &path, timestamp, nonce, body,
     ));
-    Ok(vec![
+    let mut headers = multi_server_signed_headers(
+        identity,
+        &MultiServerRequest {
+            server_id,
+            method,
+            url,
+            request_id: &new_nonce()?,
+            timestamp,
+            nonce,
+            body,
+        },
+        now,
+    )?;
+    headers.extend([
         ("X-Studio-Federation-State".to_owned(), identity.id.clone()),
         ("X-Studio-Federation-Time".to_owned(), timestamp.to_string()),
         ("X-Studio-Federation-Nonce".to_owned(), nonce.to_owned()),
         ("X-Studio-Federation-Signature".to_owned(), signature),
-    ])
+    ]);
+    Ok(headers)
 }
 
 pub fn federation_message_signing_bytes(envelope: &Value) -> RemoteTransportResult<Vec<u8>> {
@@ -1653,7 +1678,7 @@ fn canonical_request_target(url: &str) -> RemoteTransportResult<String> {
         .map_or_else(|| "/".to_owned(), |value| value.as_str().to_owned()))
 }
 
-fn validate_identifier(value: &str) -> RemoteTransportResult<()> {
+pub(crate) fn validate_identifier(value: &str) -> RemoteTransportResult<()> {
     if value.is_empty()
         || value.len() > 128
         || !value.as_bytes()[0].is_ascii_alphanumeric()
@@ -2069,6 +2094,7 @@ pub(crate) mod tests {
         assert_eq!(
             federation_signed_headers(
                 &identity,
+                "peer-state",
                 "POST",
                 "https://peer.example/api/federation",
                 1_700_000_000,
@@ -2076,9 +2102,22 @@ pub(crate) mod tests {
                 body,
                 1_700_000_000,
             )
-            .expect("federation headers sign exact path")[0]
-                .0,
-            "X-Studio-Federation-State"
+            .expect("federation headers sign exact path")
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+            [
+                "X-Studio-Client",
+                "X-Studio-Server",
+                "X-Studio-Timestamp",
+                "X-Studio-Nonce",
+                "X-Studio-Request-Id",
+                "X-Studio-Signature",
+                "X-Studio-Federation-State",
+                "X-Studio-Federation-Time",
+                "X-Studio-Federation-Nonce",
+                "X-Studio-Federation-Signature",
+            ]
         );
     }
 
@@ -2108,12 +2147,12 @@ pub(crate) mod tests {
         store
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT INTO runtime_federation_nonces(peer_id,nonce,created) VALUES('peer-a','stale',?1)",
+                    "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES('federation:peer-a','stale',?1)",
                     [now - 1_000],
                 )?;
                 for index in 0..240 {
                     transaction.execute(
-                        "INSERT INTO runtime_federation_nonces(peer_id,nonce,created) VALUES('peer-a',?1,?2)",
+                        "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES('federation:peer-a',?1,?2)",
                         rusqlite::params![format!("recent-{index}"), now],
                     )?;
                 }
@@ -2135,7 +2174,7 @@ pub(crate) mod tests {
         let connection = store.test_reader().expect("read transaction opens");
         let stale: i64 = connection
             .query_row(
-                "SELECT count(*) FROM runtime_federation_nonces WHERE nonce='stale'",
+                "SELECT count(*) FROM runtime_access_nonces WHERE nonce='stale'",
                 [],
                 |row| row.get(0),
             )

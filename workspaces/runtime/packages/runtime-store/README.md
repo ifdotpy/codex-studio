@@ -240,9 +240,9 @@ committed snapshot; it includes both typed-record and specialized SQL tables):
   `runtime_execution_effects`, `runtime_execution_inputs`,
   `runtime_execution_nodes`, `runtime_execution_runs`.
 - Federation: `runtime_federation_identity`, `runtime_federation_inbox`,
-  `runtime_federation_invites`, `runtime_federation_nonces`,
-  `runtime_federation_outbox`, `runtime_federation_peers`,
-  `runtime_federation_rooms`, `runtime_federation_settings`.
+  `runtime_federation_invites`, `runtime_federation_outbox`,
+  `runtime_federation_peers`, `runtime_federation_rooms`,
+  `runtime_federation_settings`.
 - Items and operations: `runtime_item_fulltext`, `runtime_items`,
   `runtime_lead_requests`, `runtime_monitors`, `runtime_operation_receipts`, `runtime_plans`,
   `runtime_profiles`, `runtime_projects`, `runtime_requests`, `runtime_rooms`,

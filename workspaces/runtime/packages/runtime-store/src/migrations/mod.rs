@@ -56,6 +56,7 @@ mod m2026_10_30_task_records;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
+mod m2026_10_30_one_nonce_table;
 mod m2026_10_31_native_status_error;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -804,6 +805,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_request_record::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-one-nonce-table",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Federation nonces in runtime_federation_nonces",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_one_nonce_table::apply(c.transaction),
     },
     &RegistryMigration,
     &SqlMigration {
