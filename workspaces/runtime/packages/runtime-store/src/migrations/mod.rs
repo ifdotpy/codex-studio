@@ -754,6 +754,29 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| crate::schema::prepare_publication_overflow_receipts(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-item-turn-scope",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Stores with the retired native approval index or without the item turn index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::schema::prepare_item_turn_scope(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-retired-capture-receipts",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Analytics,
+            supported_source: "Stores with retired capture receipt tables",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| {
+            c.transaction.execute_batch("DROP TABLE IF EXISTS analytics_capture_effect_receipts; DROP TABLE IF EXISTS analytics_capture_legacy_watermarks; DROP TABLE IF EXISTS analytics_capture_receipt_migrations;")?;
+            Ok(())
+        },
+    },
 ];
 
 /// Operator-facing catalog; implementation and metadata have one owner.

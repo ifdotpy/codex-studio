@@ -16,6 +16,11 @@ pub(crate) fn prepare_publication_overflow_receipts(connection: &Connection) -> 
     Ok(())
 }
 
+pub(crate) fn prepare_item_turn_scope(connection: &Connection) -> StoreResult<()> {
+    connection.execute_batch("CREATE INDEX IF NOT EXISTS runtime_item_turn_scope ON runtime_items(\n                    agent, json_extract(record,'$.turnId'), created);\n        DROP INDEX IF EXISTS runtime_request_native_approval;")?;
+    Ok(())
+}
+
 /// Current receipt-owner query columns. The JSON record owns domain state;
 /// only quarantine remains independent so malformed agent JSON can be held.
 pub(crate) fn receipt_owner_columns() -> Vec<(&'static str, &'static str, String)> {

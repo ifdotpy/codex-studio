@@ -312,6 +312,7 @@ fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreRes
     transaction.pragma_update(None, "user_version", version)?;
     if schema_name == "canvas.sqlite3" {
         crate::schema::prepare_peer_update_settings(&transaction)?;
+        crate::schema::prepare_item_turn_scope(&transaction)?;
         crate::bootstrap::prepare_runtime_event_indexes(&transaction)?;
         crate::AgentRepository::prepare_change_journal(&transaction)?;
         crate::MonitorsRepository::prepare_indexes(&transaction)?;

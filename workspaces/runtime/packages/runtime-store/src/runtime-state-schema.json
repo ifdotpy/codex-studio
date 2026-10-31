@@ -838,13 +838,6 @@
         "type": "index"
       },
       {
-        "create_order": 61,
-        "name": "runtime_request_native_approval",
-        "sql": "CREATE INDEX runtime_request_native_approval ON runtime_requests(\n                    json_extract(record,'$.agent'),json_extract(record,'$.params.itemId'),\n                    json_extract(record,'$.status'))\n                    WHERE json_valid(record) AND json_extract(record,'$.method') IN\n                    ('item/commandExecution/requestApproval','item/fileChange/requestApproval')",
-        "table": "runtime_requests",
-        "type": "index"
-      },
-      {
         "create_order": 60,
         "name": "runtime_request_native_question",
         "sql": "CREATE INDEX runtime_request_native_question ON runtime_requests(\n                    json_extract(record,'$.agent'),json_extract(record,'$.params.itemId'),\n                    json_extract(record,'$.status'))\n                    WHERE json_valid(record) AND json_extract(record,'$.method')='item/tool/requestUserInput'",
