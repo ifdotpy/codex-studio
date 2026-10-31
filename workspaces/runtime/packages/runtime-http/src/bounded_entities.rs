@@ -2208,7 +2208,7 @@ mod tests {
         let mut snapshot = state.account_policy.as_ref().expect("policy").accounts();
         snapshot
             .logins
-            .push(serde_json::from_value(json!({"requestId":"id","accountKey":"account","status":"pending","verificationUrl":"https://login.invalid/private-only","userCode":"private-code"})).unwrap());
+            .push(serde_json::from_str(r#"{"requestId":"id","accountKey":"account","status":"pending","verificationUrl":"https://login.invalid/private-only","userCode":"private-code"}"#).unwrap());
         put(
             state.store.as_ref().expect("store"),
             "accounts",
