@@ -2373,7 +2373,7 @@ fn record_manual_release_closure(
         return Ok(false);
     };
     let mut statement = tx.prepare_cached(
-        "SELECT record FROM runtime_agents WHERE thread_id=?1 AND account_key=?2 ORDER BY rowid LIMIT 2",
+        "SELECT record FROM runtime_agents WHERE id IN (SELECT chat FROM sessions WHERE thread_id=?1 AND state<>'ended') AND account_key=?2 ORDER BY rowid LIMIT 2",
     )?;
     let rows = statement
         .query_map(params![thread, identity.account], |row| {

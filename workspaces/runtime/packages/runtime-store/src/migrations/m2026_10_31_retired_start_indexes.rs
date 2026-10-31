@@ -12,7 +12,8 @@ pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
          DROP INDEX IF EXISTS {ACTIVE_INDEX};
          DROP INDEX IF EXISTS runtime_agent_account_wake_candidates_v6;
          DROP INDEX IF EXISTS runtime_agent_callback_context_v3;
-         DROP INDEX IF EXISTS runtime_agent_vm_stream_owner;"
+         DROP INDEX IF EXISTS runtime_agent_vm_stream_owner;
+         DROP INDEX IF EXISTS runtime_agent_thread;"
     ))?;
     Ok(())
 }

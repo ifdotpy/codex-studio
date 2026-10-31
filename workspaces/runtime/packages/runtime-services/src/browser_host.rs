@@ -432,7 +432,7 @@ impl StoreChats {
             .store
             .read_async("runtime-services/browser_host", move |connection| {
                 let mut statement = connection.prepare(
-                    "SELECT record FROM runtime_agents WHERE id=?1 OR thread_id=?1 LIMIT 2",
+                    "SELECT record FROM runtime_agents WHERE id=?1 OR id IN (SELECT chat FROM sessions WHERE thread_id=?1 AND state<>'ended') LIMIT 2",
                 )?;
                 let rows = statement
                     .query_map([&session], |row| row.get(0))?

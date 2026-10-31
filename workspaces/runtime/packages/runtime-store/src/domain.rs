@@ -118,6 +118,8 @@ pub enum SessionState {
     Starting,
     Ready,
     Lost,
+    /// The chat has another thread or none. Kept as history; thread lookups skip it.
+    Ended,
 }
 
 macro_rules! text_enum {
@@ -192,6 +194,7 @@ pub fn tables_sql() -> String {
             id TEXT PRIMARY KEY, chat TEXT NOT NULL, thread_id TEXT NOT NULL,
             account_key TEXT NOT NULL, state TEXT NOT NULL) STRICT;
          CREATE INDEX IF NOT EXISTS chats_vm ON {CHAT_TABLE}(id) WHERE execution_mode='vm';
+         CREATE INDEX IF NOT EXISTS sessions_thread ON {SESSION_TABLE}(thread_id,account_key) WHERE state<>'ended';
          CREATE INDEX IF NOT EXISTS sessions_chat ON {SESSION_TABLE}(chat);
          CREATE TABLE IF NOT EXISTS {TURN_TABLE}(
             id TEXT PRIMARY KEY, chat TEXT NOT NULL, state TEXT NOT NULL, session TEXT,
@@ -508,12 +511,13 @@ fn project_state(connection: &Connection, id: &str, fields: &Fields) -> StoreRes
             fields.turn_epoch,
         ])?;
 
-    let session = match (&fields.thread_id, &fields.account_key) {
-        (Some(thread), Some(account)) => {
+    let session = match &fields.thread_id {
+        Some(thread) => {
+            let account = fields.account_key.as_deref().unwrap_or("default");
             let session = format!("{id}:{thread}");
             connection
                 .prepare_cached(
-                    "UPDATE sessions SET state='lost' WHERE chat=?1 AND id<>?2 AND state<>'lost'",
+                    "UPDATE sessions SET state='ended' WHERE chat=?1 AND id<>?2 AND state<>'ended'",
                 )?
                 .execute(params![id, session])?;
             connection
@@ -523,6 +527,10 @@ fn project_state(connection: &Connection, id: &str, fields: &Fields) -> StoreRes
                      WHERE account_key IS NOT excluded.account_key",
                 )?
                 .execute(params![session, id, thread, account, SessionState::Ready.column()])?;
+            // The chat is back on an earlier thread.
+            connection
+                .prepare_cached("UPDATE sessions SET state='lost' WHERE id=?1 AND state='ended'")?
+                .execute([&session])?;
             if fields.in_flight == Some(true) {
                 // A turn runs on the thread again: the provider connection is back.
                 connection
@@ -535,7 +543,14 @@ fn project_state(connection: &Connection, id: &str, fields: &Fields) -> StoreRes
             }
             Some(SessionId(session))
         }
-        _ => None,
+        None => {
+            connection
+                .prepare_cached(
+                    "UPDATE sessions SET state='ended' WHERE chat=?1 AND state<>'ended'",
+                )?
+                .execute([id])?;
+            None
+        }
     };
 
     let current = unfinished_turn(connection, id)?;
@@ -770,7 +785,9 @@ pub fn turn_completed(
 /// A lost provider connection: every ready session of the chat is `Lost`.
 pub fn mark_sessions_lost(connection: &Connection, chat: &str) -> StoreResult<usize> {
     Ok(connection
-        .prepare_cached("UPDATE sessions SET state='lost' WHERE chat=?1 AND state<>'lost'")?
+        .prepare_cached(
+            "UPDATE sessions SET state='lost' WHERE chat=?1 AND state IN ('starting','ready')",
+        )?
         .execute([chat])?)
 }
 
@@ -1168,7 +1185,7 @@ mod tests {
         assert_eq!(
             states,
             [
-                ("one".into(), SessionState::Lost),
+                ("one".into(), SessionState::Ended),
                 ("two".into(), SessionState::Ready)
             ]
         );

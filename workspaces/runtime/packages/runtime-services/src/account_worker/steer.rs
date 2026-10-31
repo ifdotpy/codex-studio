@@ -271,7 +271,7 @@ pub(super) fn acknowledge(
         return Ok(None);
     }
     let mut statement = tx.prepare_cached(
-        "SELECT id FROM runtime_agents WHERE thread_id=?1 \
+        "SELECT id FROM runtime_agents WHERE id IN (SELECT chat FROM sessions WHERE thread_id=?1 AND state<>'ended') \
          AND account_key=?2 LIMIT 2",
     )?;
     let agents = statement
