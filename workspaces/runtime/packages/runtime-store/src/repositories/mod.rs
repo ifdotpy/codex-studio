@@ -11,6 +11,7 @@ pub(crate) mod checkpoints;
 pub(crate) mod claude_controls;
 pub(crate) mod claude_records;
 pub(crate) mod claude_retry;
+pub mod command_watermarks;
 pub(crate) mod context_repair;
 pub(crate) mod continuation;
 pub(crate) mod coordination;

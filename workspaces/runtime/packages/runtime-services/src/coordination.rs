@@ -354,7 +354,7 @@ fn post_managed_message(
             || !matches_requested_delivery(&metadata, input.delivery)?
         {
             return Err(CoordinationError::Conflict(
-                "This message id has different content",
+                crate::commands::MESSAGE_ID_CONFLICT,
             ));
         }
     }
@@ -598,7 +598,7 @@ fn send_followup_inner(
             || !matches_requested_delivery(&metadata, delivery)?
         {
             return Err(CoordinationError::Conflict(
-                "This message id has different content",
+                crate::commands::MESSAGE_ID_CONFLICT,
             ));
         }
         studio_runtime_store::system_reads::validate(
@@ -864,7 +864,7 @@ pub fn post_message(
         let message = validated_message(message)?;
         if message.room != input.room || message.author != "user" || message.text != text {
             return Err(CoordinationError::Conflict(
-                "This message id has different content",
+                crate::commands::MESSAGE_ID_CONFLICT,
             ));
         }
         return Ok(message_receipt(message, true));

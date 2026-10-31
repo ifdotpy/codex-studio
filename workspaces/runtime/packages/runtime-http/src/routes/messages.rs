@@ -95,6 +95,14 @@ pub(super) async fn post_message(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ManagedMessageBody>,
 ) -> Result<Json<crate::generated::StudioApiWorkModelsMessageReceipt>, ApiError> {
+    send_message(state, body).await
+}
+
+/// The send path shared by `POST /api/messages` and the `send` command.
+pub(super) async fn send_message(
+    state: HttpState,
+    body: crate::generated::ManagedMessageBody,
+) -> Result<Json<crate::generated::StudioApiWorkModelsMessageReceipt>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let wake = state.event_wake;
     let message_admission = state.message_admission.clone();

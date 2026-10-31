@@ -4014,9 +4014,7 @@ async fn ancestry_reads_only_the_checked_parent_chain() {
         assert!(
             super::is_descendant(
                 &tx,
-                &Actor::from_record(&template().value["agents"][0], &sender, 3)
-                    .unwrap()
-                    .id,
+                &Actor::from_record(&template().value["agents"][0], &sender, 3).unwrap(),
                 "chain-leaf"
             )
             .unwrap()

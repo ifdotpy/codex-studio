@@ -43,6 +43,7 @@ const ROUTES: &[(&str, &str, CommandClass)] = &[
     ("POST", "/api/claude/file-backups", Host),
     ("POST", "/api/claude/profiles", OwnerOnly),
     ("POST", "/api/claude/session", ChatControl),
+    ("POST", "/api/commands", ChatControl),
     ("POST", "/api/complaints", ChatControl),
     ("POST", "/api/configure", OwnerOnly),
     ("POST", "/api/connection-recovery", ChatControl),
