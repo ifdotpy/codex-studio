@@ -15,24 +15,6 @@ mod m2026_10_27_scheduler_indexes;
 mod m2026_10_28_agent_account;
 mod m2026_10_28_agent_fields;
 mod m2026_10_28_group_revision;
-mod m2026_10_28_receipts_account_worker;
-mod m2026_10_28_receipts_actions;
-mod m2026_10_28_receipts_checks;
-mod m2026_10_28_receipts_context_repair;
-mod m2026_10_28_receipts_drop_old_tables;
-mod m2026_10_28_receipts_execution;
-mod m2026_10_28_receipts_incidents;
-mod m2026_10_28_receipts_owner_state;
-mod m2026_10_28_receipts_provider_callbacks;
-mod m2026_10_28_receipts_provider_delivery;
-mod m2026_10_28_receipts_remote;
-mod m2026_10_28_receipts_requests;
-mod m2026_10_28_receipts_schema;
-mod m2026_10_28_receipts_title;
-mod m2026_10_28_receipts_tools;
-mod m2026_10_28_receipts_vm_provider;
-mod m2026_10_28_receipts_voice;
-mod m2026_10_28_receipts_work;
 mod m2026_10_28_usage_revision;
 mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
@@ -85,10 +67,8 @@ use studio_runtime_schema::studio_errors::{
     MigrationPhase, MigrationRollbackOutcome, MigrationTarget,
 };
 
-use crate::receipt_migration_contract::{self, MigrationCheckpoint, ReceiptFamilyMigration};
 use crate::{StoreError, StoreResult};
 use m2026_10_26_provider_identity::Accounts;
-use studio_runtime_schema::persistence::{MigrationStatus, ReceiptMigrationPhase};
 
 /// Calendar date of the format transition, never an automatic expiry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,24 +191,21 @@ trait Migration: Sync {
 
 /// Catalog adapter for independent receipt families. Only the runner owns commits.
 struct ReceiptMigration {
-    family: &'static (dyn ReceiptFamilyMigration + Sync),
-    sources: &'static [&'static str],
+    id: &'static str,
 }
 
 impl Migration for ReceiptMigration {
     fn definition(&self) -> MigrationDefinition {
         MigrationDefinition {
-            id: self.family.id(),
+            id: self.id,
             introduced: OCTOBER_28,
             target: MigrationTarget::Canvas,
-            supported_source: "Classified pre-cutover receipt family, bounded by rowid and input bytes",
+            supported_source: "Completed historical receipt family",
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         }
     }
     fn apply(&self, _context: &Context<'_, '_>) -> StoreResult<()> {
-        Err(StoreError::RecordContract(
-            "receipt families require the bounded startup runner",
-        ))
+        Ok(())
     }
     fn receipt_family(&self) -> Option<&ReceiptMigration> {
         Some(self)
@@ -594,7 +571,11 @@ static CATALOG: &[&dyn Migration] = &[
             supported_source: "Receipt tables before per-family cutover",
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
-        apply: |c| m2026_10_28_receipts_schema::apply(c.transaction),
+        apply: |c| {
+            crate::receipt_migration_contract::prepare_schema(c.transaction)
+                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+            crate::schema::prepare_receipt_holds(c.transaction)
+        },
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -611,73 +592,55 @@ static CATALOG: &[&dyn Migration] = &[
         },
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_execution::ExecutionMigration,
-        sources: m2026_10_28_receipts_execution::SOURCES,
+        id: "2026-10-28-receipts-execution",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_actions::ActionsMigration,
-        sources: m2026_10_28_receipts_actions::SOURCES,
+        id: "2026-10-28-receipts-actions",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_context_repair::ContextRepairMigration,
-        sources: m2026_10_28_receipts_context_repair::SOURCES,
+        id: "2026-10-28-receipts-context-repair",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_voice::VoiceMigration,
-        sources: m2026_10_28_receipts_voice::SOURCES,
+        id: "2026-10-28-receipts-voice",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_work::Family,
-        sources: m2026_10_28_receipts_work::SOURCES,
+        id: "2026-10-28-receipts-work",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_title::Family,
-        sources: m2026_10_28_receipts_title::SOURCES,
+        id: "2026-10-28-receipts-title",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_owner_state::Family,
-        sources: m2026_10_28_receipts_owner_state::SOURCES,
-    },
-    // Tool lineage proves managed location identities before public replay classification.
-    &ReceiptMigration {
-        family: &m2026_10_28_receipts_tools::Family,
-        sources: m2026_10_28_receipts_tools::SOURCES,
+        id: "2026-10-28-receipts-owner-state",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_requests::Family,
-        sources: m2026_10_28_receipts_requests::SOURCES,
+        id: "2026-10-28-receipts-tools",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_remote::Family,
-        sources: m2026_10_28_receipts_remote::SOURCES,
+        id: "2026-10-28-receipts-requests",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_provider_delivery::Family,
-        sources: m2026_10_28_receipts_provider_delivery::SOURCES,
+        id: "2026-10-28-receipts-remote",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_provider_callbacks::Family,
-        sources: m2026_10_28_receipts_provider_callbacks::SOURCES,
+        id: "2026-10-28-receipts-provider-delivery",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_vm_provider::Family,
-        sources: m2026_10_28_receipts_vm_provider::SOURCES,
+        id: "2026-10-28-receipts-provider-callbacks",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_account_worker::Family,
-        sources: m2026_10_28_receipts_account_worker::SOURCES,
+        id: "2026-10-28-receipts-vm-provider",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_incidents::Family,
-        sources: &["runtime_operation_receipts"],
+        id: "2026-10-28-receipts-account-worker",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_checks::Family,
-        sources: m2026_10_28_receipts_checks::SOURCES,
+        id: "2026-10-28-receipts-incidents",
     },
     &ReceiptMigration {
-        family: &m2026_10_28_receipts_drop_old_tables::Family,
-        sources: &[],
+        id: "2026-10-28-receipts-checks",
+    },
+    &ReceiptMigration {
+        id: "2026-10-28-receipts-drop-old-tables",
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -1147,6 +1110,16 @@ fn apply_target_catalog(
             return Err(rolled_back(tx, last, target, MigrationPhase::Apply, source));
         }
     }
+    if target == MigrationTarget::Canvas {
+        let seeded: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_payload_migrations WHERE name=?1)",
+            [receipt_finish_name("2026-10-28-receipts-execution")],
+            |row| row.get(0),
+        )?;
+        if !seeded {
+            seed_receipt_finish(&tx)?;
+        }
+    }
     let verified = match target {
         // Receipt families finish the target query columns before final bootstrap validation.
         MigrationTarget::Canvas => Ok(()),
@@ -1221,6 +1194,194 @@ pub struct MigrationProgress {
     pub total: i64,
 }
 
+fn receipt_finish_name(id: &str) -> String {
+    let finish = format!("{id}-finish");
+    format!("receipts:{}:{finish}:", finish.len())
+}
+
+pub(crate) fn verify_receipt_finish(path: &Path, analytics_path: &Path) -> StoreResult<()> {
+    use rusqlite::OptionalExtension;
+    let db = crate::open_database(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let has_checkpoints: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='runtime_payload_migrations')", [], |row| row.get(0))?;
+    if !has_checkpoints {
+        for table in [
+            "runtime_operation_receipts",
+            "runtime_native_action_receipts",
+            "runtime_context_terminal_receipts",
+            "user_terminal_receipts",
+            "runtime_access_receipts",
+            "runtime_tool_results",
+            "runtime_tool_request_aliases",
+        ] {
+            let exists: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )?;
+            if exists {
+                return Err(StoreError::IntermediateReleaseRequired);
+            }
+        }
+        for table in [
+            "runtime_agents",
+            "runtime_items",
+            "messages",
+            "runtime_chat_messages",
+        ] {
+            let exists: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )?;
+            if exists
+                && db.query_row(
+                    &format!("SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1)"),
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )?
+            {
+                return Err(StoreError::IntermediateReleaseRequired);
+            }
+        }
+        let analytics = crate::open_database(analytics_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let mut stmt = analytics.prepare(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name LIKE 'analytics_%' AND name!='analytics_meta'",
+        )?;
+        let tables = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for table in tables {
+            let quoted = table.replace('"', "\"\"");
+            if analytics.query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM \"{quoted}\" LIMIT 1)"),
+                [],
+                |row| row.get::<_, bool>(0),
+            )? {
+                return Err(StoreError::IntermediateReleaseRequired);
+            }
+        }
+        return Ok(());
+    }
+    for family in CATALOG.iter().filter_map(|entry| entry.receipt_family()) {
+        let status: Option<String> = db
+            .query_row(
+                "SELECT status FROM runtime_payload_migrations WHERE name=?1",
+                [receipt_finish_name(family.id)],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| StoreError::IntermediateReleaseRequired)?;
+        if status.as_deref() != Some("complete") {
+            return Err(StoreError::IntermediateReleaseRequired);
+        }
+    }
+    Ok(())
+}
+
+fn seed_receipt_finish(tx: &Transaction<'_>) -> StoreResult<()> {
+    crate::receipt_migration_contract::prepare_schema(tx)
+        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+    crate::schema::prepare_receipt_owners(tx)?;
+    tx.execute_batch("ALTER TABLE runtime_server_inbox ADD COLUMN admission TEXT; ALTER TABLE runtime_server_outbox ADD COLUMN admission TEXT; ALTER TABLE runtime_server_fetch ADD COLUMN admission TEXT; ALTER TABLE voice_sessions ADD COLUMN provider_scope TEXT;")?;
+    use studio_runtime_schema::persistence::{
+        AccessOutboundState, EventKind, EventStatus, ExecutionEffectKind, FederationAckState,
+        FederationDeliveryState, FederationMessageKind, MigrationStatus, ServerDeliveryState,
+        ServerFetchState, ServerOperationKind, enum_check,
+    };
+    for (table, checks) in [
+        (
+            "runtime_events",
+            format!(
+                "{} {}",
+                enum_check::<EventKind>("kind"),
+                enum_check::<EventStatus>("status")
+            ),
+        ),
+        (
+            "runtime_execution_effects",
+            enum_check::<ExecutionEffectKind>("kind"),
+        ),
+        (
+            "runtime_payload_migrations",
+            enum_check::<MigrationStatus>("status"),
+        ),
+    ] {
+        tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN receipt_enum_guard INTEGER GENERATED ALWAYS AS (NULL) VIRTUAL {checks}"))?;
+    }
+    for (table, name, expression, check, nullable) in [
+        (
+            "runtime_server_inbox",
+            "receipt_state",
+            "state",
+            enum_check::<ServerDeliveryState>("receipt_state"),
+            false,
+        ),
+        (
+            "runtime_server_outbox",
+            "receipt_state",
+            "state",
+            enum_check::<ServerDeliveryState>("receipt_state"),
+            false,
+        ),
+        (
+            "runtime_server_fetch",
+            "receipt_state",
+            "state",
+            enum_check::<ServerFetchState>("receipt_state"),
+            false,
+        ),
+        (
+            "runtime_server_outbox",
+            "receipt_kind",
+            "json_extract(body,'$.action')",
+            enum_check::<ServerOperationKind>("receipt_kind"),
+            false,
+        ),
+        (
+            "runtime_access_outbound",
+            "receipt_state",
+            "json_extract(record,'$.outcome')",
+            enum_check::<AccessOutboundState>("receipt_state"),
+            false,
+        ),
+        (
+            "runtime_federation_inbox",
+            "receipt_ack",
+            "json_extract(record,'$.ack')",
+            enum_check::<FederationAckState>("receipt_ack"),
+            false,
+        ),
+        (
+            "runtime_federation_inbox",
+            "receipt_kind",
+            "json_extract(record,'$.kind')",
+            enum_check::<FederationMessageKind>("receipt_kind"),
+            true,
+        ),
+        (
+            "runtime_federation_outbox",
+            "receipt_state",
+            "json_extract(record,'$.status')",
+            enum_check::<FederationDeliveryState>("receipt_state"),
+            false,
+        ),
+        (
+            "runtime_federation_outbox",
+            "receipt_kind",
+            "json_extract(record,'$.kind')",
+            enum_check::<FederationMessageKind>("receipt_kind"),
+            false,
+        ),
+    ] {
+        let required = if nullable { "" } else { "NOT NULL" };
+        tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {name} TEXT GENERATED ALWAYS AS ({expression}) VIRTUAL {required} {check}"))?;
+    }
+    for family in CATALOG.iter().filter_map(|entry| entry.receipt_family()) {
+        tx.execute("INSERT INTO runtime_payload_migrations(name,cursor,complete,status,updated,cutover_ms) VALUES(?1,0,1,'complete',0,0)", [receipt_finish_name(family.id)])?;
+    }
+    Ok(())
+}
+
 /// Run under runtime.lock, before ordinary recovery, workers, readers or readiness.
 pub(crate) fn run(
     root: &Path,
@@ -1264,9 +1425,10 @@ fn run_receipt_migrations(
     db: &mut Connection,
     progress: Option<&(dyn Fn(MigrationProgress) + Send + Sync)>,
 ) -> StoreResult<()> {
-    for migration in CATALOG.iter().filter_map(|entry| entry.receipt_family()) {
-        run_receipt_family_progress(db, migration, &mut |_, _, _| Ok(()), progress)?;
-    }
+    let _ = progress;
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    crate::schema::prepare_receipt_owners(&tx)?;
+    tx.commit()?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     m2026_10_29_request_results_v2::convert_annotations(&tx)?;
     tx.commit()?;
@@ -1274,213 +1436,8 @@ fn run_receipt_migrations(
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     m2026_10_30_one_outbox::apply(&tx)?;
     tx.commit()?;
-    m2026_10_28_receipts_drop_old_tables::verify_absent(db)
-        .map_err(|error| receipt_error(&error))?;
     crate::schema::verify_bootstrap(db)?;
     crate::verify_observed_tables_are_rowid(db)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CommitBoundary {
-    Before,
-    After,
-}
-
-fn receipt_error(error: &receipt_migration_contract::ReceiptMigrationError) -> StoreError {
-    StoreError::SchemaMismatch(error.to_string())
-}
-
-#[cfg(test)]
-fn run_receipt_family(
-    db: &mut Connection,
-    migration: &ReceiptMigration,
-    fault: &mut impl FnMut(ReceiptMigrationPhase, CommitBoundary, i64) -> StoreResult<()>,
-) -> StoreResult<()> {
-    run_receipt_family_progress(db, migration, fault, None)
-}
-
-fn run_receipt_family_progress(
-    db: &mut Connection,
-    migration: &ReceiptMigration,
-    fault: &mut impl FnMut(ReceiptMigrationPhase, CommitBoundary, i64) -> StoreResult<()>,
-    progress: Option<&(dyn Fn(MigrationProgress) + Send + Sync)>,
-) -> StoreResult<()> {
-    let id = migration.family.id();
-    let now = (m2026_10_26_canvas::unix_now() * 1000.0) as i64;
-    let prepare = receipt_migration_contract::phase_id(id, ReceiptMigrationPhase::Prepare);
-    let finish = receipt_migration_contract::phase_id(id, ReceiptMigrationPhase::Finish);
-    {
-        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let completed = MigrationCheckpoint::load(&tx, &finish, "")
-            .map_err(|error| receipt_error(&error))?
-            .is_some_and(|checkpoint| checkpoint.status == MigrationStatus::Complete);
-        if completed {
-            return Ok(());
-        }
-        let mut checkpoint = MigrationCheckpoint::begin(&tx, &prepare, "", now)
-            .map_err(|error| receipt_error(&error))?;
-        if checkpoint.status != MigrationStatus::Complete {
-            migration
-                .family
-                .prepare(&tx, checkpoint.cutover_ms)
-                .map_err(|error| receipt_error(&error))?;
-            checkpoint.status = MigrationStatus::Complete;
-            checkpoint
-                .save(&tx, &prepare, "", now)
-                .map_err(|error| receipt_error(&error))?;
-            commit_receipt_phase(
-                tx,
-                id,
-                ReceiptMigrationPhase::Prepare,
-                checkpoint.cursor,
-                fault,
-            )?;
-        }
-    }
-    receipt_checkpoint(db)?;
-    for source in migration.sources {
-        let total = if crate::schema::table_exists(db, source)? {
-            db.query_row(
-                &format!("SELECT coalesce(max(rowid),0) FROM \"{source}\""),
-                [],
-                |row| row.get::<_, i64>(0),
-            )?
-        } else {
-            0
-        };
-        loop {
-            let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let checkpoint = MigrationCheckpoint::begin(&tx, id, source, now)
-                .map_err(|error| receipt_error(&error))?;
-            if let Some(progress) = progress {
-                progress(MigrationProgress {
-                    id: format!("{id}:{source}"),
-                    done: checkpoint.cursor,
-                    total: total.max(checkpoint.cursor),
-                });
-            }
-            if checkpoint.status == MigrationStatus::Complete {
-                break;
-            }
-            let next = match migration.family.move_batch(&tx, source, &checkpoint) {
-                Ok(next) => next,
-                Err(error) => {
-                    return Err(rolled_back(
-                        tx,
-                        id,
-                        MigrationTarget::Canvas,
-                        MigrationPhase::Apply,
-                        receipt_error(&error),
-                    ));
-                }
-            };
-            if next.cutover_ms != checkpoint.cutover_ms
-                || next.cursor < checkpoint.cursor
-                || (next.cursor == checkpoint.cursor && next.status != MigrationStatus::Complete)
-            {
-                return Err(rolled_back(
-                    tx,
-                    id,
-                    MigrationTarget::Canvas,
-                    MigrationPhase::Validate,
-                    StoreError::RecordContract("receipt batch did not advance its checkpoint"),
-                ));
-            }
-            next.save(&tx, id, source, now)
-                .map_err(|error| receipt_error(&error))?;
-            commit_receipt_phase(tx, id, ReceiptMigrationPhase::Move, next.cursor, fault)?;
-            receipt_checkpoint(db)?;
-            if next.status == MigrationStatus::Complete {
-                break;
-            }
-        }
-    }
-    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    for source in migration.sources {
-        if !MigrationCheckpoint::load(&tx, id, source)
-            .map_err(|error| receipt_error(&error))?
-            .is_some_and(|checkpoint| checkpoint.status == MigrationStatus::Complete)
-        {
-            return Err(rolled_back(
-                tx,
-                id,
-                MigrationTarget::Canvas,
-                MigrationPhase::Validate,
-                StoreError::SchemaMismatch(format!(
-                    "incomplete receipt migration {id} source {source}"
-                )),
-            ));
-        }
-    }
-    migration
-        .family
-        .finish(&tx)
-        .map_err(|error| receipt_error(&error))?;
-    let mut checkpoint =
-        MigrationCheckpoint::begin(&tx, &finish, "", now).map_err(|error| receipt_error(&error))?;
-    checkpoint.status = MigrationStatus::Complete;
-    checkpoint
-        .save(&tx, &finish, "", now)
-        .map_err(|error| receipt_error(&error))?;
-    commit_receipt_phase(
-        tx,
-        id,
-        ReceiptMigrationPhase::Finish,
-        checkpoint.cursor,
-        fault,
-    )?;
-    receipt_checkpoint(db)
-}
-
-fn commit_receipt_phase(
-    tx: Transaction<'_>,
-    id: &'static str,
-    phase: ReceiptMigrationPhase,
-    cursor: i64,
-    fault: &mut impl FnMut(ReceiptMigrationPhase, CommitBoundary, i64) -> StoreResult<()>,
-) -> StoreResult<()> {
-    if let Err(error) = fault(phase, CommitBoundary::Before, cursor) {
-        return Err(rolled_back(
-            tx,
-            id,
-            MigrationTarget::Canvas,
-            MigrationPhase::Commit,
-            error,
-        ));
-    }
-    if let Err(error) = tx.execute_batch("COMMIT") {
-        return Err(if tx.is_autocommit() {
-            failure(
-                id,
-                MigrationTarget::Canvas,
-                MigrationPhase::Commit,
-                MigrationRollbackOutcome::Unknown,
-                error.into(),
-            )
-        } else {
-            rolled_back(
-                tx,
-                id,
-                MigrationTarget::Canvas,
-                MigrationPhase::Commit,
-                error.into(),
-            )
-        });
-    }
-    fault(phase, CommitBoundary::After, cursor)
-}
-
-fn receipt_checkpoint(db: &Connection) -> StoreResult<()> {
-    let result = crate::sqlite_durability::checkpoint(
-        db,
-        crate::sqlite_durability::CheckpointMode::Truncate,
-    )?;
-    if !result.is_complete() {
-        return Err(StoreError::SchemaMismatch(
-            "receipt migration WAL checkpoint is blocked; startup has not completed".into(),
-        ));
-    }
-    Ok(())
 }
 
 /// The supervisor calls this under supervisor.lock, before recovery and listening.
@@ -1757,314 +1714,6 @@ mod tests {
             .expect("row"),
             "{}"
         );
-    }
-
-    struct BatchWitness;
-    impl ReceiptFamilyMigration for BatchWitness {
-        fn id(&self) -> &'static str {
-            "2026-10-28-receipts-batch-witness"
-        }
-        fn prepare(&self, _: &Transaction<'_>, _: i64) -> receipt_migration_contract::Result<()> {
-            Ok(())
-        }
-        fn move_batch(
-            &self,
-            tx: &Transaction<'_>,
-            source: &str,
-            checkpoint: &MigrationCheckpoint,
-        ) -> receipt_migration_contract::Result<MigrationCheckpoint> {
-            #[derive(serde::Deserialize, serde::Serialize)]
-            struct Reply {
-                index: i64,
-                #[serde(default, skip_serializing_if = "Option::is_none")]
-                padding: Option<String>,
-            }
-            let rows = receipt_migration_contract::read_receipt_batch(tx, source, checkpoint, "1")?;
-            let mut next = checkpoint.clone();
-            next.status = if rows.is_empty() {
-                MigrationStatus::Complete
-            } else {
-                MigrationStatus::Running
-            };
-            for row in rows {
-                if row.signature != "known" {
-                    return Err(receipt_migration_contract::unclassifiable(
-                        source,
-                        &row.id,
-                        &row.signature,
-                    ));
-                }
-                let reply: Reply = row.json(source)?;
-                receipt_migration_contract::import_result(
-                    tx,
-                    &row.id,
-                    &row.signature,
-                    &crate::request_results::ResultEnvelope {
-                        actor: None,
-                        reply,
-                        references: vec![],
-                    },
-                    next.cutover_ms,
-                )?;
-                receipt_migration_contract::delete_source(tx, source, row.rowid)?;
-                next.cursor = row.rowid;
-            }
-            Ok(next)
-        }
-        fn finish(&self, _: &Transaction<'_>) -> receipt_migration_contract::Result<()> {
-            Ok(())
-        }
-    }
-
-    fn receipt_batch_fixture(path: &Path, count: i64) -> Connection {
-        let mut db = Connection::open(path).expect("database");
-        crate::sqlite_durability::configure_writer(&db).expect("WAL");
-        let tx = db.transaction().expect("fixture transaction");
-        receipt_migration_contract::prepare_schema(&tx).expect("targets");
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT)").expect("source");
-        for index in 1..=count {
-            tx.execute(
-                "INSERT INTO runtime_operation_receipts VALUES(?1,'known',?2)",
-                rusqlite::params![
-                    format!("request-{index}"),
-                    serde_json::json!({"index":index}).to_string()
-                ],
-            )
-            .expect("old row");
-        }
-        tx.commit().expect("fixture committed");
-        db
-    }
-
-    #[test]
-    fn receipt_cutover_batch_crashes_preserve_evidence_and_resume_exactly() {
-        let family = ReceiptMigration {
-            family: &BatchWitness,
-            sources: &["runtime_operation_receipts"],
-        };
-        // Prepare, four move commits (500/500/1/empty), finish: before and after each.
-        for crash in 0..12 {
-            let root = tempfile::tempdir().expect("fixture");
-            let path = root.path().join("canvas.sqlite3");
-            let mut db = receipt_batch_fixture(&path, 1001);
-            let mut boundary = 0;
-            let result = run_receipt_family(&mut db, &family, &mut |_, _, _| {
-                let at = boundary;
-                boundary += 1;
-                if at == crash {
-                    Err(StoreError::RecordContract("injected process interruption"))
-                } else {
-                    Ok(())
-                }
-            });
-            assert!(result.is_err(), "boundary {crash}");
-            let evidence:i64=db.query_row("SELECT (SELECT count(*) FROM runtime_operation_receipts)+(SELECT count(*) FROM request_results)",[],|row|row.get(0)).expect("evidence");
-            assert_eq!(
-                evidence, 1001,
-                "source deletion never outruns destination at {crash}"
-            );
-            drop(db);
-            let mut db = Connection::open(&path).expect("restart");
-            crate::sqlite_durability::configure_writer(&db).expect("WAL");
-            run_receipt_family(&mut db, &family, &mut |_, _, _| Ok(())).expect("resume");
-            let results: Vec<(String, String, String, i64)> = db
-                .prepare("SELECT id,signature,result,created FROM request_results ORDER BY id")
-                .expect("results")
-                .query_map([], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                })
-                .expect("rows")
-                .collect::<rusqlite::Result<_>>()
-                .expect("read");
-            assert_eq!(results.len(), 1001);
-            assert!(results.iter().all(|row| row.3 == results[0].3));
-            let drop_migration = ReceiptMigration {
-                family: &m2026_10_28_receipts_drop_old_tables::Family,
-                sources: &[],
-            };
-            run_receipt_family(&mut db, &drop_migration, &mut |_, _, _| Ok(()))
-                .expect("drop old sources");
-            drop(db);
-            let mut db = Connection::open(&path).expect("second open");
-            run_receipt_family(&mut db, &family, &mut |_, _, _| {
-                panic!("completed family must not execute again")
-            })
-            .expect("completed");
-            let after: Vec<(String, String, String, i64)> = db
-                .prepare("SELECT id,signature,result,created FROM request_results ORDER BY id")
-                .expect("results")
-                .query_map([], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                })
-                .expect("rows")
-                .collect::<rusqlite::Result<_>>()
-                .expect("read");
-            assert_eq!(after, results);
-            assert!(
-                !crate::schema::table_exists(&db, "runtime_operation_receipts").expect("schema")
-            );
-        }
-    }
-
-    #[test]
-    fn receipt_progress_reports_committed_cursor() {
-        let root = tempfile::tempdir().expect("fixture");
-        let mut db = receipt_batch_fixture(&root.path().join("canvas.sqlite3"), 1001);
-        let family = ReceiptMigration {
-            family: &BatchWitness,
-            sources: &["runtime_operation_receipts"],
-        };
-        let positions = std::sync::Mutex::new(Vec::new());
-        let result = run_receipt_family_progress(
-            &mut db,
-            &family,
-            &mut |phase, boundary, cursor| {
-                if phase == ReceiptMigrationPhase::Move
-                    && boundary == CommitBoundary::Before
-                    && cursor > 500
-                {
-                    return Err(StoreError::RecordContract("interrupt second batch"));
-                }
-                Ok(())
-            },
-            Some(&|progress| positions.lock().expect("positions").push(progress)),
-        );
-        assert!(result.is_err());
-        let positions = positions.lock().expect("positions");
-        assert_eq!(positions.len(), 2);
-        assert_eq!(positions[0].done, 0);
-        assert_eq!(positions[1].done, 500);
-        assert_eq!(positions[1].total, 1001);
-        assert_eq!(
-            positions[1].id,
-            "2026-10-28-receipts-batch-witness:runtime_operation_receipts"
-        );
-    }
-
-    #[test]
-    fn receipt_cutover_drop_crashes_are_atomic_and_never_accept_leftover_rows() {
-        for boundary in [CommitBoundary::Before, CommitBoundary::After] {
-            let root = tempfile::tempdir().expect("fixture");
-            let path = root.path().join("canvas.sqlite3");
-            let mut db = receipt_batch_fixture(&path, 0);
-            let migration = ReceiptMigration {
-                family: &m2026_10_28_receipts_drop_old_tables::Family,
-                sources: &[],
-            };
-            assert!(
-                run_receipt_family(&mut db, &migration, &mut |phase, at, _| {
-                    if phase == ReceiptMigrationPhase::Finish && at == boundary {
-                        Err(StoreError::RecordContract("drop interrupted"))
-                    } else {
-                        Ok(())
-                    }
-                })
-                .is_err()
-            );
-            assert_eq!(
-                crate::schema::table_exists(&db, "runtime_operation_receipts").expect("schema"),
-                boundary == CommitBoundary::Before
-            );
-            drop(db);
-            let mut db = Connection::open(&path).expect("restart");
-            run_receipt_family(&mut db, &migration, &mut |_, _, _| Ok(())).expect("finish drop");
-            assert!(
-                !crate::schema::table_exists(&db, "runtime_operation_receipts").expect("schema")
-            );
-        }
-        let root = tempfile::tempdir().expect("fixture");
-        let mut db = receipt_batch_fixture(&root.path().join("canvas.sqlite3"), 1);
-        let migration = ReceiptMigration {
-            family: &m2026_10_28_receipts_drop_old_tables::Family,
-            sources: &[],
-        };
-        let error = run_receipt_family(&mut db, &migration, &mut |_, _, _| Ok(()))
-            .expect_err("leftover refuses drop");
-        let error = error.to_string();
-        assert!(
-            error.contains("runtime_operation_receipts")
-                && error.contains("request-1")
-                && error.contains("known"),
-            "{error}"
-        );
-        assert_eq!(
-            db.query_row(
-                "SELECT count(*) FROM runtime_operation_receipts",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .expect("source"),
-            1
-        );
-    }
-
-    #[test]
-    fn receipt_cutover_low_space_preserves_oversized_source_and_resumes() {
-        let root = tempfile::tempdir().expect("fixture");
-        let mut db = receipt_batch_fixture(&root.path().join("canvas.sqlite3"), 1);
-        let oversized=serde_json::json!({"index":1,"padding":"x".repeat(receipt_migration_contract::MIGRATION_BATCH_BYTES+1)}).to_string();
-        db.execute(
-            "UPDATE runtime_operation_receipts SET result=?1",
-            [&oversized],
-        )
-        .expect("oversized source");
-        let pages: i64 = db
-            .pragma_query_value(None, "page_count", |row| row.get(0))
-            .expect("pages");
-        db.pragma_update(None, "max_page_count", pages)
-            .expect("finite disk budget");
-        let family = ReceiptMigration {
-            family: &BatchWitness,
-            sources: &["runtime_operation_receipts"],
-        };
-        let error = run_receipt_family(&mut db, &family, &mut |_, _, _| Ok(()))
-            .expect_err("destination cannot fit");
-        assert!(format!("{error:?}").contains("full"), "{error:?}");
-        let source: String = db
-            .query_row("SELECT result FROM runtime_operation_receipts", [], |row| {
-                row.get(0)
-            })
-            .expect("source survives");
-        assert_eq!(source, oversized);
-        assert_eq!(
-            db.query_row("SELECT count(*) FROM request_results", [], |row| row
-                .get::<_, i64>(0))
-                .expect("results"),
-            0
-        );
-        db.pragma_update(None, "max_page_count", pages * 4)
-            .expect("space restored");
-        run_receipt_family(&mut db, &family, &mut |_, _, _| Ok(()))
-            .expect("one oversized row resumes");
-        let result: String = db
-            .query_row("SELECT result FROM request_results", [], |row| row.get(0))
-            .expect("exact result");
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&result).expect("envelope")["reply"],
-            serde_json::from_str::<serde_json::Value>(&oversized).expect("source")
-        );
-    }
-
-    #[test]
-    fn receipt_cutover_startup_error_names_unclassifiable_row_in_display() {
-        let error = failure(
-            "2026-10-28-receipts-batch-witness",
-            MigrationTarget::Canvas,
-            MigrationPhase::Apply,
-            MigrationRollbackOutcome::RolledBack,
-            receipt_error(&receipt_migration_contract::unclassifiable(
-                "source-table",
-                "source-key",
-                "source-signature",
-            )),
-        );
-        let shown = error.to_string();
-        for expected in ["source-table", "source-key", "source-signature"] {
-            assert!(
-                shown.contains(expected),
-                "operator startup error must name {expected}: {shown}"
-            );
-        }
     }
 
     #[tokio::test]

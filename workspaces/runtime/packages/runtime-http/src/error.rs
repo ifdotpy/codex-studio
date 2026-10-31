@@ -199,6 +199,7 @@ impl ApiError {
             }
             StoreError::StateDirectory(_)
             | StoreError::AlreadyOwned
+            | StoreError::IntermediateReleaseRequired
             | StoreError::MissingDatabase(_)
             | StoreError::UnsafeStateDirectory
             | StoreError::SchemaMismatch(_)

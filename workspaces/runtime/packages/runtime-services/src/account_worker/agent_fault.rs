@@ -118,6 +118,7 @@ pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
             StoreError::TranscriptInputsIncomplete { id } => ("runtime_items".into(), id.clone()),
             StoreError::StateDirectory(_)
             | StoreError::AlreadyOwned
+            | StoreError::IntermediateReleaseRequired
             | StoreError::MissingDatabase(_)
             | StoreError::Migration { .. }
             | StoreError::UnsafeStateDirectory

@@ -479,6 +479,7 @@ fn store_api_error(error: StoreError) -> ApiError {
         | StoreError::TranscriptInputsIncomplete { .. }) => ApiError::stored(error),
         StoreError::StateDirectory(_)
         | StoreError::AlreadyOwned
+        | StoreError::IntermediateReleaseRequired
         | StoreError::MissingDatabase(_)
         | StoreError::Migration { .. }
         | StoreError::UnsafeStateDirectory

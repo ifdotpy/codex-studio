@@ -13,7 +13,8 @@ pub fn store_error_kind(error: &studio_runtime_store::StoreError) -> InternalErr
         StoreError::StateDirectory(_) => K::StoreIo,
         StoreError::AlreadyOwned => K::StoreOwnership,
         StoreError::MissingDatabase(_) | StoreError::UnsafeStateDirectory => K::StoreConfiguration,
-        StoreError::SchemaMismatch(_)
+        StoreError::IntermediateReleaseRequired
+        | StoreError::SchemaMismatch(_)
         | StoreError::SchemaObjectMismatch { .. }
         | StoreError::RecordContract(_) => K::StoreSchema,
         StoreError::InvalidSyncObject { .. }
@@ -153,6 +154,7 @@ pub fn store_causes(error: &studio_runtime_store::StoreError) -> Vec<Cause> {
             }
         }
         StoreError::AlreadyOwned
+        | StoreError::IntermediateReleaseRequired
         | StoreError::RequestResult(
             studio_runtime_store::request_results::RequestResultError::Expired,
         )
