@@ -2,7 +2,72 @@
 use crate::{JsonRecord, RecordKeyMode, RecordQueryShape};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use studio_runtime_schema::claude_permissions::PermissionMode;
 use studio_runtime_schema::queue_command::Field;
+
+fn frozen_permission(source: &Map<String, Value>) -> Result<Option<PermissionMode>, ()> {
+    let mode = source
+        .get("permissionMode")
+        .filter(|value| !value.is_null())
+        .map(|value| PermissionMode::deserialize(value).map_err(|_| ()))
+        .transpose()?;
+    // work-1793466115683291392-20: frozen receipts retain their legacy field.
+    let legacy = source
+        .get("yoloMode")
+        .filter(|value| !value.is_null())
+        .map(|value| {
+            value
+                .as_bool()
+                .map(|enabled| {
+                    if enabled {
+                        PermissionMode::BypassPermissions
+                    } else {
+                        PermissionMode::Default
+                    }
+                })
+                .ok_or(())
+        })
+        .transpose()?;
+    if mode.is_some_and(|mode| {
+        legacy.is_some_and(|legacy| {
+            (mode == PermissionMode::BypassPermissions)
+                != (legacy == PermissionMode::BypassPermissions)
+        })
+    }) {
+        return Err(());
+    }
+    Ok(mode.or(legacy))
+}
+
+fn frozen_input_matches(left: &Value, right: &Value) -> bool {
+    if left == right {
+        return true;
+    }
+    let (Some(left), Some(right)) = (left.as_object(), right.as_object()) else {
+        return false;
+    };
+    if left.len() != right.len()
+        || left
+            .iter()
+            .any(|(key, value)| key != "source" && right.get(key) != Some(value))
+    {
+        return false;
+    }
+    let (Some(left), Some(right)) = (
+        left.get("source").and_then(Value::as_object),
+        right.get("source").and_then(Value::as_object),
+    ) else {
+        return false;
+    };
+    let permission = |key: &&String| matches!(key.as_str(), "permissionMode" | "yoloMode");
+    left.iter().filter(|(key, _)| !permission(key)).count()
+        == right.iter().filter(|(key, _)| !permission(key)).count()
+        && left
+            .iter()
+            .filter(|(key, _)| !permission(key))
+            .all(|(key, value)| right.get(key) == Some(value))
+        && matches!((frozen_permission(left), frozen_permission(right)), (Ok(Some(a)), Ok(Some(b))) if a == b)
+}
 #[derive(Clone, Deserialize, Serialize)]
 pub struct ClaudeAttemptRecord {
     id: String,
@@ -48,6 +113,10 @@ impl ClaudeAttemptRecord {
                 Field::Null => value == Some(&Value::Null),
                 Field::Value(submitted) => value.and_then(Value::as_bool) == Some(*submitted),
             },
+            "claudeInputRequest" => match (self.fields.get(key), value) {
+                (Some(left), Some(right)) => frozen_input_matches(left, right),
+                (left, right) => left.filter(|v| !v.is_null()) == right.filter(|v| !v.is_null()),
+            },
             _ => self.fields.get(key).filter(|v| !v.is_null()) == value.filter(|v| !v.is_null()),
         }
     }
@@ -79,6 +148,33 @@ impl JsonRecord for ClaudeAttemptRecord {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn frozen_input_matches_legacy_and_canonical_permission_modes() {
+        let frozen = json!({"id":"attempt","claudeInputRequest":{"input":[],"source":{"yoloMode":true,"cwd":"/project"}}});
+        let record = ClaudeAttemptRecord::deserialize(frozen.clone()).unwrap();
+        let canonical =
+            json!({"input":[],"source":{"permissionMode":"bypassPermissions","cwd":"/project"}});
+        assert!(
+            studio_runtime_schema::start_attempt::ClaudeInputSource::deserialize(
+                &canonical["source"]
+            )
+            .is_ok()
+        );
+        assert!(record.matches_field("claudeInputRequest", Some(&canonical)));
+        let different = json!({"input":[],"source":{"permissionMode":"default","cwd":"/project"}});
+        assert!(!record.matches_field("claudeInputRequest", Some(&different)));
+        let unknown = json!({"input":[],"source":{"permissionMode":"unknown","cwd":"/project"}});
+        assert!(!record.matches_field("claudeInputRequest", Some(&unknown)));
+        let other_input = json!({"input":["changed"],"source":{"permissionMode":"bypassPermissions","cwd":"/project"}});
+        assert!(!record.matches_field("claudeInputRequest", Some(&other_input)));
+        let conflicting = json!({"input":[],"source":{"permissionMode":"bypassPermissions","yoloMode":false,"cwd":"/project"}});
+        assert!(!record.matches_field("claudeInputRequest", Some(&conflicting)));
+        assert_eq!(
+            serde_json::from_str::<Value>(&serde_json::to_string(&record).unwrap()).unwrap(),
+            frozen
+        );
+    }
 
     #[test]
     fn claude_attempt_owner_preserves_nullable_receipt_fields_and_extensions() {

@@ -748,6 +748,9 @@
         "parentId": {
           "type": ["string", "null"]
         },
+        "permissionMode": {
+          "anyOf": [{ "$ref": "#/$defs/PermissionMode" }, { "type": "null" }]
+        },
         "role": {
           "type": ["string", "null"]
         },
@@ -759,6 +762,11 @@
         }
       },
       "additionalProperties": false
+    },
+    "PermissionMode": {
+      "description": "Claude session permission modes accepted by settings and child creation.",
+      "type": "string",
+      "enum": ["default", "acceptEdits", "auto", "plan", "bypassPermissions"]
     },
     "ConnectionScope": {
       "type": "object",
