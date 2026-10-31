@@ -96,6 +96,14 @@ fn corpus() -> &'static Value {
             }
         }
         normalize_agents(&mut data);
+        for group in ["commands", "cancellations"] {
+            for case in data[group].as_array_mut().expect("native command cases") {
+                let task = &mut case["task"];
+                task["turnId"] = json!("turn");
+                task["type"] = json!("commandExecution");
+                task["name"] = json!("command");
+            }
+        }
         for case in data["actions"].as_array_mut().expect("actions") {
             case["after"]["startAttempt"]["rootRequestId"] = case["request"]["requestId"].clone();
         }

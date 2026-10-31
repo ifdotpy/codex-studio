@@ -4246,8 +4246,8 @@ mod tests {
             json!({"state":"conflict","conflicts":["a.txt"],"choices":[],"withAgent":[],"deletes":0,"reason":null,"at":5.0,"sent":2}).to_string(),
         )
         .unwrap();
-        let project = json!({"id":source,"path":source,"projectAliases":[{"projectId":source}]});
-        let other = json!({"id":"/workspace/Plain","path":"/workspace/Plain"});
+        let project = json!({"id":source,"path":source,"peerTeams":[],"projectAliases":[{"projectId":source}]});
+        let other = json!({"id":"/workspace/Plain","path":"/workspace/Plain","peerTeams":[]});
         let records = [
             (source.to_owned(), project.clone()),
             ("/workspace/Plain".to_owned(), other.clone()),
@@ -4331,6 +4331,7 @@ mod tests {
             fs::create_dir(&workspace).unwrap();
             let mut project = case["project"].clone();
             project["path"] = json!(workspace.to_string_lossy());
+            project["peerTeams"] = json!([]);
             let prior = project.clone();
             let snapshot = ProjectVaultSnapshot::capture(
                 store.root(),

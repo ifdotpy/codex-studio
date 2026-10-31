@@ -640,7 +640,7 @@ async fn summary_entities_publish_at_the_source_write() {
             .1["status"],
         "delivered"
     );
-    let task = json!({"id":"task","agent":CHAT,"kind":"command","status":"running","created":1,"tail":"output","error":"failure","arguments":"Explicit read only"});
+    let task = json!({"id":"task","agent":CHAT,"itemId":"item","turnId":"turn","type":"commandExecution","name":"command","kind":"command","status":"running","created":1,"tail":"output","error":"failure","arguments":"Explicit read only"});
     write(
         &store,
         "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",

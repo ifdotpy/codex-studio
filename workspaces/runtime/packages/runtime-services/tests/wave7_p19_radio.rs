@@ -75,6 +75,39 @@ fn corpus() -> RadioCorpus {
     let mut cases: Vec<Value> = serde_json::from_str(expected).expect("frozen radio corpus");
     for case in &mut cases {
         for side in ["before", "after"] {
+            if let Some(rows) = case[side]["complaints"].as_array_mut() {
+                for row in rows {
+                    let mut record: Value =
+                        serde_json::from_str(row["record"].as_str().expect("complaint record"))
+                            .expect("complaint JSON");
+                    for (field, value) in [
+                        ("recipient", json!("lead")),
+                        ("version", Value::Null),
+                        ("created", Value::Null),
+                        ("updated", Value::Null),
+                        ("readAt", Value::Null),
+                        ("responses", json!([])),
+                    ] {
+                        record
+                            .as_object_mut()
+                            .expect("complaint object")
+                            .entry(field)
+                            .or_insert(value);
+                    }
+                    row["record"] = json!(record.to_string());
+                }
+            }
+            if let Some(rows) = case[side]["sync_entities"].as_array_mut() {
+                for row in rows {
+                    if row["collection"] == "agent" && row["deleted"] == 0 {
+                        let mut payload: Value =
+                            serde_json::from_str(row["payload"].as_str().expect("agent payload"))
+                                .expect("agent payload JSON");
+                        payload["value"]["compactions"] = json!(0);
+                        row["payload"] = json!(payload.to_string());
+                    }
+                }
+            }
             if let Some(rows) = case[side]["agents"].as_array_mut() {
                 for row in rows {
                     let mut record: Value =

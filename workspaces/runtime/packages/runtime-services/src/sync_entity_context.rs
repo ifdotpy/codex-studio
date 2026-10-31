@@ -606,7 +606,10 @@ mod room_preparation_tests {
         connection
             .execute(
                 "INSERT INTO runtime_projects(id,record) VALUES ('project',?1)",
-                [json!({"id":"project","path":root.path(),"name":"before"}).to_string()],
+                [
+                    json!({"id":"project","path":root.path(),"name":"before","peerTeams":[]})
+                        .to_string(),
+                ],
             )
             .expect("project");
         let prepared =

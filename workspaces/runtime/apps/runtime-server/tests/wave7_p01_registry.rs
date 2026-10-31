@@ -826,6 +826,7 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
                     if table == "agents" {
                         let mut record: Value =
                             serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
+                        record["compactions"] = json!(0);
                         record["cwd"] = json!(stored_project_root.to_string_lossy());
                         if record.get("projectId").is_some() {
                             record["projectId"] = json!(stored_project_root.to_string_lossy());
@@ -836,6 +837,7 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
                         let mut record: Value =
                             serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
                         record["projectPath"] = json!(stored_project_root.to_string_lossy());
+                        record["radio"]["direct"] = json!(false);
                         row["record"] = json!(record.to_string());
                     }
                     let fields = row.as_object().unwrap();

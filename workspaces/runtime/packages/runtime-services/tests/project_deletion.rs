@@ -107,7 +107,7 @@ async fn setup() -> (tempfile::TempDir, Arc<RuntimeStore>, Value) {
         .expect("canonical test path")
         .to_string_lossy()
         .into_owned();
-    let project = json!({"id":path,"path":path,"name":"Project","created":1,"homeServerId":"owner","locations":[{"serverId":"owner","path":path,"projectId":path}]});
+    let project = json!({"id":path,"path":path,"name":"Project","created":1,"peerTeams":[],"homeServerId":"owner","locations":[{"serverId":"owner","path":path,"projectId":path}]});
     let p = project.clone();
     store
         .transaction(move |tx| ProjectsRepository::put_project(tx, &p))

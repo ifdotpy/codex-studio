@@ -37,11 +37,18 @@ impl Fixture {
             for pointer in ["/agent", "/expected/agent"] {
                 if let Some(agent) = case.pointer_mut(pointer).and_then(Value::as_object_mut) {
                     agent.insert("provider".into(), json!("codex"));
+                    agent.entry("compactions").or_insert(json!(0));
                 }
             }
         }
         for case in data["cases"].as_array_mut().expect("cases") {
             if case["family"] == "location" {
+                for pointer in ["/project", "/expected/project"] {
+                    if let Some(project) = case.pointer_mut(pointer).and_then(Value::as_object_mut)
+                    {
+                        project.entry("peerTeams").or_insert(json!([]));
+                    }
+                }
                 let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
                 let identity = studio_runtime_schema::persistence::RequestIdentity::new(
                     "project-location",

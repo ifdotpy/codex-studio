@@ -791,7 +791,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
                 let id = format!("task-{index:07}");
                 task.execute(params![
                     id,
-                    json!({"id":id,"agent":agent,"kind":"command","status":status,"created":index as f64})
+                    json!({"id":id,"agent":agent,"itemId":id,"turnId":"turn","type":"commandExecution","name":"command","kind":"command","status":status,"created":index as f64})
                         .to_string()
                 ])?;
             }

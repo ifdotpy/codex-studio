@@ -1146,7 +1146,7 @@ async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
                 .await
                 .expect("inject corrupt counter");
         }
-        let mut task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","kind":"tool","status":"running","created":1.0});
+        let mut task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","name":"tool","kind":"tool","status":"running","created":1.0});
         if bad == "task" {
             task["created"] = json!(-1);
         }
@@ -1161,7 +1161,7 @@ async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
                 valid["id"] = json!("z-agent");
                 valid["rootId"] = json!("z-agent");
                 tx.execute("INSERT INTO runtime_agents(id,record) VALUES('z-agent',?1)",[valid.to_string()])?;
-                let valid_task = json!({"id":"z-agent:item","agent":"z-agent","itemId":"item","turnId":"turn","type":"commandExecution","kind":"command","status":"running","created":1.0});
+                let valid_task = json!({"id":"z-agent:item","agent":"z-agent","itemId":"item","turnId":"turn","type":"commandExecution","name":"command","kind":"command","status":"running","created":1.0});
                 tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('z-agent:item',?1)",[valid_task.to_string()])?;
                 if bad_for_tx == "receipt" {
                     tx.execute(

@@ -1062,6 +1062,7 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
             let mut payload: Value = serde_json::from_str(row[2].as_str().expect("agent payload"))
                 .expect("frozen agent JSON");
             payload["value"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            payload["value"]["compactions"] = json!(0);
             if payload["value"].get("accountKey").is_none() {
                 payload["value"]["accountKey"] = json!("default");
             }
@@ -1570,6 +1571,7 @@ async fn production_child_notification_matches_python_corpus() {
         if row[0] == "agent" && row[3] == 0 {
             let mut payload: Value = serde_json::from_str(row[2].as_str().expect("agent payload"))
                 .expect("frozen agent JSON");
+            payload["value"]["compactions"] = json!(0);
             payload["value"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
             if payload["value"].get("accountKey").is_none() {
                 payload["value"]["accountKey"] = json!("default");
