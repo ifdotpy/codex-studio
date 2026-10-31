@@ -1,8 +1,6 @@
 import { randomUUID } from "../uuid";
 import { serverStorageName } from "../servers/environment";
-import { serverLocalStorage as localStorage } from "../servers/storage";
 import { syncGet, syncPost, refreshSession, type GetResult } from "../api";
-import { writeLocalDraft } from "./localDraft";
 import { syncDatabase } from "./client";
 import type { Attachment } from "../components/ComposerAttachments";
 import {
@@ -22,21 +20,14 @@ export type PendingUpload = {
   created: number;
   asset?: Attachment;
 };
-export type PendingUploadContent = {
-  bytes?: ArrayBuffer | undefined;
-  file?: Blob | undefined;
-};
-
 export const UPLOAD_DATABASE_NAME = "codex-studio-uploads";
 export type UploadOptions = {
   databaseName: string;
-  storage: typeof localStorage;
   syncGet: (
     path: "/api/sync/identity",
   ) => Promise<Pick<GetResult<"/api/sync/identity">, "workspaceId">>;
   syncPost: typeof syncPost<"/api/assets">;
   refreshSession: typeof refreshSession;
-  writeLocalDraft: typeof writeLocalDraft;
   syncDatabase: () => Promise<
     Pick<Awaited<ReturnType<typeof syncDatabase>>, "workspaceId">
   >;
@@ -45,23 +36,14 @@ export type UploadOptions = {
 export function createUploads(
   options: UploadOptions = {
     databaseName: serverStorageName(UPLOAD_DATABASE_NAME),
-    storage: localStorage,
     syncGet,
     syncPost,
     refreshSession,
-    writeLocalDraft,
     syncDatabase,
   },
 ) {
-  const {
-    databaseName,
-    syncGet,
-    syncPost,
-    refreshSession,
-    writeLocalDraft,
-    syncDatabase,
-  } = options;
-  const localStorage = options.storage;
+  const { databaseName, syncGet, syncPost, refreshSession, syncDatabase } =
+    options;
   const UPLOADS_CHANNEL_NAME =
     databaseName === serverStorageName(UPLOAD_DATABASE_NAME)
       ? "studio-uploads-changed"
@@ -100,67 +82,8 @@ export function createUploads(
     setTimeout(() => channel.close(), 0);
   };
 
-  const database = () =>
-    new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(databaseName, 2);
-      request.onupgradeneeded = () => {
-        const db = request.result;
-        const uploads = db.objectStoreNames.contains("uploads")
-          ? request.transaction!.objectStore("uploads")
-          : db.createObjectStore("uploads", { keyPath: "id" });
-        const contents = db.createObjectStore("contents", { keyPath: "id" });
-        uploads.openCursor().onsuccess = (event) => {
-          const cursor = (event.target as IDBRequest<IDBCursorWithValue | null>)
-            .result;
-          if (!cursor) return;
-          const { bytes, file, ...row } = cursor.value;
-          contents.put({ id: row.id, bytes, file });
-          cursor.update({
-            ...row,
-            size: bytes?.byteLength ?? file?.size ?? row.size,
-          });
-          cursor.continue();
-        };
-      };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  async function transaction<T>(
-    mode: IDBTransactionMode,
-    action: (store: IDBObjectStore, tx: IDBTransaction) => IDBRequest<T>,
-    stores: [string, ...string[]] = ["uploads"],
-  ): Promise<T> {
-    const db = await database();
-    return new Promise((resolve, reject) => {
-      let tx: IDBTransaction;
-      try {
-        tx = db.transaction(
-          stores,
-          mode,
-          mode === "readwrite" ? { durability: "strict" } : undefined,
-        );
-      } catch (error) {
-        db.close();
-        reject(error);
-        return;
-      }
-      const request = action(tx.objectStore(stores[0]), tx);
-      tx.oncomplete = () => {
-        db.close();
-        resolve(request.result);
-      };
-      tx.onerror = tx.onabort = (event) => {
-        db.close();
-        reject(
-          tx.error ||
-            (event.target as IDBRequest)?.error ||
-            new Error(
-              "Files could not be saved on this device. Keep this page open.",
-            ),
-        );
-      };
-    });
-  }
+  const rows = new Map<string, PendingUpload>();
+  const contents = new Map<string, ArrayBuffer>();
   async function queueUploads(
     stateDir: string,
     agent: string,
@@ -182,46 +105,35 @@ export function createUploads(
       throw new Error(
         "The workspace changed. The selected files have not been uploaded.",
       );
-    // Copy provider-backed File data before opening the transaction. WebKit cannot
-    // reliably put those File objects in IndexedDB. ArrayBuffer retains exact bytes.
-    const rows: (PendingUpload & { bytes: ArrayBuffer })[] = await Promise.all(
-      files.map(async (file, index) => ({
-        id: randomUUID(),
-        workspace: workspaceId,
-        stateDir,
-        agent,
-        name: file.name,
-        bytes: await file.arrayBuffer(),
-        size: file.size,
-        mime: file.type,
-        created: Date.now() + index,
-      })),
-    );
-    await transaction(
-      "readwrite",
-      (store, tx) => {
-        let request: IDBRequest = store.count();
-        for (const { bytes, ...row } of rows) {
-          request = store.add(row);
-          tx.objectStore("contents").add({ id: row.id, bytes });
-        }
-        return request;
-      },
-      ["uploads", "contents"],
-    );
+    // Copy file data while the selection remains available.
+    const queued: (PendingUpload & { bytes: ArrayBuffer })[] =
+      await Promise.all(
+        files.map(async (file, index) => ({
+          id: randomUUID(),
+          workspace: workspaceId,
+          stateDir,
+          agent,
+          name: file.name,
+          bytes: await file.arrayBuffer(),
+          size: file.size,
+          mime: file.type,
+          created: Date.now() + index,
+        })),
+      );
+    for (const { bytes, ...row } of queued) {
+      rows.set(row.id, row);
+      contents.set(row.id, bytes);
+    }
     uploadsChanged();
-    return rows.map(({ bytes: _bytes, ...row }) => row);
+    return queued.map(({ bytes: _bytes, ...row }) => row);
   }
   async function pendingUploads(stateDir: string, expectedWorkspace?: string) {
     const { workspaceId } = await syncDatabase();
     if (expectedWorkspace && workspaceId !== expectedWorkspace)
       throw new Error(
-        "The workspace changed. Saved uploads remain on this device.",
+        "The workspace changed. Selected files remain in this page.",
       );
-    const rows = await transaction<PendingUpload[]>("readonly", (store) =>
-      store.getAll(),
-    );
-    return rows
+    return [...rows.values()]
       .filter(
         (row) =>
           row.workspace === workspaceId &&
@@ -231,31 +143,17 @@ export function createUploads(
       .sort((a, b) => a.created - b.created || a.id.localeCompare(b.id));
   }
   const cancelled = new Set<string>();
-  const attachmentCancelled = (id: string) =>
-    localStorage.getItem(`studio-upload-cancelled:${id}`) === "true";
-  const uploadCancelled = (id: string) =>
-    cancelled.has(id) ||
-    attachmentCancelled(id) ||
-    localStorage.getItem(`studio-upload-settled:${id}`) === "true";
+  const attachmentCancelled = (id: string) => cancelled.has(id);
+  const uploadCancelled = attachmentCancelled;
   async function removeUpload(id: string, onCancelled?: () => void) {
-    const error = writeLocalDraft(`studio-upload-cancelled:${id}`, true);
-    if (error) throw new Error(error);
     cancelled.add(id);
     onCancelled?.();
     await finishUpload(id);
   }
   async function finishUpload(id: string) {
-    const error = writeLocalDraft(`studio-upload-settled:${id}`, true);
-    if (error) throw new Error(error);
     cancelled.add(id);
-    await transaction(
-      "readwrite",
-      (store, tx) => {
-        tx.objectStore("contents").delete(id);
-        return store.delete(id);
-      },
-      ["uploads", "contents"],
-    );
+    rows.delete(id);
+    contents.delete(id);
     uploadsChanged();
   }
   const active = new Map<string, Promise<Attachment | null>>();
@@ -263,10 +161,7 @@ export function createUploads(
     const existing = active.get(row.id);
     if (existing) return existing;
     const promise = (async () => {
-      let current = await transaction<PendingUpload | undefined>(
-        "readonly",
-        (store) => store.get(row.id),
-      );
+      let current = rows.get(row.id);
       if (!current || uploadCancelled(row.id)) return null;
       const identity = await syncGet("/api/sync/identity");
       const storage = await syncDatabase();
@@ -275,7 +170,7 @@ export function createUploads(
         storage.workspaceId !== row.workspace
       )
         throw new Error(
-          "The server workspace changed. The saved files remain on this device.",
+          "The server workspace changed. Selected files remain in this page.",
         );
       if (
         current.workspace !== row.workspace ||
@@ -288,13 +183,8 @@ export function createUploads(
       if (uploadCancelled(row.id)) return null;
       if (current.asset) return current.asset;
       const session = await refreshSession();
-      const content = await transaction<PendingUploadContent | undefined>(
-        "readonly",
-        (store) => store.get(row.id),
-        ["contents"],
-      );
-      if (!content || uploadCancelled(row.id)) return null;
-      const bytes = content.bytes || (await content.file?.arrayBuffer());
+      const bytes = contents.get(row.id);
+      if (uploadCancelled(row.id)) return null;
       if (!bytes) throw new Error("The saved file bytes are unavailable.");
       const base64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -319,22 +209,10 @@ export function createUploads(
       if (asset.id !== row.id)
         throw new Error("The upload response does not match the saved file.");
       // A removed upload can finish late. Never recreate its attachment.
-      current = await transaction<PendingUpload | undefined>(
-        "readonly",
-        (store) => store.get(row.id),
-      );
+      current = rows.get(row.id);
       if (!current || uploadCancelled(row.id)) return null;
-      const retained = await transaction<PendingUpload | undefined>(
-        "readwrite",
-        (store) => {
-          const request = store.get(row.id);
-          request.onsuccess = () => {
-            if (request.result) store.put({ ...request.result, asset });
-          };
-          return request;
-        },
-      );
-      return retained && !uploadCancelled(row.id) ? asset : null;
+      rows.set(row.id, { ...current, asset });
+      return asset;
     })().finally(() => active.delete(row.id));
     active.set(row.id, promise);
     return promise;

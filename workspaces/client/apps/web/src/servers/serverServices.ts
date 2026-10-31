@@ -134,11 +134,9 @@ export function createServerServices(server: StudioServer) {
       transport.owner.id,
       UPLOAD_DATABASE_NAME,
     ),
-    storage,
     syncGet: api.syncGet,
     syncPost: api.syncPost,
     refreshSession: api.refreshSession,
-    writeLocalDraft: localDrafts.writeLocalDraft,
     syncDatabase: () => synchronization().sync.syncDatabase(),
   });
   let initialization: Promise<void> | undefined;

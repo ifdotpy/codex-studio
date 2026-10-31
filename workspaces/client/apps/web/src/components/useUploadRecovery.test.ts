@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
-import { serverLocalStorage } from "../servers/storage";
 import { createUploads, uploadsChanged } from "../sync/uploads";
 import {
   attemptUploadDelivery,
@@ -211,11 +210,9 @@ describe("upload recovery scheduling", () => {
     const owner = (databaseName: string) =>
       createUploads({
         databaseName,
-        storage: serverLocalStorage,
         syncGet: vi.fn(),
         syncPost: vi.fn(),
         refreshSession: vi.fn(),
-        writeLocalDraft: vi.fn(),
         syncDatabase: vi.fn(),
       });
     const first = owner("uploads-server-one");
