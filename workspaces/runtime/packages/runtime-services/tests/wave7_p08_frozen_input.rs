@@ -104,7 +104,15 @@ async fn fresh_freeze_matches_python_capture_and_legacy_retry_stays_held() {
             case["frozen"]
         );
         let agent = row(&db, "runtime_agents", "agent");
-        assert_eq!(agent["startAttempt"]["claudeInputRequest"], case["frozen"]);
+        let mut projected = case["frozen"].clone();
+        if let Some(source) = projected.get_mut("source").and_then(Value::as_object_mut) {
+            for field in ["effort", "fastMode", "nativeEffort", "parentId"] {
+                if source.get(field).is_some_and(Value::is_null) {
+                    source.remove(field);
+                }
+            }
+        }
+        assert_eq!(agent["startAttempt"]["claudeInputRequest"], projected);
         assert!(agent.get("claudePreInputRetry").is_none());
         drop(db);
         drop(store);

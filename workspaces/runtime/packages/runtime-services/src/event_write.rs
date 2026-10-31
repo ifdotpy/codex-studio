@@ -693,29 +693,24 @@ pub fn assert_delegation(agent: &AgentRecord) -> Result<(), EventWriteError> {
 
 pub fn recovery_pending(agent: &AgentRecord) -> bool {
     let extra = &agent.extra;
-    let matches = |recovery: &Value| {
-        recovery.get("epoch").and_then(Value::as_i64) == Some(agent.epoch)
-            && recovery.get("accountKey").and_then(Value::as_str)
-                == Some(agent.account_key.as_str())
-            && recovery.get("threadId").and_then(Value::as_str) == agent.thread_id.as_deref()
+    let matches = |recovery: &studio_runtime_schema::recovery_record::RecoveryFields| {
+        recovery
+            .epoch
+            .as_ref()
+            .and_then(|value| value.number().as_i64())
+            == Some(agent.epoch)
+            && recovery.account_key.as_deref() == Some(agent.account_key.as_str())
+            && recovery.thread_id.as_deref() == agent.thread_id.as_deref()
     };
-    let root = extra
-        .get("restartRecovery")
-        .and_then(Value::as_object)
-        .map(|recovery| {
-            recovery.get("stage").and_then(Value::as_str) == Some("pending")
-                && recovery.get("autoWake").and_then(Value::as_bool) == Some(true)
-                && matches(&Value::Object(recovery.clone()))
-        })
-        .unwrap_or(false);
-    let disconnect = extra
-        .get("disconnectRecovery")
-        .and_then(Value::as_object)
-        .map(|recovery| {
-            recovery.get("autoWake").and_then(Value::as_bool) == Some(true)
-                && matches(&Value::Object(recovery.clone()))
-        })
-        .unwrap_or(false);
+    let root = agent.restart_recovery.as_deref().is_some_and(|recovery| {
+        recovery.stage.as_deref() == Some("pending")
+            && recovery.auto_wake == Some(true)
+            && matches(recovery)
+    });
+    let disconnect = agent
+        .disconnect_recovery
+        .as_deref()
+        .is_some_and(|recovery| recovery.auto_wake == Some(true) && matches(recovery));
     let recovery = !agent_auto_wake(agent).unwrap_or(true)
         && agent.status != AgentStatus::Paused
         && !agent.is_deleted()

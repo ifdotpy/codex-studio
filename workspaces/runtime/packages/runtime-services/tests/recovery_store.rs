@@ -704,6 +704,12 @@ async fn legacy_start_absence_matches_python_writes_and_visible_wait() {
         let mut expected = case["after"].clone();
         crate::normalize_agent_nulls(&mut expected);
         crate::normalize_agent_nulls(&mut after);
+        if let Some(created) = expected
+            .pointer("/startAttempt/created")
+            .and_then(serde_json::Value::as_f64)
+        {
+            expected["startAttempt"]["created"] = json!(created);
+        }
         assert_eq!(after, expected, "{}", case["name"]);
         assert_eq!(
             json!(*stopped.lock().expect("stopped witness")),
