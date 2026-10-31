@@ -16,6 +16,14 @@ pub enum RemoteEffect {
     AccessRequest,
     /// Reservation of a local Git fetch from a paired server (`runtime_server_fetch`).
     ServerFetch,
+    /// `update.offer` to a paired server (peer app updates, `peer_update_pull.rs`).
+    UpdateOffer,
+    /// `update.export`: ask a paired server to prepare its app archive.
+    UpdateExport,
+    /// `update.chunk`: one chunk of the archive. Its entry holds the offset.
+    UpdateChunk,
+    /// `update.release`: tell the paired server that the pull ended.
+    UpdateRelease,
 }
 
 impl RemoteEffect {
@@ -23,6 +31,10 @@ impl RemoteEffect {
         match self {
             Self::AccessRequest => "access_request",
             Self::ServerFetch => "server_fetch",
+            Self::UpdateOffer => "update_offer",
+            Self::UpdateExport => "update_export",
+            Self::UpdateChunk => "update_chunk",
+            Self::UpdateRelease => "update_release",
         }
     }
 
@@ -30,6 +42,11 @@ impl RemoteEffect {
     pub const fn restart_rule(self) -> RestartRule {
         match self {
             Self::AccessRequest | Self::ServerFetch => RestartRule::None,
+            // Every `update.*` action only reads the installed app of the target, and the
+            // target answers the same request id again with the same result.
+            Self::UpdateOffer | Self::UpdateExport | Self::UpdateChunk | Self::UpdateRelease => {
+                RestartRule::TargetDedupes
+            }
         }
     }
 }
@@ -64,6 +81,16 @@ pub struct RemoteEntry<T> {
     pub next_at: Option<i64>,
     pub record: T,
 }
+
+type RawEntry = (
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    OutboxStatus,
+    Option<i64>,
+    String,
+);
 
 pub struct RemoteOutbox;
 
@@ -173,29 +200,52 @@ impl RemoteOutbox {
         )
     }
 
+    /// All entries of one family, oldest first.
+    pub fn list<T: DeserializeOwned>(
+        db: &Connection,
+        effect: RemoteEffect,
+    ) -> Result<Vec<RemoteEntry<T>>, OutboxError> {
+        let mut query = db.prepare(
+            "SELECT id,target,request_id,signature,status,next_at,payload FROM runtime_outbox \
+             WHERE kind=?1 AND json_extract(payload,'$.effect')=?2 ORDER BY created,id",
+        )?;
+        let rows = query
+            .query_map(
+                params![OutboxKind::RemoteDelivery, effect.as_str()],
+                Self::raw,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter().map(Self::decode).collect()
+    }
+
     fn query<T: DeserializeOwned>(
         db: &Connection,
         sql: &str,
         args: impl rusqlite::Params,
     ) -> Result<Option<RemoteEntry<T>>, OutboxError> {
-        let row = db
-            .query_row(sql, args, |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, OutboxStatus>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, String>(6)?,
-                ))
-            })
-            .optional()?;
-        let Some((id, target, request_id, signature, status, next_at, payload)) = row else {
-            return Ok(None);
-        };
+        db.query_row(sql, args, Self::raw)
+            .optional()?
+            .map(Self::decode)
+            .transpose()
+    }
+
+    fn raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEntry> {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+        ))
+    }
+
+    fn decode<T: DeserializeOwned>(
+        (id, target, request_id, signature, status, next_at, payload): RawEntry,
+    ) -> Result<RemoteEntry<T>, OutboxError> {
         let payload: RemotePayload<T> = serde_json::from_str(&payload)?;
-        Ok(Some(RemoteEntry {
+        Ok(RemoteEntry {
             target: target.ok_or_else(|| OutboxError::Conflict(id.clone()))?,
             request_id: request_id.ok_or_else(|| OutboxError::Conflict(id.clone()))?,
             id,
@@ -203,7 +253,7 @@ impl RemoteOutbox {
             status,
             next_at,
             record: payload.record,
-        }))
+        })
     }
 
     /// Remove the entry in the transaction that saves its result.

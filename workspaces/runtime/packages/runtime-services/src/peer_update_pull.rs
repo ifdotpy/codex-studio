@@ -20,10 +20,13 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 
 use studio_runtime_schema::desktop::PeerUpdateBuild;
+use studio_runtime_schema::persistence::{OutboxStatus, RequestIdentity};
 use studio_runtime_store::RuntimeStore;
+use studio_runtime_store::remote_outbox::{RemoteEffect, RemoteEntry, RemoteOutbox};
 
 use crate::atomic_file;
 use crate::disk_space;
+use crate::event_write::request_signature;
 use crate::multi_server::{paired_servers, peer_auto_update};
 use crate::multi_server_orchestration::{HttpsPairedTransport, PairedTransport};
 use crate::peer_updates::{
@@ -93,6 +96,8 @@ enum Step {
     Refused(String),
     /// A check or a file step failed. The text names it.
     Failed(String),
+    /// The paired server did not answer. The outbox entry stays and the next pass resumes it.
+    Waiting(String),
     /// The backend stops.
     Stopped,
 }
@@ -100,7 +105,7 @@ enum Step {
 impl Step {
     fn reason(&self) -> String {
         match self {
-            Self::Refused(reason) | Self::Failed(reason) => reason.clone(),
+            Self::Refused(reason) | Self::Failed(reason) | Self::Waiting(reason) => reason.clone(),
             Self::Stopped => "The backend stopped".to_owned(),
         }
     }
@@ -110,8 +115,34 @@ fn failed(error: impl std::fmt::Display) -> Step {
     Step::Failed(error.to_string())
 }
 
-#[derive(serde::Serialize)]
-struct Empty {}
+/// The export that a paired server prepared, as the pull keeps it.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct ExportMeta {
+    export: String,
+    /// Unit: bytes.
+    size: u64,
+    sha256: String,
+}
+
+/// The record of every update entry in the shared outbox. The request of a step follows
+/// from it (`request`), so a retry sends the same body.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct StepRecord {
+    /// The offered build; null in an offer.
+    build: Value,
+    /// Unix time in seconds when the pull started. Unit: seconds.
+    started: i64,
+    /// Set from the first chunk on.
+    export: Option<ExportMeta>,
+    /// The archive offset that a chunk entry requests. Unit: bytes.
+    offset: u64,
+}
+
+/// One entry of the shared outbox with the family that it belongs to.
+struct Active {
+    effect: RemoteEffect,
+    entry: RemoteEntry<StepRecord>,
+}
 
 #[derive(serde::Deserialize)]
 struct OfferReply {
@@ -184,12 +215,28 @@ impl Puller {
         let Some(local) = peer_updates::read_build(&self.app) else {
             return Ok(());
         };
+        // A release that an earlier pass or a stop left in the outbox goes out first.
+        self.send_releases().await?;
         if !self.enabled().await? {
             return Ok(());
         }
         let now = (self.clock)();
         let root = self.root().to_path_buf();
-        let offers = self.offers(&local).await?;
+        let mut active = self.active().await?;
+        if let Some(stale) = active
+            .as_ref()
+            .filter(|active| built_at(&active.entry.record.build) <= built_at(&local))
+        {
+            // Another install already brought this build or a newer one.
+            self.conclude(stale).await?;
+            active = None;
+        }
+        // A pull in the outbox resumes; only without one the servers are asked.
+        let offers = if active.is_some() {
+            Vec::new()
+        } else {
+            self.offers(&local).await?
+        };
         let mut status = read_json(&root.join(STATUS_FILE)).unwrap_or_else(|| json!({}));
         status["checkedAt"] = json!(now);
         let failures = kept_failures(&status, now);
@@ -202,18 +249,29 @@ impl Puller {
             remove_tree(&build_folder(&root, &stale["build"]));
         }
         let pending = read_pending(&root);
-        let choice = offers
-            .into_iter()
-            .find(|(build, _)| !self.recent_failure(&status, build, now));
-        let Some((build, server)) = choice.filter(|(build, _)| {
-            pending
-                .as_ref()
-                .is_none_or(|pending| built_at(&pending["build"]) < built_at(build))
-        }) else {
+        let choice = match &active {
+            Some(active) => Some((
+                active.entry.record.build.clone(),
+                active.entry.target.clone(),
+            )),
+            None => offers
+                .into_iter()
+                .find(|(build, _)| !self.recent_failure(&status, build, now))
+                .filter(|(build, _)| {
+                    pending
+                        .as_ref()
+                        .is_none_or(|pending| built_at(&pending["build"]) < built_at(build))
+                }),
+        };
+        let Some((build, server)) = choice else {
             write_json(&root.join(STATUS_FILE), &status)?;
             return Ok(());
         };
-        match self.fetch(&server, &build).await {
+        let mut active = match active {
+            Some(active) => active,
+            None => self.start(&server, &build).await?,
+        };
+        match self.drive(&mut active).await {
             Ok(app) => {
                 write_json(
                     &root.join(PENDING_FILE),
@@ -237,9 +295,15 @@ impl Puller {
                     "outcome": "staged", "reason": null,
                 });
                 write_json(&root.join(STATUS_FILE), &status)?;
+                self.conclude(&active).await?;
                 Ok(())
             }
             Err(Step::Stopped) => Ok(()),
+            Err(Step::Waiting(_)) => {
+                // The entry stays in the outbox; the next pass resumes it.
+                write_json(&root.join(STATUS_FILE), &status)?;
+                Ok(())
+            }
             Err(step) => {
                 let reason: String = step.reason().chars().take(REASON_CHARS).collect();
                 status["failures"][build_key(&build)] =
@@ -249,6 +313,7 @@ impl Puller {
                     "outcome": "failed", "reason": reason,
                 });
                 write_json(&root.join(STATUS_FILE), &status)?;
+                self.conclude(&active).await?;
                 Ok(())
             }
         }
@@ -268,6 +333,7 @@ impl Puller {
             .read_async(LABEL, paired_servers)
             .await
             .map_err(failed)?;
+        self.remove_all(RemoteEffect::UpdateOffer).await?;
         let mut found = Vec::new();
         for server in servers {
             let Some(id) = server["id"].as_str() else {
@@ -276,14 +342,21 @@ impl Puller {
             if server["reachability"].as_str() == Some("unreachable") {
                 continue;
             }
+            let entry = self
+                .put(
+                    None,
+                    RemoteEffect::UpdateOffer,
+                    id,
+                    self.record(Value::Null),
+                )
+                .await?;
             // An offline server, or an older one that refuses the action, offers nothing.
-            let Ok(value) = self
-                .call::<OfferReply>(id, "update.offer", Empty {}, SHORT_REQUEST)
-                .await
-            else {
+            let reply = self.send::<OfferReply>(&entry).await;
+            self.remove(&entry).await?;
+            let Ok(value) = reply else {
                 continue;
             };
-            // Temporary bridge until peer updates move to the shared outbox and typed pipeline.
+            // Temporary bridge until peer updates move to the typed pipeline.
             if let Some(build) = value
                 .build
                 .map(|build| studio_runtime_store::projection_value(&build))
@@ -297,25 +370,165 @@ impl Puller {
         Ok(found)
     }
 
-    /// One request to a paired server. Every update.* action is a read, so each call
-    /// gets its own request ID.
-    async fn call<R: serde::de::DeserializeOwned>(
+    fn record(&self, build: Value) -> StepRecord {
+        StepRecord {
+            build,
+            started: (self.clock)(),
+            export: None,
+            offset: 0,
+        }
+    }
+
+    /// The entry of a new pull: the first `update.export` request.
+    async fn start(&self, server: &str, build: &Value) -> Result<Active, Step> {
+        self.put(
+            None,
+            RemoteEffect::UpdateExport,
+            server,
+            self.record(build.clone()),
+        )
+        .await
+    }
+
+    /// The pull that the outbox holds, if any. Chunks come first: they are the later step.
+    async fn active(&self) -> Result<Option<Active>, Step> {
+        let (chunks, exports) = self
+            .store
+            .read_async(LABEL, |tx| -> Result<_, studio_runtime_store::StoreError> {
+                Ok((
+                    RemoteOutbox::list::<StepRecord>(tx, RemoteEffect::UpdateChunk)?,
+                    RemoteOutbox::list::<StepRecord>(tx, RemoteEffect::UpdateExport)?,
+                ))
+            })
+            .await
+            .map_err(failed)?;
+        Ok(chunks
+            .into_iter()
+            .next()
+            .map(|entry| Active {
+                effect: RemoteEffect::UpdateChunk,
+                entry,
+            })
+            .or_else(|| {
+                exports.into_iter().next().map(|entry| Active {
+                    effect: RemoteEffect::UpdateExport,
+                    entry,
+                })
+            }))
+    }
+
+    /// Write the entry of `effect`. It replaces `old` in the same transaction, so a step
+    /// never exists twice and a restart finds exactly one.
+    async fn put(
         &self,
+        old: Option<&Active>,
+        effect: RemoteEffect,
         server: &str,
-        action: &str,
-        payload: impl serde::Serialize,
-        timeout: Duration,
-    ) -> Result<R, Step> {
-        let key = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        record: StepRecord,
+    ) -> Result<Active, Step> {
+        let request_id = RequestIdentity::issue_root();
+        let (action, payload, _) = request(effect, &record)
+            .ok_or_else(|| Step::Failed("Invalid update step".to_owned()))?;
+        let signature = request_signature(&json!({"action": action, "payload": payload}));
+        let old = old.map(|old| {
+            (
+                old.effect,
+                old.entry.target.clone(),
+                old.entry.request_id.clone(),
+                old.entry.signature.clone(),
+            )
+        });
+        let created = (self.clock)().saturating_mul(1000);
+        let (target, id, sig, stored) = (
+            server.to_owned(),
+            request_id.clone(),
+            signature.clone(),
+            record.clone(),
+        );
+        self.store
+            .transaction_with(move |tx| -> Result<(), studio_runtime_store::StoreError> {
+                if let Some((effect, target, id, signature)) = old {
+                    RemoteOutbox::delete(tx, effect, &target, &id, &signature)?;
+                }
+                RemoteOutbox::put(
+                    tx,
+                    effect,
+                    &target,
+                    &id,
+                    &sig,
+                    OutboxStatus::Pending,
+                    None,
+                    &stored,
+                    created,
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(failed)?;
+        Ok(Active {
+            effect,
+            entry: RemoteEntry {
+                id: RemoteOutbox::id(effect, server, &request_id),
+                target: server.to_owned(),
+                request_id,
+                signature,
+                status: OutboxStatus::Pending,
+                next_at: None,
+                record,
+            },
+        })
+    }
+
+    /// Remove a settled entry.
+    async fn remove(&self, active: &Active) -> Result<(), Step> {
+        let (effect, entry) = (active.effect, active.entry.clone());
+        self.store
+            .transaction_with(move |tx| -> Result<(), studio_runtime_store::StoreError> {
+                RemoteOutbox::delete(
+                    tx,
+                    effect,
+                    &entry.target,
+                    &entry.request_id,
+                    &entry.signature,
+                )?;
+                Ok(())
+            })
+            .await
+            .map_err(failed)
+    }
+
+    async fn remove_all(&self, effect: RemoteEffect) -> Result<(), Step> {
+        self.store
+            .transaction_with(move |tx| -> Result<(), studio_runtime_store::StoreError> {
+                for entry in RemoteOutbox::list::<StepRecord>(tx, effect)? {
+                    RemoteOutbox::delete(
+                        tx,
+                        effect,
+                        &entry.target,
+                        &entry.request_id,
+                        &entry.signature,
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(failed)
+    }
+
+    /// Send the stored request of an entry. A retry sends the same request ID and body.
+    async fn send<R: serde::de::DeserializeOwned>(&self, active: &Active) -> Result<R, Step> {
+        let (action, payload, timeout) = request(active.effect, &active.entry.record)
+            .ok_or_else(|| Step::Failed("Invalid update step".to_owned()))?;
+        let key = &active.entry.request_id;
         let envelope =
             json!({"requestId": key, "operation": [], "action": action, "payload": payload});
         let receipt = self
             .transport
-            .exchange(server, &envelope, timeout)
+            .exchange(&active.entry.target, &envelope, timeout)
             .await
-            .map_err(failed)?;
+            .map_err(|error| Step::Waiting(error.to_string()))?;
         use studio_runtime_schema::persistence::RemoteOutcome;
-        if receipt.request_id != key {
+        if receipt.request_id != *key {
             return Err(Step::Failed(INVALID_RECEIPT.to_owned()));
         }
         match receipt.outcome {
@@ -329,7 +542,7 @@ impl Puller {
                 })))
             }
             RemoteOutcome::Unknown => {
-                Err(Step::Failed("The paired server did not answer".to_owned()))
+                Err(Step::Waiting("The paired server did not answer".to_owned()))
             }
         }
     }
@@ -366,132 +579,228 @@ impl Puller {
             })
     }
 
-    /// Pull the archive of `build` from `server` and stage its app. The peer export is
-    /// released after the pull, also after a failure.
-    async fn fetch(&self, server: &str, build: &Value) -> Result<PathBuf, Step> {
-        let meta = self.prepare_export(server, build).await?;
-        let result = self.download(server, build, &meta).await;
-        // The peer removes an export that no puller releases after a day.
-        drop(
-            self.call::<ReleaseReply>(
-                server,
-                "update.release",
-                json!({"export": meta.export}),
-                SHORT_REQUEST,
-            )
-            .await,
-        );
-        result
-    }
-
-    /// Ask for the export until the peer has the archive ready.
-    async fn prepare_export(&self, server: &str, build: &Value) -> Result<ExportReply, Step> {
-        let deadline = tokio::time::Instant::now() + EXPORT_PREPARE;
+    /// Run the steps of the pull from the entry in the outbox: ask for the export until the
+    /// peer has the archive, then request each chunk, then check and stage the app. Each
+    /// step replaces its entry with the next one in one transaction. The entry of the last
+    /// chunk stays until `conclude`, so a restart before then repeats only that step.
+    async fn drive(&self, active: &mut Active) -> Result<PathBuf, Step> {
         loop {
             self.check_stop()?;
-            let meta: ExportReply = self
-                .call(
-                    server,
-                    "update.export",
-                    json!({"builtAt": build["builtAt"]}),
-                    EXPORT_REQUEST,
-                )
-                .await?;
-            if meta.preparing != Some(true) {
-                return Ok(meta);
+            let record = active.entry.record.clone();
+            let age = (self.clock)() - record.started;
+            if age >= FAILURE_RECORD_SECONDS {
+                return Err(Step::Failed("The pull did not finish in time".to_owned()));
             }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(Step::Failed(
-                    "The paired server did not prepare the app archive in time".to_owned(),
-                ));
+            let server = active.entry.target.clone();
+            if active.effect == RemoteEffect::UpdateExport {
+                let meta: ExportReply = self.send(active).await?;
+                if meta.preparing == Some(true) {
+                    if age >= EXPORT_PREPARE.as_secs() as i64 {
+                        return Err(Step::Failed(
+                            "The paired server did not prepare the app archive in time".to_owned(),
+                        ));
+                    }
+                    self.wait(EXPORT_POLL).await?;
+                    // The peer answers a repeated request ID with the same "preparing".
+                    *active = self
+                        .put(Some(&*active), RemoteEffect::UpdateExport, &server, record)
+                        .await?;
+                    continue;
+                }
+                let export = valid_export(&meta)?;
+                let next = StepRecord {
+                    export: Some(export),
+                    offset: 0,
+                    ..record
+                };
+                *active = self
+                    .put(Some(&*active), RemoteEffect::UpdateChunk, &server, next)
+                    .await?;
+                continue;
             }
-            self.wait(EXPORT_POLL).await?;
+            let export = record
+                .export
+                .clone()
+                .ok_or_else(|| Step::Failed("Invalid update export".to_owned()))?;
+            let updates = self.root().join(UPDATES_DIR);
+            let partial = updates.join(format!("{}.zip.partial", build_name(&record.build)));
+            if record.offset == 0 {
+                tokio::fs::create_dir_all(&updates).await.map_err(failed)?;
+                remove_extractions(&updates);
+                if disk_space::free_bytes(&updates)
+                    .is_some_and(|free| free < export.size.saturating_mul(DISK_FACTOR))
+                {
+                    return Err(Step::Failed(
+                        "Not enough free disk space for the update".to_owned(),
+                    ));
+                }
+            }
+            let chunk: ChunkReply = self.send(active).await?;
+            let data = chunk_data(&chunk, record.offset, export.size)
+                .ok_or_else(|| Step::Failed("Invalid update archive chunk".to_owned()))?;
+            append(&partial, record.offset, &data).await?;
+            let offset = record.offset + data.len() as u64;
+            if offset < export.size {
+                let next = StepRecord { offset, ..record };
+                *active = self
+                    .put(Some(&*active), RemoteEffect::UpdateChunk, &server, next)
+                    .await?;
+                continue;
+            }
+            return self.stage(&record, &export, &partial).await;
         }
     }
 
-    async fn download(
+    /// Check the whole archive and stage its app.
+    async fn stage(
         &self,
-        server: &str,
-        build: &Value,
-        meta: &ExportReply,
+        record: &StepRecord,
+        export: &ExportMeta,
+        partial: &Path,
     ) -> Result<PathBuf, Step> {
-        let invalid = || Step::Failed("Invalid update archive size or checksum".to_owned());
-        let export = meta
-            .export
-            .as_deref()
-            .filter(|export| uuid::Uuid::parse_str(export).is_ok())
-            .ok_or_else(|| Step::Failed("Invalid update export".to_owned()))?;
-        let size = meta
-            .size
-            .filter(|size| (1..=MAX_ARCHIVE_BYTES).contains(size))
-            .ok_or_else(invalid)?;
-        let digest = meta
-            .sha256
-            .as_deref()
-            .filter(|digest| digest.len() == 64)
-            .ok_or_else(invalid)?;
         let updates = self.root().join(UPDATES_DIR);
-        tokio::fs::create_dir_all(&updates).await.map_err(failed)?;
-        remove_extractions(&updates);
-        if disk_space::free_bytes(&updates)
-            .is_some_and(|free| free < size.saturating_mul(DISK_FACTOR))
-        {
+        let path = partial.to_path_buf();
+        let actual = studio_runtime_process::blocking_pool::spawn_blocking(LABEL, move || {
+            crate::server_git::file_digest(&path)
+        })
+        .await
+        .map_err(failed)?
+        .map_err(failed)?;
+        if actual != export.sha256 {
             return Err(Step::Failed(
-                "Not enough free disk space for the update".to_owned(),
+                "The update archive checksum differs".to_owned(),
             ));
         }
-        let partial = updates.join(format!("{}.zip.partial", build_name(build)));
-        let result = match self.receive(server, export, size, &partial).await {
-            Ok(actual) if actual == digest => {
-                let (partial, updates, build) = (partial.clone(), updates.clone(), build.clone());
-                let (installed, codesign, ditto) =
-                    (self.app.clone(), self.codesign.clone(), self.ditto.clone());
-                studio_runtime_process::blocking_pool::spawn_blocking(LABEL, move || {
-                    stage_app(&partial, &updates, &build, &installed, &codesign, &ditto)
-                })
-                .await
-                .map_err(failed)?
-            }
-            Ok(_) => Err(Step::Failed(
-                "The update archive checksum differs".to_owned(),
-            )),
-            Err(error) => Err(error),
-        };
-        drop(tokio::fs::remove_file(&partial).await);
-        result
+        let (partial, build) = (partial.to_path_buf(), record.build.clone());
+        let (installed, codesign, ditto) =
+            (self.app.clone(), self.codesign.clone(), self.ditto.clone());
+        studio_runtime_process::blocking_pool::spawn_blocking(LABEL, move || {
+            stage_app(&partial, &updates, &build, &installed, &codesign, &ditto)
+        })
+        .await
+        .map_err(failed)?
     }
 
-    /// Receive the archive in chunks from offset 0. Each chunk must match its offset and its
-    /// hash. Returns the SHA-256 of the whole archive.
-    async fn receive(
-        &self,
-        server: &str,
-        export: &str,
-        size: u64,
-        partial: &Path,
-    ) -> Result<String, Step> {
-        let mut file = tokio::fs::File::create(partial).await.map_err(failed)?;
-        let mut whole = Sha256::new();
-        let mut offset = 0_u64;
-        while offset < size {
-            self.check_stop()?;
-            let chunk: ChunkReply = self
-                .call(
-                    server,
-                    "update.chunk",
-                    json!({"export": export, "offset": offset}),
-                    CHUNK_REQUEST,
-                )
-                .await?;
-            let data = chunk_data(&chunk, offset, size)
-                .ok_or_else(|| Step::Failed("Invalid update archive chunk".to_owned()))?;
-            file.write_all(&data).await.map_err(failed)?;
-            whole.update(&data);
-            offset += data.len() as u64;
+    /// End a pull, after its success or its failure: remove the partial archive and replace
+    /// the entry with the release of the export. A pull without an export has nothing to
+    /// release.
+    async fn conclude(&self, active: &Active) -> Result<(), Step> {
+        let record = &active.entry.record;
+        remove_tree(
+            &self
+                .root()
+                .join(UPDATES_DIR)
+                .join(format!("{}.zip.partial", build_name(&record.build))),
+        );
+        if record.export.is_some() {
+            self.put(
+                Some(active),
+                RemoteEffect::UpdateRelease,
+                &active.entry.target,
+                record.clone(),
+            )
+            .await?;
+            self.send_releases().await
+        } else {
+            self.remove(active).await
         }
-        file.flush().await.map_err(failed)?;
-        Ok(data_encoding::HEXLOWER.encode(&whole.finalize()))
     }
+
+    /// Send each release in the outbox once. An answer or a refusal settles it. A server
+    /// that is away leaves it for the next pass. The peer removes an export that no puller
+    /// releases after a day.
+    async fn send_releases(&self) -> Result<(), Step> {
+        let entries = self
+            .store
+            .read_async(LABEL, |tx| -> Result<_, studio_runtime_store::StoreError> {
+                Ok(RemoteOutbox::list::<StepRecord>(
+                    tx,
+                    RemoteEffect::UpdateRelease,
+                )?)
+            })
+            .await
+            .map_err(failed)?;
+        for entry in entries {
+            let active = Active {
+                effect: RemoteEffect::UpdateRelease,
+                entry,
+            };
+            if !matches!(
+                self.send::<ReleaseReply>(&active).await,
+                Err(Step::Waiting(_))
+            ) {
+                self.remove(&active).await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The step that the outbox entry of `effect` sends: the action, its payload and its
+/// timeout. `None` when the record lacks what the step needs.
+fn request(effect: RemoteEffect, record: &StepRecord) -> Option<(&'static str, Value, Duration)> {
+    Some(match effect {
+        RemoteEffect::UpdateOffer => ("update.offer", json!({}), SHORT_REQUEST),
+        RemoteEffect::UpdateExport => (
+            "update.export",
+            json!({"builtAt": record.build["builtAt"]}),
+            EXPORT_REQUEST,
+        ),
+        RemoteEffect::UpdateChunk => (
+            "update.chunk",
+            json!({"export": record.export.as_ref()?.export, "offset": record.offset}),
+            CHUNK_REQUEST,
+        ),
+        RemoteEffect::UpdateRelease => (
+            "update.release",
+            json!({"export": record.export.as_ref()?.export}),
+            SHORT_REQUEST,
+        ),
+        _ => return None,
+    })
+}
+
+/// The export of a ready answer, when its identity, size and hash are valid.
+fn valid_export(meta: &ExportReply) -> Result<ExportMeta, Step> {
+    let invalid = || Step::Failed("Invalid update archive size or checksum".to_owned());
+    let export = meta
+        .export
+        .as_deref()
+        .filter(|export| uuid::Uuid::parse_str(export).is_ok())
+        .ok_or_else(|| Step::Failed("Invalid update export".to_owned()))?;
+    let size = meta
+        .size
+        .filter(|size| (1..=MAX_ARCHIVE_BYTES).contains(size))
+        .ok_or_else(invalid)?;
+    let sha256 = meta
+        .sha256
+        .as_deref()
+        .filter(|digest| digest.len() == 64)
+        .ok_or_else(invalid)?;
+    Ok(ExportMeta {
+        export: export.to_owned(),
+        size,
+        sha256: sha256.to_owned(),
+    })
+}
+
+/// Write one chunk at `offset`. A chunk that an earlier run wrote but did not settle is
+/// cut off first, so a repeated step gives the same file.
+async fn append(partial: &Path, offset: u64, data: &[u8]) -> Result<(), Step> {
+    use tokio::io::AsyncSeekExt;
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(partial)
+        .await
+        .map_err(failed)?;
+    file.set_len(offset).await.map_err(failed)?;
+    file.seek(std::io::SeekFrom::Start(offset))
+        .await
+        .map_err(failed)?;
+    file.write_all(data).await.map_err(failed)?;
+    file.flush().await.map_err(failed)
 }
 
 /// The timer of the puller: one pass after `FIRST_PULL`, then one every `PULL_INTERVAL`,
@@ -804,6 +1113,14 @@ mod tests {
         corrupt_chunks: AtomicUsize,
         /// The reason that an older server gives for update.offer.
         offer_refusal: Mutex<Option<&'static str>>,
+        /// The paired server is away after it answered this many chunks.
+        chunk_limit: AtomicUsize,
+        /// Offsets of the chunks that the server answered.
+        offsets: Mutex<Vec<u64>>,
+        /// The next releases that fail because the paired server is away.
+        release_failures: AtomicUsize,
+        /// Request IDs of every update.release that was sent.
+        release_ids: Mutex<Vec<String>>,
     }
 
     impl Link {
@@ -834,6 +1151,19 @@ mod tests {
                     .unwrap_or_default()
                     .to_owned();
                 self.actions.lock().unwrap().push(action.clone());
+                let away = crate::multi_server_auth::refused(503, "away", "The server is away");
+                if action == "update.chunk"
+                    && self.offsets.lock().unwrap().len() >= self.chunk_limit.load(Ordering::SeqCst)
+                {
+                    return Err(away);
+                }
+                if action == "update.release" {
+                    self.release_ids.lock().unwrap().push(key.clone());
+                    if self.release_failures.load(Ordering::SeqCst) > 0 {
+                        self.release_failures.fetch_sub(1, Ordering::SeqCst);
+                        return Err(away);
+                    }
+                }
                 let refusal = *self.offer_refusal.lock().unwrap();
                 if let (true, Some(reason)) = (action == "update.offer", refusal) {
                     return Ok(ExchangeOutcome::NotApplied(reason.to_owned()).to_reply(&key));
@@ -847,6 +1177,12 @@ mod tests {
                     )
                     .await?
                     .to_reply(&key);
+                if action == "update.chunk"
+                    && receipt.outcome == studio_runtime_schema::persistence::RemoteOutcome::Applied
+                {
+                    let offset = envelope["payload"]["offset"].as_u64().unwrap();
+                    self.offsets.lock().unwrap().push(offset);
+                }
                 if action == "update.chunk"
                     && receipt.outcome == studio_runtime_schema::persistence::RemoteOutcome::Applied
                     && self.corrupt_chunks.load(Ordering::SeqCst) > 0
@@ -967,6 +1303,10 @@ exit 0"#;
             actions: Mutex::new(Vec::new()),
             corrupt_chunks: AtomicUsize::new(0),
             offer_refusal: Mutex::new(None),
+            chunk_limit: AtomicUsize::new(usize::MAX),
+            offsets: Mutex::new(Vec::new()),
+            release_failures: AtomicUsize::new(0),
+            release_ids: Mutex::new(Vec::new()),
         });
         let clock = Arc::new(AtomicI64::new(NOW));
         let (stop, stop_rx) = watch::channel(false);
@@ -1054,6 +1394,82 @@ exit 0"#;
         // The next pass finds the staged build and pulls nothing again.
         f.puller.pull().await.unwrap();
         assert_eq!(f.link.count("update.export"), 1);
+    }
+
+    async fn entries(f: &Fixture, effect: RemoteEffect) -> Vec<RemoteEntry<StepRecord>> {
+        f.mac
+            .read_async(
+                "test",
+                move |tx| -> Result<_, studio_runtime_store::StoreError> {
+                    Ok(RemoteOutbox::list::<StepRecord>(tx, effect)?)
+                },
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn interrupted_pull_resumes_from_the_outbox_without_finished_chunks() {
+        let f = fixture().await;
+        let chunk = CHUNK_BYTES as u64;
+        f.link.chunk_limit.store(2, Ordering::SeqCst);
+        f.puller.pull().await.unwrap();
+        assert_eq!(*f.link.offsets.lock().unwrap(), [0, chunk]);
+        let waiting = entries(&f, RemoteEffect::UpdateChunk).await;
+        assert_eq!(waiting.len(), 1, "one chunk entry holds the pull");
+        assert_eq!(waiting[0].record.offset, 2 * chunk);
+        assert_eq!(waiting[0].target, "server");
+        assert!(read_pending(&f.state()).is_none());
+        // A restart is a new puller on the same store.
+        f.link.chunk_limit.store(usize::MAX, Ordering::SeqCst);
+        let clock = Arc::clone(&f.clock);
+        let restarted = Puller::new(
+            Arc::clone(&f.mac),
+            Arc::clone(&f.link) as Arc<dyn PairedTransport>,
+            f.puller.app.clone(),
+            f.puller.codesign.clone(),
+            f.puller.ditto.clone(),
+            Arc::new(move || clock.load(Ordering::SeqCst)),
+            f.puller.stop.clone(),
+        );
+        restarted.pull().await.unwrap();
+        assert!(read_pending(&f.state()).is_some());
+        let offsets = f.link.offsets.lock().unwrap().clone();
+        assert!(offsets.len() >= 3);
+        assert!(
+            offsets.windows(2).all(|pair| pair[0] < pair[1]),
+            "no chunk was answered twice: {offsets:?}"
+        );
+        assert_eq!(f.link.count("update.export"), 1);
+        assert_eq!(
+            f.link.count("update.offer"),
+            1,
+            "a resumed pull asks no offer"
+        );
+        assert!(entries(&f, RemoteEffect::UpdateChunk).await.is_empty());
+        assert!(peer_exports(&f).is_empty());
+    }
+
+    #[tokio::test]
+    async fn release_is_sent_again_with_its_id_until_it_is_answered_once() {
+        let f = fixture().await;
+        f.link.release_failures.store(1, Ordering::SeqCst);
+        f.puller.pull().await.unwrap();
+        assert!(read_pending(&f.state()).is_some());
+        assert_eq!(entries(&f, RemoteEffect::UpdateRelease).await.len(), 1);
+        assert!(
+            !peer_exports(&f).is_empty(),
+            "the peer still holds the export"
+        );
+        f.puller.pull().await.unwrap();
+        assert!(entries(&f, RemoteEffect::UpdateRelease).await.is_empty());
+        assert!(peer_exports(&f).is_empty());
+        let ids = f.link.release_ids.lock().unwrap().clone();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], ids[1], "the retry keeps the request ID");
+        // The answered release is not sent again.
+        f.puller.pull().await.unwrap();
+        assert_eq!(f.link.count("update.release"), 2);
     }
 
     #[tokio::test]
