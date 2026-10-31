@@ -19,18 +19,6 @@ use studio_runtime_store::{
     AgentId, AgentRepository, RuntimeStore, workspace_operations::WorkspaceOperationsRepository,
 };
 
-// The bridge may include private diagnostic fields; deserialize only the
-// evidence that this route is allowed to expose.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RepairEvidence {
-    status: String,
-    skipped_rows: u64,
-    invalid_sequence: bool,
-    scope_confirmed: Option<bool>,
-    native_history_confirmed: Option<bool>,
-}
-
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get(
@@ -58,7 +46,7 @@ async fn repair_report(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let (agent, _) = load_agent(store, id.to_owned()).await?;
     require_claude_account(&state, &agent).await?;
-    if agent.extra.get("deletedAt").is_some_and(|v| !v.is_null()) {
+    if agent.deleted_at.is_some() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "This conversation was deleted",
@@ -67,7 +55,8 @@ async fn repair_report(
     let Some(thread) = state_thread(&agent) else {
         return super::generated_json(json!({"status":"none","skippedRows":0,"invalidSequence":false,"scopeConfirmed":null,"nativeHistoryConfirmed":null})).map(Json);
     };
-    let account = agent.extra
+    let account = agent
+        .extra
         .get("lazyAccountTransfer")
         .and_then(|transfer| transfer.get("sourceAccountKey"))
         .and_then(Value::as_str)
@@ -102,18 +91,14 @@ async fn repair_report(
     let ControlReply::RepairReport(result) = result else {
         return Err(ApiError::internal());
     };
-    let evidence: RepairEvidence =
-        serde_json::from_value(result).map_err(|_| ApiError::internal())?;
-    if evidence.skipped_rows > studio_runtime_schema::shared_values::MAX_SAFE_INTEGER as u64 {
+    let evidence: crate::generated::ClaudeRepairReport =
+        serde::Deserialize::deserialize(result).map_err(|_| ApiError::internal())?;
+    if !(0..=studio_runtime_schema::shared_values::MAX_SAFE_INTEGER)
+        .contains(&evidence.skipped_rows)
+    {
         return Err(ApiError::internal());
     }
-    let safe = json!({
-        "status": evidence.status, "skippedRows": evidence.skipped_rows,
-        "invalidSequence": evidence.invalid_sequence,
-        "scopeConfirmed": evidence.scope_confirmed,
-        "nativeHistoryConfirmed": evidence.native_history_confirmed,
-    });
-    super::generated_json(safe).map(Json)
+    Ok(Json(evidence))
 }
 
 async fn session(
@@ -151,7 +136,8 @@ async fn session(
     )
     .map_err(control_error)?;
     let account = if is_state {
-        agent.extra
+        agent
+            .extra
             .get("lazyAccountTransfer")
             .and_then(|lazy| lazy.get("sourceAccountKey"))
             .and_then(Value::as_str)
@@ -193,8 +179,7 @@ async fn session(
     };
     let result = match body {
         SessionRequest::ClaudeSessionCommandRequest(request) => {
-            let body = serde_json::to_value(request).map_err(|_| ApiError::internal())?;
-            return command(state, body).await;
+            return command(state, request).await;
         }
         SessionRequest::ClaudeSessionSettingsRequest(request)
         | SessionRequest::ClaudeSessionRollbackRequest(request) => {
@@ -251,11 +236,12 @@ async fn file_backups(
         let id = body.id.clone();
         let (agent, settled) = store
             .read_async("claude/file-backups", move |tx| {
-                let agent = AgentRepository::get(tx, &AgentId(id))?
-                    .ok_or_else(|| studio_runtime_store::StoreError::InvalidStoredRecord {
+                let agent = AgentRepository::get(tx, &AgentId(id))?.ok_or_else(|| {
+                    studio_runtime_store::StoreError::InvalidStoredRecord {
                         object: "agent",
                         id: "missing".into(),
-                    })?;
+                    }
+                })?;
                 let settled = ClaudeControlRepository::settled_file_rewinds(tx, &agent.value())?;
                 Ok::<_, studio_runtime_store::StoreError>((agent, settled))
             })
@@ -267,7 +253,9 @@ async fn file_backups(
             None,
         )
         .map_err(control_error)?;
-        let thread = agent.thread_id.as_deref()
+        let thread = agent
+            .thread_id
+            .as_deref()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| control_error(ControlError::Request))?;
         let account = &agent.account_key;
@@ -301,7 +289,10 @@ async fn file_backups(
     .map_err(|_| ApiError::internal())?
 }
 
-async fn require_claude_account(state: &HttpState, agent: &studio_runtime_store::AgentRecord) -> Result<(), ApiError> {
+async fn require_claude_account(
+    state: &HttpState,
+    agent: &studio_runtime_store::AgentRecord,
+) -> Result<(), ApiError> {
     let account_key = agent.account_key.clone();
     let driver = state.account_driver.clone();
     let policy = state.account_policy.clone();
@@ -331,7 +322,8 @@ async fn require_claude_account(state: &HttpState, agent: &studio_runtime_store:
 }
 
 fn state_thread(agent: &studio_runtime_store::AgentRecord) -> Option<&str> {
-    let transfer = agent.extra
+    let transfer = agent
+        .extra
         .get("lazyAccountTransfer")
         .filter(|transfer| transfer.as_object().is_some_and(|value| !value.is_empty()));
     if let Some(transfer) = transfer {
@@ -340,7 +332,10 @@ fn state_thread(agent: &studio_runtime_store::AgentRecord) -> Option<&str> {
             .and_then(Value::as_str)
             .filter(|thread| !thread.is_empty())
     } else {
-        agent.thread_id.as_deref().filter(|thread| !thread.is_empty())
+        agent
+            .thread_id
+            .as_deref()
+            .filter(|thread| !thread.is_empty())
     }
 }
 
@@ -392,35 +387,26 @@ async fn load_agent(
     loaded.ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown managed agent"))
 }
 
-async fn command(state: HttpState, body: Value) -> Result<Json<Value>, ApiError> {
-    let command = body
-        .get("command")
-        .and_then(Value::as_str)
-        .and_then(|command| {
-            studio_runtime_services::claude_controls::service::native_command(command).ok()
-        })
-        .ok_or_else(|| {
+async fn command(
+    state: HttpState,
+    body: crate::generated::ClaudeSessionCommandRequest,
+) -> Result<Json<Value>, ApiError> {
+    let command = studio_runtime_services::claude_controls::service::native_command(&body.command)
+        .map_err(|_| {
             ApiError::new(
                 StatusCode::BAD_REQUEST,
                 "Supply one explicit Claude command",
             )
         })?;
-    let id = body
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| ApiError::validation(vec![json!("body"), json!("id")]))?;
-    let request_id = body
-        .get("request_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| {
-            ApiError::new(StatusCode::BAD_REQUEST, "Supply a command request identity")
-        })?;
-    let message = serde_json::from_value::<crate::generated::ManagedMessageBody>(json!({
-        "id":request_id,"room":id,"text":command,"delivery":studio_runtime_schema::DeliveryMoment::CurrentTurn
-    }))
-    .map_err(|_| ApiError::validation(vec![json!("body")]))?;
+    if body.request_id.is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "Supply a command request identity",
+        ));
+    }
+    let mut message =
+        crate::generated::ManagedMessageBody::new(body.request_id, body.id, command.into());
+    message.delivery = Some(studio_runtime_schema::DeliveryMoment::CurrentTurn);
     let receipt = super::messages::post_message(State(state), ApiJson(message)).await?;
     serde_json::to_value(receipt.0)
         .map(Json)

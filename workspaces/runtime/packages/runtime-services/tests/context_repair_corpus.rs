@@ -125,7 +125,7 @@ async fn stop_then_repair_preserves_historical_attempt_ownership() {
     );
     store.transaction(move |tx| {
         let attempt = json!({"id":"attempt","epoch":1,"events":[],"submitted":true,"turnId":"turn-1"});
-        let agent = json!({"id":"agent","rootId":"agent","isLead":true,"epoch":1,"accountKey":"default","threadId":thread,"provider":"codex","model":"fixture","yoloMode":true,"status":"waiting","autoWake":true,"inFlight":false,"startAttempt":attempt});
+        let agent = json!({"compactions":0,"id":"agent","rootId":"agent","isLead":true,"epoch":1,"accountKey":"default","threadId":thread,"provider":"codex","model":"fixture","yoloMode":true,"status":"waiting","autoWake":true,"inFlight":false,"startAttempt":attempt});
         ContextRepairRepository::put_agent(tx, &agent)?;
         tx.execute("INSERT INTO runtime_execution_runs(id,agent,account,epoch,thread,turn,created,record) VALUES ('run','agent','default',1,?1,'turn-1',1,?2)", rusqlite::params![thread,json!({"id":"run","agent":"agent","accountKey":"default","epoch":1,"threadId":thread,"turnId":"turn-1","status":"completed","created":1.0}).to_string()])?;
         tx.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES ('attempt','run',?1)", [attempt.to_string()])?;
@@ -218,7 +218,7 @@ fn identity() -> ConnectionIdentity {
     }
 }
 fn base_agent() -> Value {
-    json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
+    json!({"compactions":0,"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
         "provider":"codex","model":"gpt-fixture","yoloMode":true,"status":"waiting","autoWake":true,
         "inFlight":false,
         "startAttempt":{"id":"attempt","events":["event"],"submitted":true},
@@ -683,7 +683,7 @@ fn memory_fixture(case: &Value) -> rusqlite::Connection {
         CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT);
         CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
         CREATE TABLE sync_documents(seq INTEGER);
-        CREATE TABLE sync_versions(seq INTEGER);")).expect("fixture schema");
+        CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);")).expect("fixture schema");
     db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
     ContextRepairRepository::put_agent(&db, &case["agent"]).expect("record stores");

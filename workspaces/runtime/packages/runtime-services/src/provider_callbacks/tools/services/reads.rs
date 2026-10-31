@@ -157,7 +157,7 @@ pub(super) fn read(
             .and_then(|rest| rest.strip_prefix(':'))
         && let Some(item) = TranscriptRepository::item(tx, agent, key).map_err(transcript_error)?
     {
-        match item.record.extra("title").and_then(Value::as_str) {
+        match item.record.title() {
             Some("commandExecution") => return command_output(tx, key, &item, args),
             Some("dynamicToolCall") => {
                 let request = native_request_alias(tx, agent, call)?;
@@ -256,7 +256,7 @@ pub(super) fn receipt_keys(
             .strip_prefix(agent)
             .and_then(|rest| rest.strip_prefix(':'))
         && let Some(item) = TranscriptRepository::item(tx, agent, key).map_err(transcript_error)?
-        && item.record.extra("title").and_then(Value::as_str) == Some("dynamicToolCall")
+        && item.record.title() == Some("dynamicToolCall")
         && let Some(request) = native_request_alias(tx, agent, call)?
     {
         keys.push(request);
@@ -448,7 +448,7 @@ fn command_output(
             "Saved command output is truncated or unreadable. Do not repeat the command.",
         )
     };
-    let item_truncated = studio_runtime_store::truthy(item.record.extra("truncated"));
+    let item_truncated = item.record.truncated() == Some(true);
     let full = if item_truncated {
         TranscriptRepository::full_text(tx, item)
             .map_err(transcript_error)?
@@ -493,7 +493,6 @@ fn transcript_error(error: TranscriptStoreError) -> CallbackError {
         TranscriptStoreError::InvalidStoredObject { table, id } => {
             CallbackError::Stored(format!("{table}/{id}"))
         }
-        TranscriptStoreError::ActiveTurn => CallbackError::Stored("runtime_items".into()),
     }
 }
 
@@ -583,7 +582,7 @@ mod studio_input_tests {
         .expect("event metadata inserts");
         let snapshot = |id: &str| {
             CallbackSnapshot::from_record(
-                &json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"running","autoWake":true,
+                &json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"running","autoWake":true,
                 "accountKey":"default","threadId":"thread","turnId":"turn","name":id,"cwd":"/work"})
                 .to_string(),
                 &CallbackContext {

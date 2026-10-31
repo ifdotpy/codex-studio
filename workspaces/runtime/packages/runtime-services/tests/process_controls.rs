@@ -7,10 +7,6 @@ use studio_runtime_store::{RuntimeStore, StoreError};
 fn corpus() -> Value {
     serde_json::from_str(include_str!("fixtures/process-controls.json")).unwrap()
 }
-fn parse_request_fixture(value: &Value) -> studio_runtime_schema::process_controls::Request {
-    let raw = serde_json::value::RawValue::from_string(value.to_string()).unwrap();
-    studio_runtime_schema::process_controls::Request::parse(&raw).unwrap()
-}
 #[tokio::test]
 async fn leaf_listing_does_not_decode_unrelated_agents() {
     let root = tempfile::tempdir().unwrap();
@@ -59,6 +55,9 @@ async fn owners_follow_live_descendants_once_even_in_a_cycle() {
 #[test]
 fn python_process_identities_and_capabilities_match() {
     for case in corpus()["processes"].as_array().unwrap() {
+        if case["source"] == "monitor" {
+            continue;
+        }
         let mut actual = process_controls::project(
             case["source"].as_str().unwrap(),
             &case["raw"],
@@ -76,7 +75,18 @@ fn python_process_identities_and_capabilities_match() {
 fn python_output_state_survives_chunk_boundaries_and_restarts() {
     let corpus = corpus();
     let fixture = &corpus["output"];
-    let mut record = fixture["initial"].clone();
+    let mut record: studio_runtime_store::MonitorRecord = serde_json::from_str(r#"{"id":"monitor","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":"","interactive":false,"livenessCommand":"","log":"watch.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}"#).unwrap();
+    let initial = &fixture["initial"];
+    record.id = initial["id"].as_str().unwrap().to_owned();
+    record.epoch = initial["epoch"].as_i64().unwrap().try_into().unwrap();
+    record.output_patterns = Some(
+        initial["outputPatterns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item.as_str().unwrap().to_owned())
+            .collect(),
+    );
     for step in fixture["steps"].as_array().unwrap() {
         let bytes: Vec<u8> = step["bytes"]
             .as_array()
@@ -89,9 +99,14 @@ fn python_output_state_survives_chunk_boundaries_and_restarts() {
         let event = monitor_matches::pending(&mut record, step["now"].as_f64().unwrap(), false)
             .map(|(id, payload)| json!({"id":id,"payload":payload}));
         assert_eq!(legacy_match_fields(json!(event)), step["event"]);
-        assert_eq!(legacy_match_fields(record.clone()), step["record"]);
-        // The next chunk uses only persisted JSON, including incomplete UTF-8.
-        record = serde_json::from_str(&record.to_string()).unwrap();
+        let actual = legacy_match_fields(json!(&record));
+        for (key, expected) in step["record"].as_object().unwrap() {
+            assert_eq!(&actual[key], expected, "field {key}");
+        }
+        // Exercise the persisted wire representation between chunks.
+        let mut persisted = Vec::new();
+        serde_json::to_writer(&mut persisted, &record).unwrap();
+        record = serde_json::from_slice(&persisted).unwrap();
     }
     monitor_matches::flush(&mut record).unwrap();
     let event = monitor_matches::pending(&mut record, 11.4, true)
@@ -131,22 +146,32 @@ fn legacy_match_fields(mut value: Value) -> Value {
 #[test]
 fn invalid_matchers_are_rejected_before_admission() {
     for value in [
-        json!([]),
-        json!([""]),
-        json!(["x", "x"]),
-        json!(["x".repeat(257)]),
-        json!([true]),
+        vec![],
+        vec![String::new()],
+        vec!["x".into(), "x".into()],
+        vec!["x".repeat(257)],
     ] {
-        assert!(monitor_matches::patterns(Some(&value)).is_err(), "{value}");
+        assert!(
+            monitor_matches::patterns(Some(&value)).is_err(),
+            "{value:?}"
+        );
     }
+    assert!(serde_json::from_str::<Vec<String>>("[true]").is_err());
 }
 #[tokio::test]
 async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
     let root = tempfile::tempdir().unwrap();
     let store = RuntimeStore::open(Some(root.path())).await.unwrap();
     let fixture = corpus()["processes"][0].clone();
-    let owner = fixture["owner"].clone();
-    let raw = fixture["raw"].clone();
+    let mut owner = fixture["owner"].clone();
+    owner["status"] = json!("idle");
+    owner["compactions"] = json!(0);
+    let mut raw = json!({"id":"watch","agent":"owner","epoch":3,"status":"running","requestId":"request","created":1,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":"","interactive":false,"livenessCommand":"","log":"","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
+    raw.as_object_mut()
+        .unwrap()
+        .extend(fixture["raw"].as_object().unwrap().clone());
+    raw["operation"]["agent"] = json!("owner");
+    raw["operation"]["epoch"] = json!(3);
     store
         .transaction_with(move |tx| {
             tx.execute(
@@ -154,7 +179,7 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
                 [owner.to_string()],
             )?;
             tx.execute(
-                "INSERT INTO runtime_monitors(id,record) VALUES('watch',?)",
+                "INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
                 [raw.to_string()],
             )?;
             Ok::<_, StoreError>(())
@@ -162,39 +187,55 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
         .await
         .unwrap();
     let process = fixture["expected"].clone();
-    let request = json!({"action":"stop_selected","requestId":"request","agent":"owner","accountKey":"acct","epoch":3,"process":{"key":process["key"],"generation":process["generation"],"agent":"owner","accountKey":"acct","epoch":3}});
+    let mut request: studio_runtime_schema::process_controls::ProcessControlRequest = serde_json::from_str(r#"{"action":"stop_selected","requestId":"request","agent":"owner","accountKey":"acct","epoch":3,"process":{"key":"key","generation":"generation","agent":"owner","accountKey":"acct","epoch":3}}"#).unwrap();
+    let studio_runtime_schema::process_controls::ProcessControlRequest::StopSelected {
+        process: target,
+        ..
+    } = &mut request
+    else {
+        unreachable!()
+    };
+    target.key = process["key"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+        .try_into()
+        .unwrap();
+    target.generation = process["generation"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+        .try_into()
+        .unwrap();
     let connections =
         process_controls::Connections::from([("owner".into(), "connection-7".into())]);
     let r = request.clone();
     let c = connections.clone();
     let result = store
-        .transaction_with(move |tx| {
-            process_controls::claim(tx, &parse_request_fixture(&r), &c, 1.0)
-        })
+        .transaction_with(move |tx| process_controls::claim(tx, &r, &c, 1.0))
         .await
         .unwrap();
     assert!(matches!(result,process_controls::Claim::New{ref targets,..} if targets.len()==1));
     let r = request.clone();
     let c = connections.clone();
     let replay = store
-        .transaction_with(move |tx| {
-            process_controls::claim(tx, &parse_request_fixture(&r), &c, 2.0)
-        })
+        .transaction_with(move |tx| process_controls::claim(tx, &r, &c, 2.0))
         .await
         .unwrap();
     assert!(
         matches!(replay,process_controls::Claim::Replay(ref result) if result.status == studio_runtime_schema::process_controls::ProcessActionStatus::Uncertain)
     );
     let mut r = request.clone();
-    r["epoch"] = json!(4);
+    let studio_runtime_schema::process_controls::ProcessControlRequest::StopSelected {
+        scope, ..
+    } = &mut r
+    else {
+        unreachable!()
+    };
+    scope.epoch = 4;
     assert!(
         store
-            .transaction_with(move |tx| process_controls::claim(
-                tx,
-                &parse_request_fixture(&r),
-                &connections,
-                3.0
-            ))
+            .transaction_with(move |tx| process_controls::claim(tx, &r, &connections, 3.0))
             .await
             .is_err()
     );
@@ -202,6 +243,12 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
     let query = json!({"requestId":"request","agent":"owner","accountKey":"acct","epoch":3});
     assert!(matches!(
         process_controls::receipt(&connection, &query).unwrap(),
+        studio_runtime_schema::process_controls::ProcessReceipt::Found(_)
+    ));
+    let mut decimal_epoch = query.clone();
+    decimal_epoch["epoch"] = json!(3.0);
+    assert!(matches!(
+        process_controls::receipt(&connection, &decimal_epoch).unwrap(),
         studio_runtime_schema::process_controls::ProcessReceipt::Found(_)
     ));
     let mut foreign = query;

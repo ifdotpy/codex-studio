@@ -508,7 +508,7 @@ impl NotificationStreamBuffer {
             .to_owned();
         let encoded_bytes =
             studio_runtime_store::python_json_compact(&observation.params).len() as u64;
-        let hour = ((observation.observed_at / 3600.0).floor() * 3600.0) as u64;
+        let hour = ((observation.observed_at.get() / 3600.0).floor() * 3600.0) as u64;
         observation.agent = None;
         if let Some(index) = self.indexes.analytics.get(&key).copied() {
             let (old_size, size) = {
@@ -648,18 +648,14 @@ impl NotificationStreamBuffer {
             self.rebuild_indexes();
         }
     }
-    /// The durable JSON text of this buffer: its metadata, and its entries
-    /// with pending deltas (`None` when nothing is pending).
-    pub(crate) fn persisted_parts(
-        &self,
-    ) -> serde_json::Result<(String, Option<NotificationPendingStreams>)> {
+    /// Metadata and entries with pending deltas (`None` when nothing is pending).
+    pub(crate) fn persisted_parts(&self) -> (Self, Option<NotificationPendingStreams>) {
         let mut metadata = self.clone();
         for entry in &mut metadata.entries {
             entry.pending.clear();
             entry.count = 0;
             let _ = std::mem::take(&mut entry.params);
         }
-        let metadata = serde_json::to_string(&metadata)?;
         let pending = self
             .entries
             .iter()
@@ -671,7 +667,7 @@ impl NotificationStreamBuffer {
         } else {
             Some(NotificationPendingStreams(pending))
         };
-        Ok((metadata, pending))
+        (metadata, pending)
     }
 
     pub(crate) fn restore_pending(
@@ -1047,7 +1043,9 @@ mod tests {
         .enumerate()
         {
             let mut observation = analytics_observation(&key.method, cursor as u64);
-            observation.observed_at = (cursor + 1) as f64 * 3600.0;
+            observation.observed_at =
+                crate::notification_dispatch::ObservationTime::new((cursor + 1) as f64 * 3600.0)
+                    .unwrap();
             observation.params = super::super::SharedJson::new(json!({"delta":fragment}));
             streams.stage_analytics(key.clone(), observation).unwrap();
             let capture = &streams.analytics[0];
@@ -1279,9 +1277,9 @@ mod tests {
         assert_eq!(vm.selected(None), vec![vm_key.clone()]);
         assert_eq!(streams.publication_sequence, 17);
         assert_eq!(vm.publication_sequence, 0);
-        let (metadata, pending) = vm.persisted_parts().expect("VM owner state");
-        let mut restored: NotificationStreamBuffer =
-            serde_json::from_str(&metadata).expect("VM metadata");
+        let (metadata, pending) = vm.persisted_parts();
+        let mut restored = metadata;
+        restored.rebuild_runtime_state();
         restored
             .restore_pending(pending.expect("VM flush obligation"))
             .expect("VM pending restored");
@@ -1324,11 +1322,11 @@ mod tests {
             streams.enqueue_delta(key.clone(), "pending", &params, 0),
             EnqueueResult::Buffered
         ));
-        let (metadata, pending) = streams.persisted_parts().expect("persist typed state");
+        let (metadata, pending) = streams.persisted_parts();
         let mut pending = pending.expect("flush obligation");
         pending.0[0].base = Some("obsolete".into());
-        let mut restored: NotificationStreamBuffer =
-            serde_json::from_str(&metadata).expect("metadata");
+        let mut restored = metadata;
+        restored.rebuild_runtime_state();
         assert!(!restored.has_pending(&key));
         restored
             .restore_pending(pending)
@@ -1388,9 +1386,12 @@ mod tests {
         };
         let parse = |text: &str| serde_json::from_str::<Value>(text).expect("JSON text");
         for buffer in [streams.clone(), NotificationStreamBuffer::default()] {
-            let (metadata, pending) = buffer.persisted_parts().expect("encodes");
+            let (metadata, pending) = buffer.persisted_parts();
             let (expected_metadata, expected_pending) = former(&buffer);
-            assert_eq!(parse(&metadata), expected_metadata);
+            assert_eq!(
+                parse(&serde_json::to_string(&metadata).unwrap()),
+                expected_metadata
+            );
             assert_eq!(
                 pending.map(|pending| serde_json::from_str::<Value>(
                     &serde_json::to_string(&pending).expect("pending state")
@@ -1487,8 +1488,8 @@ mod tests {
                 generation: 1,
                 cursor,
             },
-            observed_at: 3600.0,
-            provider_at: 3600.0,
+            observed_at: crate::notification_dispatch::ObservationTime::new(3600.0).unwrap(),
+            provider_at: crate::notification_dispatch::ObservationTime::new(3600.0).unwrap(),
         };
         let mut streams = NotificationStreamBuffer::default();
         streams
@@ -1532,8 +1533,8 @@ mod tests {
                 generation: 1,
                 cursor,
             },
-            observed_at: 3600.0,
-            provider_at: 3600.0,
+            observed_at: crate::notification_dispatch::ObservationTime::new(3600.0).unwrap(),
+            provider_at: crate::notification_dispatch::ObservationTime::new(3600.0).unwrap(),
         }
     }
 

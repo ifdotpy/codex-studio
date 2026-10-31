@@ -84,18 +84,17 @@ async fn fixture(provider: &'static str) -> (State, String) {
                         .expect("primary actor");
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.thread_id = None;
-                    for (key, value) in [
-                        ("workspaceMode", json!("layr")),
-                        ("layrReady", json!(true)),
-                        ("provider", json!(provider)),
-                        ("cwd", json!("/home/studio/project")),
-                    ] {
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.cwd = Some("/home/studio/project".into());
+                    for (key, value) in [("layrReady", json!(true)), ("provider", json!(provider))]
+                    {
                         record.extra.insert(key.into(), value);
                     }
                     AgentRepository::put(tx, &record)?;
                     record.id = AgentId::from(sibling_id.as_str());
                     record.root_id = record.id.clone();
-                    record.extra.remove("startAttempt");
+                    record.start_attempt.take();
                     record.extra.remove("preparationWake");
                     AgentRepository::put(tx, &record)
                 })
@@ -272,8 +271,9 @@ async fn vm_notification_scope_keeps_native_and_sibling_receipts_and_observation
                     &crate::notification_runtime_effects::RuntimeNotificationEffects).expect("distinct source admission");
                 let effects = serde_json::to_string(&dispatched.post_commit).expect("observations");
                 assert!(effects.contains(&expected_handle), "observation lost its journal namespace: {effects}");
-                let (metadata, _) = dispatched.stream_update.expect("stream update").persisted_parts().expect("stream metadata");
-                let metadata: Value = serde_json::from_str(&metadata).expect("metadata JSON");
+                let (metadata, _) = dispatched.stream_update.expect("stream update").persisted_parts();
+                let encoded = serde_json::to_string(&metadata).expect("metadata JSON");
+                let metadata: Value = serde_json::from_str(&encoded).expect("metadata JSON");
                 assert_eq!(metadata["entries"][0]["key"]["account"], "default");
                 assert_eq!(metadata["entries"][0]["key"]["agent_id"],actor);
                 let scoped = ProviderDeliveryIdentity {provider_handle:expected_handle,generation:1,cursor:7};

@@ -171,9 +171,9 @@ mod tests {
 case "$*" in
   *--json)
     if [ -f "$2/upgraded" ]; then
-      printf '%s\n' '{"binary":{"format":1,"version":"0.4.0","build":"fixture"},"store":{"format":1,"version":"0.4.0","build":"fixture"},"compatible":true,"state":"compatible"}'
+      printf '%s\n' '{"binary":{"format":1,"version":"0.5.1","build":"fixture"},"store":{"format":1,"version":"0.5.1","build":"fixture"},"compatible":true,"state":"compatible"}'
     else
-      printf '%s\n' '{"binary":{"format":1,"version":"0.4.0","build":"fixture"},"store":null,"compatible":false,"state":"legacy","upgrade":{"fromFormat":0,"toFormat":1,"metadataOnly":true}}'
+      printf '%s\n' '{"binary":{"format":1,"version":"0.5.1","build":"fixture"},"store":null,"compatible":false,"state":"legacy","upgrade":{"fromFormat":0,"toFormat":1,"metadataOnly":true}}'
     fi ;;
   *--upgrade)
     printf 'upgrade\n' >> "$LAYR_ROOT/calls"
@@ -216,7 +216,7 @@ esac
     fn native_layr_package_mismatch_refuses_but_build_difference_is_visible() {
         let bundled = Identity {
             format: 1,
-            version: "0.4.0".into(),
+            version: "0.5.1".into(),
             build: "upstream".into(),
         };
         let mut developer = Identity {
@@ -232,7 +232,7 @@ esac
         )
         .expect_err("different package")
         .to_string();
-        assert!(error.contains("0.2.3") && error.contains("0.4.0") && error.contains("/store"));
+        assert!(error.contains("0.2.3") && error.contains("0.5.1") && error.contains("/store"));
         developer.version = bundled.version.clone();
         assert!(
             compare(

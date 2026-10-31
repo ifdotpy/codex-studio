@@ -263,7 +263,7 @@ async fn seeded_store_with_identity(
     let link = json!({"id": LINK, "side": "remote", "server": PEER, "parent": "home-parent",
         "parentEpoch": 4, "workers": [REMOTE, MOVED]});
     let project_record = json!({"id": project, "path": project, "name": "Fixture project",
-        "created": 1_792_510_147.0, "accountKey": "default", "accountRevision": 1,
+        "created": 1_792_510_147.0, "accountKey": "default", "accountRevision": 1, "peerTeams": [],
         "homeServerId": local, "locations": [{"serverId": local, "path": project, "projectId": project, "gitOrigin": "https://example.invalid/fixture.git"}],
         "locationsRevision": 0});
     let peer = json!({"id": PEER, "clientId": PEER, "serverId": PEER, "label": "Peer",

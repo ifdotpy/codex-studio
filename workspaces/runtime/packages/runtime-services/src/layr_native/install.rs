@@ -317,13 +317,13 @@ fn source_directory() -> Result<std::path::PathBuf, NativeLayrError> {
 mod tests {
     #[test]
     fn version_check_accepts_the_build_suffix_only() {
-        assert!(version_matches("layr version 0.4.0"));
+        assert!(version_matches("layr version 0.5.1"));
         assert!(version_matches(
-            "layr version 0.4.0 (73eb679-dirty 2026-10-28)"
+            "layr version 0.5.1 (73eb679-dirty 2026-10-28)"
         ));
-        assert!(!version_matches("layr version 0.4.01"));
+        assert!(!version_matches("layr version 0.5.11"));
         assert!(!version_matches("layr version 0.3.0 (73eb679 2026-10-28)"));
-        assert!(!version_matches("layr version 0.4.0 (unclosed"));
+        assert!(!version_matches("layr version 0.5.1 (unclosed"));
     }
 
     use super::*;

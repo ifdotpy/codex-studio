@@ -4,10 +4,10 @@ use serde_json::{Value, json};
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_providers::{RequestId, ResponseBody};
 use studio_runtime_schema::persistence::RequestCardStatus;
-use studio_runtime_schema::question_answers::{
-    QuestionApproval, QuestionCardAnswer, QuestionDecision,
+use studio_runtime_schema::question_answers::QuestionDecision;
+use studio_runtime_store::{
+    QuestionsWriteRepository, RequestRecord, RuntimeStore, Table, system_reads as records,
 };
-use studio_runtime_store::{QuestionsWriteRepository, RuntimeStore, system_reads as records};
 
 /// The native provider requests that wait for the user as a request card. The
 /// web client renders each of them (`components/questions/Requests.tsx`).
@@ -63,9 +63,10 @@ pub async fn admit_native(
             if let Some(decision) = storage::saved_decision(tx, &identity, &request)? {
                 return Ok(match decision {
                     CallbackDecision::Pending(id) => {
-                        let mut card = records::get(tx, "runtime_requests", &id)?
+                        let mut card = Table::<RequestRecord>::new(tx)
+                            .get(&id)?
                             .ok_or(CallbackError::Stale)?;
-                        card["connectionId"] = json!(context.connection);
+                        card.connection_id = Some(context.connection.clone());
                         save(tx, &card)?;
                         NativeAdmission::Card(id)
                     }
@@ -127,18 +128,14 @@ pub fn expire_ended_generations(
     let mut count = 0;
     for (id, raw) in rows {
         // A row this build cannot read keeps its state; it was never admitted here.
-        let Ok(mut card) = records::decode("runtime_requests", &id, &raw) else {
+        let Ok(mut card) = serde_json::from_str::<RequestRecord>(&raw) else {
             continue;
         };
-        if card
-            .get("accountKey")
-            .and_then(Value::as_str)
-            .unwrap_or("default")
-            != account
-            || card
-                .pointer("/supervisor/generation")
-                .and_then(Value::as_u64)
-                == Some(generation)
+        if card.id != id {
+            continue;
+        }
+        if card.account_key.as_deref().unwrap_or("default") != account
+            || card.supervisor.as_ref().map(|scope| scope.generation) == Some(generation)
         {
             continue;
         }
@@ -162,8 +159,8 @@ pub fn expire_ended_generations(
 }
 
 /// A pending card expires; an answer whose delivery started becomes uncertain.
-fn expire_card(tx: &Transaction<'_>, card: &mut Value) -> Result<bool, CallbackError> {
-    let next = match status(card)? {
+fn expire_card(tx: &Transaction<'_>, card: &mut RequestRecord) -> Result<bool, CallbackError> {
+    let next = match card.status {
         RequestCardStatus::Pending => RequestCardStatus::Expired,
         RequestCardStatus::Answering => RequestCardStatus::Uncertain,
         RequestCardStatus::Answered
@@ -173,8 +170,8 @@ fn expire_card(tx: &Transaction<'_>, card: &mut Value) -> Result<bool, CallbackE
         | RequestCardStatus::Expired
         | RequestCardStatus::Deleted => return Ok(false),
     };
-    card["status"] = json!(next);
-    storage::hold_card(tx, card["id"].as_str().ok_or(CallbackError::Stale)?)?;
+    card.status = next;
+    storage::hold_card(tx, &card.id)?;
     save(tx, card)?;
     Ok(true)
 }
@@ -211,24 +208,36 @@ pub(super) fn immediate(
 /// Tool approvals share the same answer conversion as explicit user answers.
 /// Questions and elicitation always continue to require an answer from the user.
 fn full_access_answer(method: &str, params: &Value) -> Result<Option<Value>, CallbackError> {
-    let data = QuestionApproval {
-        decision: QuestionDecision::Accept,
-    };
-    let answer = match method {
-        "item/commandExecution/requestApproval" => QuestionCardAnswer::Command(data),
-        "item/fileChange/requestApproval" => QuestionCardAnswer::File(data),
-        "item/permissions/requestApproval" => QuestionCardAnswer::Permissions(data),
-        _ => return Ok(None),
-    };
-    let answer = serde_json::to_value(answer)?;
-    answer_value(method, params, &answer["data"]).map(|(result, _)| Some(result))
+    if !matches!(
+        method,
+        "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+    ) {
+        return Ok(None);
+    }
+    answer_value(
+        method,
+        params,
+        &json!({"decision":QuestionDecision::Accept}),
+    )
+    .map(|(result, _)| Some(result))
 }
 
-pub(super) fn save(tx: &Transaction<'_>, card: &Value) -> Result<(), CallbackError> {
+// Replay debt: old outbox receipts retain their historical Value classifier and bytes.
+pub(super) fn save_historical(tx: &Transaction<'_>, card: &Value) -> Result<(), CallbackError> {
     let id = card["id"]
         .as_str()
         .ok_or(CallbackError::Invalid("Invalid callback card identity"))?;
-    records::validate("runtime_requests", id, card.clone())?;
+    if ["agent", "connectionId", "method", "status"]
+        .into_iter()
+        .any(|key| {
+            card.get(key)
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+        })
+    {
+        return Err(CallbackError::Stored(format!("runtime_requests/{id}")));
+    }
     QuestionsWriteRepository::put_request(tx, id, &card.to_string())?;
     let actor = card["agent"]
         .as_str()
@@ -253,6 +262,23 @@ pub(super) fn save(tx: &Transaction<'_>, card: &Value) -> Result<(), CallbackErr
     studio_runtime_store::SyncDocumentsRepository::put_entity(tx, "request", id, value, deleted)?;
     Ok(())
 }
+
+pub(super) fn save(tx: &Transaction<'_>, card: &RequestRecord) -> Result<(), CallbackError> {
+    let id = card.id.as_str();
+    Table::<RequestRecord>::new(tx).put(card)?;
+    if let Some(actor) = records::get(tx, "runtime_agents", &card.agent)? {
+        crate::tool_requests::reconcile_request_effect(tx, card, &actor)?;
+    }
+    let deleted = card.status != RequestCardStatus::Pending;
+    let value = if deleted {
+        json!({})
+    } else {
+        crate::sync_views::project_persisted_record("request", &json!(card))
+            .ok_or_else(|| CallbackError::Stored(format!("runtime_requests/{id}")))?
+    };
+    studio_runtime_store::SyncDocumentsRepository::put_entity(tx, "request", id, value, deleted)?;
+    Ok(())
+}
 pub(super) fn admit(
     tx: &Transaction<'_>,
     context: &CallbackContext,
@@ -270,15 +296,35 @@ pub(super) fn admit(
         return Err(CallbackError::Invalid("Too many pending provider requests"));
     }
     let id = owner.id.clone();
-    let mut card = json!({"id":id,"rpcId":input.id,"method":input.method,"params":input.params,"agent":context.agent,"accountKey":context.account,"connectionId":context.connection,"epoch":context.epoch,"supervisor":{"generation":context.generation},"status":RequestCardStatus::Pending,"createdAt":now});
+    let method =
+        <studio_runtime_schema::request_record::RequestMethod as serde::Deserialize>::deserialize(
+            serde::de::value::StrDeserializer::<serde::de::value::Error>::new(&input.method),
+        )
+        .map_err(|_| CallbackError::Invalid("Unsupported request type"))?;
+    let params = serde_json::value::to_raw_value(&input.params)?;
+    let mut card = RequestRecord::new(
+        id.clone(),
+        context.agent.clone(),
+        method,
+        RequestCardStatus::Pending,
+        now,
+        params,
+    );
+    card.rpc_id = Some(input.id.clone());
+    card.account_key = Some(context.account.clone());
+    card.connection_id = Some(context.connection.clone());
+    card.epoch = Some(context.epoch);
+    card.supervisor = Some(studio_runtime_schema::request_record::RequestSupervisor {
+        generation: context.generation,
+    });
     if let Some(item_id) = input.params["itemId"].as_str() {
         let key = format!("{}:{item_id}", context.agent);
         if let Some(item) = records::get(tx, "runtime_items", &key)?
-            && let Some(preview) = item["text"]
-                .as_str()
-                .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            && let Some(preview) = item["text"].as_str().and_then(|text| {
+                serde_json::from_str::<Box<serde_json::value::RawValue>>(text).ok()
+            })
         {
-            card["preview"] = preview;
+            card.preview = Some(preview);
         }
     }
     save(tx, &card)?;
@@ -303,6 +349,21 @@ pub fn answer_value(
     params: &Value,
     data: &Value,
 ) -> Result<(Value, Value), CallbackError> {
+    let (result, history) = answer_value_typed(method, params, data)?;
+    Ok((result, json!(history)))
+}
+
+fn answer_value_typed(
+    method: &str,
+    params: &Value,
+    data: &Value,
+) -> Result<
+    (
+        Value,
+        Vec<studio_runtime_schema::request_record::RequestAnswer>,
+    ),
+    CallbackError,
+> {
     let choice = || -> Result<QuestionDecision, CallbackError> {
         match data.get("decision") {
             None => Ok(QuestionDecision::Decline),
@@ -351,19 +412,36 @@ pub fn answer_value(
     } else {
         params["questions"].as_array().cloned().unwrap_or_default()
     };
-    let history = fields.iter().map(|field| {
-        let id = field["id"].as_str().ok_or(CallbackError::Invalid("Invalid question field"))?;
-        let secret = studio_runtime_store::truthy(field.get("isSecret"));
-        let answer = if secret {
-            json!("[redacted]")
-        } else if data.get("answers").is_some() {
-            data["answers"][id].get("answers").cloned().unwrap_or(json!([]))
-        } else {
-            data["content"][id].clone()
-        };
-        Ok(json!({"id":id,"question":field.get("question").unwrap_or(&json!(id)),"isSecret":secret,"answer":answer}))
-    }).collect::<Result<Vec<_>, CallbackError>>()?;
-    Ok((result, json!(history)))
+    let history = fields
+        .iter()
+        .map(|field| {
+            let id = field["id"]
+                .as_str()
+                .ok_or(CallbackError::Invalid("Invalid question field"))?;
+            let secret = studio_runtime_store::truthy(field.get("isSecret"));
+            let answer = if secret {
+                json!("[redacted]")
+            } else if data.get("answers").is_some() {
+                data["answers"][id]
+                    .get("answers")
+                    .cloned()
+                    .unwrap_or(json!([]))
+            } else {
+                data["content"][id].clone()
+            };
+            let question = field
+                .get("question")
+                .map_or(Some(id), Value::as_str)
+                .ok_or(CallbackError::Invalid("Invalid question field"))?;
+            Ok(studio_runtime_schema::request_record::RequestAnswer {
+                id: id.into(),
+                question: question.into(),
+                is_secret: secret,
+                answer: serde_json::value::to_raw_value(&answer)?,
+            })
+        })
+        .collect::<Result<Vec<_>, CallbackError>>()?;
+    Ok((result, history))
 }
 pub async fn answer(
     store: &RuntimeStore,
@@ -397,59 +475,65 @@ fn answer_in(
 ) -> Result<Reply, CallbackError> {
     let snapshot = storage::snapshot(tx, context)?;
     snapshot.active()?;
-    let mut card = records::get(tx, "runtime_requests", id)?
+    let mut card = Table::<RequestRecord>::new(tx)
+        .get(&id.to_owned())?
         .ok_or(CallbackError::Invalid("Unknown request"))?;
-    if card["agent"] != context.agent
-        || card["epoch"].as_u64() != Some(context.epoch)
-        || card["accountKey"] != context.account
-        || card
-            .pointer("/supervisor/generation")
-            .and_then(Value::as_u64)
-            != Some(context.generation)
+    if card.agent != context.agent
+        || card.epoch != Some(context.epoch)
+        || card.account_key.as_deref() != Some(context.account.as_str())
+        || card.supervisor.as_ref().map(|s| s.generation) != Some(context.generation)
     {
         return Err(CallbackError::Stale);
     }
-    let method = card["method"]
-        .as_str()
-        .ok_or_else(|| CallbackError::Stored(id.into()))?
-        .to_owned();
+    let method = card.method.as_str().to_owned();
     if method == "item/tool/requestUserInput" && snapshot.actor()["isLead"] != true {
         return Err(CallbackError::Invalid(
             "Only the orchestrator can ask the user",
         ));
     }
     let signature = answer_signature(data);
+    // Identity debt shared with resolve: historical signatures canonicalize params through Value.
     let input = Input {
-        id: serde_json::from_value::<RequestId>(card["rpcId"].clone())?,
+        id: card.rpc_id.clone().ok_or(CallbackError::Stale)?,
         method,
-        params: card["params"].clone(),
+        params: serde_json::from_str(card.params.get())?,
     };
     let identity = ReplyIdentity::new(context, &input.id);
     let owner = storage::owner(tx, &identity)?.ok_or(CallbackError::Stale)?;
     if owner.payload.card.as_deref() != Some(id) {
         return Err(CallbackError::Stale);
     }
-    if let Some(previous) = card.get("answerSignature") {
-        if previous != &signature {
+    if let Some(previous) = card.answer_signature.as_deref() {
+        if previous != signature {
             return Err(CallbackError::Conflict);
         }
-        if status(&card)? != RequestCardStatus::Answered {
+        if card.status != RequestCardStatus::Answered {
             return Err(CallbackError::Unknown);
         }
         return storage::saved_reply(tx, &identity, &input)?.ok_or(CallbackError::Unknown);
     }
-    if status(&card)? != RequestCardStatus::Pending {
+    if card.status != RequestCardStatus::Pending {
         return Err(CallbackError::Invalid("Request is no longer pending"));
     }
-    let unanswered = card.clone();
-    let (result, history) = answer_value(&input.method, &input.params, data)?;
-    card["answerSignature"] = json!(signature);
-    card["answeredBy"] = json!("user");
-    card["answeredAt"] = json!(now);
-    card["decision"] = data.get("decision").cloned().unwrap_or(json!("answer"));
-    card["deferred"] = json!(false);
-    card["answerHistory"] = history;
-    card["status"] = json!(RequestCardStatus::Answering);
+    let unanswered = json!(card);
+    let (result, history) = answer_value_typed(&input.method, &input.params, data)?;
+    card.answer_signature = Some(signature);
+    card.answered_by = Some("user".into());
+    card.answered_at = Some(now);
+    card.decision = match data.get("decision") {
+        None => Some(studio_runtime_schema::request_record::RequestDecision::Answer),
+        Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or(CallbackError::Invalid("Invalid decision"))?
+                .parse()
+                .map_err(|_| CallbackError::Invalid("Invalid decision"))?,
+        ),
+    };
+    card.deferred = Some(false);
+    card.answer_history = Some(history);
+    card.status = RequestCardStatus::Answering;
     let reply = Reply::new(identity, ResponseBody::Result(result))?;
     storage::save_reply(tx, &input, &reply)?;
     let mut outbox = storage::response(tx, &reply.identity)?.ok_or(CallbackError::Unknown)?;
@@ -471,8 +555,10 @@ pub async fn expire(
     store
         .transaction_with(move |tx| {
             let mut count = 0;
-            for mut card in records::all(tx, "runtime_requests")? {
-                if card["accountKey"] != account || card["connectionId"] != connection {
+            for mut card in Table::<RequestRecord>::new(tx).list()? {
+                if card.account_key.as_deref() != Some(account.as_str())
+                    || card.connection_id.as_deref() != Some(connection.as_str())
+                {
                     continue;
                 }
                 if expire_card(tx, &mut card)? {
@@ -495,27 +581,24 @@ pub async fn resolve(
     let context = context.clone();
     let rpc_id = rpc_id.clone();
     store.transaction_with(move |tx| {
-        let rpc_value = serde_json::to_value(&rpc_id)?;
         let identity = ReplyIdentity::new(&context, &rpc_id);
+        // Identity debt: historical provider signatures canonicalize stored params through Value.
         let matching = matching_rpc_cards(tx, &context, &rpc_id)?;
         let signature = matching.first().map(|card| Input {
             id: rpc_id.clone(), method: card["method"].as_str().unwrap_or_default().into(), params: card["params"].clone(),
         }.signature());
         storage::resolve_owner(tx, &identity, signature.as_deref())?;
         let mut count = 0;
-        for mut card in records::all(tx, "runtime_requests")? {
-            if card["agent"] == context.agent
-                && card["accountKey"] == context.account
-                && card["epoch"].as_u64() == Some(context.epoch)
-                && card
-                    .pointer("/supervisor/generation")
-                    .and_then(Value::as_u64)
-                    == Some(context.generation)
-                && card["rpcId"] == rpc_value
-                && matches!(status(&card)?, RequestCardStatus::Pending | RequestCardStatus::Answering | RequestCardStatus::Uncertain | RequestCardStatus::Blocked)
+        for mut card in Table::<RequestRecord>::new(tx).list()? {
+            if card.agent == context.agent
+                && card.account_key.as_deref() == Some(context.account.as_str())
+                && card.epoch == Some(context.epoch)
+                && card.supervisor.as_ref().map(|scope| scope.generation) == Some(context.generation)
+                && card.rpc_id.as_ref() == Some(&rpc_id)
+                && matches!(card.status, RequestCardStatus::Pending | RequestCardStatus::Answering | RequestCardStatus::Uncertain | RequestCardStatus::Blocked)
             {
-                card["status"] = json!(RequestCardStatus::Resolved);
-                card["resolvedAt"] = json!(now);
+                card.status = RequestCardStatus::Resolved;
+                card.resolved_at = Some(now);
                 // Retire prepared/submitted replies before any delayed worker can
                 // submit or settle them; provider resolution is not approval.
                 save(tx, &card)?;
@@ -578,49 +661,61 @@ pub(crate) fn answer_signature(data: &Value) -> String {
 
 /// Context comes exclusively from the validated stored card and actor, never
 /// from HTTP fields. Recheck the actor and card inside the answer transaction.
-fn card_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContext, CallbackError> {
-    let required = |v: &Value| {
-        v.as_str()
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-            .ok_or_else(|| CallbackError::Stored("runtime_requests/context".into()))
-    };
-    let agent = required(&card["agent"])?;
-    let actor = records::get(tx, "runtime_agents", &agent)?.ok_or(CallbackError::Stale)?;
+fn card_context(
+    tx: &Transaction<'_>,
+    card: &RequestRecord,
+) -> Result<CallbackContext, CallbackError> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Params {
+        thread_id: String,
+        turn_id: Option<String>,
+    }
+    let params: Params = serde_json::from_str(card.params.get())
+        .map_err(|_| CallbackError::Stored("runtime_requests/context".into()))?;
+    let agent = &card.agent;
+    let actor = records::get(tx, "runtime_agents", agent)?.ok_or(CallbackError::Stale)?;
+    let account = card.account_key.as_deref().unwrap_or("default");
+    let connection = actor
+        .pointer("/startAttempt/connectionId")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .or(card.connection_id.as_deref())
+        .filter(|s| !s.is_empty())
+        .ok_or(CallbackError::Stale)?;
+    let turn = params
+        .turn_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or_else(|| actor["turnId"].as_str().filter(|s| !s.is_empty()))
+        .ok_or(CallbackError::Stale)?;
+    if agent.is_empty() || params.thread_id.is_empty() {
+        return Err(CallbackError::Stale);
+    }
     Ok(CallbackContext {
         agent: agent.clone(),
-        account: card["accountKey"].as_str().unwrap_or("default").into(),
+        account: account.into(),
         stream_id: if actor["executionMode"] == "vm" {
-            crate::account_worker::vm_journal_scope(
-                card["accountKey"].as_str().unwrap_or("default"),
-                &agent,
-            )
+            crate::account_worker::vm_journal_scope(account, agent)
         } else {
-            card["accountKey"].as_str().unwrap_or("default").into()
+            account.into()
         },
-        connection: actor
-            .pointer("/startAttempt/connectionId")
-            .and_then(Value::as_str)
-            .filter(|connection| !connection.is_empty())
-            .map(str::to_owned)
-            .map(Ok)
-            .unwrap_or_else(|| required(&card["connectionId"]))?,
+        connection: connection.into(),
         generation: card
-            .pointer("/supervisor/generation")
-            .and_then(Value::as_u64)
-            .ok_or(CallbackError::Stale)?,
-        epoch: card["epoch"].as_u64().ok_or(CallbackError::Stale)?,
-        thread: required(&card["params"]["threadId"])?,
-        turn: card["params"]["turnId"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-            .map(Ok)
-            .unwrap_or_else(|| required(&actor["turnId"]))?,
+            .supervisor
+            .as_ref()
+            .ok_or(CallbackError::Stale)?
+            .generation,
+        epoch: card.epoch.ok_or(CallbackError::Stale)?,
+        thread: params.thread_id,
+        turn: turn.into(),
     })
 }
 
-fn provider_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContext, CallbackError> {
+fn provider_context(
+    tx: &Transaction<'_>,
+    card: &RequestRecord,
+) -> Result<CallbackContext, CallbackError> {
     card_context(tx, card).map_err(|error| match error {
         CallbackError::Stored(_) | CallbackError::Stale => {
             CallbackError::Dependency("provider-session/question-answer")
@@ -645,10 +740,11 @@ pub async fn pending_native_delete_context(
     let id = id.to_owned();
     store
         .read_async("runtime-services/provider_callbacks/cards", move |tx| {
-            let card = records::get(tx, "runtime_requests", &id)?
+            let card = Table::<RequestRecord>::new(tx)
+                .get(&id)?
                 .ok_or(CallbackError::Invalid("Unknown question"))?;
-            let method = card["method"].as_str().unwrap_or_default();
-            if status(&card)? == RequestCardStatus::Pending && method != "agent/asyncQuestion" {
+            let method = card.method.as_str();
+            if card.status == RequestCardStatus::Pending && method != "agent/asyncQuestion" {
                 provider_context(tx, &card).map(Some)
             } else {
                 Ok(None)
@@ -680,19 +776,20 @@ fn prepare_answer_in(
     now: f64,
     delete: bool,
 ) -> Result<Option<Reply>, CallbackError> {
-    let card = records::get(tx, "runtime_requests", id)?
+    let card = Table::<RequestRecord>::new(tx)
+        .get(&id.to_owned())?
         .ok_or(CallbackError::Invalid("Unknown request"))?;
-    if let Some(signature) = card.get("answerSignature") {
-        if signature != &answer_signature(data) {
+    if let Some(signature) = card.answer_signature.as_deref() {
+        if signature != answer_signature(data) {
             return Err(CallbackError::Conflict);
         }
-        if status(&card)? == RequestCardStatus::Answered {
+        if card.status == RequestCardStatus::Answered {
             return Ok(None);
         }
         return Err(CallbackError::Unknown);
     }
-    if !interactive(card["method"].as_str().unwrap_or_default()) {
-        return Err(match card["method"].as_str() {
+    if !interactive(card.method.as_str()) {
+        return Err(match Some(card.method.as_str()) {
             Some("agent/asyncQuestion") => {
                 CallbackError::Dependency("question-answer/async-question")
             }
@@ -726,14 +823,11 @@ pub async fn prepare_delete(
     let id = id.to_owned();
     store
         .transaction_with(move |tx| {
-            let mut card = records::get(tx, "runtime_requests", &id)?
+            let mut card = Table::<RequestRecord>::new(tx)
+                .get(&id)?
                 .ok_or(CallbackError::Invalid("Unknown question"))?;
-            let actor = records::get(
-                tx,
-                "runtime_agents",
-                card["agent"].as_str().ok_or(CallbackError::Stale)?,
-            )?
-            .ok_or(CallbackError::Stale)?;
+            let actor =
+                records::get(tx, "runtime_agents", &card.agent)?.ok_or(CallbackError::Stale)?;
             let allowed = crate::questions_write::state_only_delete_allowed(
                 &card,
                 studio_runtime_store::truthy(actor.get("deletedAt")),
@@ -760,8 +854,8 @@ pub async fn prepare_delete(
             if !allowed {
                 return Ok(None);
             }
-            let method = card["method"].as_str().unwrap_or_default();
-            if status(&card)? == RequestCardStatus::Pending && method != "agent/asyncQuestion" {
+            let method = card.method.as_str();
+            if card.status == RequestCardStatus::Pending && method != "agent/asyncQuestion" {
                 // A native answer is only possible for a card tied to a live
                 // provider request. Missing callback identity is a named refusal,
                 // checked before prepare_answer_in writes durable intent.

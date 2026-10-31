@@ -4,7 +4,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::json;
 
 use crate::StoreResult;
-use crate::records::{AgentRecord, GraphAgentRecord, Table};
+use crate::records::{AgentRecord, Table};
 use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{SchemaRequirements, TableRequirement};
 
@@ -20,10 +20,6 @@ const MESSAGES: &[TableRequirement] = &[TableRequirement {
     name: "messages",
     columns: &["id", "room", "author", "text", "at", "deliveries"],
 }];
-const GRAPH_AGENTS: &[TableRequirement] = &[TableRequirement {
-    name: "graph_agents",
-    columns: &["id", "record"],
-}];
 
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
@@ -31,7 +27,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[GROUPS[0], EDGES[0], MESSAGES[0], GRAPH_AGENTS[0]],
+    bootstrap_tables: &[GROUPS[0], EDGES[0], MESSAGES[0]],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -103,16 +99,12 @@ impl CoordinationRepository {
 
     pub fn agents(
         connection: &rusqlite::Connection,
-    ) -> StoreResult<Vec<(String, serde_json::Value, bool)>> {
-        let mut result = Vec::new();
-        for agent in Table::<AgentRecord>::new(connection).list()? {
-            result.push((agent.id().0.clone(), agent.value(), false));
-        }
-        for agent in Table::<GraphAgentRecord>::new(connection).list()? {
-            let id = agent.id().clone();
-            result.push((id, agent.into_value(), true));
-        }
-        Ok(result)
+    ) -> StoreResult<Vec<(String, serde_json::Value)>> {
+        Ok(Table::<AgentRecord>::new(connection)
+            .list()?
+            .into_iter()
+            .map(|agent| (agent.id().0.clone(), agent.value()))
+            .collect())
     }
 
     pub fn agent_exists(connection: &rusqlite::Connection, id: &str) -> StoreResult<bool> {
@@ -324,45 +316,20 @@ inventory::submit! {
 }
 
 #[cfg(test)]
-mod graph_agent_tests {
+mod tests {
     use super::CoordinationRepository;
-    use crate::StoreError;
     use rusqlite::Connection;
-    use serde_json::json;
 
     #[test]
-    fn graph_agent_projection_preserves_last_duplicate_and_checks_row_identity() {
+    fn coordination_reads_managed_agents_without_legacy_graph_table() {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL); CREATE TABLE graph_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);").unwrap();
         connection
-            .execute(
-                "INSERT INTO graph_agents VALUES(?1,?2)",
-                [
-                    "",
-                    r#"{"id":"discarded","id":"","opaque":{"nested":[1,null]},"number":1.0}"#,
-                ],
-            )
+            .execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
             .unwrap();
-        let agents = CoordinationRepository::agents(&connection).unwrap();
-        assert_eq!(
-            agents,
-            vec![(
-                "".into(),
-                json!({"id":"","opaque":{"nested":[1,null]},"number":1.0}),
-                true
-            )]
+        assert!(
+            CoordinationRepository::agents(&connection)
+                .unwrap()
+                .is_empty()
         );
-        for raw in [r#"{"id":"other"}"#, r#"{"id":null}"#, r#"{}"#, r#"[]"#] {
-            connection
-                .execute("UPDATE graph_agents SET record=?1 WHERE id=''", [raw])
-                .unwrap();
-            assert!(matches!(
-                CoordinationRepository::agents(&connection),
-                Err(StoreError::InvalidStoredObject {
-                    table: "graph_agents",
-                    ..
-                })
-            ));
-        }
     }
 }

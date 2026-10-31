@@ -12,7 +12,8 @@ use std::{
 };
 
 use serde::{Deserialize, de::IgnoredAny};
-use serde_json::{Number, Value, json};
+use serde_json::{Value, json};
+use studio_runtime_schema::json_object::JsonObject;
 use studio_runtime_services::{
     native_runtime::{
         CompatibilityEvidence, CompatibilityProbe, CompatibilityRefusal, CompatibilityResult,
@@ -88,12 +89,13 @@ impl CompatibilityProbe for SystemCompatibilityProbe {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CompanionReady {
     #[serde(rename = "type")]
     kind: String,
-    #[serde(rename = "selectedVersion")]
-    version: Number,
-    capabilities: Vec<IgnoredAny>,
+    selected_version: f64,
+    #[serde(rename = "capabilities")]
+    _capabilities: Vec<IgnoredAny>,
 }
 #[derive(Deserialize)]
 struct InitializeResult {
@@ -114,13 +116,12 @@ fn probe_result<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, ()> {
     }
     T::deserialize(value).map_err(|_| ())
 }
-fn companion_ready(value: Value) -> Result<(), ()> {
-    let ready: CompanionReady = probe_result(value)?;
-    if ready.kind != "connection/ready" || ready.version != Number::from(1) {
-        return Err(());
-    }
-    let _capabilities = ready.capabilities;
-    Ok(())
+fn companion_ready(bytes: &[u8]) -> Result<(), ()> {
+    let JsonObject(ready): JsonObject<CompanionReady> =
+        serde_json::from_slice(bytes).map_err(|_| ())?;
+    (ready.kind == "connection/ready" && ready.selected_version == 1.0)
+        .then_some(())
+        .ok_or(())
 }
 
 async fn check_bundle(
@@ -164,9 +165,7 @@ async fn check_bundle(
         {
             return Err(CompatibilityRefusal::CompanionCheck);
         }
-        let value: Value = serde_json::from_slice(&reply[4..])
-            .map_err(|_| CompatibilityRefusal::CompanionCheck)?;
-        companion_ready(value).map_err(|_| CompatibilityRefusal::CompanionCheck)?;
+        companion_ready(&reply[4..]).map_err(|_| CompatibilityRefusal::CompanionCheck)?;
         companions.insert(name.to_owned(), json!({"smoke":true}));
     }
 
@@ -592,7 +591,6 @@ mod tests {
         for raw in [
             r#"{"type":"connection/ready","selectedVersion":1,"capabilities":[null,{},1]}"#,
             r#"{"type":"connection/ready","selectedVersion":1.0,"capabilities":[]}"#,
-            r#"{"type":"bad","type":"connection/ready","selectedVersion":0,"selectedVersion":1,"capabilities":[]}"#,
             r#"{"type":"connection/ready","selectedVersion":1,"capabilities":{}}"#,
             r#"{"userAgent":"","config":{"anything":[null,1]},"data":[]}"#,
             r#"{"userAgent":null,"config":[],"data":[null]}"#,
@@ -606,9 +604,9 @@ mod tests {
             let parsed: Result<Value, _> = serde_json::from_str(raw);
             if let Ok(value) = parsed {
                 let ready = value.get("type").and_then(Value::as_str) == Some("connection/ready")
-                    && value.get("selectedVersion") == Some(&json!(1))
+                    && value.get("selectedVersion").and_then(Value::as_f64) == Some(1.0)
                     && value.get("capabilities").is_some_and(Value::is_array);
-                assert_eq!(companion_ready(value.clone()).is_ok(), ready, "{raw}");
+                assert_eq!(companion_ready(raw.as_bytes()).is_ok(), ready, "{raw}");
                 assert_eq!(
                     probe_result::<InitializeResult>(value.clone()).is_ok(),
                     value.get("userAgent").and_then(Value::as_str).is_some(),
@@ -624,6 +622,7 @@ mod tests {
                 assert_eq!(loaded, value.get("data") == Some(&json!([])), "{raw}");
             }
         }
+        assert!(companion_ready(br#"{"type":"bad","type":"connection/ready","selectedVersion":1,"capabilities":[]}"#).is_err());
     }
 
     #[tokio::test]

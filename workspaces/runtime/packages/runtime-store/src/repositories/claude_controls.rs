@@ -91,7 +91,7 @@ impl ClaudeControlRepository {
             return Err(invalid(id));
         }
         if !removed.is_empty() {
-            use crate::{RecordOrder, RecordPredicate, Table, TranscriptItemRecord, truthy};
+            use crate::{RecordOrder, RecordPredicate, Table, TranscriptItemRecord};
             let turns: std::collections::BTreeSet<_> = removed.iter().map(String::as_str).collect();
             for item in Table::<TranscriptItemRecord>::new(tx).list_matching(
                 Some(RecordPredicate::PhysicalAgentEquals(&actor.id.0)),
@@ -99,12 +99,13 @@ impl ClaudeControlRepository {
             )? {
                 let mut item = item;
                 if item
-                    .extra("turnId")
-                    .and_then(Value::as_str)
+                    .turn_id()
+                    .value()
+                    .map(String::as_str)
                     .is_some_and(|turn| turns.contains(turn))
-                    && !truthy(item.extra("afterRestore"))
+                    && item.after_restore().is_none_or(str::is_empty)
                 {
-                    item.set_after_restore(serde_json::json!(id));
+                    item.set_after_restore(id.to_owned());
                     if !Table::<TranscriptItemRecord>::new(tx).update(&item)? {
                         return Err(invalid("transcript"));
                     }

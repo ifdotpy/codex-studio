@@ -134,6 +134,7 @@ mod tests {
         ))
         .expect("legacy fixture");
         original["accountKey"] = json!("default");
+        original["compactions"] = json!(0);
         let record = AgentRecord::from_value(original.clone()).expect("legacy stored record");
         store.transaction(move |tx| {
             AgentRepository::put(tx, &record)?;
@@ -192,7 +193,7 @@ mod tests {
             .await
             .expect("fixture operation succeeds");
         store.transaction(|tx| {
-            let agent = json!({"accountKey":"default","provider":"codex", "id":"legacy-worker", "rootId":"lead", "parentId":"lead", "epoch":1,
+            let agent = json!({"compactions":0,"accountKey":"default","provider":"codex", "id":"legacy-worker", "rootId":"lead", "parentId":"lead", "epoch":1,
                 "workspaceMode":"image", "status":"running", "autoWake":true, "inFlight":true,
                 "turnId":"old-turn", "startAttempt":{"turnId":"old-turn"},
                 "restartRecovery":{"turnId":"old-turn","stage":"pending"}});

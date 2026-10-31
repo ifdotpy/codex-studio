@@ -107,7 +107,7 @@ impl Fixture {
             .transaction(move |tx| {
                 let mut agent: studio_runtime_store::AgentRecord =
                     serde_json::from_str(include_str!("agent.json"))?;
-                agent.extra.insert("cwd".into(), json!(workspace));
+                agent.cwd = Some(workspace.to_string_lossy().into_owned());
                 agent
                     .extra
                     .insert("hostProjectPath".into(), json!(workspace));
@@ -116,7 +116,7 @@ impl Fixture {
                 AgentRepository::put(tx, &agent)?;
                 agent.id = "other".into();
                 agent.root_id = agent.id.clone();
-                agent.extra.insert("cwd".into(), json!(cwd));
+                agent.cwd = Some(cwd);
                 AgentRepository::put(tx, &agent)
             })
             .await

@@ -349,8 +349,7 @@ mod tests {
 fn connected_method(method: &str) -> bool {
     matches!(
         method,
-        "system.info"
-            | "preferences.raw_all"
+        "preferences.raw_all"
             | "preferences.import"
             | "preferences.raw_set"
             | "preferences.raw_remove"

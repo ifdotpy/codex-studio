@@ -27,6 +27,7 @@ mod path;
 pub mod path_identity;
 pub mod receipt_migration_contract;
 pub mod receipt_schema;
+pub use studio_runtime_schema::raw_object;
 mod records;
 mod repositories;
 pub use repositories::multi_server_delivery;
@@ -96,9 +97,9 @@ use sqlite_actor::{ActorResponseDisposition, SqliteActor};
 
 pub use path::{NATIVE_LAYR_DIRECTORY, resolve_state_dir};
 pub use records::{
-    ActiveExecutionView, AgentExecutionMode, AgentId, AgentRecord, AgentRepository, AgentStatus,
-    AnnotationRecord, ChatMessage, ChatMessageId, CheckpointRecord, ComplaintRecord,
-    CredentialCopy, EventMetadataRecord, ExecutionRunRecord, GraphAgentRecord, InterruptOutcome,
+    ActiveExecutionView, AgentDraft, AgentExecutionMode, AgentId, AgentRecord, AgentRepository,
+    AgentSandbox, AgentStatus, AnnotationRecord, ChatMessage, ChatMessageId, CheckpointRecord,
+    ComplaintRecord, CredentialCopy, EventMetadataRecord, ExecutionRunRecord, InterruptOutcome,
     JsonRecord, LegacyWorkReply, MessageRepository, MonitorRecord, NativeRelease,
     NativeReleaseScope, NativeReviewThread, PlanRecord, QueueEvent, QueueEventId,
     QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate, RecordQueryShape,
@@ -107,7 +108,7 @@ pub use records::{
     TaskRecord, TaskRepository, TerminalRecord, TitleJob, ToolResultRecord, TranscriptAssetId,
     TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord, UnknownAgentStatus,
     UsageResumeRecord, VmAuthBootstrap, VmLaunch, WorkItemRecord, WorkStatus,
-    WorkspaceOperationRecord, decode_agent_value,
+    WorkspaceOperationRecord, decode_agent_record,
 };
 pub use repositories::agent_indexed_reads::{AgentIndexedReads, RESERVED_TURN_INPUT};
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
@@ -493,7 +494,6 @@ fn fire_commit_observers(notifiers: &Mutex<CommitNotifiers>) {
 }
 
 fn fire_analytics_commit_observers(notifiers: &Mutex<CommitNotifiers>, roots: ChangedRoots) {
-    fire_commit_observers(notifiers);
     let observers = notifiers
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -825,6 +825,10 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("invalid stored object {table}/{id}")]
     InvalidStoredObject { table: &'static str, id: String },
+    #[error("full transcript text is unavailable for {id}")]
+    TranscriptFullTextUnavailable { id: String },
+    #[error("transcript inputs are incomplete for {id}")]
+    TranscriptInputsIncomplete { id: String },
     #[error("persisted JSON schema validation failed: {0}")]
     SchemaValidation(String),
     #[error("invalid JSON-record table contract: {0}")]
@@ -1563,15 +1567,6 @@ impl RuntimeStore {
     /// already installed; the first one stays.
     pub fn install_entity_publisher(&self, publisher: Arc<dyn EntityPublisher>) -> bool {
         self.entity_publisher.set(publisher).is_ok()
-    }
-
-    /// Observe committed analytics source writes. Callbacks must only enqueue work.
-    pub fn add_analytics_commit_observer(&self, observer: impl Fn() + Send + Sync + 'static) {
-        self.analytics_commit_notifiers
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .observers
-            .push(Arc::new(observer));
     }
 
     /// Observe analytics commits with the roots whose usage generation changed.

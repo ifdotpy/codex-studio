@@ -17,7 +17,7 @@ async fn limits_exposes_agent_policy_and_accounts_exposes_only_safe_organization
             .await
             .expect("runtime store opens"),
     );
-    let agent = json!({"id":"worker","rootId":"worker","epoch":1,"status":"idle",
+    let agent = json!({"compactions":0,"id":"worker","rootId":"worker","epoch":1,"status":"idle",
         "accountKey":"claude","provider":"claude","model":"sonnet","cwd":"/fixture","isLead":true});
     let stored = AgentRecord::from_value(agent.clone()).expect("agent fixture is valid");
     store

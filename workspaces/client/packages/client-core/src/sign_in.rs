@@ -6,6 +6,7 @@ use std::{
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
+use studio_client_domain::json_object::{LenientField, optional_field};
 
 /// Maximum time between the native click and use of its sign-in intent. Unit: seconds.
 const INTENT_LIFETIME: Duration = Duration::from_secs(60);
@@ -20,18 +21,18 @@ const REFUSED: &str =
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SignInFields {
-    #[serde(default, deserialize_with = "text")]
+    #[serde(default, deserialize_with = "optional_field")]
     request_id: Option<String>,
-    #[serde(default, deserialize_with = "text")]
+    #[serde(default, deserialize_with = "optional_field")]
     url: Option<String>,
-    #[serde(default, deserialize_with = "text")]
+    #[serde(default, deserialize_with = "optional_field")]
     preparation: Option<String>,
 }
 #[derive(Default, Deserialize)]
 struct SignInEnvelope {
     #[serde(default, rename = "signInOwner", deserialize_with = "owner")]
     owner: Owner,
-    #[serde(default, rename = "_nativeWindow", deserialize_with = "text")]
+    #[serde(default, rename = "_nativeWindow", deserialize_with = "optional_field")]
     window: Option<String>,
 }
 #[derive(Default)]
@@ -41,14 +42,11 @@ enum Owner {
     Named(String),
     Invalid,
 }
-fn text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
-}
 fn owner<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Owner, D::Error> {
-    Ok(match Value::deserialize(d)? {
-        Value::Null => Owner::Local,
-        Value::String(value) => Owner::Named(value),
-        Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => Owner::Invalid,
+    Ok(match Option::<LenientField<String>>::deserialize(d)? {
+        None => Owner::Local,
+        Some(LenientField::Value(value)) => Owner::Named(value),
+        Some(LenientField::Other(_)) => Owner::Invalid,
     })
 }
 struct SignInRequest {
@@ -337,6 +335,24 @@ mod tests {
         let mut invalid = params();
         invalid.as_object_mut().unwrap().remove("_nativeWindow");
         assert!(SignInRequest::parse(&invalid).scope().is_err());
+    }
+    #[test]
+    fn owner_null_is_local_and_other_non_text_values_are_refused() {
+        let mut value = params();
+        value["signInOwner"] = Value::Null;
+        assert_eq!(
+            SignInRequest::parse(&value).context().unwrap().owner,
+            "local"
+        );
+        value["signInOwner"] = json!("remote");
+        assert_eq!(
+            SignInRequest::parse(&value).context().unwrap().owner,
+            "remote"
+        );
+        for owner in [json!(false), json!(0), json!([]), json!({})] {
+            value["signInOwner"] = owner;
+            assert!(SignInRequest::parse(&value).context().is_err());
+        }
     }
     #[test]
     fn native_count_limit_reclaims_expired_intents() {

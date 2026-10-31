@@ -1,22 +1,16 @@
 //! Pure task and non-text item transitions; the transaction adapter applies the intents.
 use super::notices::{json_text, remove};
 use super::{NotificationDispatchError, suffix};
+use serde::Deserialize;
 use serde_json::{Value, json};
+use studio_runtime_schema::task_record::{NonnegativeNumber, ProcessId, TaskStatus, TaskType};
 use studio_runtime_store::TaskRecord;
 
 pub(super) const TOOL_OUTPUT_CHARS: usize = 12_000;
-const TASK_TYPES: &[&str] = &[
-    "commandExecution",
-    "dynamicToolCall",
-    "mcpToolCall",
-    "webSearch",
-    "fileChange",
-    "contextCompaction",
-];
 
 #[derive(Default)]
 pub(super) struct ItemDecision {
-    pub task: Option<Value>,
+    pub task: Option<TaskRecord>,
     pub item: Option<Value>,
     pub compacted: bool,
 }
@@ -28,33 +22,35 @@ pub(super) fn task_transition(
     previous: Option<&TaskRecord>,
     stale: bool,
     at: f64,
-) -> Result<Option<Value>, NotificationDispatchError> {
+) -> Result<Option<TaskRecord>, NotificationDispatchError> {
     let item = &params["item"];
     let kind = item["type"].as_str().unwrap_or_default();
+    let task_type = TaskType::deserialize(serde::de::value::StrDeserializer::<
+        serde::de::value::Error,
+    >::new(kind))
+    .ok();
     let item_id = item["id"]
         .as_str()
         .or_else(|| params["itemId"].as_str())
         .filter(|s| !s.is_empty());
-    if item_id.is_none()
-        || (method != "item/commandExecution/outputDelta" && !TASK_TYPES.contains(&kind))
-    {
+    if item_id.is_none() || (method != "item/commandExecution/outputDelta" && task_type.is_none()) {
         return Ok(None);
     }
     let item_id = item_id.unwrap_or_default();
     let historical_tool = stale
         && matches!(method, "item/started" | "item/completed")
         && previous.is_some_and(|t| {
-            t.kind() == Some("tool")
-                && t.agent().map(Value::from).unwrap_or(Value::Null) == agent["id"]
-                && t.item_id() == Some(item_id)
-                && t.turn_id().map(Value::from).unwrap_or(Value::Null) == params["turnId"]
-                && t.task_type() == Some(kind)
+            t.kind() == studio_runtime_schema::task_record::TaskKind::Tool
+                && Some(t.agent()) == agent["id"].as_str()
+                && t.item_id() == item_id
+                && Some(t.turn_id()) == params["turnId"].as_str()
+                && t.task_type().as_str() == kind
         });
     if stale
         && !historical_tool
         && !previous.is_some_and(|t| {
-            t.kind() == Some("command")
-                && t.turn_id().map(Value::from).unwrap_or(Value::Null) == params["turnId"]
+            t.kind() == studio_runtime_schema::task_record::TaskKind::Command
+                && Some(t.turn_id()) == params["turnId"].as_str()
         })
     {
         return Ok(None);
@@ -73,56 +69,145 @@ pub(super) fn task_transition(
         task.set_output_truncated(
             task.output_truncated() == Some(true) || output.chars().count() > TOOL_OUTPUT_CHARS,
         );
-        return Ok(Some(task.into_value()));
+        return Ok(Some(task));
     }
     if let Some(task) = previous
-        && task.status() != Some("running")
+        && task.status() != studio_runtime_schema::task_record::TaskStatus::Running
     {
-        return Ok(Some(task.value()));
+        return Ok(Some(task.clone()));
     }
-    let mut task = previous.map(TaskRecord::value).unwrap_or_else(||json!({"id":format!("{}:{item_id}",agent["id"].as_str().unwrap_or_default()),"agent":agent["id"],"itemId":item_id,"turnId":params.get("turnId").filter(|t|!t.is_null() && **t != "").unwrap_or(&agent["turnId"]),"created":at,"kind":if kind=="commandExecution"{"command"}else{"tool"}}));
-    task["type"] = json!(kind);
-    task["name"] = item
+    let task_type = task_type.ok_or_else(NotificationDispatchError::invalid)?;
+    let name = item
         .get("tool")
-        .filter(|v| v.as_str().is_some_and(|s| !s.is_empty()))
-        .cloned()
-        .unwrap_or(json!(kind));
-    task["status"] = json!("running");
-    for key in [
-        "command",
-        "cwd",
-        "processId",
-        "durationMs",
-        "exitCode",
-        "query",
-        "server",
-        "outputFile",
-    ] {
-        if let Some(value) = item.get(key).filter(|v| !v.is_null()) {
-            task[key] = value.clone();
-        }
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(kind)
+        .to_owned();
+    let mut task = if let Some(previous) = previous {
+        previous.clone()
+    } else {
+        let agent_id = agent["id"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(NotificationDispatchError::invalid)?;
+        let turn = params["turnId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| agent["turnId"].as_str().filter(|s| !s.is_empty()))
+            .ok_or_else(NotificationDispatchError::invalid)?;
+        let created = NonnegativeNumber::deserialize(serde::de::value::F64Deserializer::<
+            serde::de::value::Error,
+        >::new(at))
+        .map_err(|_| NotificationDispatchError::invalid())?;
+        TaskRecord::new(
+            agent_id.to_owned(),
+            item_id.to_owned(),
+            turn.to_owned(),
+            created,
+            task_type,
+            name.clone(),
+        )
+    };
+    if task.task_type() != task_type {
+        return Err(NotificationDispatchError::invalid());
     }
-    for key in ["startedAtMs", "completedAtMs"] {
-        if let Some(value) = params.get(key).filter(|v| v.is_number()) {
-            task[key] = value.clone();
-        }
-    }
-    if let (Some(start), Some(end)) = (task["startedAtMs"].as_f64(), task["completedAtMs"].as_f64())
-    {
-        task["durationMs"] = duration(&task["startedAtMs"], &task["completedAtMs"], start, end);
-    }
-    for key in ["arguments", "error"] {
-        if let Some(value) = item.get(key).filter(|v| !v.is_null()) {
-            task[key] = json!(
-                value
-                    .as_str()
+    task.name = name;
+    task.set_status(TaskStatus::Running);
+    let string = |key: &str| {
+        item.get(key)
+            .filter(|v| !v.is_null())
+            .map(|v| {
+                v.as_str()
                     .map(str::to_owned)
-                    .unwrap_or_else(|| json_text(value))
-                    .chars()
-                    .take(TOOL_OUTPUT_CHARS)
-                    .collect::<String>()
+                    .ok_or_else(NotificationDispatchError::invalid)
+            })
+            .transpose()
+    };
+    if let Some(value) = string("command")? {
+        task.command = Some(value);
+    }
+    if let Some(value) = string("cwd")? {
+        task.cwd = Some(value);
+    }
+    if let Some(value) = item.get("processId").filter(|v| !v.is_null()) {
+        task.process_id =
+            Some(ProcessId::deserialize(value).map_err(|_| NotificationDispatchError::invalid())?);
+    }
+    if let Some(value) = string("query")? {
+        task.query = Some(value);
+    }
+    if let Some(value) = string("server")? {
+        task.server = Some(value);
+    }
+    if let Some(value) = string("outputFile")? {
+        task.output_file = Some(value);
+    }
+    if let Some(value) = item.get("exitCode").filter(|v| !v.is_null()) {
+        task.exit_code = Some(
+            value
+                .as_i64()
+                .ok_or_else(NotificationDispatchError::invalid)?,
+        );
+    }
+    if let Some(value) = item.get("durationMs").filter(|v| !v.is_null()) {
+        task.duration_ms = Some(
+            NonnegativeNumber::deserialize(value)
+                .map_err(|_| NotificationDispatchError::invalid())?,
+        );
+    }
+    if let Some(value) = params.get("startedAtMs").filter(|v| v.is_number()) {
+        task.started_at_ms = Some(
+            NonnegativeNumber::deserialize(value)
+                .map_err(|_| NotificationDispatchError::invalid())?,
+        );
+    }
+    if let Some(value) = params.get("completedAtMs").filter(|v| v.is_number()) {
+        task.completed_at_ms = Some(
+            NonnegativeNumber::deserialize(value)
+                .map_err(|_| NotificationDispatchError::invalid())?,
+        );
+    }
+    if let (Some(start), Some(end)) = (task.started_at_ms(), task.completed_at_ms()) {
+        let integer = task
+            .started_at_ms
+            .as_ref()
+            .and_then(|v| v.number().as_i64())
+            .zip(
+                task.completed_at_ms
+                    .as_ref()
+                    .and_then(|v| v.number().as_i64()),
             );
-        }
+        task.duration_ms = Some(
+            if let Some((start, end)) = integer {
+                NonnegativeNumber::deserialize(serde::de::value::I64Deserializer::<
+                    serde::de::value::Error,
+                >::new(
+                    end.saturating_sub(start).max(0)
+                ))
+            } else {
+                NonnegativeNumber::deserialize(serde::de::value::F64Deserializer::<
+                    serde::de::value::Error,
+                >::new((end - start).max(0.0)))
+            }
+            .map_err(|_| NotificationDispatchError::invalid())?,
+        );
+    }
+    let text = |key: &str| {
+        item.get(key).filter(|v| !v.is_null()).map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| json_text(value))
+                .chars()
+                .take(TOOL_OUTPUT_CHARS)
+                .collect()
+        })
+    };
+    if let Some(value) = text("arguments") {
+        task.arguments = Some(value);
+    }
+    if let Some(value) = text("error") {
+        task.error = Some(value);
     }
     let output = item
         .get("aggregatedOutput")
@@ -136,20 +221,27 @@ pub(super) fn task_transition(
                 .map(json_text)
         });
     if let Some(output) = output {
-        task["tail"] = json!(suffix(&output, TOOL_OUTPUT_CHARS));
-        task["outputTruncated"] = json!(output.chars().count() > TOOL_OUTPUT_CHARS);
+        task.tail = Some(suffix(&output, TOOL_OUTPUT_CHARS));
+        task.output_truncated = Some(output.chars().count() > TOOL_OUTPUT_CHARS);
     }
     if method == "item/completed" && item["status"] != "inProgress" {
-        if !task["durationMs"].is_number() {
-            let elapsed = (at - task["created"].as_f64().unwrap_or(at)) * 1000.0;
-            task["durationMs"] = if elapsed <= 0.0 {
-                json!(0)
-            } else {
-                json!(elapsed)
-            };
+        if task.duration_ms.is_none() {
+            let elapsed = (at - task.created()) * 1000.0;
+            task.duration_ms = Some(
+                if elapsed <= 0.0 {
+                    NonnegativeNumber::deserialize(serde::de::value::I64Deserializer::<
+                        serde::de::value::Error,
+                    >::new(0))
+                } else {
+                    NonnegativeNumber::deserialize(serde::de::value::F64Deserializer::<
+                        serde::de::value::Error,
+                    >::new(elapsed))
+                }
+                .map_err(|_| NotificationDispatchError::invalid())?,
+            );
         }
-        task["status"] = json!(tool_status(item, false));
-        task["finished"] = json!(at);
+        task.set_status(tool_status(item, false));
+        task.finished = Some(at);
     }
     Ok(Some(task))
 }
@@ -215,11 +307,9 @@ pub(super) fn non_text(
         && item["aggregatedOutput"].is_null()
         && let Some(task) = &decision.task
     {
-        displayed["aggregatedOutput"] = json!(suffix(
-            task["tail"].as_str().unwrap_or_default(),
-            TOOL_OUTPUT_CHARS
-        ));
-        displayed["outputTruncated"] = json!(task["outputTruncated"] == true);
+        displayed["aggregatedOutput"] =
+            json!(suffix(task.tail().unwrap_or_default(), TOOL_OUTPUT_CHARS));
+        displayed["outputTruncated"] = json!(task.output_truncated() == Some(true));
     }
     for key in ["startedAtMs", "completedAtMs"] {
         if let Some(value) = params.get(key).filter(|v| !v.is_null()) {
@@ -245,7 +335,7 @@ pub(super) fn non_text(
                     None
                 } else {
                     match &decision.task {
-                        Some(task) => task.get("durationMs").cloned(),
+                        Some(task) => task.duration_json(),
                         None => previous_task.and_then(TaskRecord::duration_json),
                     }
                 }
@@ -258,17 +348,17 @@ pub(super) fn non_text(
     Ok(decision)
 }
 
-pub(super) fn tool_status(item: &Value, started: bool) -> &'static str {
+pub(super) fn tool_status(item: &Value, started: bool) -> TaskStatus {
     if started || item["status"] == "inProgress" {
-        "running"
+        TaskStatus::Running
     } else if matches!(item["status"].as_str(), Some("failed" | "declined"))
         || item["success"] == false
         || (!item["exitCode"].is_null() && item["exitCode"] != 0)
         || crate::event_write::truthy(item.get("error"))
     {
-        "failed"
+        TaskStatus::Failed
     } else {
-        "completed"
+        TaskStatus::Completed
     }
 }
 

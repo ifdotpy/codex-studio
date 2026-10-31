@@ -406,7 +406,13 @@ fn access_outbound(
     cutover: i64,
 ) -> Result<()> {
     let source = "runtime_access_outbound";
-    let state = domain::<AccessOutboundState>(source, row, &record["outcome"])?.to_owned();
+    // The retired Python backend named a pruned complete reply "expired"; Rust calls it redacted.
+    let outcome = if record["outcome"] == "expired" {
+        json!(AccessOutboundState::Redacted.as_str())
+    } else {
+        record["outcome"].clone()
+    };
+    let state = domain::<AccessOutboundState>(source, row, &outcome)?.to_owned();
     match state.as_str() {
         s if s == AccessOutboundState::Unknown.as_str() => {
             if !record["created"].is_number() {
@@ -447,6 +453,19 @@ fn access_outbound(
     Ok(())
 }
 
+/// Counts pending outbox rows of retired actions that the migration dropped.
+const RETIRED_PENDING_REPORT: &str = "dropped-retired-pending:server-outbox";
+
+/// The request root of an outbox body whose action is not a current `ServerOperationKind`.
+fn retired_action_root(wrapper: &Value) -> Option<String> {
+    let body: Value = serde_json::from_str(wrapper["body"].as_str()?).ok()?;
+    let action = body["action"].as_str()?;
+    if <ServerOperationKind as strum::VariantNames>::VARIANTS.contains(&action) {
+        return None;
+    }
+    body["requestId"].as_str().map(str::to_owned)
+}
+
 fn server(
     tx: &Transaction<'_>,
     source: &str,
@@ -455,6 +474,22 @@ fn server(
     cutover: i64,
 ) -> Result<()> {
     let state = domain::<ServerDeliveryState>(source, row, &wrapper["state"])?;
+    if source == "runtime_server_outbox"
+        && let Some(root) = retired_action_root(wrapper)
+    {
+        // The retired Python backend sent actions that Rust never sends, replays or
+        // accepts from a peer: a complete one has no reader, a pending one can never finish.
+        if state == ServerDeliveryState::Complete.as_str() {
+            deletion(tx, source, "server-outbox", row, &root, cutover)?;
+        } else {
+            let mut count = MigrationCheckpoint::begin(tx, ID, RETIRED_PENDING_REPORT, cutover)?;
+            count.cursor += 1;
+            count.status = MigrationStatus::Complete;
+            count.save(tx, ID, RETIRED_PENDING_REPORT, cutover)?;
+        }
+        delete_source(tx, source, row.rowid)?;
+        return Ok(());
+    }
     let mut destination = row.clone();
     let mut wire_root = row.id.clone();
     if source == "runtime_server_outbox" {
@@ -1034,11 +1069,40 @@ mod tests {
     }
 
     #[test]
+    fn receipts_remote_retired_outbox_actions_are_dropped_and_counted() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let body = |id: &str| json!({"requestId":id,"action":"state","payload":{}}).to_string();
+        db.execute("INSERT INTO runtime_server_outbox(id,fingerprint,state,result,body,server) VALUES('done','f','complete','{\"_syncEntities\":[]}',?1,'peer')", [body("done")]).expect("retired complete");
+        db.execute("INSERT INTO runtime_server_outbox(id,fingerprint,state,body,server) VALUES('pending','f','queued',?1,'peer')", [body("pending")]).expect("retired pending");
+        migrate(&mut db);
+        let ids: Vec<String> = db
+            .prepare("SELECT id FROM runtime_server_outbox")
+            .expect("query")
+            .query_map([], |r| r.get(0))
+            .expect("rows")
+            .collect::<std::result::Result<_, _>>()
+            .expect("ids");
+        assert!(ids.is_empty());
+        let tx = db.transaction().expect("transaction");
+        for report in ["deleted-completed-c:server-outbox", RETIRED_PENDING_REPORT] {
+            assert_eq!(
+                MigrationCheckpoint::load(&tx, ID, report)
+                    .expect("report")
+                    .expect("count")
+                    .cursor,
+                1
+            );
+        }
+    }
+
+    #[test]
     fn receipts_remote_completed_without_reply_counts_each_family_once() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&mut db);
         insert(&db, "client", "expired", "tombstone");
         db.execute("INSERT INTO runtime_access_outbound VALUES('server','redacted','hash','{\"outcome\":\"redacted\",\"completed\":1.0}')",[]).expect("redacted reply");
+        db.execute("INSERT INTO runtime_access_outbound VALUES('server','expired','hash','{\"outcome\":\"expired\",\"completed\":1.0}')",[]).expect("legacy expired reply");
         let delivered = json!({"id":"2f4bf964-ef79-5f3e-936c-f839d664e5f2","kind":"chat-message","status":"delivered"});
         db.execute(
             "INSERT INTO runtime_federation_outbox VALUES(?1,'peer',?2)",
@@ -1054,7 +1118,7 @@ mod tests {
                     .expect("report")
                     .expect("family count")
                     .cursor,
-                1
+                if family == "access-outbound" { 2 } else { 1 }
             );
         }
         assert_eq!(

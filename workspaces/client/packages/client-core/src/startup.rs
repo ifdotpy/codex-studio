@@ -18,6 +18,7 @@ use std::{
     process::{Command, Stdio},
     time::Duration,
 };
+use studio_client_domain::json_object::optional_field;
 use tokio::time::{Instant, sleep};
 
 // Desktop HTTP identity mirrors backend.ts; backend.test.ts checks parity.
@@ -78,13 +79,8 @@ pub struct SupervisorRecovery {
 // unrelated platform helper fields. Invalid or missing values remain visible.
 #[derive(Deserialize)]
 pub struct EnabledRecovery {
-    #[serde(default, deserialize_with = "enabled_value")]
+    #[serde(default, deserialize_with = "optional_field")]
     pub enabled: Option<bool>,
-}
-fn enabled_value<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<bool>, D::Error> {
-    serde_json::Value::deserialize(deserializer).map(|value| value.as_bool())
 }
 
 // Recovery also contains settings owned by the platform recovery helper.
@@ -461,6 +457,19 @@ mod tests {
     use super::*;
     #[test]
     fn recovery_projections_preserve_partial_reads_and_missing_launch_fields() {
+        for value in [
+            serde_json::json!(null),
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::json!(1),
+            serde_json::json!("yes"),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let enabled =
+                EnabledRecovery::deserialize(&serde_json::json!({"enabled":value})).unwrap();
+            assert_eq!(enabled.enabled, value.as_bool());
+        }
         let source = serde_json::json!({"enabled":true,"supervisorEnabled":true,"environment":null,"unsetEnvironment":5,"platformSpecific":{"future":true}});
         let enabled: EnabledRecovery = serde_json::from_value(source.clone()).unwrap();
         let supervisor: SupervisorRecovery = serde_json::from_value(source.clone()).unwrap();

@@ -38,6 +38,26 @@ mod m2026_10_28_usage_revision;
 mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
+mod m2026_10_30_agent_compactions;
+mod m2026_10_30_agent_volatile;
+mod m2026_10_30_branch_phase;
+mod m2026_10_30_capture_errors;
+mod m2026_10_30_complaint_record;
+pub(crate) mod m2026_10_30_monitor_errors;
+mod m2026_10_30_monitor_generated;
+pub(crate) mod m2026_10_30_monitor_queue;
+pub(crate) mod m2026_10_30_monitor_status;
+mod m2026_10_30_project_teams;
+mod m2026_10_30_radio_room;
+mod m2026_10_30_request_record;
+mod m2026_10_30_retire_graph_agents;
+mod m2026_10_30_rule_monitor_records;
+mod m2026_10_30_start_wait;
+mod m2026_10_30_task_records;
+mod m2026_10_30_unused_agent_columns;
+mod m2026_10_30_unused_start_action;
+mod m2026_10_30_vm_stream_owners;
+mod m2026_10_31_native_status_error;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -46,6 +66,12 @@ pub use m2026_10_20_agents::prepare_columns;
 pub use m2026_10_26_provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_26_provider_identity::migrate_canvas_2026_10_26;
+#[cfg(any(test, feature = "test-support"))]
+pub use m2026_10_30_branch_phase::apply as migrate_branch_phase;
+#[cfg(any(test, feature = "test-support"))]
+pub use m2026_10_30_project_teams::apply as migrate_project_teams;
+#[cfg(any(test, feature = "test-support"))]
+pub use m2026_10_30_radio_room::apply as migrate_radio_room;
 
 use std::path::Path;
 
@@ -97,6 +123,15 @@ const OCTOBER_29: MigrationDate = MigrationDate {
     month: 10,
     day: 29,
 };
+<<<<<<< head
+||||||| base
+=======
+const OCTOBER_31: MigrationDate = MigrationDate {
+    year: 2026,
+    month: 10,
+    day: 31,
+};
+>>>>>>> origin/main
 const OCTOBER_30: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
@@ -265,6 +300,26 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
+            id: "2026-10-30-agent-compactions",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records with missing compaction counts",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_agent_compactions::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-start-wait",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records with legacy start waits",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_start_wait::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: CANVAS_PROVIDER_ID,
             introduced: OCTOBER_26,
             target: MigrationTarget::Canvas,
@@ -274,6 +329,36 @@ static CATALOG: &[&dyn Migration] = &[
         apply: |c| {
             m2026_10_26_provider_identity::migrate_canvas_2026_10_26(c.transaction, c.accounts)
         },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-unused-agent-columns",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records with unread stored generated columns",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_unused_agent_columns::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-retire-graph-agents",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Legacy registered graph agent rows",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_retire_graph_agents::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-unused-start-action",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records with an unread stored start action",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_unused_start_action::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -298,6 +383,56 @@ static CATALOG: &[&dyn Migration] = &[
             }
             crate::agent_volatile::prepare(c.transaction)
         },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-monitor-queue-column",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor rows with JSON queue index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_monitor_queue::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-vm-stream-owner-index",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agents before the VM stream owner index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_vm_stream_owners::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-monitor-status-column",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor rows with JSON status indexes",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_monitor_status::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-monitor-error-columns",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor rows with JSON Studio-error index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_monitor_errors::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-monitor-generated-columns",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor records with writer-maintained index columns",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_monitor_generated::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -460,6 +595,20 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| m2026_10_28_receipts_schema::apply(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-dismissed-incidents-index",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Receipt incidents without a dismissal index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| {
+            Ok(crate::receipt_schema::install_dismissed_index(
+                c.transaction,
+            )?)
+        },
+    },
     &ReceiptMigration {
         family: &m2026_10_28_receipts_execution::ExecutionMigration,
         sources: m2026_10_28_receipts_execution::SOURCES,
@@ -541,6 +690,34 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
+            id: "2026-10-30-agent-volatile-complete",
+            introduced: MigrationDate {
+                year: 2026,
+                month: 10,
+                day: 30,
+            },
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent volatile fields before complete typed writes",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_agent_volatile::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-retired-auth-probe-receipts",
+            introduced: MigrationDate {
+                year: 2026,
+                month: 10,
+                day: 30,
+            },
+            target: MigrationTarget::Canvas,
+            supported_source: "Retired Claude auth probe receipts in any status",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_26_canvas::remove_auth_probe_receipts(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-29-model-choices",
             introduced: OCTOBER_29,
             target: MigrationTarget::Canvas,
@@ -581,6 +758,7 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
+<<<<<<< head
             id: "2026-10-30-text-blobs",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
@@ -588,8 +766,122 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_text_blobs::apply(c.transaction),
+||||||| base
+=======
+            id: "2026-10-30-rule-monitor-records",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Rule and monitor records before strict typed state",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_rule_monitor_records::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-unused-monitor-stall-index",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor rows with the unused stall deadline expression index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| {
+            c.transaction
+                .execute_batch("DROP INDEX IF EXISTS runtime_monitor_stall_due")?;
+            Ok(())
+        },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-capture-errors",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Analytics,
+            supported_source: "Capture error timestamps stored as decimal strings",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_capture_errors::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-complaint-record",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Complaint records before strict typed state",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_complaint_record::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-request-record",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Request records before strict typed state",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_request_record::apply(c.transaction),
+>>>>>>> origin/main
     },
     &RegistryMigration,
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-task-records",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Task records before strict typed validation",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_task_records::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-radio-room",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Radio rooms with missing or null direct and missing active fields",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_radio_room::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-project-teams",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Project records without peerTeams",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_project_teams::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-branch-phase",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Branch operations with missing or unclassifiable phases",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_branch_phase::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-native-status-error",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent native status errors stored as objects",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_31_native_status_error::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-restore-monitor-active-index",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor status migration without the active monitor index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::StartupRecoveryRepository::prepare_monitor_index(c.transaction),
+    },
 ];
 
 /// Operator-facing catalog; implementation and metadata have one owner.
@@ -1087,7 +1379,109 @@ pub(crate) fn prepare_canvas_fixture(transaction: &Transaction<'_>) -> StoreResu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vm_stream_owner_scan_uses_partial_index() {
+        let db = crate::fresh_state::test_canvas();
+        let detail: String = db.query_row(
+            "EXPLAIN QUERY PLAN SELECT id FROM runtime_agents INDEXED BY runtime_agent_vm_stream_owner WHERE account_key=?1 AND execution_mode='vm' AND hold_status='clear'",
+            ["default"], |row| row.get(3),
+        ).unwrap();
+        assert!(detail.contains("runtime_agent_vm_stream_owner"), "{detail}");
+        for (id, mode, account) in [
+            ("vm", "vm", "default"),
+            ("host", "host", "default"),
+            ("other", "vm", "other"),
+        ] {
+            let record = serde_json::json!({"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":account,"executionMode":mode});
+            db.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, record.to_string()],
+            )
+            .unwrap();
+        }
+        let owners = || {
+            db.prepare("SELECT id FROM runtime_agents WHERE account_key=?1 AND execution_mode='vm' AND hold_status='clear' ORDER BY id").unwrap().query_map(["default"], |row| row.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+        };
+        assert_eq!(owners(), ["vm"]);
+        db.execute(
+            "UPDATE runtime_agents SET hold_status='invalid' WHERE id='vm'",
+            [],
+        )
+        .unwrap();
+        assert!(owners().is_empty());
+        db.execute(
+            "UPDATE runtime_agents SET hold_status='clear' WHERE id='vm'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(owners(), ["vm"]);
+    }
     use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    #[test]
+    fn dismissal_index_migration_preserves_incidents() {
+        let mut db = Connection::open_in_memory().expect("database");
+        crate::receipt_schema::create(&db).expect("schema");
+        db.execute_batch("DROP INDEX runtime_error_incidents_dismissed; INSERT INTO runtime_error_incidents(id,kind,owner_kind,owner_id,created,last_seen,dismissed_at,payload) VALUES('dismissed','http_failure','request','owner',1,1,2,'null'),('open','http_failure','request','owner',1,1,NULL,'null');").expect("old incidents");
+        let tx = db.transaction().expect("transaction");
+        let accounts = Accounts::new();
+        let step = CATALOG
+            .iter()
+            .find(|step| step.definition().id == "2026-10-30-dismissed-incidents-index")
+            .expect("registered migration");
+        let context = Context::Sql(SqlContext {
+            transaction: &tx,
+            accounts: &accounts,
+            source: SourceDatabase::Independent,
+        });
+        step.apply(&context).expect("migration");
+        step.apply(&context).expect("repeat migration");
+        let rows: i64 = tx
+            .query_row("SELECT count(*) FROM runtime_error_incidents", [], |row| {
+                row.get(0)
+            })
+            .expect("rows");
+        assert_eq!(rows, 2);
+        let plan: String = tx.query_row("EXPLAIN QUERY PLAN SELECT id,dismissed_at FROM runtime_error_incidents WHERE dismissed_at IS NOT NULL", [], |row| row.get(3)).expect("plan");
+        assert!(plan.contains("runtime_error_incidents_dismissed"), "{plan}");
+        tx.commit().expect("commit");
+    }
+
+    #[test]
+    fn migration_removes_unused_monitor_stall_index() {
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE INDEX runtime_monitor_stall_due ON runtime_monitors(json_extract(record,'$.activityAt')) WHERE json_extract(record,'$.status')='running'; INSERT INTO runtime_monitors(id,record) VALUES('m','{}');").expect("legacy monitor");
+        let tx = db.transaction().expect("transaction");
+        let accounts = Accounts::new();
+        let step = CATALOG
+            .iter()
+            .find(|step| step.definition().id == "2026-10-30-unused-monitor-stall-index")
+            .expect("registered migration");
+        step.apply(&Context::Sql(SqlContext {
+            transaction: &tx,
+            accounts: &accounts,
+            source: SourceDatabase::Independent,
+        }))
+        .expect("migration");
+        assert!(
+            !tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='runtime_monitor_stall_due')",
+                [],
+                |row| row.get::<_, bool>(0)
+            )
+            .expect("index")
+        );
+        assert_eq!(
+            tx.query_row(
+                "SELECT record FROM runtime_monitors WHERE id='m'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .expect("row"),
+            "{}"
+        );
+    }
 
     struct BatchWitness;
     impl ReceiptFamilyMigration for BatchWitness {
@@ -1605,5 +1999,31 @@ mod tests {
         if !db.is_autocommit() {
             db.execute_batch("ROLLBACK").expect("fixture cleanup");
         }
+    }
+}
+
+#[cfg(test)]
+mod monitor_active_index_regression {
+    use super::*;
+
+    #[test]
+    fn migration_restores_missing_active_monitor_index() {
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT,monitor_status TEXT); INSERT INTO runtime_monitors VALUES('m','{}','running');").expect("old schema");
+        let tx = db.transaction().expect("transaction");
+        let accounts = Accounts::new();
+        let step = CATALOG
+            .iter()
+            .find(|step| step.definition().id == "2026-10-31-restore-monitor-active-index")
+            .expect("migration");
+        let context = Context::Sql(SqlContext {
+            transaction: &tx,
+            accounts: &accounts,
+            source: SourceDatabase::Independent,
+        });
+        step.apply(&context).expect("restore index");
+        step.apply(&context).expect("repeat migration");
+        let plan: String = tx.query_row("EXPLAIN QUERY PLAN SELECT id FROM runtime_monitors WHERE monitor_status IN ('running','starting','approval')", [], |row| row.get(3)).expect("plan");
+        assert!(plan.contains("runtime_monitor_startup_active"), "{plan}");
     }
 }

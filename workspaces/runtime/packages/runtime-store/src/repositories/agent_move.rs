@@ -70,13 +70,5 @@ impl AgentMoveRepository {
             [serde_json::to_string(agents)?], |row| row.get(0),
         )?)
     }
-
-    pub fn pending_events(db: &Connection, agent: &str) -> StoreResult<bool> {
-        Ok(db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status='pending')",
-            [agent],
-            |row| row.get(0),
-        )?)
-    }
 }
 inventory::submit! {crate::repositories::SchemaRegistration {repository:"agent_move",requirements:&REQUIREMENTS}}

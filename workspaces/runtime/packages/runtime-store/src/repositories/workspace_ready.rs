@@ -105,14 +105,10 @@ impl ReadyToken {
         let Some(current) = CheckpointsRepository::reservation_snapshot(tx, &self.agent)? else {
             return Ok(Err(ReadyRefusal));
         };
-        let valid = current.agent.record["epoch"] == self.epoch
-            && workspace_generation(&current.agent.record) == self.source
-            && current.agent.record["autoWake"] == true
-            && current
-                .agent
-                .record
-                .get("deletedAt")
-                .is_none_or(Value::is_null)
+        let valid = u64::try_from(current.agent.epoch).ok() == Some(self.epoch)
+            && workspace_generation(&current.agent.value()) == self.source
+            && current.agent.auto_wake == Some(true)
+            && current.agent.deleted_at.is_none()
             && self
                 .paths
                 .reservations(&current)
@@ -166,10 +162,19 @@ pub fn overlaps(a: &Path, b: &Path) -> bool {
 pub struct WorkspacePaths(BTreeMap<PathBuf, PathBuf>);
 impl WorkspacePaths {
     pub fn capture(snapshot: &WorkspaceSnapshot, extra: impl IntoIterator<Item = PathBuf>) -> Self {
-        let paths = std::iter::once(&snapshot.agent)
-            .chain(&snapshot.agents)
-            .chain(&snapshot.operations)
-            .filter_map(|row| row.record["cwd"].as_str().map(PathBuf::from))
+        let paths = snapshot
+            .agent
+            .cwd
+            .as_deref()
+            .map(PathBuf::from)
+            .into_iter()
+            .chain(
+                snapshot
+                    .agents
+                    .iter()
+                    .chain(&snapshot.operations)
+                    .filter_map(|row| row.record["cwd"].as_str().map(PathBuf::from)),
+            )
             .chain(extra);
         Self(
             paths
@@ -314,7 +319,7 @@ impl WorkspaceReadyRepository {
         let Some(current) = CheckpointsRepository::reservation_snapshot(tx, &plan.agent)? else {
             return Ok(false);
         };
-        if workspace_generation(&current.agent.record) != plan.source
+        if workspace_generation(&current.agent.value()) != plan.source
             || conflicts(&current, plan, paths) != conflicts(expected, plan, paths)
             || conflicts(&current, plan, paths).is_none_or(|conflicts| !conflicts.is_empty())
         {
@@ -335,7 +340,7 @@ impl WorkspaceReadyRepository {
         operation["updated"] = json!(now);
         tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
             params![plan.id, operation.to_string()])?;
-        let mut actor = current.agent.record;
+        let mut actor = current.agent.value();
         actor["workspaceOperation"] = json!("provision");
         actor["workspaceReservationId"] = json!(plan.id);
         actor["worktreePreparation"] = json!("preparing");

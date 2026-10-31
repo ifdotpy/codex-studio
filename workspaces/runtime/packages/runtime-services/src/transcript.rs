@@ -56,7 +56,6 @@ impl From<TranscriptStoreError> for TranscriptError {
             TranscriptStoreError::InvalidStoredObject { table, id } => {
                 Self::InvalidStoredObject { table, id }
             }
-            TranscriptStoreError::ActiveTurn => Self::RequiresDependency("transcript/event-driver"),
             TranscriptStoreError::Store(StoreError::Sqlite(rusqlite::Error::SqliteFailure(
                 error,
                 _,
@@ -73,6 +72,14 @@ impl From<StoreError> for TranscriptError {
             StoreError::InvalidStoredObject { table, id } => {
                 Self::InvalidStoredObject { table, id }
             }
+            StoreError::TranscriptFullTextUnavailable { id } => Self::InvalidStoredObject {
+                table: "runtime_item_fulltext",
+                id,
+            },
+            StoreError::TranscriptInputsIncomplete { id } => Self::InvalidStoredObject {
+                table: "runtime_items",
+                id,
+            },
             StoreError::InvalidSyncObject { scope, id }
             | StoreError::InvalidSyncObjectField { scope, id, .. } => {
                 Self::InvalidStoredState { table: scope, id }
@@ -184,7 +191,9 @@ fn pull_scope_cached_in(
     after: i64,
 ) -> Result<Option<Value>, TranscriptError> {
     let actor = TranscriptRepository::agent(transaction, agent)?;
-    let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
+    let deleted = actor
+        .as_ref()
+        .is_none_or(studio_runtime_store::AgentRecord::is_deleted);
     let revision = TranscriptRepository::revision(transaction, agent)?;
     let high = transaction.query_row(
         "SELECT coalesce(max(seq),0) FROM sync_entities WHERE collection=?1",
@@ -247,7 +256,9 @@ fn pull_scope_in(
         return Ok(result);
     }
     let actor = TranscriptRepository::agent(transaction, agent)?;
-    let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
+    let deleted = actor
+        .as_ref()
+        .is_none_or(studio_runtime_store::AgentRecord::is_deleted);
     let revision = TranscriptRepository::revision(transaction, agent)?;
     let payload = if deleted {
         json!({})
@@ -288,11 +299,9 @@ fn validate_cached_payload(scope: &str, payload: &Value) -> Result<(), Transcrip
         return Err(invalid_stored("sync_entities", &cache_id));
     }
     for item in items {
-        let id = item["id"]
+        item["id"]
             .as_str()
             .ok_or_else(|| invalid_stored("sync_entities", &cache_id))?;
-        studio_runtime_store::system_reads::validate("runtime_items", id, item.clone())
-            .map_err(|_| invalid_stored("sync_entities", &cache_id))?;
     }
     Ok(())
 }
@@ -312,7 +321,7 @@ pub async fn item(
 fn item_in(connection: &Connection, agent: &str, identity: &str) -> Result<Value, TranscriptError> {
     let actor =
         TranscriptRepository::agent(connection, agent)?.ok_or(TranscriptError::UnknownMessage)?;
-    if truthy(actor.get("deletedAt")) {
+    if actor.is_deleted() {
         return Err(TranscriptError::DeletedConversation);
     }
     let row = TranscriptRepository::resolve_item(connection, agent, identity)?
@@ -362,7 +371,7 @@ fn search_in(
     let limit = limit.clamp(1, 500) as usize;
     let actor =
         TranscriptRepository::agent(connection, agent)?.ok_or(TranscriptError::UnknownMessage)?;
-    if truthy(actor.get("deletedAt")) {
+    if actor.is_deleted() {
         return Err(TranscriptError::DeletedConversation);
     }
     if query.is_empty() {
@@ -448,7 +457,10 @@ fn search_item_in(
             .find(|agent| agent.id.as_ref() == Some(&row.agent))
             .ok_or(TranscriptError::SearchResultUnavailable)?;
         if actor.deleted_at.as_ref().is_some_and(Deletion::is_deleted)
-            || truthy(row.record.extra("afterRestore"))
+            || row
+                .record
+                .after_restore()
+                .is_some_and(|value| !value.is_empty())
         {
             return Err(TranscriptError::SearchResultUnavailable);
         }
@@ -828,17 +840,13 @@ fn project(
     complete: bool,
 ) -> Result<Value, TranscriptError> {
     validate_parent(row)?;
-    let input_is_user = input.and_then(|value| value.kind()) == Some("user");
     let parent_role = row.record.role();
-    let role = if input_is_user {
-        Value::String("user".to_owned())
-    } else {
-        Value::String(
-            parent_role
-                .ok_or_else(|| invalid_stored("runtime_items", &row.id))?
-                .to_owned(),
-        )
-    };
+    let role = Value::String(
+        input
+            .map_or(parent_role, |input| input.projected_role(parent_role))
+            .as_str()
+            .to_owned(),
+    );
     let mut projected = row
         .record
         .value()
@@ -851,20 +859,6 @@ fn project(
             .as_object()
             .ok_or_else(|| invalid_stored("runtime_items", &row.id))?;
         projected.extend(fields.clone());
-    }
-    optional_extra_string(
-        row.record.extra("clientMessageId"),
-        "runtime_items",
-        &row.id,
-    )?;
-    let turn_id = input
-        .and_then(|value| value.extra("turnId"))
-        .or_else(|| row.record.extra("turnId"));
-    if let Some(turn_id) = turn_id
-        && !turn_id.is_null()
-        && !turn_id.is_string()
-    {
-        return Err(invalid_stored("runtime_items", &row.id));
     }
     projected.insert("id".to_owned(), Value::String(identity.to_owned()));
     projected.insert("sourceId".to_owned(), Value::String(source_id.to_owned()));
@@ -886,7 +880,7 @@ fn hydrate_input<F>(
 where
     F: FnOnce(&str) -> Result<Option<String>, TranscriptError>,
 {
-    let truncated = validate_input(input, &row.id)?;
+    let truncated = input.effective_truncated();
     let input_id = input.id();
     let identity = input_id.map_or_else(
         || format!("{}:{index}", row.id),
@@ -900,9 +894,7 @@ where
         return Err(TranscriptError::MissingContent);
     }
     let complete = !truncated || event.is_some();
-    let text = event
-        .or(input.text().map(str::to_owned))
-        .unwrap_or_default();
+    let text = input.projected_text(event);
     project(row, Some(input), &row.id, &identity, agent, text, complete).map(Some)
 }
 
@@ -921,13 +913,12 @@ where
     {
         let mut pieces = Vec::new();
         for input in inputs {
-            validate_input(input, &row.id)?;
             let input_id = input.id();
             let event = input_id.map(&mut event_lookup).transpose()?.flatten();
             if let Some(event) = event {
                 pieces.push(event);
             } else if input_id.is_none()
-                && !input.truncated().unwrap_or(false)
+                && !input.effective_truncated()
                 && let Some(text) = input.text()
             {
                 pieces.push(text.to_owned());
@@ -951,39 +942,7 @@ fn validate_parent(row: &TranscriptItem) -> Result<bool, TranscriptError> {
     if row.record.id().as_ref() != row.id {
         return Err(invalid_stored("runtime_items", &row.id));
     }
-    optional_extra_bool(row.record.extra("truncated"), "runtime_items", &row.id)
-        .map(|value| value.unwrap_or(false))
-}
-
-fn optional_extra_string<'a>(
-    value: Option<&'a Value>,
-    table: &'static str,
-    id: &str,
-) -> Result<Option<&'a str>, TranscriptError> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => Ok(Some(value)),
-        _ => Err(invalid_stored(table, id)),
-    }
-}
-fn validate_input(
-    input: &studio_runtime_schema::transcript_record::TranscriptInput,
-    id: &str,
-) -> Result<bool, TranscriptError> {
-    optional_extra_string(input.extra("turnId"), "runtime_items", id)?;
-    optional_extra_string(input.extra("clientMessageId"), "runtime_items", id)?;
-    Ok(input.truncated().unwrap_or(false))
-}
-fn optional_extra_bool(
-    value: Option<&Value>,
-    table: &'static str,
-    id: &str,
-) -> Result<Option<bool>, TranscriptError> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Bool(value)) => Ok(Some(*value)),
-        _ => Err(invalid_stored(table, id)),
-    }
+    Ok(row.record.truncated().unwrap_or(false))
 }
 
 fn invalid_stored(table: &'static str, id: &str) -> TranscriptError {
@@ -1056,7 +1015,7 @@ mod tests {
             if let Some(text) = text {
                 stored["text"] = text;
             }
-            let record = TranscriptItemRecord::from_value(stored)
+            let record: TranscriptItemRecord = serde_json::from_str(&stored.to_string())
                 .expect("persisted transcript permits absent or null parent text");
             let row = TranscriptItem {
                 id: record.id().as_ref().to_owned(),
@@ -1082,10 +1041,13 @@ mod tests {
             json!({"id":"input-1"}),
             json!({"id":"input-1","kind":null,"text":null,"truncated":null}),
         ] {
-            let record = TranscriptItemRecord::from_value(json!({
-                "id":"item-1", "role":"assistant", "text":null,
-                "inputs":[input]
-            }))
+            let record: TranscriptItemRecord = serde_json::from_str(
+                &json!({
+                    "id":"item-1", "role":"assistant", "text":null,
+                    "inputs":[input]
+                })
+                .to_string(),
+            )
             .expect("persisted transcript permits absent or null optional input fields");
             let row = TranscriptItem {
                 id: record.id().as_ref().to_owned(),
@@ -1119,7 +1081,7 @@ mod tests {
             .transaction(|transaction| {
                 AgentRepository::put(
                     transaction,
-                    &AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                    &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"agent", "rootId":"agent", "epoch":0, "status":"idle"
                     }))?,
                 )?;

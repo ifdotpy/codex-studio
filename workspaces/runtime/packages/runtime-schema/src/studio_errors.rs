@@ -427,8 +427,7 @@ mod tests {
             serde_json::from_str(include_str!("schemas/persisted-monitor-record.schema.json"))
                 .expect("monitor record schema");
         assert_eq!(
-            monitor["properties"]["status"]["anyOf"][0],
-            openapi["components"]["schemas"]["MonitorState"],
+            monitor["$defs"]["MonitorState"], openapi["components"]["schemas"]["MonitorState"],
             "persisted monitor status consumes the same owner"
         );
         for code in schemas().expect("schemas")["MonitorRecoveryReason"]["enum"]

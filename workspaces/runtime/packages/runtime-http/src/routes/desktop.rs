@@ -147,10 +147,6 @@ fn status(state: &HttpState, disk_space: DiskSpaceStatus) -> Value {
                 "candidates": [], "accounts": {}
             })
         });
-    let peer_update = studio_runtime_services::peer_update_pull::status(
-        std::path::Path::new(&state.state_dir),
-        studio_runtime_services::peer_updates::installed_app().as_deref(),
-    );
     json!({
         "application": "codex-agents", "protocol": 1, "mobileProtocol": 1,
         "backendKind": studio_runtime_schema::desktop::BACKEND_KIND,
@@ -169,7 +165,7 @@ fn status(state: &HttpState, disk_space: DiskSpaceStatus) -> Value {
         "supervisorFallback": supervisor.as_ref().is_some_and(|snapshot| snapshot.fallback),
         "supervisorNotice": supervisor.and_then(|snapshot| snapshot.notice),
         "stateDir": state.state_dir, "linuxVm": null,
-        "diskSpace": disk_space, "peerUpdate": peer_update
+        "diskSpace": disk_space
     })
 }
 inventory::submit! {

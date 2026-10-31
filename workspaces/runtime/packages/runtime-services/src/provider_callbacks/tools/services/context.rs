@@ -100,7 +100,7 @@ mod tests {
         store
             .transaction_with(move |tx| {
                 let agent = |id: &str, role: &str, thread: &str| {
-                    json!({"id":id, "rootId":"lead", "parentId":(id != "lead").then_some("lead"),
+                    json!({"compactions":0,"id":id, "rootId":"lead", "parentId":(id != "lead").then_some("lead"),
                         "epoch":1, "status":"running", "isLead":id == "lead", "name":id,
                         "role":role, "provider":"codex", "accountKey":"default",
                         "executionMode":"vm", "cwd":"/line", "threadId":thread})
