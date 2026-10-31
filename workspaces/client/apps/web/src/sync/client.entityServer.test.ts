@@ -860,6 +860,10 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
         kind: "command",
         status: "running",
         created: 1,
+        itemId: "command",
+        turnId: "turn",
+        type: "commandExecution",
+        name: "command",
       },
     });
     const running = await waitSnapshot(
