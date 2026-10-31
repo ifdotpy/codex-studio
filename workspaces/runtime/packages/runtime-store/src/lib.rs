@@ -7,6 +7,7 @@ mod cached_sql;
 pub mod durable_seq;
 pub mod entity_publication;
 pub mod error_incidents;
+pub mod item_seq_backfill;
 pub mod migrations;
 pub mod online_migration;
 pub use cached_sql::{CachedSql, STATEMENT_CACHE_CAPACITY};

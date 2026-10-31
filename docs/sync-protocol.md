@@ -207,9 +207,31 @@ questionHistory, request, work, workDetail, workResult, workDecision, workReleas
 test compares it with the published views.
 
 Status: the source, the shared cursor space and the view log exist. The stream still
-reads `sync_entities`, and entity publication still writes it. Before the transcript copy
-in `sync_entities` is removed, `transcript_copy_missing_from_owner` must return nothing
-for the live store. Old `sync_entities` rows are deleted by a later migration.
+reads `sync_entities`, and entity publication still writes it. Old `sync_entities` rows
+are deleted by a later migration.
+
+### Transcript pages at read time
+
+`runtime_items` is a durable table: its triggers keep a `durable_rows` entry for each item.
+Migration `2026-10-30-transcript-read` installs them. It does not number the old rows,
+because the live table has about 1.5 million of them. The online migration
+`runtime_items_seq` (`transcript_seq_backfill`, started at every boot, see
+[online migrations](online-migrations.md)) numbers them in short batches. When it
+completes, it runs `transcript_copy_missing_from_owner`. Only when that returns nothing does
+it set `sync_entity_meta` key `transcript_copies` to `retired`. When an item is missing, the
+key stays unset and the writer keeps the transcript copies in `sync_entities`. A state
+without items retires the copies in the migration itself. No migration deletes the old rows.
+
+With the key set, `pull_scope` writes nothing. A conversation's change number is the
+highest `seq` of its agent row, its items, and any deleted item or agent. The page is
+built from `runtime_items` for each pull that is newer than the cursor. The server remembers
+the item hashes of the pages it sent (memory only, 256 pages). A cursor that matches a
+remembered page gets a delta in the existing transcript frame format. Any other cursor gets
+the full page. Pages are never cached in `sync_entities`.
+
+The first frame of a stream with a chat open also carries the newest window of the
+`SYNC_TRANSCRIPT_RECENT_CHATS` most recently changed other chats, as ordinary transcript
+snapshots. They are not subscribed. A client that opens one of them already has its tail.
 
 ### Entity publication
 

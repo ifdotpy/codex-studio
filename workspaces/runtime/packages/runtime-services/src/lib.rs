@@ -209,6 +209,7 @@ pub mod token_rate;
 pub mod tool_requests;
 pub mod transcript;
 pub mod transcript_runtime;
+pub mod transcript_seq_backfill;
 pub mod turn_prepare;
 pub mod unclean_recovery;
 pub mod usage;

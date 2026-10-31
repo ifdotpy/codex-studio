@@ -156,6 +156,7 @@ async fn transcript_cases(group: usize) {
                     )
                 }),
         );
+        keep_copies(&store).await;
         seed_transcript_replies(&store, orphan_replies).await;
         let db = store.test_reader().expect("migrated snapshot reader");
         let workspace_sequence: i64 = db
@@ -339,6 +340,7 @@ async fn transcript_cases(group: usize) {
                     .await
                     .expect("reasoning restart"),
             );
+            keep_copies(&store).await;
             let replay = transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", 0)
                 .await
                 .expect("lost response retry");
@@ -424,6 +426,7 @@ async fn transcript_cases(group: usize) {
                             .await
                             .expect("restart after failed sync write"),
                     );
+                    keep_copies(&store).await;
                     assert_eq!(
                         sync_snapshot(&store),
                         before,
@@ -448,6 +451,7 @@ async fn transcript_cases(group: usize) {
                     .await
                     .expect("restart after commit failure"),
             );
+            keep_copies(&store).await;
             assert_eq!(sync_snapshot(&store), before, "commit failure leaked rows");
             let got =
                 transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", after)
@@ -483,6 +487,7 @@ async fn transcript_cases(group: usize) {
             let seq = got["checkpoint"]["seq"].as_i64().expect("cursor");
             drop(store);
             let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("restart"));
+            keep_copies(&store).await;
             let next = transcript::pull_scope(Arc::clone(&store), "transcript:agent", "agent", seq)
                 .await
                 .expect("replay");
@@ -644,6 +649,21 @@ fn assert_pull(
         documents[0]["seq"] = json!(fixture_sync_high + allocation_shift + 1);
     }
     assert_eq!(decode(got), expected);
+}
+
+/// This corpus covers the writer that keeps transcript copies. A state that passed the
+/// migration check would build pages at read time instead, so the corpus keeps the copies.
+async fn keep_copies(store: &RuntimeStore) {
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "DELETE FROM sync_entity_meta WHERE key='transcript_copies'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("keep transcript copies");
 }
 
 fn sync_snapshot(store: &RuntimeStore) -> Value {

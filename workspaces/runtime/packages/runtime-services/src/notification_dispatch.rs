@@ -4253,7 +4253,7 @@ mod tests {
             .expect("agent retry state sets");
         connection
             .execute(
-                "INSERT INTO runtime_items VALUES('agent:answer','agent',?1,1.0)",
+                "INSERT INTO runtime_items(id,agent,record,created) VALUES('agent:answer','agent',?1,1.0)",
                 [json!({
                     "id":"agent:answer","role":"assistant","title":"Assistant","text":"old",
                     "truncated":false,"at":1.0,"streaming":true,"turnId":"turn","phase":null,
@@ -4349,7 +4349,7 @@ mod tests {
             .expect("agent epoch restored");
         connection
             .execute(
-                "INSERT INTO runtime_items VALUES('agent:malformed','agent',?1,1.0)",
+                "INSERT INTO runtime_items(id,agent,record,created) VALUES('agent:malformed','agent',?1,1.0)",
                 [
                     json!({"id":"agent:malformed","role":"assistant","text":"x","inputs":7})
                         .to_string(),
