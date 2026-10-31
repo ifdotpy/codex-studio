@@ -368,4 +368,10 @@ Owner: `runtime-services/src/device_trust.rs`. Decision:
   devices.
 - A device that gets `client_revoked` when it pairs replaces its key and pairs again.
 
-Not done yet: the Tauri and Electron native credential stores keep one key for each pair.
+- The Tauri window signs in its Rust shell (the webview sends requests through the shell), so
+  the shell keeps the device key in its key store (`client-core/src/server_keys.rs`, entry
+  `device`, same id rule). The web IndexedDB key cannot sign there. A new pairing uses this
+  key and stores no key of its own. A pairing made before keeps its own key and client id,
+  so it still signs; it is one device entry on its server.
+
+Not done yet: the Electron credential store keeps one key for each pair.
