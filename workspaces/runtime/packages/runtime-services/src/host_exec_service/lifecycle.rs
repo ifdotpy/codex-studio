@@ -54,6 +54,36 @@ fn unknown(message: impl Into<String>) -> ServiceError {
     }
 }
 
+fn request_identity(method: &str, params: Option<&Value>) -> String {
+    format!(
+        "{CALL_ID_PREFIX}{}",
+        protocol::key(&studio_runtime_store::python_json(&json!([
+            method,
+            params.cloned().unwrap_or(Value::Null)
+        ])))
+    )
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[test]
+    fn persisted_request_identity_keeps_legacy_bytes() {
+        assert_eq!(
+            request_identity("health", None),
+            "host-service:cf52b2b555f5d990fb23a01ac85ed19a7d419c487414fd4f87f031bddadcfaac"
+        );
+        assert_eq!(
+            request_identity(
+                "service.retire",
+                Some(&json!({"pid": 42, "buildId": "old"}))
+            ),
+            "host-service:9a8579f52a0acfe86909e8ce0b784ac010499e102a37cbf31632a2885d277155"
+        );
+    }
+}
+
 /// One request to the service of `state`, with its exact request identity.
 pub fn service_call(
     state: &Path,
@@ -61,10 +91,7 @@ pub fn service_call(
     method: &str,
     params: Option<&Value>,
 ) -> Result<Value, ServiceError> {
-    let identity = format!(
-        "{CALL_ID_PREFIX}{}",
-        protocol::key(&json!([method, params.cloned().unwrap_or(Value::Null)]).to_string())
-    );
+    let identity = request_identity(method, params);
     let request = json!({"id": identity, "method": method, "params": params.cloned().unwrap_or_else(|| json!({})), "token": token});
     let io = |error: std::io::Error| unknown(error.to_string());
     let mut channel = UnixStream::connect(state.join(SOCKET_FILE)).map_err(io)?;
