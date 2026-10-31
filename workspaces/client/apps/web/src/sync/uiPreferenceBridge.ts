@@ -32,7 +32,11 @@ export function createUiPreferenceBridge(
 
   const send = async (explicitRetry = false) => {
     if (explicitRetry) retryGeneration++;
-    if (!active || !ready) return;
+    if (!active) return;
+    if (!ready) {
+      sendAgain = true;
+      return;
+    }
     if (sending) {
       sendAgain = true;
       return;
@@ -107,7 +111,8 @@ export function createUiPreferenceBridge(
 
   const receiveProjection = (preferences: UiPreferenceProjection) => {
     if (!active) return;
-    ready = true;
+    const pending = sendAgain;
+    ready = false;
     for (const scope of ["user", "server"] as const) {
       const fields = preferences[scope]?.fields as PreferenceFields | undefined;
       if (!fields) continue;
@@ -116,6 +121,9 @@ export function createUiPreferenceBridge(
       confirmed[scope] = serialized;
       receivePreferenceFields(scope, fields, storage);
     }
+    sendAgain = pending;
+    ready = true;
+    if (sendAgain) void send();
   };
 
   return {

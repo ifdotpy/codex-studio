@@ -55,17 +55,49 @@ afterEach(() => {
 });
 
 describe("UI preference projection bridge", () => {
+  it("sends an explicit edit made before the first projection", async () => {
+    let changed = () => {};
+    mocks.watch.mockImplementation((listener) => {
+      changed = listener;
+      return () => {};
+    });
+    mocks.read.mockImplementation((scope) =>
+      scope === "user"
+        ? { theme: { value: "dark", timestamp: 2, writer: "w" } }
+        : {},
+    );
+    const bridge = createUiPreferenceBridge(storage, mocks.syncPost);
+    const stop = bridge.start();
+    changed();
+    expect(mocks.syncPost).not.toHaveBeenCalled();
+    bridge.receiveProjection({});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mocks.syncPost).toHaveBeenCalledOnce();
+    stop();
+  });
   it("does not send stored fields on initial or repeated projection", async () => {
+    let changed = () => {};
+    mocks.watch.mockImplementation((listener) => {
+      changed = listener;
+      return () => {};
+    });
+    mocks.receive.mockImplementation(() => changed());
     mocks.read.mockReturnValue({
       old: { value: "old", timestamp: 1, writer: "w" },
     });
     const bridge = createUiPreferenceBridge(storage, mocks.syncPost);
     const stop = bridge.start();
-    bridge.receiveProjection({});
-    bridge.receiveProjection({});
+    const projection = {
+      user: {
+        fields: { theme: { value: "dark", timestamp: 3, writer: "server" } },
+      },
+    };
+    bridge.receiveProjection(projection);
+    bridge.receiveProjection(projection);
     await vi.advanceTimersByTimeAsync(0);
     expect(mocks.syncPost).not.toHaveBeenCalled();
     stop();
+    mocks.receive.mockReset();
   });
   it("retries HTTP preference edits with the same payload", async () => {
     const fields = { local: { value: "Привет 🦀", timestamp: 2, writer: "w" } };
