@@ -813,7 +813,7 @@ mod tests {
     use serde_json::json;
 
     fn agent(id: &str, extra: Value) -> Value {
-        let mut base = json!({"id":id,"rootId":id,"epoch":1,"status":"idle","provider":"codex",
+        let mut base = json!({"id":id,"rootId":id,"epoch":1,"status":"idle","provider":"codex","compactions":0,
             "accountKey":"default","autoWake":true,"turnEpoch":0,"inFlight":false});
         base.as_object_mut()
             .unwrap()

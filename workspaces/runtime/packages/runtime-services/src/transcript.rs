@@ -1425,7 +1425,7 @@ mod tests {
                 }
                 AgentRepository::put(
                     transaction,
-                    &AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                    &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"agent", "rootId":"agent", "epoch":0, "status":"idle"
                     }))?,
                 )?;

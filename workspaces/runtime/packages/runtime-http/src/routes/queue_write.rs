@@ -353,7 +353,7 @@ mod tests {
     async fn seeded_store(directory: &std::path::Path) -> Arc<RuntimeStore> {
         let store = Arc::new(RuntimeStore::open(Some(directory)).await.expect("store"));
         store.transaction(|tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"workspace","rootId":"workspace","epoch":0,"status":"idle","provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"workspace","rootId":"workspace","epoch":0,"status":"idle","provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('late','workspace','user','Late','pending',3,0),('early','workspace','user','Early','pending',1,0),('note','workspace','followup','Note','pending',2,0)", [])?;
             Ok(())
         }).await.expect("seed queue");
