@@ -323,12 +323,12 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
                 }
             }
             db.execute("INSERT OR IGNORE INTO runtime_agent_volatile(id) SELECT id FROM runtime_agents", [])?;
+            studio_runtime_store::migrations::migrate_radio_room(db)?;
+            studio_runtime_store::migrations::migrate_project_teams(db)?;
             for id in completed_turns {
                 let (chat, turn) = id.split_once(':').expect("completed turn id");
                 studio_runtime_store::domain::complete_turn(db, chat, turn)?;
             }
-            studio_runtime_store::migrations::migrate_radio_room(db)?;
-            studio_runtime_store::migrations::migrate_project_teams(db)?;
             Ok(())
         })
         .await
