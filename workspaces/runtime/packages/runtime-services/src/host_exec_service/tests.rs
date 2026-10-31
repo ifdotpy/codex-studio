@@ -493,6 +493,28 @@ async fn receipt_refuses_changed_raw_params_without_reexecution() {
 }
 
 #[tokio::test]
+async fn prime_checks_typed_cache_paths_at_the_request_boundary() {
+    let fixture = Fixture::new();
+    let acquire = json!({"operationId":"prime-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});
+    fixture
+        .call("prime-acquire", "acquire", acquire)
+        .await
+        .unwrap();
+    let params = json!({"operationId":"prime-test","agentId":"agent","caches":[]});
+    let result = fixture.call("prime-empty", "prime", params).await.unwrap();
+    assert_eq!(result["primed"].as_array().unwrap().len(), 0);
+    let invalid = json!({"operationId":"prime-test","agentId":"agent","caches":["../escape"]});
+    assert_eq!(
+        fixture
+            .call("prime-invalid", "prime", invalid)
+            .await
+            .unwrap_err()
+            .0,
+        "invalid_params"
+    );
+}
+
+#[tokio::test]
 async fn legacy_receipt_digest_is_refused_without_executing() {
     let fixture = Fixture::new();
     let params = json!({"operationId": "legacy", "agentId": "agent", "projectId": "project",

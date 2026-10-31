@@ -117,18 +117,6 @@ impl HostService {
         .map_err(|error| Failure::Unexpected(error.to_string()))?
     }
 
-    pub(crate) fn cache_list(value: Option<&Value>) -> Result<Vec<String>, HostExecError> {
-        let items = match value {
-            None => return Ok(Vec::new()),
-            Some(Value::Array(items)) if items.len() <= MAX_CACHES => items,
-            Some(_) => return Err(HostExecError::new(INVALID, "Invalid cache folders")),
-        };
-        items
-            .iter()
-            .map(|item| protocol::relative(Some(item)))
-            .collect()
-    }
-
     pub(crate) fn cache_paths(items: &[String]) -> Result<Vec<String>, HostExecError> {
         require(items.len() <= MAX_CACHES, "Invalid cache folders", INVALID)?;
         items
@@ -309,14 +297,14 @@ impl HostService {
         identity: &str,
         op: &Op,
         slot: &Path,
-        params: &Map<String, Value>,
+        caches: &[String],
     ) -> Outcome<Value> {
         require(
             text(op, "state") == "leased",
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
-        let caches = Self::cache_list(params.get("caches"))?;
+        let caches = Self::cache_paths(caches)?;
         let lock = self.lock_for(&format!("run\0{identity}"));
         let _held = lock.lock().await;
         let mut primed = Vec::new();
