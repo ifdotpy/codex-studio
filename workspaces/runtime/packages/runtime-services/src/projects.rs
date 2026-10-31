@@ -314,7 +314,15 @@ fn git_origin(directory: &std::path::Path) -> Option<String> {
 
 /// Read-only paired-server project-location actions. They expose only bounded
 /// directory metadata and visible project names, matching the Python peer API.
-pub fn peer_location_info(path: &str) -> Result<Value, ProjectsError> {
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerLocationInfo {
+    pub git_head: Option<String>,
+    pub git_origin: Option<String>,
+    pub matches: [(); 0],
+}
+
+pub fn peer_location_info(path: &str) -> Result<PeerLocationInfo, ProjectsError> {
     if path.is_empty() || path.chars().count() > 4096 {
         return Err(ProjectsError::BadRequest("a folder path is invalid"));
     }
@@ -326,7 +334,11 @@ pub fn peer_location_info(path: &str) -> Result<Value, ProjectsError> {
     let head = git_read(&directory, &["rev-parse", "--verify", "HEAD"])
         .filter(|value| value.len() == 40 || value.len() == 64)
         .map(|value| value[..8].to_owned());
-    Ok(json!({"gitHead":head,"gitOrigin":git_origin(&directory),"matches":[]}))
+    Ok(PeerLocationInfo {
+        git_head: head,
+        git_origin: git_origin(&directory),
+        matches: [],
+    })
 }
 
 pub async fn peer_location_matches(
@@ -442,8 +454,11 @@ mod peer_location_tests {
             .expect("open isolated store");
         let info = peer_location_info(repo.to_str().expect("UTF-8 temp path"))
             .expect("read peer location");
-        assert_eq!(info["gitOrigin"], "example.invalid/team/repo");
-        assert_eq!(info["matches"], json!([]));
+        assert_eq!(
+            info.git_origin.as_deref(),
+            Some("example.invalid/team/repo")
+        );
+        assert!(info.matches.is_empty());
         let matches = peer_location_matches(
             &store,
             "example.invalid/team/repo".to_owned(),

@@ -640,10 +640,7 @@ async fn local_project_registration(
     )
     .await
     .map_err(|_| ApiError::internal())?;
-    let git_origin = origin
-        .ok()
-        .and_then(|value| value.get("gitOrigin").cloned())
-        .unwrap_or(Value::Null);
+    let git_origin = origin.ok().and_then(|value| value.git_origin);
     let value = json!({"serverId":local_server,"path":path,"canonicalPath":canonical,
         "projectId":physical_id,"gitOrigin":git_origin,"homeProjectId":project_id,
         "requestId":operation_id});
@@ -652,7 +649,7 @@ async fn local_project_registration(
     let local_server_for_write = local_server.clone();
     let name_for_write = name.to_owned();
     let canonical_for_write = canonical.to_owned();
-    let git_origin_for_write = git_origin.as_str().map(str::to_owned);
+    let git_origin_for_write = git_origin.clone();
     let operation_for_write = operation_id.clone();
     let result = LocationResult {
         request_id: operation_id.clone(),
@@ -1227,12 +1224,7 @@ fn remote_location_action(
                     .and_then(|path| {
                         studio_runtime_services::projects::peer_location_info(path).ok()
                     })
-                    .and_then(|value| {
-                        value
-                            .get("gitOrigin")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    })
+                    .and_then(|value| value.git_origin)
             })
             .ok_or_else(|| {
                 ApiError::new(StatusCode::BAD_REQUEST, "The project has no Git origin")
