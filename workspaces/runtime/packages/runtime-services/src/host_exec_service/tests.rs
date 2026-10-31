@@ -493,6 +493,63 @@ async fn receipt_refuses_changed_raw_params_without_reexecution() {
 }
 
 #[tokio::test]
+async fn chunked_transfer_commits_and_deletes_a_typed_entry() {
+    let fixture = Fixture::new();
+    let acquire = json!({"operationId":"chunk-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});
+    fixture
+        .call("chunk-acquire", "acquire", acquire)
+        .await
+        .unwrap();
+    let entry = json!({"kind":"file", "bytes":1, "mode":420, "sha256":"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"});
+    fixture
+        .call(
+            "chunk-entry",
+            "sync.entry",
+            json!({"operationId":"chunk-test","agentId":"agent","path":"file","entry":entry}),
+        )
+        .await
+        .unwrap();
+    fixture.call("chunk-data", "sync.chunk", json!({"operationId":"chunk-test","agentId":"agent","path":"file","offset":0,"data":"eA=="})).await.unwrap();
+    fixture
+        .call(
+            "chunk-commit",
+            "sync.commit",
+            json!({"operationId":"chunk-test","agentId":"agent","path":"file"}),
+        )
+        .await
+        .unwrap();
+    let manifest = fixture
+        .call(
+            "chunk-manifest",
+            "manifest",
+            json!({"operationId":"chunk-test","agentId":"agent","after":""}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        manifest["entries"]["file"]["sha256"],
+        "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+    );
+    fixture
+        .call(
+            "chunk-delete",
+            "sync.delete",
+            json!({"operationId":"chunk-test","agentId":"agent","path":"file"}),
+        )
+        .await
+        .unwrap();
+    let manifest = fixture
+        .call(
+            "chunk-manifest-after",
+            "manifest",
+            json!({"operationId":"chunk-test","agentId":"agent","after":""}),
+        )
+        .await
+        .unwrap();
+    assert!(manifest["entries"].get("file").is_none());
+}
+
+#[tokio::test]
 async fn sync_clone_skips_when_project_folder_is_absent() {
     let fixture = Fixture::new();
     let acquire = json!({"operationId":"clone-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});

@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base64::Engine;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use super::protocol::{self, Failure, HostExecError, INVALID, Manifest, Outcome, require};
-use super::{HostService, Op, SyncModeItem, clone_ffi, integer, slots, text};
+use super::{HostService, Op, SyncBatchItem, SyncModeItem, SyncOperation, clone_ffi, slots, text};
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 /// Largest hash cache of a project folder before it starts again.
@@ -24,12 +24,6 @@ const MAX_MODE_ITEMS: usize = 4096;
 const MAX_BATCH_ITEMS: usize = 1024;
 /// Longest clone failure text in a `prime` or `sync.clone` answer, in characters.
 const CLONE_ERROR_CHARS: usize = 300;
-
-fn file_mode(entry: &Value) -> Option<u32> {
-    integer(entry.get("mode"))
-        .filter(|mode| (0..=0o777).contains(mode))
-        .and_then(|mode| u32::try_from(mode).ok())
-}
 
 fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
@@ -549,27 +543,16 @@ impl HostService {
         &self,
         op: &Op,
         slot: &Path,
-        name: Option<&Value>,
-        entry: Option<&Value>,
+        name: &str,
+        entry: &protocol::ManifestEntry,
         data: Option<&[u8]>,
     ) -> Outcome<()> {
-        let path = protocol::inside(&slot.join("source"), name, false)?;
-        let name = protocol::relative(name)?;
+        let name_value = protocol::text_value(name);
+        let path = protocol::inside(&slot.join("source"), Some(&name_value), false)?;
+        let name = protocol::relative(Some(&name_value))?;
         require(
             !protocol::under(&name, &Self::mac_only(op)),
             "The path stays on the host (macOnly)",
-            INVALID,
-        )?;
-        let entry = entry
-            .filter(|entry| entry.is_object())
-            .unwrap_or(&Value::Null);
-        let kind = entry
-            .get("kind")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        require(
-            ["directory", "link", "file"].contains(&kind),
-            "Invalid source entry",
             INVALID,
         )?;
         if let Some(parent) = path.parent() {
@@ -577,29 +560,31 @@ impl HostService {
         }
         match fs::symlink_metadata(&path) {
             Ok(meta) if !meta.is_dir() => fs::remove_file(&path)?,
-            Ok(_) if kind != "directory" => fs::remove_dir_all(&path)?,
+            Ok(_) if !matches!(entry, protocol::ManifestEntry::Directory) => {
+                fs::remove_dir_all(&path)?
+            }
             _ => {}
         }
-        if kind == "directory" {
-            if !path.is_dir() {
-                fs::create_dir(&path)?;
+        let (length, mode, checksum) = match entry {
+            protocol::ManifestEntry::Directory => {
+                if !path.is_dir() {
+                    fs::create_dir(&path)?;
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        if kind == "link" {
-            let target = entry
-                .get("target")
-                .and_then(Value::as_str)
-                .filter(|target| !target.contains('\0'))
-                .ok_or_else(|| HostExecError::new(INVALID, "Invalid link target"))?;
-            std::os::unix::fs::symlink(target, &path)?;
-            return Ok(());
-        }
+            protocol::ManifestEntry::Link { target } => {
+                require(!target.contains('\0'), "Invalid link target", INVALID)?;
+                std::os::unix::fs::symlink(target, &path)?;
+                return Ok(());
+            }
+            protocol::ManifestEntry::File {
+                bytes,
+                mode,
+                sha256,
+            } => (*bytes, *mode, sha256),
+        };
         let budget = self.budget_of(op);
-        let length = integer(entry.get("bytes"))
-            .and_then(|length| u64::try_from(length).ok())
-            .filter(|length| *length <= budget)
-            .ok_or_else(|| HostExecError::new(INVALID, "Invalid file size"))?;
+        require(length <= budget, "Invalid file size", INVALID)?;
         self.reserve(slot.parent().unwrap_or(slot), budget, length, slot)?;
         let Some(data) = data else {
             fs::File::create(&path)?;
@@ -614,15 +599,13 @@ impl HostService {
             return Ok(());
         };
         use sha2::Digest;
-        let checksum = protocol::hex(sha2::Sha256::digest(data).as_slice());
+        let actual_checksum = protocol::hex(sha2::Sha256::digest(data).as_slice());
         require(
-            data.len() as u64 == length
-                && entry.get("sha256").and_then(Value::as_str) == Some(checksum.as_str()),
+            data.len() as u64 == length && *checksum == actual_checksum,
             "The source checksum differs",
             INVALID,
         )?;
-        let mode = file_mode(entry)
-            .ok_or_else(|| HostExecError::new(INVALID, "Invalid source file mode"))?;
+        require(mode <= 0o777, "Invalid source file mode", INVALID)?;
         // No fsync: the next command hashes the slot again and sends a file that a crash broke.
         fs::write(&path, data)?;
         set_mode(&path, mode)?;
@@ -633,28 +616,20 @@ impl HostService {
         &self,
         op: &Op,
         slot: &Path,
-        params: &Map<String, Value>,
+        items: &[SyncBatchItem],
     ) -> Outcome<Value> {
         require(
             text(op, "state") == "leased",
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
-        let items = match params.get("items") {
-            Some(Value::Array(items)) if !items.is_empty() && items.len() <= MAX_BATCH_ITEMS => {
-                items
-            }
-            _ => return Err(HostExecError::new(INVALID, "Invalid source batch").into()),
-        };
+        require(
+            !items.is_empty() && items.len() <= MAX_BATCH_ITEMS,
+            "Invalid source batch",
+            INVALID,
+        )?;
         for item in items {
-            require(
-                item.is_object() && item.get("data").is_none_or(Value::is_string),
-                "Invalid source batch",
-                INVALID,
-            )?;
-        }
-        for item in items {
-            let content = match item.get("data").and_then(Value::as_str) {
+            let content = match item.data.as_deref() {
                 Some(data) => Some(
                     BASE64
                         .decode(data)
@@ -662,33 +637,32 @@ impl HostService {
                 ),
                 None => None,
             };
-            self.place(
-                op,
-                slot,
-                item.get("path"),
-                item.get("entry"),
-                content.as_deref(),
-            )?;
+            self.place(op, slot, &item.path, &item.entry, content.as_deref())?;
         }
         Ok(json!({"entries": items.len()}))
     }
 
-    pub(crate) fn sync_entry(
+    pub(crate) fn sync_operation(
         &self,
-        method: &str,
         identity: &str,
         op: &Op,
         slot: &Path,
         mac_only: &[String],
-        params: &Map<String, Value>,
+        operation: &SyncOperation,
     ) -> Outcome<Value> {
         require(
             text(op, "state") == "leased",
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
-        let path = protocol::inside(&slot.join("source"), params.get("path"), false)?;
-        let name = protocol::relative(params.get("path"))?;
+        let name = match operation {
+            SyncOperation::Delete(params) | SyncOperation::Commit(params) => &params.path,
+            SyncOperation::Entry(params) => &params.path,
+            SyncOperation::Chunk(params) => &params.path,
+        };
+        let name_value = protocol::text_value(name);
+        let path = protocol::inside(&slot.join("source"), Some(&name_value), false)?;
+        let name = protocol::relative(Some(&name_value))?;
         require(
             !protocol::under(&name, mac_only),
             "The path stays on the host (macOnly)",
@@ -698,8 +672,8 @@ impl HostService {
             .opdir(identity)
             .join("entries")
             .join(format!("{}.json", protocol::key(&name)));
-        match method {
-            "sync.delete" => match fs::symlink_metadata(&path) {
+        match operation {
+            SyncOperation::Delete(_) => match fs::symlink_metadata(&path) {
                 Ok(meta) if !meta.is_dir() => fs::remove_file(&path)?,
                 Ok(_)
                     if !mac_only
@@ -711,19 +685,17 @@ impl HostService {
                 }
                 _ => {}
             },
-            "sync.entry" => self.place(op, slot, params.get("path"), params.get("entry"), None)?,
-            "sync.chunk" => {
+            SyncOperation::Entry(params) => {
+                self.place(op, slot, &params.path, &params.entry, None)?
+            }
+            SyncOperation::Chunk(params) => {
                 require(
                     path.is_file() && !protocol::is_symlink(&path),
                     "The source file is not open",
                     INVALID,
                 )?;
-                let data = params
-                    .get("data")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| Failure::Unexpected("'data'".into()))?;
                 let data = BASE64
-                    .decode(data)
+                    .decode(&params.data)
                     .map_err(|error| Failure::Unexpected(error.to_string()))?;
                 require(
                     data.len() <= protocol::CHUNK,
@@ -732,12 +704,18 @@ impl HostService {
                 )?;
                 let size = fs::metadata(&path)?.len();
                 require(
-                    params.get("offset").and_then(Value::as_u64) == Some(size),
+                    params.offset == size,
                     "The source chunk offset differs",
                     INVALID,
                 )?;
-                let entry = protocol::read_json(&entry_file)?;
-                let declared = entry.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+                let entry: protocol::ManifestEntry =
+                    serde_json::from_str(&fs::read_to_string(&entry_file)?)?;
+                let protocol::ManifestEntry::File {
+                    bytes: declared, ..
+                } = entry
+                else {
+                    return Err(HostExecError::new(INVALID, "Invalid source entry").into());
+                };
                 require(
                     size + data.len() as u64 <= declared,
                     "The source exceeds its declared size",
@@ -748,26 +726,32 @@ impl HostService {
                 file.flush()?;
                 file.sync_all()?;
             }
-            "sync.commit" => {
+            SyncOperation::Commit(_) => {
                 require(
                     !protocol::is_symlink(&path),
                     "The source file is a symbolic link",
                     INVALID,
                 )?;
-                let entry = protocol::read_json(&entry_file)?;
+                let entry: protocol::ManifestEntry =
+                    serde_json::from_str(&fs::read_to_string(&entry_file)?)?;
+                let protocol::ManifestEntry::File {
+                    bytes,
+                    mode,
+                    sha256,
+                } = entry
+                else {
+                    return Err(HostExecError::new(INVALID, "Invalid source entry").into());
+                };
                 let (checksum, meta) = protocol::digest_file(&path)?;
                 require(
-                    entry.get("bytes").and_then(Value::as_u64) == Some(meta.len())
-                        && entry.get("sha256").and_then(Value::as_str) == Some(checksum.as_str()),
+                    bytes == meta.len() && sha256 == checksum,
                     "The source checksum differs",
                     INVALID,
                 )?;
-                let mode = file_mode(&entry)
-                    .ok_or_else(|| HostExecError::new(INVALID, "Invalid source file mode"))?;
+                require(mode <= 0o777, "Invalid source file mode", INVALID)?;
                 set_mode(&path, mode)?;
             }
-            _ => return Err(HostExecError::new(INVALID, "Unknown source transfer method").into()),
         }
-        Ok(json!({"path": params.get("path").cloned().unwrap_or(Value::Null)}))
+        Ok(json!({"path": name}))
     }
 }

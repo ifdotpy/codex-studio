@@ -183,6 +183,58 @@ struct SyncCloneParams {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct TransferCommon {
+    operation_id: String,
+    agent_id: String,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct SyncPathParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    path: String,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct SyncEntryParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    path: String,
+    entry: protocol::ManifestEntry,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct SyncChunkParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    path: String,
+    offset: u64,
+    data: String,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct SyncBatchParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    items: Vec<SyncBatchItem>,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct SyncBatchItem {
+    path: String,
+    entry: protocol::ManifestEntry,
+    data: Option<String>,
+}
+
+pub(crate) enum SyncOperation {
+    Delete(SyncPathParams),
+    Entry(SyncEntryParams),
+    Chunk(SyncChunkParams),
+    Commit(SyncPathParams),
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ResultManifestParams {
     operation_id: String,
     agent_id: String,
@@ -215,6 +267,8 @@ enum FrameParams {
     Prime(PrimeParams),
     SyncMode(SyncModeParams),
     SyncClone(SyncCloneParams),
+    Sync(SyncOperation),
+    SyncBatch(SyncBatchParams),
     ResultManifest(ResultManifestParams),
     // Existing dispatch until each remaining method has its own typed variant.
     Legacy(Map<String, Value>),
@@ -708,12 +762,7 @@ impl HostService {
             _ => {}
         }
         let slot = self.slot(&op)?;
-        let mac_only = string_list(&op, "macOnly");
         match method {
-            "sync.batch" => self.sync_batch(&op, &slot, params),
-            method if method.starts_with("sync.") => {
-                self.sync_entry(method, &identity, &op, &slot, &mac_only, params)
-            }
             "cancel" => self.cancel(&identity, &mut op).await.map(Value::Object),
             "release" => self
                 .release(&identity, op, &slot, params)
@@ -790,6 +839,32 @@ impl HostService {
                 let slot = self.slot(&op)?;
                 self.sync_clone(&op, &slot, &params.path, &params.entry)
                     .await
+            }
+            FrameParams::Sync(params) => {
+                let common = match params {
+                    SyncOperation::Delete(params) | SyncOperation::Commit(params) => &params.common,
+                    SyncOperation::Entry(params) => &params.common,
+                    SyncOperation::Chunk(params) => &params.common,
+                };
+                let op = self.load(&common.operation_id)?;
+                require(
+                    text(&op, "agentId") == common.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                let mac_only = string_list(&op, "macOnly");
+                self.sync_operation(&common.operation_id, &op, &slot, &mac_only, params)
+            }
+            FrameParams::SyncBatch(params) => {
+                let op = self.load(&params.common.operation_id)?;
+                require(
+                    text(&op, "agentId") == params.common.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                self.sync_batch(&op, &slot, &params.items)
             }
             FrameParams::ResultManifest(params) => {
                 let op = self.load(&params.operation_id)?;
@@ -947,6 +1022,26 @@ impl HostService {
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
             "sync.clone" => FrameParams::SyncClone(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "sync.delete" => FrameParams::Sync(SyncOperation::Delete(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            )),
+            "sync.entry" => FrameParams::Sync(SyncOperation::Entry(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            )),
+            "sync.chunk" => FrameParams::Sync(SyncOperation::Chunk(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            )),
+            "sync.commit" => FrameParams::Sync(SyncOperation::Commit(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            )),
+            "sync.batch" => FrameParams::SyncBatch(
                 serde_json::from_str(raw)
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
