@@ -102,6 +102,9 @@ async fn seed(store: &RuntimeStore, records: Records) {
                         "INSERT INTO voice_sessions(id,agent,created,ended,state) VALUES(?1,?2,1,?3,?4)",
                         params![row["id"].as_str(), row["agent"].as_str(), row["ended"].as_f64(), row["state"].as_str()],
                     )?;
+                } else if table == "runtime_requests" {
+                    let request: studio_runtime_store::RequestRecord = serde_json::from_str(&row.to_string())?;
+                    studio_runtime_store::Table::<studio_runtime_store::RequestRecord>::new(tx).put(&request)?;
                 } else { agent_management::write(tx, &table, &row)?; }
             }
         }

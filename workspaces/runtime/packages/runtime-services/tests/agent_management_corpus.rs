@@ -334,7 +334,7 @@ async fn archive_is_refused_while_the_worker_has_pending_work() {
         ),
         (
             "runtime_requests",
-            json!({"id":"question","agent":"worker","status":"pending","method":"agent/asyncQuestion"}),
+            json!({"id":"question","agent":"worker","status":"pending","method":"agent/asyncQuestion","createdAt":1,"params":{}}),
         ),
         (
             "runtime_monitors",

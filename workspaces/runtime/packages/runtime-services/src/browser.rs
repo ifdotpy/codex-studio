@@ -1835,31 +1835,31 @@ mod tests {
         for (raw, expected) in [
             ("null", 503),
             (r#"{"method":"wrong"}"#, 503),
-            (r#"{"method":"wrong","params":null}"#, 404),
-            (r#"{"method":"browser/open","params":{}}"#, 404),
+            (r#"{"method":"wrong","params":null}"#, 503),
+            (r#"{"method":"browser/open","params":{}}"#, 503),
             (
                 r#"{"method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef"}}"#,
-                403,
+                503,
             ),
             (
                 r#"{"method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":null}}"#,
-                403,
+                503,
             ),
             (
                 r#"{"method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":123}}"#,
-                403,
+                503,
             ),
             (
                 r#"{"method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":{"tokenHash":null,"extra":true}}}"#,
-                403,
+                503,
             ),
             (
                 r#"{"method":"browser/open","params":{"bridgeId":"wrong","forward":{"tokenHash":false}}}"#,
-                404,
+                503,
             ),
             (
                 r#"{"method":"wrong","method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":{"tokenHash":"bad"}}}"#,
-                403,
+                503,
             ),
         ] {
             let key = id.clone();
@@ -1876,7 +1876,7 @@ mod tests {
             assert_eq!(error.status(), expected, "{raw}");
         }
         let key = id.clone();
-        let valid = json!({"method":"browser/open","params":{"bridgeId":bridge,"forward":{"tokenHash":studio_runtime_store::sha256_hex(b"token"),"extra":true}}}).to_string();
+        let valid = json!({"id":id,"agent":"fixture","status":"pending","createdAt":1,"method":"browser/open","params":{"bridgeId":bridge,"forward":{"tokenHash":studio_runtime_store::sha256_hex(b"token"),"extra":true}}}).to_string();
         store
             .transaction_with(move |tx| {
                 studio_runtime_store::QuestionsWriteRepository::put_request(tx, &key, &valid)

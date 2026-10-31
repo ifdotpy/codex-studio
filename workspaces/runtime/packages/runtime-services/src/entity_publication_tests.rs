@@ -796,7 +796,7 @@ async fn a_raw_request_row_write_reaches_the_client_and_a_closed_one_leaves_it()
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
     let card = json!({"id":"raw-card","agent":CHAT,"method":"agent/asyncQuestion",
-        "status":"pending","params":{"message":"Continue?"}});
+        "status":"pending","createdAt":1,"params":{"message":"Continue?"}});
     write(
         &store,
         "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
