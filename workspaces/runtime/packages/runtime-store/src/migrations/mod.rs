@@ -55,6 +55,7 @@ mod m2026_10_30_task_records;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
+mod m2026_10_31_native_status_error;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -119,6 +120,11 @@ const OCTOBER_29: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
     day: 29,
+};
+const OCTOBER_31: MigrationDate = MigrationDate {
+    year: 2026,
+    month: 10,
+    day: 31,
 };
 const OCTOBER_30: MigrationDate = MigrationDate {
     year: 2026,
@@ -828,6 +834,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_branch_phase::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-native-status-error",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent native status errors stored as objects",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_31_native_status_error::apply(c.transaction),
     },
 ];
 
