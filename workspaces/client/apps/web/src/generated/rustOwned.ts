@@ -83,6 +83,54 @@ export interface components {
           kind: "closed";
           reason: components["schemas"]["CloseReason"];
         };
+    /** @description A forward of the callback to another server. Only the hash of the token is stored. */
+    BrowserForward: {
+      expires_at: components["schemas"]["Timestamp"];
+      token_hash: string;
+    };
+    /** @description How a sign-in ended after the person opened it. */
+    BrowserOutcome:
+      | ("signed_in" | "refused" | "provider_error" | "unknown" | "expired")
+      | "cancelled";
+    /**
+     * @description The step of a sign-in card. The approval state says who answered; the phase
+     *     says what happens in the paste mode, where the card waits after the answer.
+     */
+    BrowserPhase:
+      | {
+          /** @constant */
+          kind: "link";
+        }
+      | {
+          expires_at: components["schemas"]["Timestamp"];
+          /** @constant */
+          kind: "waiting";
+        }
+      | {
+          at: components["schemas"]["Timestamp"];
+          expires_at: components["schemas"]["Timestamp"];
+          /** @constant */
+          kind: "pasted";
+        }
+      | {
+          /**
+           * Format: uint16
+           * @description HTTP status the command answered, when it answered.
+           */
+          http: number | null;
+          /** @constant */
+          kind: "finished";
+          outcome: components["schemas"]["BrowserOutcome"];
+        };
+    /** @description The loopback address the sign-in command listens on. */
+    BrowserRedirect: {
+      host: string;
+      path: string;
+      /** Format: uint16 */
+      port: number;
+    };
+    /** @description Where a sign-in link came from. */
+    BrowserSource: "vm" | "host";
     CloseReason:
       | (
           | "turn_ended"
@@ -413,9 +461,24 @@ export interface components {
           monitor: string;
         }
       | {
+          /** @description Identity of the guest request. 32 lowercase hex characters. */
+          bridge_id: string;
+          client_id: string | null;
+          /** @description Deadline of the guest request. */
+          expires_at: components["schemas"]["Timestamp"] | null;
+          forward: components["schemas"]["BrowserForward"] | null;
+          host: string;
+          /** @description Other chats that wait on this card. */
+          joined: components["schemas"]["AgentId"][];
           /** @constant */
           kind: "browser_open";
+          linux_user: string | null;
+          phase: components["schemas"]["BrowserPhase"];
+          redirect: components["schemas"]["BrowserRedirect"] | null;
+          scope: string | null;
+          source: components["schemas"]["BrowserSource"];
           url: string;
+          user_code: string | null;
         };
     Request2: {
       id: string;
@@ -523,6 +586,11 @@ export type Answer = components["schemas"]["Answer"];
 export type Approval = components["schemas"]["Approval"];
 export type ApprovalId = components["schemas"]["ApprovalId"];
 export type ApprovalState = components["schemas"]["ApprovalState"];
+export type BrowserForward = components["schemas"]["BrowserForward"];
+export type BrowserOutcome = components["schemas"]["BrowserOutcome"];
+export type BrowserPhase = components["schemas"]["BrowserPhase"];
+export type BrowserRedirect = components["schemas"]["BrowserRedirect"];
+export type BrowserSource = components["schemas"]["BrowserSource"];
 export type CloseReason = components["schemas"]["CloseReason"];
 export type CommandError = components["schemas"]["CommandError"];
 export type CommandId = components["schemas"]["CommandId"];

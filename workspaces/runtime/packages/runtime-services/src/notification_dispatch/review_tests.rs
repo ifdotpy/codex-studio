@@ -164,7 +164,8 @@ fn failed_notification_transaction_discards_staged_stream_changes() {
 #[test]
 fn p06_recovery_message_retains_buffered_text_questions_and_atomicity() {
     let mut db = super::tests::database();
-    db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL); UPDATE runtime_agents SET record=json_set(record,'$.isLead',json('true')) WHERE id='agent';").expect("test invariant");
+    studio_runtime_store::approvals::create_schema(&db).expect("test invariant");
+    db.execute_batch("UPDATE runtime_agents SET record=json_set(record,'$.isLead',json('true')) WHERE id='agent';").expect("test invariant");
     let tx = db.transaction().expect("test invariant");
     let frame = super::tests::frame(
         &json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"retained"}}),
@@ -189,7 +190,7 @@ fn p06_recovery_message_retains_buffered_text_questions_and_atomicity() {
         .expect("test invariant");
     let original = agent.clone();
     let item = json!({"id":"answer","type":"agentMessage","text":"","questions":[{"title":"Which option?","options":["A","B"]}]});
-    tx.execute_batch("CREATE TEMP TRIGGER fail_question BEFORE INSERT ON runtime_requests BEGIN SELECT RAISE(ABORT,'question failpoint'); END;").expect("test invariant");
+    tx.execute_batch("CREATE TEMP TRIGGER fail_question BEFORE INSERT ON approvals BEGIN SELECT RAISE(ABORT,'question failpoint'); END;").expect("test invariant");
     assert!(
         streams
             .recover_agent_message_in_transaction(
@@ -250,18 +251,18 @@ fn p06_recovery_message_retains_buffered_text_questions_and_atomicity() {
         1,
         "recovery must not invent a journal entry"
     );
-    let request: String = tx
-        .query_row(
-            "SELECT record FROM runtime_requests WHERE id='agent:question:answer'",
-            [],
-            |r| r.get(0),
-        )
-        .expect("test invariant");
-    assert_eq!(
-        serde_json::from_str::<Value>(&request).expect("test invariant")["params"]["questions"][0]
-            ["question"],
-        "Which option?"
-    );
+    let request = studio_runtime_store::approvals::get(
+        &tx,
+        &studio_runtime_schema::approvals::ApprovalId("agent:question:answer".into()),
+    )
+    .expect("test invariant")
+    .expect("test invariant");
+    let studio_runtime_schema::approvals::Request::AgentQuestion { questions } = request.request
+    else {
+        panic!("an agent question");
+    };
+    assert_eq!(questions[0].question, "Which option?");
+    assert_eq!(questions[0].options[1].label, "B");
     tx.rollback().expect("test invariant");
     assert_eq!(
         db.query_row("SELECT count(*) FROM runtime_items", [], |r| r

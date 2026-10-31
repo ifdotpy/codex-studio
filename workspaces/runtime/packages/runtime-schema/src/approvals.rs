@@ -129,9 +129,98 @@ pub enum Request {
         command: String,
     },
     /// Today `browser/open`.
-    BrowserOpen {
-        url: String,
+    BrowserOpen(BrowserCard),
+}
+
+/// Where a sign-in link came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserSource {
+    /// The guest service of the Linux VM on this Mac.
+    Vm,
+    /// The browser host of commands that run on this server.
+    Host,
+}
+
+/// The loopback address the sign-in command listens on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserRedirect {
+    pub host: String,
+    pub port: u16,
+    pub path: String,
+}
+
+/// A forward of the callback to another server. Only the hash of the token is stored.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserForward {
+    pub token_hash: String,
+    pub expires_at: Timestamp,
+}
+
+/// How a sign-in ended after the person opened it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserOutcome {
+    SignedIn,
+    Refused,
+    ProviderError,
+    Unknown,
+    Expired,
+    /// The person declined in the waiting phase. No address was pasted.
+    Cancelled,
+}
+
+impl BrowserOutcome {
+    /// Whether a pasted address was sent to the sign-in command.
+    pub fn was_pasted(self) -> bool {
+        matches!(
+            self,
+            Self::SignedIn | Self::Refused | Self::ProviderError | Self::Unknown
+        )
+    }
+}
+
+/// The step of a sign-in card. The approval state says who answered; the phase
+/// says what happens in the paste mode, where the card waits after the answer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BrowserPhase {
+    /// The link is shown. Nobody opened it.
+    Link,
+    /// Paste mode: the person opened the link and the card waits for the address of the
+    /// page that did not load. `expires_at` is the end of the guest lease.
+    Waiting { expires_at: Timestamp },
+    /// A pasted address is on its way to the command. A second paste is refused.
+    Pasted { expires_at: Timestamp, at: Timestamp },
+    Finished {
+        outcome: BrowserOutcome,
+        /// HTTP status the command answered, when it answered.
+        http: Option<u16>,
     },
+}
+
+/// A sign-in link that needs the person's consent to open.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserCard {
+    pub url: String,
+    /// Identity of the guest request. 32 lowercase hex characters.
+    pub bridge_id: String,
+    pub host: String,
+    pub source: BrowserSource,
+    pub redirect: Option<BrowserRedirect>,
+    pub client_id: Option<String>,
+    pub scope: Option<String>,
+    pub linux_user: Option<String>,
+    pub user_code: Option<String>,
+    /// Deadline of the guest request.
+    pub expires_at: Option<Timestamp>,
+    /// Other chats that wait on this card.
+    pub joined: Vec<AgentId>,
+    pub forward: Option<BrowserForward>,
+    pub phase: BrowserPhase,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -155,6 +244,11 @@ pub enum ElicitationAction {
 pub struct QuestionAnswer {
     pub id: String,
     pub answer: Vec<String>,
+}
+
+impl QuestionAnswer {
+    /// Stored in place of the value the user typed for a secret question.
+    pub const REDACTED: &'static str = "[redacted]";
 }
 
 /// The answer a person or policy gives. Its kind must fit the request kind.

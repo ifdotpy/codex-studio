@@ -10,7 +10,7 @@ use studio_runtime_services::workspace_views::{
 };
 use studio_runtime_store::{
     AgentRecord, AnnotationRecord, CheckpointRecord, ComplaintRecord, Connection, PlanRecord,
-    RequestRecord, RuleRecord, StoreError, TaskRecord, TranscriptRepository,
+    RuleRecord, StoreError, TaskRecord, TranscriptRepository,
     WorkspaceViewsRepository,
 };
 
@@ -252,10 +252,16 @@ fn workspace_view(
         );
     }
 
-    let requests = record_values(
-        WorkspaceViewsRepository::records_for_agents::<RequestRecord>(connection, "agent", &ids)
-            .map_err(ApiError::stored)?,
-    )?;
+    let mut requests = Vec::new();
+    for id in &ids {
+        requests.extend(
+            studio_runtime_store::approvals::for_agent(
+                connection,
+                &studio_runtime_schema::approvals::AgentId(id.clone()),
+            )
+            .map_err(|error| ApiError::stored(error.into()))?,
+        );
+    }
     let complaints = if root.is_some() {
         record_values(
             WorkspaceViewsRepository::records_for_agents::<ComplaintRecord>(

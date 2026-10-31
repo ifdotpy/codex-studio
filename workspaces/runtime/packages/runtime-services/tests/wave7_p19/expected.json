@@ -2330,10 +2330,31 @@
           "deliveries": "{}"
         }
       ],
-      "requests": [
+      "requests": [],
+      "approvals": [
         {
           "id": "q",
-          "record": "{\"id\": \"q\", \"agent\": \"a\", \"epoch\": 1, \"turnId\": \"turn\", \"method\": \"agent/asyncQuestion\", \"status\": \"pending\", \"params\": {}, \"created\": 10.0}"
+          "agent": "a",
+          "turn": "turn",
+          "created": 10.0,
+          "epoch": 1,
+          "kind": "agent_question",
+          "request": "{\"kind\":\"agent_question\",\"questions\":[]}",
+          "delivery": null,
+          "detail": "{\"params\":{},\"preview\":null,\"answer_error\":null,\"host_close_reason\":null}",
+          "state": "pending",
+          "answer": null,
+          "command": null,
+          "answered_by": null,
+          "at": null,
+          "since": null,
+          "reason": null,
+          "deferral_active": null,
+          "deferral_at": null,
+          "deferral_by": null,
+          "fire_at": null,
+          "hidden_at": null,
+          "hidden_by": null
         }
       ],
       "completed_turns": [
@@ -2440,10 +2461,31 @@
           "deliveries": "{}"
         }
       ],
-      "requests": [
+      "requests": [],
+      "approvals": [
         {
           "id": "q",
-          "record": "{\"id\": \"q\", \"agent\": \"a\", \"epoch\": 1, \"turnId\": \"turn\", \"method\": \"agent/asyncQuestion\", \"status\": \"pending\", \"params\": {}, \"created\": 10.0}"
+          "agent": "a",
+          "turn": "turn",
+          "created": 10.0,
+          "epoch": 1,
+          "kind": "agent_question",
+          "request": "{\"kind\":\"agent_question\",\"questions\":[]}",
+          "delivery": null,
+          "detail": "{\"params\":{},\"preview\":null,\"answer_error\":null,\"host_close_reason\":null}",
+          "state": "pending",
+          "answer": null,
+          "command": null,
+          "answered_by": null,
+          "at": null,
+          "since": null,
+          "reason": null,
+          "deferral_active": null,
+          "deferral_at": null,
+          "deferral_by": null,
+          "fire_at": null,
+          "hidden_at": null,
+          "hidden_by": null
         }
       ],
       "completed_turns": [
@@ -2511,10 +2553,17 @@
       "expected_revision": 2,
       "question": {
         "id": "q",
-        "method": "agent/asyncQuestion",
         "agent": "a",
+        "turn": "turn",
+        "created": 10.0,
         "epoch": 1,
-        "turnId": "turn"
+        "request": { "kind": "agent_question", "questions": [] },
+        "delivery": null,
+        "detail": { "params": {}, "preview": null, "answer_error": null, "host_close_reason": null },
+        "state": { "kind": "pending" },
+        "deferral": null,
+        "fire_at": null,
+        "hidden": null
       },
       "text": "answer",
       "accepted": false
@@ -2574,10 +2623,31 @@
           "deliveries": "{}"
         }
       ],
-      "requests": [
+      "requests": [],
+      "approvals": [
         {
           "id": "q",
-          "record": "{\"id\": \"q\", \"agent\": \"a\", \"epoch\": 1, \"turnId\": \"turn\", \"method\": \"agent/asyncQuestion\", \"status\": \"pending\", \"params\": {}, \"created\": 10.0}"
+          "agent": "a",
+          "turn": "turn",
+          "created": 10.0,
+          "epoch": 1,
+          "kind": "agent_question",
+          "request": "{\"kind\":\"agent_question\",\"questions\":[]}",
+          "delivery": null,
+          "detail": "{\"params\":{},\"preview\":null,\"answer_error\":null,\"host_close_reason\":null}",
+          "state": "pending",
+          "answer": null,
+          "command": null,
+          "answered_by": null,
+          "at": null,
+          "since": null,
+          "reason": null,
+          "deferral_active": null,
+          "deferral_at": null,
+          "deferral_by": null,
+          "fire_at": null,
+          "hidden_at": null,
+          "hidden_by": null
         }
       ],
       "completed_turns": [
@@ -2693,10 +2763,31 @@
           "deliveries": "{}"
         }
       ],
-      "requests": [
+      "requests": [],
+      "approvals": [
         {
           "id": "q",
-          "record": "{\"id\": \"q\", \"agent\": \"a\", \"epoch\": 1, \"turnId\": \"turn\", \"method\": \"agent/asyncQuestion\", \"status\": \"pending\", \"params\": {}, \"created\": 10.0}"
+          "agent": "a",
+          "turn": "turn",
+          "created": 10.0,
+          "epoch": 1,
+          "kind": "agent_question",
+          "request": "{\"kind\":\"agent_question\",\"questions\":[]}",
+          "delivery": null,
+          "detail": "{\"params\":{},\"preview\":null,\"answer_error\":null,\"host_close_reason\":null}",
+          "state": "pending",
+          "answer": null,
+          "command": null,
+          "answered_by": null,
+          "at": null,
+          "since": null,
+          "reason": null,
+          "deferral_active": null,
+          "deferral_at": null,
+          "deferral_by": null,
+          "fire_at": null,
+          "hidden_at": null,
+          "hidden_by": null
         }
       ],
       "completed_turns": [

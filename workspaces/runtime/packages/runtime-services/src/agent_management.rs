@@ -648,9 +648,9 @@ impl ManagementSnapshot {
         );
         add(
             ArchiveBlockerKind::Questions,
-            self.owned("runtime_requests", "agent", agent.id())
+            self.owned("approvals", "agent", agent.id())
                 .into_iter()
-                .filter(|r| is_status(r, &["pending"]))
+                .filter(|r| is_pending_approval(r))
                 .map(|r| r["id"].clone())
                 .collect(),
         );
@@ -837,6 +837,11 @@ pub(crate) fn archived_cleanup_result(record: &Value) -> (Value, Value) {
     };
     let workspace = Value::Null;
     (worktree, workspace)
+}
+
+/// An approval row in its JSON form that waits for an answer.
+fn is_pending_approval(row: &Value) -> bool {
+    row["state"]["kind"] == "pending"
 }
 
 fn is_status(row: &Value, statuses: &[&str]) -> bool {
@@ -1232,17 +1237,17 @@ fn stop(
         decision.write("runtime_agents", record);
         decision.cancel_pending.push(agent.id().to_owned());
     }
-    for request in snapshot.rows("runtime_requests") {
+    for request in snapshot.rows("approvals") {
         if request
             .get("agent")
             .and_then(Value::as_str)
             .is_some_and(|id| ids.iter().any(|a| a == id))
-            && is_status(request, &["pending"])
-            && request.get("method").and_then(Value::as_str) != Some("monitor/approve")
+            && is_pending_approval(request)
+            && request["request"]["kind"] != "monitor_start"
         {
             let mut request = request.clone();
-            request["status"] = json!("expired");
-            decision.write("runtime_requests", request);
+            request["state"] = json!({"kind":"closed","reason":"session_lost","at":now});
+            decision.write("approvals", request);
         }
     }
     Ok(decision)
@@ -1520,11 +1525,11 @@ mod lifecycle_scope_parity_tests {
                     ],
                 ),
                 (
-                    "runtime_requests".to_owned(),
+                    "approvals".to_owned(),
                     vec![
-                        json!({"id":"worker-request","agent":"worker","status":"pending","method":"user/input"}),
-                        json!({"id":"approval-request","agent":"nested","status":"pending","method":"monitor/approve"}),
-                        json!({"id":"unrelated-request","agent":"other-lead","status":"pending","method":"user/input"}),
+                        json!({"id":"worker-request","agent":"worker","state":{"kind":"pending"},"request":{"kind":"question"}}),
+                        json!({"id":"approval-request","agent":"nested","state":{"kind":"pending"},"request":{"kind":"monitor_start"}}),
+                        json!({"id":"unrelated-request","agent":"other-lead","state":{"kind":"pending"},"request":{"kind":"question"}}),
                     ],
                 ),
                 (

@@ -46,7 +46,6 @@ async fn answer(
     let async_store = store.clone();
     let browser_store = store.clone();
     let browser_id = id.clone();
-    let validators = state.validators.clone();
     let local_window = super::browser::local_window(&headers, peer);
     let vm_state_dir = state.vm_state_dir.clone();
     let browser_guest = state.browser_answer_guest.clone();
@@ -92,12 +91,12 @@ async fn answer(
             )
         })?;
         Ok::<_, studio_runtime_services::browser_answer::BrowserAnswerError>((
-            guest, forwarder, now, validators,
+            guest, forwarder, now,
         ))
     }
     .await
     .map_err(browser_answer_error)?;
-    let (guest, forwarder, now, validators) = browser_context;
+    let (guest, forwarder, now) = browser_context;
     let browser_answer = studio_runtime_services::browser_answer::answer(
         &store,
         &id,
@@ -107,9 +106,6 @@ async fn answer(
             guest,
             local_forwarder: forwarder,
             now,
-            validate: move |record: &serde_json::Value| {
-                validators.validate_table_record("runtime_requests", record)
-            },
             http_providers: Default::default(),
         },
     )
@@ -360,7 +356,20 @@ async fn delete_question(
     ApiJson(body): ApiJson<crate::generated::QuestionBody>,
 ) -> Result<Json<crate::generated::MutationReceipt>, ApiError> {
     let id = body.id;
-    let result = if let Some(runtime) = state.callback_runtime.clone() {
+    // An agent question is a typed approval; a provider card goes through the callback runtime.
+    let agent_id = id.clone();
+    let agent_question = match state.store.clone() {
+        Some(store) => store
+            .transaction_with_error(move |transaction| {
+                questions_write::delete_agent_question(transaction, &agent_id)
+            })
+            .await
+            .map_err(api_error)?,
+        None => None,
+    };
+    let result = if let Some(result) = agent_question {
+        result
+    } else if let Some(runtime) = state.callback_runtime.clone() {
         runtime
             .delete_question(&id, callback_clock().map_err(|_| ApiError::internal())?)
             .await
