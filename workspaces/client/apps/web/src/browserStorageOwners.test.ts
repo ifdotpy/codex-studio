@@ -9,7 +9,6 @@ import { expect, it } from "vitest";
 // entry needs an owner. A removed use must leave this list, so the list always
 // matches the source.
 const allowed: Record<string, string> = {
-  "App.tsx": "workspace id of each server view, read by the server list",
   "browserPersistence.ts": "allowed browser persistence and legacy cleanup",
   "components/shell/BackgroundTasks.tsx":
     "request identity of a pending background task control, kept for a lost reply",
@@ -17,8 +16,6 @@ const allowed: Record<string, string> = {
     "request identity of a pending MCP action, kept for a lost reply",
   "components/shell/MonitorRestart.tsx":
     "request body of a pending monitor restart, kept for a lost reply",
-  "servers/automaticAccessStore.ts":
-    "servers removed from the automatic UI list",
   "servers/serverServices.ts": "server-scoped storage for each server view",
   "servers/storage.ts":
     "server-scoped storage that drafts, queues, uploads, and caches use",
