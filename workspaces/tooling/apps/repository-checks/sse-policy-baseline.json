@@ -300,14 +300,6 @@
     "callee": "indexedDB.open"
   },
   {
-    "file": "servers/automaticAccessStore.ts",
-    "callee": "globalThis.localStorage"
-  },
-  {
-    "file": "servers/automaticAccessStore.ts",
-    "callee": "globalThis.localStorage"
-  },
-  {
     "file": "servers/browserCredentials.ts",
     "callee": "fetch"
   },

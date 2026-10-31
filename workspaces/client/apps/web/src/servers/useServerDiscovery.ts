@@ -16,11 +16,7 @@ import {
 } from "./discoveryModel";
 import type { ServerAccessRequest } from "./accessContract";
 import { AutomaticUiAccess } from "./automaticUiAccess";
-import {
-  automaticAccessStore,
-  excludedServers,
-  setServerExcluded,
-} from "./automaticAccessStore";
+import { automaticAccessStore } from "./automaticAccessStore";
 import {
   readServers,
   setLocalServerDetails,
@@ -44,7 +40,6 @@ export function useServerDiscovery(
   const [accessError, setAccessError] = useState("");
   const [busy, setBusy] = useState(false);
   const [checkedAt, setCheckedAt] = useState<number | null>(null);
-  const [excluded, setExcluded] = useState<Set<string>>(new Set());
   useEffect(() => {
     const changed = (event: Event) => {
       if (
@@ -70,15 +65,6 @@ export function useServerDiscovery(
         inviteId: attempt.invitation?.inviteId,
       }),
     );
-  useEffect(() => {
-    let mounted = true;
-    void attempts.current!.initialize().catch((failure) => {
-      if (mounted) setError(errorText(failure));
-    });
-    return () => {
-      mounted = false;
-    };
-  }, []);
   const controller = useRef<AutomaticUiAccess | null>(null);
   if (!controller.current)
     controller.current = new AutomaticUiAccess(attempts.current, {
@@ -96,7 +82,6 @@ export function useServerDiscovery(
           );
         await navigator.locks.request(`studio-automatic-ui-access:${key}`, run);
       },
-      excluded: (id) => excludedServers().has(id),
       add: (server) => {
         if (active.current) addRef.current(server);
       },
@@ -180,18 +165,6 @@ export function useServerDiscovery(
       });
     setSnapshot(next);
     setCheckedAt(Date.now() / 1000);
-    setExcluded(excludedServers());
-    // Every owner UI, including a phone through Serve, follows the same
-    // paired-server snapshot. Discovery management remains local-only.
-    if (next && localAvailable)
-      void controller.current!.reconcile(next).then(
-        () => {
-          if (active.current) setAccessError("");
-        },
-        (failure) => {
-          if (active.current) setAccessError(errorText(failure));
-        },
-      );
   };
   const effectiveSnapshot = snapshot
     ? {
@@ -212,17 +185,9 @@ export function useServerDiscovery(
     const alias = effectiveSnapshot?.aliases?.local;
     if (alias) setLocalServerDetails({ alias });
   }, [effectiveSnapshot?.aliases?.local]);
-  const loadGeneration = useRef(0);
   const load = (version?: ResourceVersion) => {
     const snapshot = version?.discoverySnapshot;
-    if (snapshot) {
-      const generation = ++loadGeneration.current;
-      return attempts.current!.initialize().then(() => {
-        if (generation === loadGeneration.current) return apply(snapshot);
-        return undefined;
-      });
-    }
-    return Promise.resolve();
+    return snapshot ? apply(snapshot) : Promise.resolve();
   };
   const loadRef = useRef(load);
   loadRef.current = load;
@@ -314,7 +279,6 @@ export function useServerDiscovery(
     checkedAt,
     error: [error, accessError].filter(Boolean).join("\n"),
     busy,
-    excluded,
     actions: {
       find: () => {
         void run({ action: "discover", requestId: randomUUID() });
@@ -364,13 +328,17 @@ export function useServerDiscovery(
       : undefined,
     addAgain: (id: string) => {
       try {
-        setServerExcluded(id, false);
         controller.current?.retry(id);
-        setExcluded(excludedServers());
         if (snapshot)
           void controller.current
-            ?.reconcile(snapshot)
-            .catch((failure) => setError(errorText(failure)));
+            ?.reconcile({
+              ...snapshot,
+              servers: snapshot.servers.filter((server) => server.id === id),
+            })
+            .then(
+              () => setAccessError(""),
+              (failure) => setAccessError(errorText(failure)),
+            );
       } catch (failure) {
         setError(errorText(failure));
       }

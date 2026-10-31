@@ -32,7 +32,6 @@ export interface AutomaticAccessAdapter {
   current(): Promise<DiscoverySnapshot | null>;
   existing(): StudioServer[];
   add(server: StudioServer): void;
-  excluded(serverId: string): boolean;
   lock?(key: string, run: () => Promise<void>): Promise<void>;
 }
 export class AutomaticUiAccess {
@@ -82,7 +81,6 @@ export class AutomaticUiAccess {
       latest?.localServerId === home &&
       row?.origin === peer.origin &&
       row.generation === peer.generation &&
-      !this.adapter.excluded(peer.id) &&
       this.cancelled.get(peer.id) !== peer.generation &&
       row.paired &&
       row.status !== "revoked"

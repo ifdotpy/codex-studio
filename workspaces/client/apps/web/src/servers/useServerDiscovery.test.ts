@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { ResourceVersion } from "../sync/resourceEvents";
 import type { ServerAccessState } from "./accessContract";
+import type { DiscoverySnapshot } from "./discoveryModel";
 
 const mocks = vi.hoisted(() => ({
   effects: [] as (() => void | (() => void))[],
@@ -8,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   access: vi.fn(),
   snapshots: [] as unknown[],
   setLocalServerDetails: vi.fn(),
+  reconcile: vi.fn(async (_snapshot: unknown) => {}),
   stateCalls: 0,
   snapshotOverride: undefined as unknown,
   fields: {} as Record<string, unknown>,
@@ -36,11 +38,13 @@ vi.mock("./ServerServicesContext", () => ({
 }));
 vi.mock("./automaticAccessStore", () => ({
   automaticAccessStore: () => ({ initialize: async () => {} }),
-  excludedServers: () => new Set(),
 }));
 vi.mock("./automaticUiAccess", () => ({
   AutomaticUiAccess: class {
-    async reconcile() {}
+    reconcile(snapshot: unknown) {
+      return mocks.reconcile(snapshot);
+    }
+    retry() {}
     stop() {}
   },
 }));
@@ -72,6 +76,7 @@ afterEach(() => {
   mocks.snapshots.length = 0;
   mocks.access.mockReset();
   mocks.setLocalServerDetails.mockReset();
+  mocks.reconcile.mockClear();
   mocks.stateCalls = 0;
   mocks.snapshotOverride = undefined;
   mocks.fields = {};
@@ -110,6 +115,7 @@ it("uses stream snapshots without a fallback HTTP read", async () => {
     discoverySnapshot: snapshot,
   } as ResourceVersion);
   expect(mocks.access).not.toHaveBeenCalled();
+  expect(mocks.reconcile).not.toHaveBeenCalled();
   expect(mocks.snapshots).toContainEqual(
     expect.objectContaining({ localServerId: "owner" }),
   );
@@ -144,4 +150,15 @@ it("uses stream snapshots without a fallback HTTP read", async () => {
     if (cleanup) cleanups.push(cleanup);
   }
   expect(mocks.setLocalServerDetails).toHaveBeenCalledWith({ alias: "NEW" });
+  mocks.snapshotOverride = {
+    ...(snapshots.at(-1) as DiscoverySnapshot),
+    servers: [{ id: "peer" }, { id: "other" }],
+  };
+  mocks.stateCalls = 0;
+  const discovery = useServerDiscovery(true, vi.fn());
+  discovery.addAgain("peer");
+  expect(mocks.reconcile).toHaveBeenCalledOnce();
+  expect(mocks.reconcile.mock.calls[0]?.[0]).toMatchObject({
+    servers: [{ id: "peer" }],
+  });
 });
