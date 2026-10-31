@@ -29789,6 +29789,22 @@
             ],
             "default": null
           },
+          "online": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/OnlineMigration"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Progress of each online migration by name (docs/online-migrations.md).",
+            "title": "Online"
+          },
           "payloads": {
             "anyOf": [
               {
@@ -33442,6 +33458,65 @@
           }
         },
         "title": "NativeTurnErrorRecordResponse",
+        "type": "object"
+      },
+      "OnlineMigration": {
+        "additionalProperties": false,
+        "description": "Progress of one online migration: batch copy with a high-water mark.",
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "cursor": {
+            "description": "High-water mark: the highest source key copied.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "dirty": {
+            "description": "Changed source keys waiting for a re-copy.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Dirty",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Error"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PayloadMigrationState"
+          },
+          "updated": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Updated"
+          }
+        },
+        "required": [
+          "cursor",
+          "complete",
+          "status",
+          "updated",
+          "error",
+          "dirty"
+        ],
+        "title": "OnlineMigration",
         "type": "object"
       },
       "OrchestrationSettings": {

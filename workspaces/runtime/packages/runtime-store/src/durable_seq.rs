@@ -22,7 +22,7 @@
 //! The DDL of `durable_rows` and `durable_floor` is in `sync_schema.sql` (section
 //! `common`), where the allocators that read `durable_rows` are.
 
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::{StoreError, StoreResult};
 
@@ -36,11 +36,26 @@ pub struct DurableTable {
     pub name: &'static str,
     /// Column that holds the row payload sent to readers.
     pub payload: &'static str,
+    /// True for a table too large to number in one transaction: the installer adds the
+    /// triggers, and an online migration gives the old rows their entries later.
+    pub online_backfill: bool,
 }
 
 impl DurableTable {
     pub const fn new(name: &'static str, payload: &'static str) -> Self {
-        Self { name, payload }
+        Self {
+            name,
+            payload,
+            online_backfill: false,
+        }
+    }
+
+    pub const fn online(name: &'static str, payload: &'static str) -> Self {
+        Self {
+            name,
+            payload,
+            online_backfill: true,
+        }
     }
 }
 
@@ -49,6 +64,8 @@ pub const DURABLE_TABLES: &[DurableTable] = &[
     DurableTable::new("runtime_agents", "record"),
     DurableTable::new("runtime_requests", "record"),
     DurableTable::new("runtime_work", "record"),
+    // The owner of conversation items; transcript pages are built from it at read time.
+    DurableTable::online("runtime_items", "record"),
 ];
 
 /// The next number of the shared counter. Owner of the allocation rule. The same text
@@ -149,15 +166,31 @@ pub(crate) fn install(tx: &Transaction<'_>) -> StoreResult<()> {
     tx.execute_batch(&view_log_sql())?;
     for table in DURABLE_TABLES {
         let name = table.name;
-        let base: i64 = tx.query_row(&format!("SELECT {NEXT}-1"), [], |r| r.get(0))?;
-        tx.execute_batch(&format!(
-            "INSERT INTO durable_rows(tbl,id,seq,deleted,at)
-               SELECT '{name}',id,{base}+ROW_NUMBER() OVER (ORDER BY rowid),0,0 FROM {name} t
-               WHERE NOT EXISTS (SELECT 1 FROM durable_rows d WHERE d.tbl='{name}' AND d.id=t.id);
-             {}",
-            trigger_sql(name)
-        ))?;
+        if !table.online_backfill {
+            let base: i64 = tx.query_row(&format!("SELECT {NEXT}-1"), [], |r| r.get(0))?;
+            tx.execute_batch(&format!(
+                "INSERT INTO durable_rows(tbl,id,seq,deleted,at)
+                   SELECT '{name}',id,{base}+ROW_NUMBER() OVER (ORDER BY rowid),0,0 FROM {name} t
+                   WHERE NOT EXISTS (SELECT 1 FROM durable_rows d WHERE d.tbl='{name}' AND d.id=t.id);"
+            ))?;
+        }
+        tx.execute_batch(&trigger_sql(name))?;
     }
+    Ok(())
+}
+
+/// Give one row of an `online_backfill` table its entry, unless it has one. Rows written
+/// after the triggers exist have an entry from them, so this only reaches old rows. Safe
+/// to repeat: a row that has an entry keeps its number.
+pub fn number_row(connection: &Connection, table: &str, rowid: i64) -> StoreResult<()> {
+    connection.execute(
+        &format!(
+            "INSERT INTO durable_rows(tbl,id,seq,deleted,at)
+               SELECT '{table}',id,{NEXT},0,0 FROM {table} WHERE rowid=?1
+             ON CONFLICT(tbl,id) DO NOTHING"
+        ),
+        [rowid],
+    )?;
     Ok(())
 }
 
@@ -299,6 +332,55 @@ pub fn transcript_copy_missing_from_owner(
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(missing)
+}
+
+/// `sync_entity_meta` key that records the end of the transcript copies in `sync_entities`.
+const COPIES_KEY: &str = "transcript_copies";
+const COPIES_RETIRED: &str = "retired";
+
+/// True once transcript pages are built at read time and the writer keeps no transcript
+/// copy in `sync_entities`.
+pub fn transcript_copies_retired(connection: &Connection) -> StoreResult<bool> {
+    let value: Option<String> = connection
+        .query_row(
+            "SELECT value FROM sync_entity_meta WHERE key=?1",
+            [COPIES_KEY],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(value.as_deref() == Some(COPIES_RETIRED))
+}
+
+/// Stop writing transcript copies, but only when the owner table holds every item the
+/// copies list. Returns the missing `(agent, item)` pairs; on a non-empty result nothing
+/// changes and the writer keeps the copies. Old rows are never deleted.
+pub fn retire_transcript_copies(tx: &Transaction<'_>) -> StoreResult<Vec<(String, String)>> {
+    let missing = transcript_copy_missing_from_owner(tx)?;
+    if missing.is_empty() {
+        tx.execute(
+            "INSERT INTO sync_entity_meta(key,value) VALUES(?1,?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            [COPIES_KEY, COPIES_RETIRED],
+        )?;
+    }
+    Ok(missing)
+}
+
+/// The change number of a conversation: the highest `durable_rows.seq` of its agent, its
+/// items, and any deleted item. It only grows, and a cursor from any sync table is valid
+/// against it because they share one counter.
+pub fn transcript_change_cursor(connection: &Connection, agent: &str) -> StoreResult<i64> {
+    Ok(connection.query_row(
+        "SELECT MAX(
+            COALESCE((SELECT seq FROM durable_rows WHERE tbl='runtime_agents' AND id=?1),0),
+            COALESCE((SELECT MAX(d.seq) FROM runtime_items i
+                      JOIN durable_rows d ON d.tbl='runtime_items' AND d.id=i.id
+                      WHERE i.agent=?1),0),
+            COALESCE((SELECT MAX(seq) FROM durable_rows
+                      WHERE deleted=1 AND tbl='runtime_items'),0))",
+        [agent],
+        |row| row.get(0),
+    )?)
 }
 
 #[cfg(test)]
@@ -513,7 +595,7 @@ mod tests {
 
     #[test]
     fn an_unknown_table_is_refused() {
-        assert!(changes_since(&canvas(), "runtime_items", None).is_err());
+        assert!(changes_since(&canvas(), "runtime_events", None).is_err());
     }
 
     #[test]
@@ -558,5 +640,70 @@ mod tests {
             transcript_copy_missing_from_owner(&db).expect("check"),
             vec![("a1".to_owned(), "i2".to_owned())]
         );
+    }
+
+    #[test]
+    fn retiring_the_copies_needs_every_item_in_the_owner_and_never_deletes_rows() {
+        let mut db = canvas();
+        // A fresh state has no copies, so the migration retired them.
+        assert!(transcript_copies_retired(&db).expect("flag"));
+        db.execute_batch(
+            "DELETE FROM sync_entity_meta WHERE key='transcript_copies';
+             INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES
+               ('transcript:a1','item:i2',2,'h',NULL,0);",
+        )
+        .expect("a copy row without its item");
+        let tx = db.transaction().expect("transaction");
+        let missing = retire_transcript_copies(&tx).expect("check");
+        tx.commit().expect("commit");
+        assert_eq!(missing, vec![("a1".to_owned(), "i2".to_owned())]);
+        assert!(
+            !transcript_copies_retired(&db).expect("flag"),
+            "the writer keeps the copies"
+        );
+        db.execute_batch(
+            "INSERT INTO runtime_items(id,agent,record,created) VALUES('i2','a1','{}',1)",
+        )
+        .expect("owner row");
+        let tx = db.transaction().expect("transaction");
+        assert!(retire_transcript_copies(&tx).expect("check").is_empty());
+        tx.commit().expect("commit");
+        assert!(transcript_copies_retired(&db).expect("flag"));
+        let copies: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sync_entities WHERE collection='transcript:a1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(copies, 1, "old rows stay");
+    }
+
+    #[test]
+    fn the_change_cursor_follows_items_agent_and_deletes_of_one_conversation() {
+        let db = canvas();
+        db.execute_batch(
+            "INSERT INTO runtime_agents(id,record) VALUES('a1','{\"provider\":\"codex\",\"id\":\"a1\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\",\"accountKey\":\"default\"}');
+             INSERT INTO runtime_items(id,agent,record,created) VALUES('i1','a1','{}',1);",
+        )
+        .expect("rows");
+        let first = transcript_change_cursor(&db, "a1").expect("cursor");
+        assert!(first > 0);
+        db.execute(
+            "INSERT INTO runtime_items(id,agent,record,created) VALUES('o1','other','{}',1)",
+            [],
+        )
+        .expect("other chat");
+        assert_eq!(transcript_change_cursor(&db, "a1").expect("cursor"), first);
+        db.execute(
+            "UPDATE runtime_items SET record='{\"x\":1}' WHERE id='i1'",
+            [],
+        )
+        .expect("update");
+        let second = transcript_change_cursor(&db, "a1").expect("cursor");
+        assert!(second > first);
+        db.execute("DELETE FROM runtime_items WHERE id='i1'", [])
+            .expect("delete");
+        assert!(transcript_change_cursor(&db, "a1").expect("cursor") > second);
     }
 }

@@ -815,6 +815,30 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| m2026_10_30_request_record::apply(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-transcript-read",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Transcript copies in sync_entities and items without a change number entry",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| {
+            crate::durable_seq::install(c.transaction)?;
+            // Old items are numbered by the online backfill (transcript_seq_backfill),
+            // which also runs the copy check and ends the copies. Without items there is
+            // nothing to number, so the check runs here. The old rows stay either way.
+            let items: bool = c.transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_items)",
+                [],
+                |row| row.get(0),
+            )?;
+            if !items {
+                crate::durable_seq::retire_transcript_copies(c.transaction)?;
+            }
+            Ok(())
+        },
+    },
     &RegistryMigration,
     &SqlMigration {
         definition: MigrationDefinition {

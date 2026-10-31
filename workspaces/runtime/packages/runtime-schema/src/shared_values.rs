@@ -95,6 +95,9 @@ pub const SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS: usize = 128;
 pub const TRANSCRIPT_BEFORE_INCLUSIVE_CURSOR_PREFIX: &str = "@transcript-before-inclusive:";
 /// Default newest transcript records in a subscription baseline, in items.
 pub const SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS: usize = 40;
+/// Most recent chats whose newest transcript window the server sends with a first
+/// subscription, so that opening one of them needs no request, in chats.
+pub const SYNC_TRANSCRIPT_RECENT_CHATS: usize = 3;
 /// Maximum changed and removed transcript records in a complete stream interval, in items.
 pub const SYNC_TRANSCRIPT_STREAM_MAX_ITEMS: usize = 512;
 /// Maximum voice records in a complete transient stream interval, in records.
