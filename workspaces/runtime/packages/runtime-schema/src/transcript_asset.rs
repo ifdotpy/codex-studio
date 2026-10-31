@@ -272,10 +272,7 @@ mod tests {
             r#"{"id":"a","agent":"owner","name":"n","mime":"m","image":false,"size":1,"hash":"h","created":2}"#,
         ] {
             let view: TranscriptAssetView = serde_json::from_str(raw).unwrap();
-            let before: Value = serde_json::from_str(raw).unwrap();
-            let after: Value =
-                serde_json::from_str(&serde_json::to_string(&view).unwrap()).unwrap();
-            assert_eq!(before, after);
+            assert_eq!(serde_json::to_string(&view).unwrap(), raw);
         }
         assert!(serde_json::from_str::<TranscriptAssetView>(r#"{"id":"a","name":null}"#).is_err());
     }

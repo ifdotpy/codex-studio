@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use studio_runtime_providers::Method;
+use studio_runtime_schema::transcript_asset::TranscriptAssetView;
 use studio_runtime_schema::{queue_command::Field, workspace_operation::OperationPhase};
 use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::account_session_runtime::{
@@ -971,7 +972,7 @@ struct BranchItem {
     role: Option<String>,
     title: Option<String>,
     text: Option<String>,
-    assets: Option<Value>,
+    assets: Option<Vec<TranscriptAssetView>>,
     inputs: Option<Vec<BranchInput>>,
 }
 #[derive(Deserialize)]
@@ -980,7 +981,7 @@ struct BranchInput {
     kind: Option<studio_runtime_schema::persistence::EventKind>,
     created: Option<serde_json::Number>,
     at: Option<serde_json::Number>,
-    assets: Option<Value>,
+    assets: Option<Vec<TranscriptAssetView>>,
     text: Option<String>,
 }
 
@@ -1042,7 +1043,7 @@ async fn copy_branch_history(
             Some(fork_turn) => rows.iter().filter_map(|(_,raw,created)|serde_json::from_str::<studio_runtime_schema::json_object::JsonObject<BranchTurn>>(raw).ok().map(|r| r.0).filter(|r|r.turn_id.as_deref()==Some(fork_turn.as_str())).map(|_|*created)).reduce(f64::max).unwrap_or(f64::NEG_INFINITY),
             None => f64::NEG_INFINITY,
         };
-        let mut assets=BTreeMap::<String,Value>::new();
+        let mut assets=BTreeMap::<String,TranscriptAssetView>::new();
         for (old_id, raw, _created) in rows.into_iter().take_while(|(_, _, created)| *created <= cutoff) {
             let source_record = serde_json::from_str::<studio_runtime_schema::json_object::JsonObject<BranchItem>>(&raw)
                 .map_err(|_| studio_runtime_store::StoreError::InvalidStoredObject { table: "runtime_items", id: old_id.clone() })?.0;
@@ -1059,18 +1060,18 @@ async fn copy_branch_history(
                     "system" => "System".to_owned(),
                     other => other.to_owned(),
                 });
-            let mut item_assets = source_record.assets.clone().unwrap_or_else(|| json!([]));
-            copy_asset_views(tx,&source,&target,&mut item_assets,&mut assets)?;
+            let mut item_assets = source_record.assets.clone().unwrap_or_default();
+            copy_asset_views(tx,&target,&mut item_assets,&mut assets)?;
             let source_inputs = source_record.inputs.as_ref();
             let mut inputs = Vec::new();
             if let Some(source_inputs) = source_inputs {
                 let mut remaining = 20_000usize;
                 for input in source_inputs {
-                    if input.id.is_none() || input.kind.is_none() || input.created.as_ref().or(input.at.as_ref()).is_none() || input.text.is_none() || input.assets.as_ref().and_then(Value::as_array).is_none() {
+                    if input.id.is_none() || input.kind.is_none() || input.created.as_ref().or(input.at.as_ref()).is_none() || input.text.is_none() || input.assets.is_none() {
                         return Err(studio_runtime_store::StoreError::TranscriptInputsIncomplete { id: old_id.clone() });
                     }
-                    let mut input_assets = input.assets.clone().unwrap_or_else(|| json!([]));
-                    copy_asset_views(tx,&source,&target,&mut input_assets,&mut assets)?;
+                    let mut input_assets = input.assets.clone().unwrap_or_default();
+                    copy_asset_views(tx,&target,&mut input_assets,&mut assets)?;
                     let input_text = input.text.as_deref().unwrap_or_default();
                     let excerpt = input_text.chars().take(remaining).collect::<String>();
                     remaining = remaining.saturating_sub(excerpt.chars().count());
@@ -1186,11 +1187,9 @@ fn branch_draft_payload(
     target: &str,
     selected: &studio_runtime_store::TranscriptItem,
     message_id: &str,
-    assets: &mut BTreeMap<String, Value>,
+    assets: &mut BTreeMap<String, TranscriptAssetView>,
 ) -> Result<Value, studio_runtime_store::StoreError> {
     let record = &selected.record;
-    // Branch asset copying still needs the canonical Value projection; typed asset views are follow-up debt.
-    let projected = record.value();
     let inputs = record.inputs().value();
     let prompt_index = inputs.and_then(|inputs| {
         inputs.iter().enumerate().position(|(index, input)| {
@@ -1209,49 +1208,38 @@ fn branch_draft_payload(
     let mut prefix = Vec::new();
     let mut prefix_assets = Vec::new();
     if let (Some(inputs), Some(prompt_index)) = (inputs, prompt_index) {
-        for (index, input) in inputs[..prompt_index].iter().enumerate() {
+        for input in &inputs[..prompt_index] {
             if input.kind() != Some("user") {
                 continue;
             }
             prefix.push(input.text().unwrap_or(""));
-            if let Some(views) = projected
-                .get("inputs")
-                .and_then(Value::as_array)
-                .and_then(|items| items.get(index))
-                .and_then(|item| item.get("assets"))
-                .cloned()
-            {
-                prefix_assets.push(views);
-            }
+            prefix_assets.extend(decode_asset_views(input.assets())?);
         }
     }
     let mut prompt_assets = match prompt {
-        Some(_) => prompt_index.and_then(|index| {
-            projected
-                .get("inputs")
-                .and_then(Value::as_array)
-                .and_then(|items| items.get(index))
-                .and_then(|item| item.get("assets"))
-        }),
-        None => projected.get("assets"),
-    }
-    .cloned()
-    .unwrap_or_else(|| json!([]));
-    let mut prefix_asset_views = Value::Array(
-        prefix_assets
-            .into_iter()
-            .flat_map(|value| value.as_array().cloned().unwrap_or_default())
-            .collect(),
-    );
-    copy_asset_views(tx, source, target, &mut prompt_assets, assets)?;
-    copy_asset_views(tx, source, target, &mut prefix_asset_views, assets)?;
-    let mut all_assets = prefix_asset_views.as_array().cloned().unwrap_or_default();
-    all_assets.extend(prompt_assets.as_array().cloned().unwrap_or_default());
+        Some(input) => decode_asset_views(input.assets())?,
+        None => decode_asset_views(record.assets())?,
+    };
+    copy_asset_views(tx, target, &mut prompt_assets, assets)?;
+    copy_asset_views(tx, target, &mut prefix_assets, assets)?;
+    let mut all_assets = prefix_assets;
+    all_assets.extend(prompt_assets);
     Ok(json!({
         "text": text,
         "prefixText": prefix.join("\n\n"),
         "assets": all_assets,
     }))
+}
+
+fn decode_asset_views(
+    views: &Field<Vec<Box<serde_json::value::RawValue>>>,
+) -> Result<Vec<TranscriptAssetView>, studio_runtime_store::StoreError> {
+    views
+        .value()
+        .into_iter()
+        .flatten()
+        .map(|view| serde_json::from_str(view.get()).map_err(Into::into))
+        .collect()
 }
 
 fn transcript_store_error(
@@ -1274,23 +1262,17 @@ fn transcript_store_error(
 
 fn copy_asset_views(
     tx: &rusqlite::Transaction<'_>,
-    _source: &str,
     target: &str,
-    views: &mut Value,
-    map: &mut BTreeMap<String, Value>,
+    views: &mut [TranscriptAssetView],
+    map: &mut BTreeMap<String, TranscriptAssetView>,
 ) -> Result<(), studio_runtime_store::StoreError> {
-    let Some(array) = views.as_array_mut() else {
-        return Ok(());
-    };
-    for view in array {
-        let Some(old) = view.get("id").and_then(Value::as_str) else {
-            continue;
-        };
-        if let Some(existing) = map.get(old) {
+    for view in views {
+        let old = view.id().to_owned();
+        if let Some(existing) = map.get(&old) {
             *view = existing.clone();
             continue;
         }
-        let Some(asset) = WorkspaceFilesRepository::asset(tx, old)? else {
+        let Some(asset) = WorkspaceFilesRepository::asset(tx, &old)? else {
             return Err(studio_runtime_store::StoreError::SchemaMismatch(
                 "missing transcript asset".into(),
             ));
@@ -1299,12 +1281,8 @@ fn copy_asset_views(
         let mut asset = asset;
         asset.retarget(id.clone(), target.to_owned());
         WorkspaceFilesRepository::insert_asset(tx, &id, &asset)?;
-        let record = asset.into_value();
-        let mut copied_view = record.clone();
-        if let Some(object) = copied_view.as_object_mut() {
-            object.remove("path");
-        }
-        map.insert(old.to_owned(), copied_view.clone());
+        let copied_view = asset.into_view();
+        map.insert(old, copied_view.clone());
         *view = copied_view;
     }
     Ok(())
@@ -1383,6 +1361,33 @@ mod tests {
     fn branch_item_rejects_non_string_turn_id() {
         assert!(serde_json::from_str::<BranchItem>(r#"{"turnId":7}"#).is_err());
         assert!(serde_json::from_str::<BranchItem>(r#"{"turnId":"turn"}"#).is_ok());
+    }
+
+    #[test]
+    fn branch_item_rejects_invalid_asset_view() {
+        assert!(serde_json::from_str::<BranchItem>(r#"{"assets":[{"id":5}]}"#).is_err());
+        assert!(serde_json::from_str::<BranchItem>(r#"{"assets":[{"id":"asset"}]}"#).is_ok());
+    }
+
+    #[tokio::test]
+    async fn copied_asset_views_reuse_projection_without_storage_path() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        store.transaction(|tx| {
+            let asset: studio_runtime_store::TranscriptAssetRecord = serde_json::from_str(
+                r#"{"id":"asset","agent":"source","name":"n","path":"private","mime":"text/plain","image":false,"size":1,"hash":"h","created":2,"vendor":{"x":  1}}"#,
+            )?;
+            WorkspaceFilesRepository::insert_asset(tx, "asset", &asset)?;
+            let mut views: Vec<TranscriptAssetView> = serde_json::from_str(r#"[{"id":"asset"},{"id":"asset"}]"#)?;
+            let mut copied = BTreeMap::new();
+            copy_asset_views(tx, "child", &mut views, &mut copied)?;
+            assert_eq!(views[0].id(), views[1].id());
+            assert_eq!(copied.len(), 1);
+            let wire = serde_json::to_string(&views)?;
+            assert!(!wire.contains("private"));
+            assert!(wire.contains(r#""vendor":{"x":  1}"#));
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.unwrap();
     }
     use axum::response::IntoResponse;
     use std::sync::Mutex;
