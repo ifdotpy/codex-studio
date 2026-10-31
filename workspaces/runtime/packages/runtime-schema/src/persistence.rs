@@ -127,7 +127,7 @@ domain!(RequestCardStatus { Pending=>"pending", Answering=>"answering", Answered
 domain!(TerminalActionFailure { UnknownOutcome=>"unknown_outcome", Rejected=>"rejected", Disconnected=>"disconnected" });
 domain!(NativeReleasePhase { Checking=>"checking", Unsubscribing=>"unsubscribing", Unknown=>"unknown", Released=>"released", Blocked=>"blocked", Resumed=>"resumed" });
 domain!(ServerFetchState { Preparing=>"preparing", Fetching=>"fetching", Complete=>"complete" });
-domain!(ServerOperationKind { Event=>"event", Input=>"input", Message=>"message", MoveSend=>"move_send", MoveStatus=>"move_status", LocationInfo=>"location_info", LocationMatches=>"location_matches", Stop=>"stop", ExecEvent=>"exec_event", Projects=>"projects", ProjectsChanged=>"projects.changed", Folders=>"folders", Git=>"git", Export=>"export", Chunk=>"chunk", ExecRead=>"exec_read", ExecInput=>"exec_input", ExecCancel=>"exec_cancel", Release=>"release", UpdateOffer=>"update.offer", UpdateExport=>"update.export", UpdateChunk=>"update.chunk", UpdateRelease=>"update.release", BackupPut=>"backup.put", Task=>"task", Complaint=>"complaint", Context=>"context", Directory=>"directory", ChatRead=>"chat_read", MoveManage=>"move_manage", MoveInterrupt=>"move_interrupt", MoveSpawn=>"move_spawn", Exec=>"exec", ExecReceipt=>"exec_receipt", BrowserCallback=>"browser_callback", AddLocation=>"add_location", RemoveLocation=>"remove_location", MoveValidate=>"move_validate", MoveBegin=>"move_begin", DeviceTrust=>"device_trust" });
+domain!(ServerOperationKind { Event=>"event", Input=>"input", Message=>"message", MoveSend=>"move_send", MoveStatus=>"move_status", LocationInfo=>"location_info", LocationMatches=>"location_matches", Stop=>"stop", ExecEvent=>"exec_event", Projects=>"projects", ProjectsChanged=>"projects.changed", Folders=>"folders", Git=>"git", Export=>"export", Chunk=>"chunk", ExecRead=>"exec_read", ExecInput=>"exec_input", ExecCancel=>"exec_cancel", Release=>"release", UpdateOffer=>"update.offer", UpdateExport=>"update.export", UpdateChunk=>"update.chunk", UpdateRelease=>"update.release", Task=>"task", Complaint=>"complaint", Context=>"context", Directory=>"directory", ChatRead=>"chat_read", MoveManage=>"move_manage", MoveInterrupt=>"move_interrupt", MoveSpawn=>"move_spawn", Exec=>"exec", ExecReceipt=>"exec_receipt", BrowserCallback=>"browser_callback", AddLocation=>"add_location", RemoveLocation=>"remove_location", MoveValidate=>"move_validate", MoveBegin=>"move_begin" });
 domain!(RecoveryReceiptStatus { Unknown=>"unknown", Unconfirmed=>"unconfirmed", Blocked=>"blocked", Skipped=>"skipped", Superseded=>"superseded", HistoryMissing=>"history_missing", InputRestored=>"input_restored", Held=>"held", Reconciled=>"reconciled", Adopted=>"adopted", Accepted=>"accepted", Checked=>"checked", Released=>"released" });
 domain!(NativeSettingsStatus { Submitted=>"submitted", Acknowledged=>"acknowledged", NotSent=>"not_sent", Unknown=>"unknown", Rejected=>"rejected" });
 domain!(SafetyRetryStage { Turns=>"turns", Items=>"items", Interrupt=>"interrupt", VerifyTurns=>"verify_turns", VerifyItems=>"verify_items", Fork=>"fork", Start=>"start", Running=>"running", Unknown=>"unknown", Failed=>"failed", Cancelled=>"cancelled" });
@@ -264,75 +264,6 @@ pub fn enum_check<T: VariantNames>(column: &str) -> String {
     format!("CHECK(\"{}\" IN ({values}))", column.replace('"', "\"\""))
 }
 
-fn quoted(identifier: &str) -> String {
-    format!("\"{}\"", identifier.replace('"', "\"\""))
-}
-
-/// The two `(name, CREATE TRIGGER)` pairs that keep `table.column` inside the
-/// enum, generated solely from its variants. Like a `CHECK`, a NULL passes.
-/// Triggers replace a `CHECK` on a large table: SQLite changes a `CHECK` only
-/// by rebuilding the table, while a trigger is replaced in milliseconds.
-pub fn enum_check_trigger_statements<T: VariantNames>(
-    table: &str,
-    column: &str,
-) -> [(String, String); 2] {
-    let values = T::VARIANTS
-        .iter()
-        .map(|value| format!("'{}'", value.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(",");
-    let message = format!("{table}.{column} is outside its enum").replace('\'', "''");
-    let (table_q, column_q) = (quoted(table), quoted(column));
-    [("ins", "INSERT"), ("upd", "UPDATE OF")].map(|(kind, event)| {
-        let name = quoted(&format!("enum_check_{table}_{column}_{kind}"));
-        let on = if kind == "ins" {
-            event.to_owned()
-        } else {
-            format!("{event} {column_q}")
-        };
-        let sql = format!(
-            "CREATE TRIGGER {name} BEFORE {on} ON {table_q} WHEN NEW.{column_q} NOT IN ({values}) \
-             BEGIN SELECT RAISE(ABORT,'{message}'); END"
-        );
-        (name, sql)
-    })
-}
-
-/// SQL that replaces the enum check triggers of `table.column`, for a migration.
-pub fn enum_check_triggers<T: VariantNames>(table: &str, column: &str) -> String {
-    enum_check_trigger_statements::<T>(table, column)
-        .into_iter()
-        .map(|(name, sql)| format!("DROP TRIGGER IF EXISTS {name}; {sql};"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Parity check: the stored triggers of `table.column` equal the ones generated
-/// from the enum. It fails when a variant was added or removed in only one place.
-#[cfg(feature = "sqlite")]
-pub fn check_enum_triggers<T: VariantNames>(
-    db: &rusqlite::Connection,
-    table: &str,
-    column: &str,
-) -> Result<(), String> {
-    for (name, expected) in enum_check_trigger_statements::<T>(table, column) {
-        let stored: String = db
-            .query_row(
-                "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name=?1",
-                [name.trim_matches('"')],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("trigger {name} is missing: {error}"))?;
-        if stored != expected {
-            return Err(format!(
-                "trigger {name} differs from the enum {}",
-                std::any::type_name::<T>()
-            ));
-        }
-    }
-    Ok(())
-}
-
 /// Exact reply retained for a completed move from a virtual machine.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -386,25 +317,6 @@ impl RequestIdentity {
         let id = serde_json::to_string(&(namespace, authority, uuid.to_string(), operation))
             .expect("string tuple serializes");
         Ok(Self { id, issued_ms })
-    }
-
-    /// An identity for a trusted in-process caller whose ids the server or a provider issues
-    /// (a tool call id), so they are not UUIDv7. The issue time is the admission time. Never
-    /// use this for an id that arrives over the network.
-    pub fn opaque(
-        namespace: &str,
-        authority: &[&str],
-        root_request_id: &str,
-        operation: &[&str],
-        admitted_ms: i64,
-    ) -> Self {
-        // All inputs are strings, so tuple serialization cannot fail.
-        let id = serde_json::to_string(&(namespace, authority, root_request_id, operation))
-            .expect("string tuple serializes");
-        Self {
-            id,
-            issued_ms: admitted_ms,
-        }
     }
 
     pub fn issue_root() -> String {
@@ -534,36 +446,6 @@ mod tests {
                 .is_err()
         );
         assert!(serde_json::from_str::<T>("\"bogus\"").is_err());
-    }
-    #[cfg(feature = "sqlite")]
-    #[test]
-    fn enum_check_triggers_match_the_enum_and_reject_other_values() {
-        let db = rusqlite::Connection::open_in_memory().expect("fresh database");
-        db.execute_batch("CREATE TABLE witness(id INTEGER PRIMARY KEY, state TEXT)")
-            .expect("table");
-        assert!(check_enum_triggers::<MigrationStatus>(&db, "witness", "state").is_err());
-        db.execute_batch(&enum_check_triggers::<MigrationStatus>("witness", "state"))
-            .expect("triggers");
-        check_enum_triggers::<MigrationStatus>(&db, "witness", "state").expect("parity");
-        for wire in MigrationStatus::VARIANTS {
-            db.execute("INSERT INTO witness(state) VALUES(?1)", [wire])
-                .expect("variant accepted");
-        }
-        db.execute("INSERT INTO witness(state) VALUES(NULL)", [])
-            .expect("NULL passes");
-        assert!(
-            db.execute("INSERT INTO witness(state) VALUES('bogus')", [])
-                .is_err()
-        );
-        assert!(
-            db.execute("UPDATE witness SET state='bogus' WHERE id=1", [])
-                .is_err()
-        );
-        // Installing the triggers again replaces them.
-        db.execute_batch(&enum_check_triggers::<MigrationStatus>("witness", "state"))
-            .expect("replace");
-        // A column checked against another enum differs.
-        assert!(check_enum_triggers::<TitleStatus>(&db, "witness", "state").is_err());
     }
     fn at(ms: i64) -> RequestIdentity {
         let uuid = Uuid::from_u128(((ms as u128) << 80) | (7 << 76) | (2 << 62));

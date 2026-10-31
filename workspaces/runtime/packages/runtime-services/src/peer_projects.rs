@@ -198,9 +198,6 @@ pub struct PeerProjects {
     stale: BTreeSet<String>,
     /// Paired servers at the last pass; `None` before the first pass.
     known: Option<BTreeSet<String>>,
-    /// Per paired server: the fingerprint of the device trust list after the last exchange.
-    /// A later pass sends the list again only when it differs.
-    trust_synced: BTreeMap<String, String>,
 }
 
 impl PeerProjects {
@@ -210,7 +207,6 @@ impl PeerProjects {
             driver,
             stale: BTreeSet::new(),
             known: None,
-            trust_synced: BTreeMap::new(),
         }
     }
 
@@ -263,30 +259,6 @@ impl PeerProjects {
             if let Some(label) = paired.get(&server) {
                 self.refresh(&server, label).await;
             }
-        }
-        // The same passes carry the list of servers and device keys: a changed list, a new
-        // pairing, or a server that reaches this one again.
-        self.trust_synced.retain(|id, _| paired.contains_key(id));
-        for server in paired.keys() {
-            self.sync_trust(server).await;
-        }
-    }
-
-    /// Exchange the device trust list with one paired server when it changed since the last
-    /// exchange (docs/decisions/2026-10-28-target-client-server-architecture.md).
-    async fn sync_trust(&mut self, server: &str) {
-        let Ok(entries) = crate::device_trust::read(&self.store).await else {
-            return;
-        };
-        let current = crate::device_trust::digest(&entries);
-        if self.trust_synced.get(server) == Some(&current) {
-            return;
-        }
-        // A server that does not answer is tried again at its next contact.
-        if let Some(merged) =
-            crate::device_trust::sync_peer(&self.driver, &self.store, server).await
-        {
-            self.trust_synced.insert(server.to_owned(), merged);
         }
     }
 
@@ -490,10 +462,6 @@ mod tests {
                     CHANGED_ACTION => {
                         *self.notices.lock().unwrap() += 1;
                         serde_json::value::RawValue::from_string("{}".to_owned()).unwrap()
-                    }
-                    crate::device_trust::ACTION => {
-                        serde_json::value::RawValue::from_string("{\"entries\":[]}".to_owned())
-                            .unwrap()
                     }
                     _ => panic!("unexpected action"),
                 };

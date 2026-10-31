@@ -6,14 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  test,
-  expect,
-  createFixtureViteServer,
-  readCachedRows,
-  remoteOrigin,
-  REMOTE_FIXTURE_HOST,
-} from "../playwright.ts";
+import { test, expect, createFixtureViteServer } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
 
 test("bounded entities render initial and live changes with zero resource GETs", async ({
@@ -107,12 +100,7 @@ test("bounded entities render initial and live changes with zero resource GETs",
     configFile: false,
     root: fileURLToPath(new URL("../..", import.meta.url)),
     cacheDir: join(state, "vite"),
-    server: {
-      host: "127.0.0.1",
-      port: 0,
-      allowedHosts: [REMOTE_FIXTURE_HOST],
-      proxy: { "/api": backend.origin },
-    },
+    server: { host: "127.0.0.1", port: 0, proxy: { "/api": backend.origin } },
   });
   const reads: string[] = [];
   page.on("request", (request) => {
@@ -131,8 +119,7 @@ test("bounded entities render initial and live changes with zero resource GETs",
   });
   try {
     await vite.listen();
-    // A remote host name: only a remote frontend keeps the thin cache.
-    await page.goto(remoteOrigin(fixtureOrigin(vite)));
+    await page.goto(fixtureOrigin(vite));
     await expect(
       page.getByText("Initial stream queue", { exact: true }),
     ).toBeVisible({ timeout: 20_000 });
@@ -168,21 +155,43 @@ test("bounded entities render initial and live changes with zero resource GETs",
     await expect(
       page.getByText("Updated desktop stream", { exact: true }),
     ).toBeVisible();
-    // Read the cache record of the mounted server scope. A new default sync
+    // Read the cache used by the mounted server scope. A new default sync
     // client would create a second subscription with a separate service owner.
-    const readProjection = async () => {
-      const rows = await readCachedRows(page, "entities");
-      return page.evaluate(async (rows) => {
-        const { applyEntityRows, emptyEntityProjection } =
-          await import("/src/sync/entityProjection.ts");
-        return applyEntityRows(emptyEntityProjection(), rows, true).runtime;
-      }, rows);
-    };
-    // The record is written after render; poll until it holds the update.
-    await expect
-      .poll(async () => (await readProjection()).accountCostsByAccount.default)
-      .toBeDefined();
-    const projection = await readProjection();
+    const projection = await page.evaluate(async () => {
+      const name = (await indexedDB.databases()).find(
+        (database) =>
+          database.name?.includes("studio-entity-projection-") &&
+          database.name.endsWith("--projections"),
+      )?.name;
+      if (!name) throw new Error("The renderer projection cache is missing");
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open(name);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const rows = await new Promise<
+        (Omit<
+          import("../../src/sync/entityProjection.ts").EntityRow,
+          "_deleted"
+        > & { _deleted: string })[]
+      >((resolve, reject) => {
+        const request = db
+          .transaction("docs", "readonly")
+          .objectStore("docs")
+          .getAll();
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      db.close();
+      const { applyEntityRows, emptyEntityProjection } =
+        await import("/src/sync/entityProjection.ts");
+      // Dexie stores its indexed deletion flag as a string.
+      return applyEntityRows(
+        emptyEntityProjection(),
+        rows.map((row) => ({ ...row, _deleted: row._deleted === "1" })),
+        true,
+      ).runtime;
+    });
     expect(projection.accountCostsByAccount).toEqual({
       default: backend.snapshot.runtime.accountCostsByAccount.default,
     });

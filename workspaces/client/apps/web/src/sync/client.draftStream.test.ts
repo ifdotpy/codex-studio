@@ -1,7 +1,8 @@
 import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
-import { until } from "./draftServerFixture";
+import type { RxDatabase } from "rxdb";
+import { firstValueFrom, filter } from "rxjs";
 import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 import type {
   ResourceChangeEvent,
@@ -9,6 +10,7 @@ import type {
 } from "./subscriptions/events";
 
 const mocks = vi.hoisted(() => ({
+  databases: [] as RxDatabase[],
   syncGet: vi.fn(),
   syncPost: vi.fn(
     async (
@@ -18,27 +20,45 @@ const mocks = vi.hoisted(() => ({
     ): Promise<import("./client").SyncDocument[]> => [],
   ),
   pushWait: undefined as (() => void) | undefined,
-  replication: undefined as
-    | import("./draftReplication").DraftReplication
-    | undefined,
+  replication: undefined as { awaitInSync: () => Promise<unknown> } | undefined,
   invalidate: undefined as ((version?: ResourceVersion) => void) | undefined,
 }));
-vi.mock("./draftReplication", async (original) => {
-  const actual = await original<typeof import("./draftReplication")>();
+vi.mock("rxdb", async (original) => {
+  const rxdb = await original<typeof import("rxdb")>();
+  return {
+    ...rxdb,
+    createRxDatabase: async (
+      options: Parameters<typeof rxdb.createRxDatabase>[0],
+    ) => {
+      const db = await rxdb.createRxDatabase({
+        ...options,
+        multiInstance: false,
+      });
+      mocks.databases.push(db);
+      return db;
+    },
+  };
+});
+vi.mock("rxdb/plugins/storage-dexie", async () => ({
+  getRxStorageDexie: (await import("rxdb/plugins/storage-memory"))
+    .getRxStorageMemory,
+}));
+vi.mock("rxdb/plugins/replication", async (original) => {
+  const actual = await original<typeof import("rxdb/plugins/replication")>();
   return {
     ...actual,
-    createDraftReplication: (
-      ...args: Parameters<typeof actual.createDraftReplication>
+    replicateRxCollection: (
+      ...args: Parameters<typeof actual.replicateRxCollection>
     ) => {
-      const options = args[1];
-      const waitBeforePersist = options.push.waitBeforePersist;
-      if (waitBeforePersist)
+      const options = args[0];
+      const waitBeforePersist = options.push?.waitBeforePersist;
+      if (options.push && waitBeforePersist)
         options.push.waitBeforePersist = () => {
           const pending = waitBeforePersist();
           mocks.pushWait?.();
           return pending;
         };
-      const replication = actual.createDraftReplication(...args);
+      const replication = actual.replicateRxCollection(...args);
       mocks.replication = replication;
       return replication;
     },
@@ -77,6 +97,8 @@ afterEach(async () => {
   await closing;
   vi.useRealTimers();
   stop = undefined;
+  await Promise.all(mocks.databases.map((db) => db.close()));
+  mocks.databases = [];
   mocks.replication = undefined;
   mocks.pushWait = undefined;
   mocks.syncGet.mockReset();
@@ -150,15 +172,14 @@ async function setup() {
   return { client, db, event, deliver, pulls, workspaceId };
 }
 
-it("applies real draft stream edits and tombstones without pulls, then recovers gaps and reconnects", async () => {
+it("applies real RxDB draft stream edits and tombstones without pulls, then recovers gaps and reconnects", async () => {
   const { db, event, deliver, pulls } = await setup();
   await deliver(event(0, 1));
   expect((await db.drafts.findOne("phone:chat").exec())?.payload).toContain(
     '"updated":1.5',
   );
-  const deleted = until(
-    db.drafts.findOne("phone:chat").$,
-    (doc) => doc === null,
+  const deleted = firstValueFrom(
+    db.drafts.findOne("phone:chat").$.pipe(filter((doc) => doc === null)),
   );
   await deliver(event(1, 2, true));
   await deleted;
@@ -172,7 +193,7 @@ it("applies real draft stream edits and tombstones without pulls, then recovers 
   expect(pulls()).toHaveLength(4);
 });
 
-it("recovers an accepted draft from the durable checkpoint after persistence fails", async () => {
+it("recovers an accepted draft from the durable RxDB checkpoint after persistence fails", async () => {
   const { db, event, deliver, pulls, workspaceId } = await setup();
   await deliver(event(0, 1));
   expect(!!(await db.drafts.findOne("phone:chat").exec())).toBe(true);
@@ -194,9 +215,10 @@ it("recovers an accepted draft from the durable checkpoint after persistence fai
   const write = vi
     .spyOn(db.drafts.storageInstance, "bulkWrite")
     .mockRejectedValueOnce(new Error("injected stream persistence failure"));
-  const recovered = until(
-    db.drafts.findOne("phone:chat").$,
-    (doc) => !!doc?.payload.includes("recovered"),
+  const recovered = firstValueFrom(
+    db.drafts
+      .findOne("phone:chat")
+      .$.pipe(filter((doc) => !!doc?.payload.includes("recovered"))),
   );
   await deliver(changed);
   await recovered;
@@ -282,11 +304,16 @@ it("admits streamed changes during a pending push and keeps both conflicting tex
   required(
     required(confirmed.resourceVersions[0]).draftChanges!.documents[0],
   ).payload = merged.payload;
-  const confirmedWrite = until(
-    db.drafts.findOne("phone:chat").$,
-    (doc) =>
-      !!doc?.payload.includes("remote-new") &&
-      doc.payload.includes("local-unsent"),
+  const confirmedWrite = firstValueFrom(
+    db.drafts
+      .findOne("phone:chat")
+      .$.pipe(
+        filter(
+          (doc) =>
+            !!doc?.payload.includes("remote-new") &&
+            doc.payload.includes("local-unsent"),
+        ),
+      ),
   );
   await deliver(confirmed);
   const payload = (await confirmedWrite)?.payload;

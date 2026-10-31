@@ -245,7 +245,7 @@ mod tests {
             Outbox::for_request::<Input>(&tx, "request").expect("request"),
             vec![row.clone()]
         );
-        tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,payload,created) SELECT id||'-other',?1,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,'5',created FROM runtime_outbox WHERE id=?2",params![OutboxKind::WorkVm,row.id]).expect("heterogeneous sibling effect");
+        tx.execute("INSERT INTO runtime_outbox SELECT id||'-other',?1,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,'5',created FROM runtime_outbox WHERE id=?2",params![OutboxKind::WorkVm,row.id]).expect("heterogeneous sibling effect");
         assert!(Outbox::for_request::<Input>(&tx, "request").is_err());
         assert_eq!(
             Outbox::for_request_kind::<Input>(&tx, "request", row.kind)

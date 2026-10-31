@@ -32,7 +32,8 @@ pub const ACTIVE_INDEX: &str = "runtime_agent_active";
 /// [`ACTIVE_INDEX`] and the query that reads it.
 macro_rules! active_turn {
     () => {
-        "(in_flight=1 OR status IN ('running','starting','approval'))"
+        "(in_flight=1 OR status IN ('running','starting','approval') \
+         OR start_attempt_active_at_reservation=1)"
     };
 }
 /// SQL listing `(id, root_id)` of the agents that hold a running or reserved
@@ -46,15 +47,7 @@ pub const RESERVED_TURN_INPUT: &str = concat!(
        JOIN runtime_events AS event ON event.id=input.value \
        WHERE event.agent=runtime_agents.id \
        AND event.epoch=json_extract(runtime_agents.record,'$.startAttempt.epoch') \
-       AND event.status IN ('reserved','dispatching','uncertain'))) \
-     UNION \
-     SELECT a.id,a.root_id FROM turns t JOIN runtime_agents a ON a.id=t.chat \
-       WHERE t.attempt_active_at_reservation=1 AND EXISTS (\
-       SELECT 1 FROM json_each(a.record,'$.startAttempt.events') AS input \
-       JOIN runtime_events AS event ON event.id=input.value \
-       WHERE event.agent=a.id \
-       AND event.epoch=json_extract(a.record,'$.startAttempt.epoch') \
-       AND event.status IN ('reserved','dispatching','uncertain')) ORDER BY 1"
+       AND event.status IN ('reserved','dispatching','uncertain'))) ORDER BY id"
 );
 /// Agents holding a workspace operation, by working directory.
 pub const WORKSPACE_OPERATION_INDEX: &str = "runtime_agent_workspace_operation";

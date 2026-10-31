@@ -681,10 +681,7 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
           )?.id ?? null;
         if (leadResponseId) pull.watch(leadResponseId);
       }
-      if (
-        response.url().endsWith("/api/commands") &&
-        readVerifierRequest<{ kind?: string } | null>(request)?.kind === "send"
-      )
+      if (response.url().endsWith("/api/messages"))
         messageAgentId ??= legacySubmittedAgent(request) ?? null;
     });
     await page.addInitScript(PROBE_SOURCE, {

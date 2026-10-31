@@ -29,8 +29,7 @@ export type {
   TranscriptPageData,
 } from "./apiTypes";
 import type { JsonInput, TranscriptWireItem } from "./apiTypes";
-import type { DeepReadonly } from "./deepReadonly.ts";
-export type { DeepReadonly };
+import type { DeepReadonly } from "rxdb";
 export type Agent = DeepReadonly<AgentEntityDto>;
 export type Chat = ChatEntityDto;
 export type PeerTeam = PeerTeamEntityDto;

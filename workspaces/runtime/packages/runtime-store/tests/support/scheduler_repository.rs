@@ -27,7 +27,7 @@ fn database() -> Connection {
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                    PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER);
-                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);"),
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);"),
             )
             .expect("scheduler tables create");
     connection
@@ -633,7 +633,7 @@ fn snapshot(connection: &Connection) -> serde_json::Value {
             .query_map([], |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,i64>(5)?)))
             .expect("sync snapshot queries").collect::<Result<Vec<_>,_>>().expect("sync snapshot reads");
     let completed = connection
-        .prepare("SELECT chat||':'||provider_turn FROM turns WHERE state='completed' ORDER BY 1")
+        .prepare("SELECT id FROM runtime_completed_turns ORDER BY id")
         .expect("completed-turn snapshot prepares")
         .query_map([], |row| row.get::<_, String>(0))
         .expect("completed-turn snapshot queries")

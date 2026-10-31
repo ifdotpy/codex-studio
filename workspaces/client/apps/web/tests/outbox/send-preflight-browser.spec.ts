@@ -1,8 +1,8 @@
 import { required } from "../teams/helpers.ts";
 import type { components } from "../../src/generated/api.ts";
-import { sendReply, sentMessage } from "../messages/send-command.ts";
+import { requestBody } from "../messages/helpers.ts";
 import type { Route } from "playwright";
-import type { MessageDelivery, SendMessageBody } from "../../src/commands.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 // Real outbox and API calls against a local fixture. No native model requests.
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -32,7 +32,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     const page = fixturePage;
     const errors: string[] = [],
       posts: {
-        body: SendMessageBody;
+        body: PostBody<"/api/messages">;
         headers: Record<string, string>;
       }[] = [],
       effects = new Set();
@@ -66,9 +66,8 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
         });
       return undefined;
     });
-    await page.route("**/api/commands", async (route) => {
-      const body = sentMessage(route.request());
-      if (!body) return route.fallback();
+    await page.route("**/api/messages", async (route) => {
+      const body = requestBody<PostBody<"/api/messages">>(route);
       posts.push({ body, headers: route.request().headers() });
       effects.add(body.id);
       if (loseResponse) {
@@ -76,10 +75,10 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
         await route.abort("failed");
       } else
         await route.fulfill({
-          json: sendReply({
+          json: {
             id: body.id,
             status: "delivered",
-          } satisfies MessageDelivery),
+          } satisfies PostResult<"/api/messages">,
         });
     });
     await page.goto(origin + "check");
@@ -88,7 +87,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
         await import("/src/../tests/outbox/send-preflight-browser.fixture.tsx");
       await mount();
     });
-    const body = (id: string): SendMessageBody => ({
+    const body = (id: string): PostBody<"/api/messages"> => ({
       id,
       room: `chat-${id}`,
       text: `Exact content ${id}`,
@@ -108,7 +107,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     const arm = () => {
       preflight = { identities: [], sessions: [] };
     };
-    const begin = (value: SendMessageBody, copies = 1) =>
+    const begin = (value: PostBody<"/api/messages">, copies = 1) =>
       page.evaluate(({ value, copies }) => window.start(value, copies), {
         value,
         copies,

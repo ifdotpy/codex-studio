@@ -1,5 +1,4 @@
 import { SignedEventSource } from "../../servers/eventSource";
-import { routesFor } from "../../servers/routes";
 import { hasNativeClient } from "../../native/client";
 import { NativeEventSource } from "../../native/stream";
 import type { createApiScope } from "../../api";
@@ -41,13 +40,6 @@ export function createServerSubscriptions(options: ServerSubscriptionOptions) {
     transferStorage: () =>
       nativeCore?.() ? new MemoryTransferStorage() : undefined,
     ...(nativeCore?.() ? { independent: true } : {}),
-    // Each connection of a remote server reports the routes it answers on.
-    ...(owner.id === "local"
-      ? {}
-      : {
-          onRoutes: (routes: readonly string[]) =>
-            routesFor(owner).learn(routes),
-        }),
     openEvents: (url) =>
       owner.id === "local" && hasNativeClient()
         ? new NativeEventSource(url)
@@ -58,19 +50,8 @@ export function createServerSubscriptions(options: ServerSubscriptionOptions) {
     storageName: (name) =>
       owner.id === "local" ? name : `${name}:server:${owner.id}`,
   });
-  // A move to a faster route replaces the stream.
-  const stopRoutes =
-    owner.id === "local"
-      ? undefined
-      : routesFor(owner).onChange(() => transport.replaceStream());
   return createSubscriptions(
-    {
-      ...transport,
-      dispose() {
-        stopRoutes?.();
-        transport.dispose();
-      },
-    },
+    transport,
     createDataObserver(
       sync,
       transport,

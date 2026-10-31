@@ -1,5 +1,5 @@
 import type { components } from "../../generated/api.ts";
-import type { DeepReadonly } from "../../deepReadonly.ts";
+import type { DeepReadonly } from "rxdb";
 import type { SUBSCRIPTION_ENTITY_SCOPES } from "../../generated/subscriptionEntities.ts";
 import type {
   KnownApiFields,

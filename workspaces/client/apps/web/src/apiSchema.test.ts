@@ -240,13 +240,10 @@ it("blocks later writes when a rollback returns an identity without a schema has
   expect(api.isApiSchemaMismatch()).toBe(true);
   expect(mismatch).toHaveBeenCalledTimes(1);
   await expect(
-    api.post("/api/commands", {
+    api.post("/api/messages", {
       id: "same-message",
-      client: "c",
-      number: 1,
-      kind: "send",
-      target: "chat",
-      body: { text: "hello" },
+      room: "chat",
+      text: "hello",
     }),
   ).rejects.toMatchObject({ name: "ApiSchemaMismatchError" });
   expect(fetch).toHaveBeenCalledTimes(1);
@@ -339,13 +336,10 @@ it("does not treat an unmarked HTTP 426 as an API schema mismatch", async () => 
       }),
   );
   const api = await import("./api");
-  const request = api.post("/api/commands", {
+  const request = api.post("/api/messages", {
     id: "m1",
-    client: "c",
-    number: 1,
-    kind: "send",
-    target: "r",
-    body: { text: "x" },
+    room: "r",
+    text: "x",
   });
   await expect(request).rejects.toMatchObject({ status: 426 });
   const error = await request.catch((reason: unknown) => reason);
@@ -378,14 +372,7 @@ it("raises mismatch state only for the explicitly marked schema-gated 426", asyn
   );
   api = await import("./api");
   await expect(
-    api.post("/api/commands", {
-      id: "message-1",
-      client: "c",
-      number: 1,
-      kind: "send",
-      target: "chat",
-      body: { text: "hello" },
-    }),
+    api.post("/api/messages", { id: "message-1", room: "chat", text: "hello" }),
   ).rejects.toMatchObject({ status: 426 });
   expect(api.isApiSchemaMismatch()).toBe(true);
 });

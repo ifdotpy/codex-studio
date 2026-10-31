@@ -328,7 +328,7 @@ async fn late_completion_and_missing_receipt_write_nothing() {
     f.patch("epoch", json!(1)).await;
     f.store
         .transaction(|tx| {
-            tx.execute("DELETE FROM turns WHERE state='completed'", [])?;
+            tx.execute("DELETE FROM runtime_completed_turns", [])?;
             Ok(())
         })
         .await

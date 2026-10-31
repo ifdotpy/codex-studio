@@ -5,11 +5,8 @@ import type { components } from "../../generated/api";
 type ResourceRef = components["schemas"]["ResourceRef"];
 export type SubscriptionCursor = components["schemas"]["SubscriptionCursor"];
 
-/** The cursor of a transcript is stored with its rows, in one cache record.
- * Another selector is hashed: its text is unbounded. */
+/** Hash unbounded selector text to fit the projection's primary-key contract. */
 export async function cursorDocumentId(resource: ResourceRef): Promise<string> {
-  if (resource.kind === "transcript")
-    return `transcript:cursor:${resource.agentId}`;
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(subscriptionKey(resource)),

@@ -7,7 +7,6 @@ mod json_body;
 pub mod middleware;
 mod model_entities;
 mod mutation_tasks;
-mod route_class;
 pub mod router;
 pub mod routes;
 pub mod schema;

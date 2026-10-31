@@ -1399,6 +1399,7 @@ fn python_review_child_claim_and_review_start_match() {
             "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT NOT NULL,account TEXT NOT NULL,epoch INTEGER NOT NULL,thread TEXT,turn TEXT,created REAL NOT NULL,record TEXT NOT NULL);\
              CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT NOT NULL,record TEXT NOT NULL);\
              CREATE TABLE runtime_execution_inputs(run TEXT NOT NULL,event TEXT NOT NULL,PRIMARY KEY(run,event));\
+             CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);\
              CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,created REAL NOT NULL,epoch INTEGER NOT NULL,turn_id TEXT,error TEXT);",
         )
         .expect("scheduler table shapes");

@@ -28,6 +28,7 @@ test("Scroll restart", async () => {
         "react/jsx-runtime",
         "react/jsx-dev-runtime",
         "react-dom/client",
+        "dexie",
       ],
     },
     server: { host: "127.0.0.1", port: 0, hmr: false },

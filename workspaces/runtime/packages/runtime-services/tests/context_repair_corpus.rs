@@ -135,7 +135,7 @@ async fn stop_then_repair_preserves_historical_attempt_ownership() {
     }).await.expect("seed");
     agent_lifecycle_runtime::execute(
         Arc::clone(&store),
-        &Action::Pause {
+        &Action::Stop {
             target: "agent".into(),
             descendants: false,
             reason: None,
@@ -651,7 +651,7 @@ fn context_repair_absent_schema_is_named_without_writes() {
         "runtime_event_meta",
         "runtime_items",
         "runtime_item_fulltext",
-        "turns",
+        "runtime_completed_turns",
     ] {
         let mut db = memory_fixture(&data["recurring"][0]);
         db.execute_batch(&format!("DROP TABLE {table}"))
@@ -678,11 +678,12 @@ fn memory_fixture(case: &Value) -> rusqlite::Connection {
     db.execute_batch(&studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
         CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,epoch INTEGER,kind TEXT,text TEXT,status TEXT,created REAL,turn_id TEXT,error TEXT);
         CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT);
+        CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);
         CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT,created REAL,record TEXT);
         CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT);
         CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
         CREATE TABLE sync_documents(seq INTEGER);
-        CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);")).expect("fixture schema");
+        CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);")).expect("fixture schema");
     db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
     ContextRepairRepository::put_agent(&db, &case["agent"]).expect("record stores");

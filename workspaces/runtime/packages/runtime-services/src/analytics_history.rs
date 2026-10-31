@@ -5,7 +5,7 @@
 //! compare-and-swap prevents two readers from acknowledging the same batch.
 use crate::analytics_capture::{
     CaptureError, CaptureSnapshot, CaptureSource, PreparedCapture, ResponseRateAssociation,
-    check_agent_identity, decide, text,
+    check_identity, decide, text,
 };
 use crate::analytics_rollout::{RolloutAction, RolloutContext};
 use rusqlite::OptionalExtension;
@@ -311,9 +311,9 @@ impl HistoryBatch {
             .await
             .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
         }
-        check_agent_identity(store, vec![(*self.agent).clone()]).await?;
         store
-            .analytics_projection_transaction(move |tx| {
+            .analytics_transaction(move |tx, canvas| {
+                check_identity(canvas, &self.agent)?;
                 let current = Repo::read(tx, CaptureTable::History, text(&self.state["id"]))?;
                 if current != self.previous {
                     return Err(HistoryError::StaleCheckpoint);
@@ -592,7 +592,7 @@ async fn quarantine_history_checkpoint(
     replacement: Value,
 ) -> Result<(), HistoryError> {
     store
-        .analytics_projection_transaction(move |tx| {
+        .analytics_transaction(move |tx, _| {
             let current: Option<String> = tx
                 .query_row(
                     "SELECT record FROM analytics_history WHERE id=?1",

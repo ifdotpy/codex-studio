@@ -12,7 +12,6 @@ mod catalog_agent;
 mod checkpoints;
 mod claude_controls;
 mod claude_login;
-mod commands;
 pub(crate) mod compose;
 pub(crate) mod desktop;
 pub use desktop::{backend_build_identity, initialize_backend_identity};

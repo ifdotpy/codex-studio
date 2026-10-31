@@ -15,7 +15,6 @@ import {
   apiSchemaHandshakeSse,
 } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
-import { standaloneCommand } from "../../src/commands.ts";
 import { execFileSync } from "node:child_process";
 test("one UI routes overlapping chats to two and three signed servers without reload", async ({
   page,
@@ -780,21 +779,18 @@ test("phone HTTPS Serve route opens the normal App and its local session", async
       page.getByRole("dialog", { name: "Studio settings" }),
     ).toHaveCount(0);
     await expect(page.locator("iframe")).toHaveCount(0);
-    const phoneSend = standaloneCommand("send", "phone-chat", {
-      text: "phone send",
-    });
-    const sent = await page.evaluate(async (command) => {
+    const sent = await page.evaluate(async () => {
       const session = await (await fetch("/api/session")).json();
-      const response = await fetch("/api/commands", {
+      const response = await fetch("/api/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-Canvas-Token": session.token,
         },
-        body: JSON.stringify(command),
+        body: JSON.stringify({ id: crypto.randomUUID(), text: "phone send" }),
       });
       return response.status;
-    }, phoneSend);
+    });
     expect(sent).toBe(200);
     expect(local.writes[0]!._canvasToken).toBe("local-only");
   } finally {

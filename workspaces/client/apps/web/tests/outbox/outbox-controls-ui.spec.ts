@@ -1,8 +1,7 @@
 import { required } from "../teams/helpers.ts";
 import type { OutboxEntry } from "../../src/sync/send.ts";
 import { responseJson } from "../messages/helpers.ts";
-import { commandOf, sendBody } from "../messages/send-command.ts";
-import type { SendMessageBody } from "../../src/commands.ts";
+import { requestBody } from "../messages/helpers.ts";
 import { readTranscript } from "../drafts/draft-fixture-helpers.ts";
 import type { Browser, BrowserContext, Route } from "playwright";
 import type { ViteDevServer } from "vite";
@@ -11,7 +10,11 @@ type TranscriptIdentity = Pick<
   components["schemas"]["TranscriptInput"],
   "id" | "clientMessageId"
 >;
-import type { GetResult, TranscriptPageData } from "../../src/apiTypes.ts";
+import type {
+  PostBody,
+  GetResult,
+  TranscriptPageData,
+} from "../../src/apiTypes.ts";
 declare global {
   interface Window {
     outboxModule: typeof import("../../src/sync/send.ts");
@@ -102,7 +105,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     });
     installApiSchemaFixtureHeaders(context);
     const errors: string[] = [],
-      posts: SendMessageBody[] = [];
+      posts: PostBody<"/api/messages">[] = [];
     let available = true,
       holdSession: ((route: Route) => void | Promise<void>) | null = null,
       holdPost: ((route: Route) => void | Promise<void>) | null = null,
@@ -123,12 +126,12 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       if (holdSession) return holdSession(route);
       return route.fallback();
     });
-    await context.route("**/api/commands", async (route) => {
-      const command = commandOf(route.request(), "send");
-      if (!command) return route.fallback();
-      posts.push(sendBody(command));
+    await context.route("**/api/messages", async (route) => {
+      if (route.request().method() !== "POST") return route.fallback();
+      const body = requestBody<PostBody<"/api/messages">>(route);
+      posts.push(body);
       if (holdPost) return holdPost(route);
-      const response = await fetch(target + "/api/commands", {
+      const response = await fetch(target + "/api/messages", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -137,7 +140,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
             route.request().headers()["x-canvas-token"],
           ),
         },
-        body: JSON.stringify(command),
+        body: JSON.stringify(body),
       });
       await route.fulfill({
         status: response.status,
@@ -281,7 +284,10 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
         "The accepted message is visible without a pending status",
       );
     };
-    const serverTranscriptHas = async (body: SendMessageBody, text: string) => {
+    const serverTranscriptHas = async (
+      body: PostBody<"/api/messages">,
+      text: string,
+    ) => {
       const transcript = await responseJson<TranscriptPageData>(
         await fetch(`${target}/api/transcript?id=${body.room}`),
       );
@@ -493,7 +499,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       text: "Keep the immutable request",
       assets: [],
       delivery: "queue",
-    } satisfies SendMessageBody;
+    } satisfies PostBody<"/api/messages">;
     await page.evaluate((body) => {
       window.raceResult = window.outboxModule.durableSend(body);
     }, body);
@@ -555,9 +561,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     page.on("request", (request) => {
       if (
         request.method() === "POST" &&
-        ["/api/queue", "/api/commands"].includes(
-          new URL(request.url()).pathname,
-        )
+        ["/api/queue", "/api/stop"].includes(new URL(request.url()).pathname)
       )
         forbiddenNativeMutations.push(request.url());
     });

@@ -259,14 +259,7 @@ impl RemoteClient {
             url.query().map(|v| format!("?{v}")).unwrap_or_default()
         );
         let signature = server_keys::signature(
-            self.vault.as_ref(),
-            credential,
-            method,
-            &target,
-            &timestamp,
-            &nonce,
-            request_id,
-            &body,
+            credential, method, &target, &timestamp, &nonce, request_id, &body,
         )?;
         let mut request = self.http.request(
             method
@@ -586,7 +579,6 @@ impl RemoteClient {
         if server_keys::origin(field(invitation, "origin")?)? != origin {
             return Err("The invitation belongs to another server.".into());
         }
-        let device = server_keys::ensure_device(self.vault.as_ref())?;
         let mut state = self.vault.read()?;
         let missing = Credential::Other(Value::Null);
         if state
@@ -596,7 +588,7 @@ impl RemoteClient {
             .unwrap_or(&missing)
             .is_null()
         {
-            let draft = server_keys::new_pair(invitation, id, &device)?;
+            let draft = server_keys::new_pair(invitation, id)?;
             state
                 .group_mut("drafts")
                 .and_then(Group::entries_mut)
@@ -1078,7 +1070,7 @@ mod tests {
         let port = listener.local_addr().expect("address").port();
         let pair = |server: &str| {
             let invitation = json!({"protocol":1,"origin":format!("https://{server}.tailnet.ts.net:{port}"),"serverId":server,"inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
-            server_keys::legacy_pair(&invitation, "pair")
+            server_keys::new_pair(&invitation, "pair")
                 .unwrap()
                 .into_value()
         };
@@ -1151,7 +1143,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let origin = format!("https://fixture.tailnet.ts.net:{}", address.port());
         let invitation = json!({"protocol":1,"origin":origin,"serverId":"server","inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
-        let credential = server_keys::legacy_pair(&invitation, "pair")
+        let credential = server_keys::new_pair(&invitation, "pair")
             .unwrap()
             .into_value();
         let config = rustls::ServerConfig::builder_with_provider(Arc::new(
@@ -1211,7 +1203,7 @@ mod tests {
             let address = listener.local_addr().unwrap();
             let origin = format!("https://fixture.tailnet.ts.net:{}", address.port());
             let invitation = json!({"protocol":1,"origin":origin,"serverId":"server","inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
-            let credential = server_keys::legacy_pair(&invitation, "pair")
+            let credential = server_keys::new_pair(&invitation, "pair")
                 .unwrap()
                 .into_value();
             let expected = credential.clone();

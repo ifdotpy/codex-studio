@@ -177,26 +177,3 @@ fn workspace_keeps_serde_json_maps_sorted() {
         "serde_json arbitrary_precision changes number meaning, and preserve_order changes Map order relied upon by canonical output in several crates; code needing insertion order must parse ordered pairs locally"
     );
 }
-
-#[test]
-fn a_federation_route_gets_no_principal_from_the_edge() {
-    use crate::middleware::edge_check;
-    use studio_runtime_services::principal::{CommandClass, Grant, Principal};
-    // A forged peer header is not read at the edge: the handler builds `Federated`
-    // only after the signature check.
-    assert_eq!(edge_check(None, CommandClass::Federation), Ok(None));
-    // A signed device or server cannot use a federation route.
-    let device = Principal::Device {
-        id: "d".into(),
-        grant: Grant::Full,
-    };
-    let peer = Principal::Peer { server: "s".into() };
-    assert_eq!(edge_check(Some(&device), CommandClass::Federation), Err(()));
-    assert_eq!(edge_check(Some(&peer), CommandClass::Federation), Err(()));
-    // Other routes: no principal means the owner, which the table checks.
-    assert_eq!(
-        edge_check(None, CommandClass::OwnerOnly),
-        Ok(Some(Principal::Owner))
-    );
-    assert_eq!(edge_check(Some(&peer), CommandClass::OwnerOnly), Err(()));
-}

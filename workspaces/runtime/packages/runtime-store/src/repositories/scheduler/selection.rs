@@ -117,7 +117,7 @@ fn saved_identity(saved: &crate::ExecutionAttempt) -> StoreResult<Vec<InputIdent
 
 /// `_v5` removes the obsolete capacity-start predicate. The 2026-10-21
 /// migration drops v4 before removing its generated column.
-const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v6";
+const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v5";
 
 /// Owns the agent-only superset of all rows the account wake page may return.
 /// Event existence and invalid-agent hold receipts are checked after this
@@ -129,7 +129,7 @@ fn account_wake_candidate_predicate(a: &str) -> String {
         "({} OR {} OR {})",
         account_wake_queued_candidate(a),
         account_wake_steer_candidate(a),
-        account_wake_recovery(a, false)
+        account_wake_recovery(a)
     )
 }
 
@@ -240,21 +240,11 @@ fn account_wake_pending(a: &str, held_after: &str) -> String {
     )
 }
 
-/// `exact` adds the start attempt facts that live on the owner turn row. An
-/// index predicate cannot read another table, so the index uses the broader
-/// form and the query adds the exact one.
-fn account_wake_recovery(a: &str, exact: bool) -> String {
-    let attempt = if exact {
-        format!(
-            "AND EXISTS(SELECT 1 FROM turns t WHERE t.chat={a}id AND t.attempt_submitted=1 \
-             AND t.attempt_connection_generation IS NOT NULL) "
-        )
-    } else {
-        String::new()
-    };
+fn account_wake_recovery(a: &str) -> String {
     format!(
         "(({a}provider='codex' \
-           {attempt}\
+           AND {a}start_attempt_submitted=1 \
+           AND {a}start_attempt_connection_generation IS NOT NULL \
            AND {a}status IN ('starting','running','waiting','paused','interrupted')) \
          OR ({a}has_disconnect_recovery=1 AND ( \
            COALESCE({a}status,'') NOT IN ('completed','waiting','paused','parked') \
@@ -269,7 +259,7 @@ fn account_wake_recovery(a: &str, exact: bool) -> String {
 fn account_wake_target_filter(a: &str, held_after: &str) -> String {
     let eligibility = account_wake_index_eligibility(a);
     let pending = account_wake_pending(a, held_after);
-    let recovery = account_wake_recovery(a, true);
+    let recovery = account_wake_recovery(a);
     format!(
         "{eligibility} \
          AND {a}hold_status=?1 \

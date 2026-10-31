@@ -13,7 +13,7 @@ pnpm install --frozen-lockfile
 git config --local core.hooksPath .githooks
 just install
 pnpm --filter codex-agents-web run build
-just package-native /tmp/studio-package
+pnpm --filter codex-agents-desktop run start
 ```
 
 The installer builds the Rust command binaries and links them into `~/.local/bin`.

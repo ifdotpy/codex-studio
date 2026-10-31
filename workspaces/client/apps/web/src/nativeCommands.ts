@@ -1,8 +1,4 @@
-import {
-  ProviderKind,
-  isProviderKind,
-  providerSupports,
-} from "./generated/providerKind.ts";
+import { ProviderKind, isProviderKind } from "./generated/providerKind.ts";
 import type { NativeAction } from "./generated/api.ts";
 export type { NativeAction } from "./generated/api.ts";
 // Studio handles these chat commands itself. A Claude chat sends /compact and
@@ -12,10 +8,10 @@ const STUDIO_COMMANDS: Record<ProviderKind, RegExp> = {
   [ProviderKind.Codex]: /^\/(rename|compact|review|stop|stop-team)(\s|$)/,
   [ProviderKind.Claude]: /^\/(rename|stop|stop-team)(\s|$)/,
 };
-// Native review runs only on Codex. Compact follows the compaction capability.
-const REVIEW_PROVIDERS: ReadonlySet<ProviderKind> = new Set([
-  ProviderKind.Codex,
-]);
+const MENU_ACTIONS: Record<ProviderKind, NativeAction[]> = {
+  [ProviderKind.Codex]: ["compact", "review"],
+  [ProviderKind.Claude]: ["compact"],
+};
 
 export function renameCommand(text: string): string | null | undefined {
   const match = /^\/rename(?:\s+(.*))?$/s.exec(text);
@@ -30,9 +26,5 @@ export function studioCommand(
 }
 
 export function menuActions(provider: string | undefined): NativeAction[] {
-  if (!isProviderKind(provider)) return [];
-  const actions: NativeAction[] = [];
-  if (providerSupports(provider, "compaction")) actions.push("compact");
-  if (REVIEW_PROVIDERS.has(provider)) actions.push("review");
-  return actions;
+  return isProviderKind(provider) ? [...MENU_ACTIONS[provider]] : [];
 }

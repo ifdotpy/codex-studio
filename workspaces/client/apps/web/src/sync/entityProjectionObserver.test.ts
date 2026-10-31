@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { LocalCollection } from "./localCollection";
+import type { RxCollection } from "rxdb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { observeEntityProjection } from "./entityProjectionObserver";
 import {
@@ -51,7 +51,7 @@ function source(initial: EntityRow[], readyMarker = marker()) {
     find: vi.fn(() => ({ exec: query })),
   };
   return {
-    collection: collection as unknown as LocalCollection,
+    collection: collection as unknown as RxCollection<EntityRow>,
     query,
     read: collection.storageInstance.findDocumentsById,
     toJSON,
@@ -260,7 +260,7 @@ it("does not scan retained IDs for one explicit change or tombstone", () => {
   expect(snapshot?.threads[0].name).toBe("new");
 });
 
-it("retains a local delete that keeps the same server sequence", () => {
+it("retains a local RxDB delete that keeps the same server sequence", () => {
   const state = emptyEntityProjection();
   applyEntityChanges(state, [row("a", 1)], true);
   const removed = applyEntityChanges(

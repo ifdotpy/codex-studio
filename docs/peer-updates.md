@@ -62,12 +62,8 @@ pass, 2 minutes after the start and then every 10 minutes. A pass runs only when
    verification before (kept in `<state>/peer-update.json`).
 3. Export, pull every chunk, and check each chunk hash and the whole file hash. The archive
    comes as `update.chunk` answers only. A stream over the QUIC link (`docs/peer-link.md`) is not
-   built: the Rust backend serves no export stream route. Every step is an entry of the shared
-   outbox (`RemoteEffect::UpdateOffer`, `UpdateExport`, `UpdateChunk`, `UpdateRelease`, restart rule
-   `TargetDedupes`: the peer only reads its app). A chunk entry holds the archive offset, and the
-   next chunk replaces it in one transaction. A paired server that does not answer leaves the
-   entry; the next pass (or a restart) sends the same request ID again and continues at that
-   offset. Chunks that were saved are not sent again.
+   built: the Rust backend serves no export stream route. A lost chunk fails the pull, and the next
+   pull starts again after the 1-hour retry.
 4. Extract with `ditto -x -k` into a new private folder `<state>/updates/.extract-*`. The
    folder must then hold only `Codex Studio.app`. Another program can write into the
    `<builtAt>` folder at any time (Finder writes `.DS_Store` into a folder that a window shows),
@@ -78,9 +74,7 @@ pass, 2 minutes after the start and then every 10 minutes. A pass runs only when
      same certificate signed it;
    - its `studio-build.json` equals the offered stamp.
 6. Move the app to `<state>/updates/<builtAt>/Codex Studio.app`. Write
-   `<state>/pending-update.json`: `{id, app, build, from}`. Replace the last chunk entry with
-   an `update.release` entry. It goes out once, and a paired server that is away gets it at the
-   next pass. A failed pull releases the export in the same way.
+   `<state>/pending-update.json`: `{id, app, build, from}`. Release the peer export.
 
 Only one pull runs at a time, because one timer task makes the passes. A failure is recorded
 with its reason in `peer-update.json` (`failures`, keyed by `builtAt:commit`; kept 24 hours) and

@@ -7,22 +7,15 @@ use crate::records::{
 use crate::repositories::sync_documents::SyncDocumentsRepository;
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::stored_text::{StoredText, StoredTextValue};
-use crate::text_blobs;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::TRANSCRIPT_MAX_TOMBSTONES;
 use thiserror::Error;
 
-const BOOTSTRAP_TABLES: &[TableRequirement] = &[
-    TableRequirement {
-        name: "runtime_item_fulltext",
-        columns: &["id", "body"],
-    },
-    TableRequirement {
-        name: "runtime_item_blobs",
-        columns: &["id", "hash", "size"],
-    },
-];
+const BOOTSTRAP_TABLES: &[TableRequirement] = &[TableRequirement {
+    name: "runtime_item_fulltext",
+    columns: &["id", "body"],
+}];
 const SEARCH_NEXT_META_TABLES: &[TableRequirement] = &[TableRequirement {
     name: "runtime_search_next_meta",
     columns: &["id", "agent", "kind", "search_rowid"],
@@ -318,9 +311,6 @@ impl TranscriptRepository {
         connection: &Connection,
         id: &str,
     ) -> TranscriptStoreResult<Option<String>> {
-        if let Some(blob) = text_blobs::reference(connection, id)? {
-            return Ok(Some(text_blobs::read(connection, &blob.hash)?));
-        }
         let full = connection
             .query_row_cached(
                 "SELECT body FROM runtime_item_fulltext WHERE id=?1",
@@ -456,8 +446,7 @@ impl TranscriptRepository {
             return Err(invalid_record("runtime_items", id));
         }
         let has_fulltext = table_exists(transaction, "runtime_item_fulltext")?;
-        let long = text.chars().count() > text_blobs::TEXT_BLOB_MIN_CHARS;
-        if long && !has_fulltext {
+        if text.chars().count() > 20_000 && !has_fulltext {
             return Err(invalid_record("runtime_item_fulltext", id));
         }
         let owner = transaction
@@ -478,10 +467,7 @@ impl TranscriptRepository {
                 created
             ],
         )?;
-        // A pointer to a blob never outlives the text it was made from. A
-        // background pass moves final text to a blob; see `text_blobs`.
-        text_blobs::clear_reference(transaction, id)?;
-        if long {
+        if text.chars().count() > 20_000 {
             transaction.execute_cached(
                 "INSERT INTO runtime_item_fulltext(id,body) VALUES(?1,?2) \
                  ON CONFLICT(id) DO UPDATE SET body=excluded.body",
@@ -982,9 +968,7 @@ fn search_phase(connection: &Connection) -> TranscriptStoreResult<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::text_blobs;
     use rusqlite::Connection;
-    use serde_json::Value;
     use serde_json::json;
 
     use super::{TranscriptRepository, TranscriptStoreError};
@@ -1389,279 +1373,57 @@ mod tests {
         }
     }
 
-    /// A file database with the transcript tables and the blob table.
-    fn blob_fixture(directory: &std::path::Path) -> Connection {
-        let connection = Connection::open(directory.join("canvas.sqlite3")).expect("database");
+    #[test]
+    fn full_text_long_item_is_stored_compressed() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database opens");
         connection
             .execute_batch(
                 "CREATE TABLE runtime_items(id TEXT PRIMARY KEY, agent TEXT NOT NULL, \
                  record TEXT NOT NULL, created REAL NOT NULL);
-                 CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY, body TEXT NOT NULL);
-                 CREATE TABLE runtime_item_blobs(id TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL);",
+                 CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY, body TEXT NOT NULL);",
             )
             .expect("transcript tables create");
-        connection
-    }
-
-    fn long_text() -> String {
-        "long \u{2713} ".repeat(4_000)
-    }
-
-    fn long_record(streaming: bool) -> Value {
-        json!({"id":"agent:long","role":"assistant","text":"preview","truncated":true,"streaming":streaming})
-    }
-
-    fn put_long(connection: &Connection, text: &str, streaming: bool) -> Value {
-        let record = long_record(streaming);
-        let transaction = connection.unchecked_transaction().expect("transaction");
+        let transaction = connection.transaction().expect("transaction");
+        let text = "long \u{2713} ".repeat(4_000);
+        let record =
+            json!({"id":"agent:long","role":"assistant","text":"preview","truncated":true});
         TranscriptRepository::put_item(
             &transaction,
             "agent:long",
             "agent",
             &record,
             1.0,
-            text,
+            &text,
             false,
         )
         .expect("item writes");
-        transaction.commit().expect("commit");
-        record
-    }
 
-    /// What the background pass does: write the file, then commit the pointer.
-    fn move_to_blob(state: &std::path::Path, text: &str) -> text_blobs::MovedText {
-        let (blob, bytes) = text_blobs::encode_blob(text);
-        let path = text_blobs::layout(&state.join("blobs"), &blob.hash);
-        std::fs::create_dir_all(path.parent().unwrap()).expect("directories");
-        std::fs::write(&path, bytes).expect("blob file");
-        text_blobs::MovedText {
-            id: "agent:long".to_owned(),
-            digest: text_blobs::digest(text),
-            blob,
-        }
-    }
-
-    fn commit_moved(connection: &mut Connection, moved: &text_blobs::MovedText) -> usize {
-        let transaction = connection.transaction().expect("transaction");
-        let set = text_blobs::commit(&transaction, std::slice::from_ref(moved)).expect("commit");
-        transaction.commit().expect("commit");
-        set
-    }
-
-    #[test]
-    fn long_item_text_is_staged_in_the_table_and_moves_to_a_blob_when_final() {
-        let state = tempfile::tempdir().expect("state");
-        let mut connection = blob_fixture(state.path());
-        let text = long_text();
-        let record = put_long(&connection, &text, false);
-        assert!(
-            !state.path().join("blobs").exists(),
-            "a writer transaction does no file I/O"
+        let (kind, body): (String, rusqlite::types::Value) = transaction
+            .query_row(
+                "SELECT typeof(body),body FROM runtime_item_fulltext WHERE id='agent:long'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("body reads");
+        assert_eq!(kind, "blob", "a long item stores stored format 1");
+        let rusqlite::types::Value::Blob(body) = body else {
+            panic!("blob body");
+        };
+        assert_eq!(
+            crate::stored_text::decode_blob(&body).as_deref(),
+            Ok(text.as_str())
         );
-
-        let pending = text_blobs::pending(&connection, 10).expect("pending");
-        assert_eq!(pending, vec![("agent:long".to_owned(), text.clone())]);
-        let moved = move_to_blob(state.path(), &text);
-        assert_eq!(commit_moved(&mut connection, &moved), 1);
-        assert!(text_blobs::pending(&connection, 10).unwrap().is_empty());
-        assert!(
-            text_blobs::fulltext_without_blob(&connection)
-                .unwrap()
-                .is_empty()
-        );
-        let blob = text_blobs::reference(&connection, "agent:long")
-            .unwrap()
-            .unwrap();
-        assert_eq!(blob.size, text.len() as u64);
         let item = super::TranscriptItem {
             id: "agent:long".to_owned(),
             agent: "agent".to_owned(),
             record: serde_json::from_str(&record.to_string()).unwrap(),
         };
         assert_eq!(
-            TranscriptRepository::full_text(&connection, &item)
-                .unwrap()
+            TranscriptRepository::full_text(&transaction, &item)
+                .expect("full text reads")
                 .as_deref(),
             Some(text.as_str())
         );
-        assert_eq!(text_blobs::read(&connection, &blob.hash).unwrap(), text);
-    }
-
-    #[test]
-    fn streaming_item_is_not_moved_and_a_rewrite_clears_the_pointer() {
-        let state = tempfile::tempdir().expect("state");
-        let mut connection = blob_fixture(state.path());
-        let text = long_text();
-        put_long(&connection, &text, true);
-        assert!(
-            text_blobs::pending(&connection, 10).unwrap().is_empty(),
-            "streaming text is not final"
-        );
-
-        put_long(&connection, &text, false);
-        let moved = move_to_blob(state.path(), &text);
-        assert_eq!(commit_moved(&mut connection, &moved), 1);
-        let longer = format!("{text}more");
-        put_long(&connection, &longer, false);
-        assert!(
-            text_blobs::reference(&connection, "agent:long")
-                .unwrap()
-                .is_none()
-        );
-        let item = super::TranscriptItem {
-            id: "agent:long".to_owned(),
-            agent: "agent".to_owned(),
-            record: serde_json::from_str(&long_record(false).to_string()).unwrap(),
-        };
-        assert_eq!(
-            TranscriptRepository::full_text(&connection, &item)
-                .unwrap()
-                .as_deref(),
-            Some(longer.as_str()),
-            "the rewrite is read, not the old blob"
-        );
-    }
-
-    #[test]
-    fn commit_never_points_at_a_missing_blob_or_a_changed_text() {
-        let state = tempfile::tempdir().expect("state");
-        let mut connection = blob_fixture(state.path());
-        let text = long_text();
-        put_long(&connection, &text, false);
-        let (blob, _bytes) = text_blobs::encode_blob(&text);
-        let missing = text_blobs::MovedText {
-            id: "agent:long".to_owned(),
-            digest: text_blobs::digest(&text),
-            blob,
-        };
-        assert_eq!(
-            commit_moved(&mut connection, &missing),
-            0,
-            "no file, no row"
-        );
-
-        let moved = move_to_blob(state.path(), &text);
-        put_long(&connection, &format!("{text}changed"), false);
-        assert_eq!(
-            commit_moved(&mut connection, &moved),
-            0,
-            "the text changed after the blob"
-        );
-        let rows: i64 = connection
-            .query_row("SELECT count(*) FROM runtime_item_blobs", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(rows, 0);
-    }
-
-    fn sweep_once(
-        connection: &mut Connection,
-        state: &std::path::Path,
-        later: std::time::SystemTime,
-    ) -> usize {
-        let root = state.join("blobs");
-        let pointed = text_blobs::pointed_hashes(connection).unwrap();
-        let names = text_blobs::quarantine(&root, &pointed, later).unwrap();
-        let transaction = connection.transaction().unwrap();
-        let keep = text_blobs::referenced_among(&transaction, &names).unwrap();
-        transaction.commit().unwrap();
-        text_blobs::release(&root, &keep, &names).unwrap()
-    }
-
-    #[test]
-    fn sweep_deletes_old_unreferenced_text_blobs_only() {
-        let state = tempfile::tempdir().expect("state");
-        let mut connection = blob_fixture(state.path());
-        let text = long_text();
-        put_long(&connection, &text, false);
-        let orphan = move_to_blob(state.path(), &text);
-        let orphan_file = text_blobs::layout(&state.path().join("blobs"), &orphan.blob.hash);
-        // A payload blob is plain JSON and is never collected.
-        let payload_hash = "ab".repeat(32);
-        let payload = text_blobs::layout(&state.path().join("blobs"), &payload_hash);
-        std::fs::create_dir_all(payload.parent().unwrap()).unwrap();
-        std::fs::write(&payload, b"{\"contentItems\":[]}").unwrap();
-
-        let soon = std::time::SystemTime::now();
-        assert_eq!(
-            sweep_once(&mut connection, state.path(), soon),
-            0,
-            "too young"
-        );
-        assert!(orphan_file.is_file());
-        let later = soon + text_blobs::TEXT_BLOB_SWEEP_DELAY * 2;
-        assert_eq!(sweep_once(&mut connection, state.path(), later), 1);
-        assert!(!orphan_file.exists());
-        assert!(payload.is_file(), "payload blobs are not collected");
-    }
-
-    #[test]
-    fn sweep_never_deletes_a_referenced_blob_even_when_it_races_a_commit() {
-        let state = tempfile::tempdir().expect("state");
-        let mut connection = blob_fixture(state.path());
-        let text = long_text();
-        put_long(&connection, &text, false);
-        let moved = move_to_blob(state.path(), &text);
-        let root = state.path().join("blobs");
-        let far = std::time::SystemTime::now() + text_blobs::TEXT_BLOB_SWEEP_DELAY * 1000;
-
-        // Referenced: the sweep leaves the file where it is.
-        assert_eq!(commit_moved(&mut connection, &moved), 1);
-        assert_eq!(sweep_once(&mut connection, state.path(), far), 0);
-        let file = text_blobs::layout(&root, &moved.blob.hash);
-        assert!(file.is_file());
-
-        // The pointer appears after the quarantine: the second read restores the file.
-        connection
-            .execute("DELETE FROM runtime_item_blobs", [])
-            .unwrap();
-        let names = text_blobs::quarantine(&root, &Default::default(), far).unwrap();
-        assert_eq!(names, vec![moved.blob.hash.clone()]);
-        assert_eq!(
-            commit_moved(&mut connection, &moved),
-            0,
-            "the file is in the trash, so no pointer"
-        );
-        connection
-            .execute(
-                "INSERT INTO runtime_item_blobs(id,hash,size) VALUES('agent:long',?1,1)",
-                [&moved.blob.hash],
-            )
-            .unwrap();
-        let transaction = connection.transaction().unwrap();
-        let keep = text_blobs::referenced_among(&transaction, &names).unwrap();
-        transaction.commit().unwrap();
-        assert_eq!(text_blobs::release(&root, &keep, &names).unwrap(), 0);
-        assert!(
-            file.is_file(),
-            "a referenced blob is restored, never deleted"
-        );
-    }
-
-    #[test]
-    fn fulltext_check_reports_rows_without_a_blob_and_the_table_keeps_its_rows() {
-        let state = tempfile::tempdir().expect("state");
-        let mut connection = blob_fixture(state.path());
-        let text = long_text();
-        put_long(&connection, &text, false);
-        assert_eq!(
-            text_blobs::fulltext_without_blob(&connection).unwrap(),
-            vec!["agent:long".to_owned()]
-        );
-        let moved = move_to_blob(state.path(), &text);
-        assert_eq!(commit_moved(&mut connection, &moved), 1);
-        assert!(
-            text_blobs::fulltext_without_blob(&connection)
-                .unwrap()
-                .is_empty()
-        );
-        let kept: i64 = connection
-            .query_row("SELECT count(*) FROM runtime_item_fulltext", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert_eq!(kept, 1, "the legacy table keeps its rows");
     }
 }
 inventory::submit! {

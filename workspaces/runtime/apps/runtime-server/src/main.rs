@@ -66,8 +66,7 @@ const STARTUP_TRACE_ENV: &str = "CODEX_STUDIO_STARTUP_TRACE";
 
 /// Durable inputs that can enqueue or unblock a server-to-server delivery.
 const ORCHESTRATION_WAKE_TABLES: [ObservedTable; 3] = [
-    // The shared outbox holds server requests and federation messages. A write wakes both schedulers.
-    ObservedTable::RuntimeOutbox,
+    ObservedTable::ServerOutbox,
     ObservedTable::AccessClients,
     ObservedTable::ServerLinks,
 ];
@@ -78,7 +77,7 @@ const FEDERATION_WAKE_TABLES: [ObservedTable; 6] = [
     ObservedTable::FederationPeers,
     ObservedTable::FederationInvites,
     ObservedTable::FederationRooms,
-    ObservedTable::RuntimeOutbox,
+    ObservedTable::FederationOutbox,
 ];
 
 fn observe_table_wakes(store: &RuntimeStore, tables: &[ObservedTable], wake: Arc<Notify>) {
@@ -578,12 +577,6 @@ async fn run(
     let public_origin = remote_access.origin();
     #[cfg(unix)]
     let peer_link_advert = Arc::new(std::sync::RwLock::new(None));
-    #[cfg(unix)]
-    let peer_link_token = {
-        let mut secret = [0_u8; 32];
-        getrandom::fill(&mut secret).map_err(|error| std::io::Error::other(error.to_string()))?;
-        data_encoding::HEXLOWER.encode(&secret)
-    };
     let cache_root = env::var_os("XDG_CACHE_HOME")
         .or_else(|| env::var_os("CODEX_AGENTS_CACHE_DIR"))
         .or_else(|| {
@@ -734,9 +727,7 @@ async fn run(
     }
     #[cfg(unix)]
     {
-        state = state
-            .with_peer_link_advert(Arc::clone(&peer_link_advert))
-            .with_peer_link_token(&peer_link_token);
+        state = state.with_peer_link_advert(Arc::clone(&peer_link_advert));
     }
     #[cfg(unix)]
     {
@@ -967,33 +958,6 @@ async fn run(
     // Start the peer child only after listener bind and all fallible router
     // construction have succeeded. The pre-created advert is already shared
     // with HttpState, so routes observe the child's later published address.
-    // A new QUIC connection to a paired server makes its waiting deliveries due at once.
-    #[cfg(unix)]
-    let peer_reached: peer_link::PeerReached = {
-        let store = Arc::clone(&store);
-        let wake = Arc::clone(&orchestration_wake);
-        Arc::new(move |public_key: String| {
-            let store = Arc::clone(&store);
-            let wake = Arc::clone(&wake);
-            tokio::spawn(async move {
-                let now = epoch_seconds() as i64;
-                match store
-                    .transaction_with(move |tx| {
-                        studio_runtime_services::multi_server_orchestration::release_peer(
-                            tx,
-                            &public_key,
-                            now,
-                        )
-                    })
-                    .await
-                {
-                    Ok(0) => {}
-                    Ok(_) => wake.notify_one(),
-                    Err(error) => eprintln!("peer-link outbox release failed: {error}"),
-                }
-            });
-        })
-    };
     #[cfg(unix)]
     let mut peer_link_runtime = public_origin
         .as_ref()
@@ -1004,8 +968,6 @@ async fn run(
                 origin.clone(),
                 state_root.clone().to_path_buf(),
                 Arc::clone(&peer_link_advert),
-                peer_link_token,
-                Arc::clone(&peer_reached),
             )
         })
         .transpose()?;
@@ -1076,15 +1038,6 @@ async fn run(
         monitor_shutdown.subscribe(),
     ));
     let stored_text_task = tokio::spawn(studio_runtime_services::stored_text_compaction::run(
-        Arc::clone(&store),
-        monitor_shutdown.subscribe(),
-    ));
-    let transcript_backfill_task =
-        tokio::spawn(studio_runtime_services::transcript_seq_backfill::run(
-            Arc::clone(&store),
-            monitor_shutdown.subscribe(),
-        ));
-    let text_blob_sweep_task = tokio::spawn(studio_runtime_services::text_blob_sweep::run(
         Arc::clone(&store),
         monitor_shutdown.subscribe(),
     ));
@@ -1188,14 +1141,6 @@ async fn run(
         monitor_shutdown.subscribe(),
     )
     .map(|puller| tokio::spawn(studio_runtime_services::peer_update_pull::run(puller)));
-    // Backup of canvas.sqlite3 to a paired server; idle until the owner turns it on (docs/backup.md).
-    let backup_task = tokio::spawn(
-        studio_runtime_services::peer_backup::Sender::installed(
-            Arc::clone(&store),
-            monitor_shutdown.subscribe(),
-        )
-        .run(),
-    );
     // Projects of paired servers for this server's own clients (docs/peer-projects.md).
     let peer_projects_task = state.orchestration_driver_handle().map(|driver| {
         let wake = state.peer_projects_wake_handle();
@@ -1469,12 +1414,6 @@ async fn run(
         shutdown_join("Studio error publication task", studio_errors_task).await??;
         shutdown_join("storage retention task", retention_task).await??;
         shutdown_join("stored text compaction task", stored_text_task).await??;
-        shutdown_join(
-            "transcript sequence backfill task",
-            transcript_backfill_task,
-        )
-        .await??;
-        shutdown_join("text blob sweep task", text_blob_sweep_task).await??;
         shutdown_join("analytics projection task", analytics_projection_task).await??;
         if let Some(task) = orchestration_task {
             shutdown_join("orchestration driver task", task).await??;
@@ -1482,7 +1421,6 @@ async fn run(
         if let Some(task) = peer_update_task {
             shutdown_join("peer update task", task).await??;
         }
-        shutdown_join("backup task", backup_task).await??;
         if let Some(task) = peer_projects_task {
             shutdown_join("peer projects task", task).await??;
         }
@@ -2161,16 +2099,11 @@ mod targeted_scheduler_wake_tests {
         tokio::task::yield_now().await;
         store
             .transaction(|tx| {
-                studio_runtime_store::remote_outbox::RemoteOutbox::put(
-                    tx,
-                    studio_runtime_store::remote_outbox::RemoteEffect::ServerRequest,
-                    "peer",
-                    "outbox-event",
-                    "fingerprint",
-                    studio_runtime_schema::persistence::OutboxStatus::Pending,
-                    Some(1),
-                    serde_json::json!({"body":"{\"action\":\"event\"}"}),
-                    1,
+                tx.execute(
+                    "INSERT INTO runtime_server_outbox(\
+                        id,server,body,state,created_at,next_at,fingerprint,attempts\
+                     ) VALUES('outbox-event','peer','{\"action\":\"event\"}','queued',1,1,'fingerprint',0)",
+                    [],
                 )?;
                 Ok(())
             })
@@ -2180,6 +2113,11 @@ mod targeted_scheduler_wake_tests {
             .await
             .expect("orchestration observes outbox input")
             .expect("orchestration waiter");
+        tokio::task::yield_now().await;
+        assert!(
+            !federation_waiter.is_finished(),
+            "orchestration outbox writes must not wake federation"
+        );
         federation_waiter.abort();
 
         let federation_waiter = tokio::spawn({

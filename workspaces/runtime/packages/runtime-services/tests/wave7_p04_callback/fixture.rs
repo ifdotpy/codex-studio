@@ -205,8 +205,7 @@ fn snapshot_rows(store: &RuntimeStore, logical: bool) -> Value {
                 name.as_str(),
                 "runtime_outbox" | "request_results" | "runtime_tool_requests"
             ) || name == studio_runtime_store::agent_volatile::AGENT_VOLATILE_TABLE
-                || (name.starts_with("sync_") && name != "sync_entities")
-                || name.starts_with("durable_"))
+                || (name.starts_with("sync_") && name != "sync_entities"))
         {
             continue;
         }

@@ -207,8 +207,8 @@ Opening a retry keeps the server transport degraded until a valid live frame
 arrives, so switching chats during that retry preserves the reconnect notice.
 
 Draft recovery journal and local record writes happen synchronously on each
-edit. The draft replication coalesces upstream pushes according to the wait
-policy in [`src/sync/client.ts`](src/sync/client.ts), while resume and the journal rescan
+edit. RxDB coalesces upstream draft pushes according to the wait policy in
+[`src/sync/client.ts`](src/sync/client.ts), while resume and the journal rescan
 continue to recover pending local changes.
 
 The client shows bounded cached history when a managed chat is reopened.

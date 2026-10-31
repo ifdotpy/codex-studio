@@ -181,6 +181,10 @@ test-heavy:
 test-rust-usage-resume-corpora:
     @STUDIO_RUNTIME_CORPUS_FULL=1 cargo nextest run --workspace -E '(binary(integration) & test(/^continuation_(corpus|recovery)::/))'
 
+[doc("Manual heavy check: migrate an isolated Electron profile with hidden windows.")]
+test-native-profile-migration:
+    @pnpm --filter codex-agents-desktop run test:profile-migration
+
 [doc("Manual heavy check: build the Rust desktop host and run isolated hidden WebViews.")]
 test-native-webview:
     @pnpm --filter codex-agents-web run build

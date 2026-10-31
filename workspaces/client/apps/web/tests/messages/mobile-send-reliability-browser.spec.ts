@@ -1,6 +1,5 @@
 import { required } from "./helpers.ts";
-import { sendReply, sentMessage } from "./send-command.ts";
-import type { MessageDelivery } from "../../src/commands.ts";
+import { requestBody } from "./helpers.ts";
 import type { Page, Route } from "@playwright/test";
 import type { MessageRequest } from "./helpers.ts";
 import type {} from "./mobile-send-reliability-browser.fixture.tsx";
@@ -75,9 +74,8 @@ test("Mobile Send Reliability Browser", async ({
         });
       return undefined;
     });
-    await context.route("**/api/commands", (route) => {
-      const body = sentMessage(route.request());
-      if (!body) return route.fallback();
+    await context.route("**/api/messages", (route) => {
+      const body = requestBody<import("./helpers.ts").MessageRequest>(route);
       posts.push(body);
       if (body.id.startsWith("hold-")) {
         const routes = pending.get(body.id) || [];
@@ -85,19 +83,19 @@ test("Mobile Send Reliability Browser", async ({
         pending.set(body.id, routes);
       } else if (body.id === "statusless-receipt") {
         return route.fulfill({
-          json: sendReply({
+          json: {
             id: body.id,
             room: body.room,
             text: body.text,
             deliveries: {},
-          } as MessageDelivery),
+          },
         });
       } else
         return route.fulfill({
-          json: sendReply({
+          json: {
             id: body.id,
             status: "delivered",
-          } satisfies MessageDelivery),
+          } satisfies import("../../src/api.ts").PostResult<"/api/messages">,
         });
       return undefined;
     });

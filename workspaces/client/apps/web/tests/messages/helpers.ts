@@ -14,6 +14,7 @@ export async function responseJson<T>(
   return response.json() as Promise<T>;
 }
 
-export type MessageRequest = import("../../src/commands.ts").SendMessageBody;
+export type MessageRequest =
+  import("../../src/api.ts").PostBody<"/api/messages">;
 export type ComplaintDetail = components["schemas"]["ComplaintDetailResponse"];
 export type ComplaintBody = components["schemas"]["ComplaintBody"];

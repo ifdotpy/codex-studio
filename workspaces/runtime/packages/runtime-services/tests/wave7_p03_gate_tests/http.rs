@@ -1,26 +1,5 @@
 pub(super) mod support;
 
-/// The `send` command of `POST /api/commands`; the command id is the message id.
-fn send_command(id: &str, room: &str, text: &str, assets: serde_json::Value) -> String {
-    serde_json::json!({
-        "id": id, "client": "test", "number": 1, "kind": "send",
-        "target": room, "body": {"text": text, "assets": assets}
-    })
-    .to_string()
-}
-
-/// The delivery receipt row that a send response carries.
-fn receipt_of(response: &serde_json::Value) -> serde_json::Value {
-    response["rows"]
-        .as_array()
-        .and_then(|rows| {
-            rows.iter()
-                .find(|row| row["collection"] == "messageReceipt")
-        })
-        .map(|row| row["payload"].clone())
-        .expect("message receipt row")
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_accepts_unrelated_operation_started_after_preparation() {
     use axum::{
@@ -46,7 +25,7 @@ async fn http_accepts_unrelated_operation_started_after_preparation() {
     let request_id = uuid::Uuid::now_v7().to_string();
     let request = Request::builder()
         .method("POST")
-        .uri("/api/commands")
+        .uri("/api/messages")
         .header("x-canvas-token", "token")
         .header("host", "127.0.0.1:4620")
         .header("content-type", "application/json")
@@ -58,20 +37,17 @@ async fn http_accepts_unrelated_operation_started_after_preparation() {
             [127, 0, 0, 1],
             12345,
         ))))
-        .body(Body::from(send_command(
-            &request_id,
-            "late-operation-recipient",
-            "hello",
-            serde_json::json!([]),
-        )))
+        .body(Body::from(
+            serde_json::json!({"room":"late-operation-recipient", "id":request_id, "text":"hello"})
+                .to_string(),
+        ))
         .expect("request");
     let response = app.oneshot(request).await.expect("HTTP response");
     operation.await.expect("operation writer joins");
     assert_eq!(response.status(), axum::http::StatusCode::OK);
-    let receipt = receipt_of(
-        &serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.expect("body"))
-            .expect("command response"),
-    );
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.expect("body"))
+            .expect("receipt");
     assert_eq!(receipt["status"], "queued");
     assert!(
         receipt.get("waitingFor").is_none(),
@@ -111,7 +87,7 @@ async fn http_accepts_uploaded_asset_id_with_empty_message_text() {
     .expect("upload through the shared payload owner");
     let request = Request::builder()
         .method("POST")
-        .uri("/api/commands")
+        .uri("/api/messages")
         .header("x-canvas-token", "token")
         .header("host", "127.0.0.1:4620")
         .header("content-type", "application/json")
@@ -123,19 +99,21 @@ async fn http_accepts_uploaded_asset_id_with_empty_message_text() {
             [127, 0, 0, 1],
             12345,
         ))))
-        .body(Body::from(send_command(
-            &request_id,
-            "late-operation-recipient",
-            "",
-            serde_json::json!([asset["id"].clone()]),
-        )))
+        .body(Body::from(
+            serde_json::json!({
+                "room":"late-operation-recipient",
+                "id":request_id,
+                "text":"",
+                "assets":[asset["id"].clone()]
+            })
+            .to_string(),
+        ))
         .expect("request");
     let response = app.oneshot(request).await.expect("HTTP response");
     assert_eq!(response.status(), axum::http::StatusCode::OK);
-    let receipt = receipt_of(
-        &serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.expect("body"))
-            .expect("command response"),
-    );
+    let receipt: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.expect("body"))
+            .expect("receipt");
     assert_eq!(receipt["status"], "queued");
     let raw = support::read(fixture.store.clone(), move |connection| {
         connection
@@ -254,7 +232,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     let request = |id: &str, text: &str, assets: &[String]| {
         Request::builder()
             .method("POST")
-            .uri("/api/commands")
+            .uri("/api/messages")
             .header("x-canvas-token", "token")
             .header("host", "127.0.0.1:4620")
             .header("content-type", "application/json")
@@ -266,12 +244,15 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
                 [127, 0, 0, 1],
                 12345,
             ))))
-            .body(Body::from(send_command(
-                id,
-                "late-operation-recipient",
-                text,
-                serde_json::json!(assets),
-            )))
+            .body(Body::from(
+                serde_json::json!({
+                    "room":"late-operation-recipient",
+                    "id":id,
+                    "text":text,
+                    "assets":assets
+                })
+                .to_string(),
+            ))
             .expect("request")
     };
     let request_id = uuid::Uuid::now_v7().to_string();
@@ -281,14 +262,12 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         .await
         .expect("HTTP response");
     assert_eq!(response.status(), axum::http::StatusCode::OK);
-    let receipt = receipt_of(
-        &serde_json::from_slice(
-            &to_bytes(response.into_body(), 65536)
-                .await
-                .expect("response body"),
-        )
-        .expect("command response"),
-    );
+    let receipt: serde_json::Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), 65536)
+            .await
+            .expect("response body"),
+    )
+    .expect("message receipt");
     assert_eq!(receipt["status"], "queued");
     let duplicate = app
         .clone()
@@ -296,20 +275,18 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
         .await
         .expect("duplicate HTTP response");
     assert_eq!(duplicate.status(), axum::http::StatusCode::OK);
-    let duplicate_receipt = receipt_of(
-        &serde_json::from_slice(
-            &to_bytes(duplicate.into_body(), 65536)
-                .await
-                .expect("duplicate response body"),
-        )
-        .expect("duplicate command response"),
-    );
+    let duplicate_receipt: serde_json::Value = serde_json::from_slice(
+        &to_bytes(duplicate.into_body(), 65536)
+            .await
+            .expect("duplicate response body"),
+    )
+    .expect("duplicate message receipt");
     assert_eq!(duplicate_receipt["id"], receipt["id"]);
     assert_eq!(duplicate_receipt["status"], receipt["status"]);
     let outbox_count: i64 = support::read(fixture.store.clone(), |connection| {
         connection
             .query_row(
-                "SELECT COUNT(*) FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='server_request' AND status='pending'",
+                "SELECT COUNT(*) FROM runtime_server_outbox WHERE state='queued'",
                 [],
                 |row| row.get::<_, i64>(0),
             )
@@ -351,7 +328,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     let (server, raw): (String, String) = support::read(fixture.store.clone(), |connection| {
         connection
             .query_row(
-                "SELECT target,json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='server_request' AND status='pending'",
+                "SELECT server,body FROM runtime_server_outbox WHERE state='queued'",
                 [],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
@@ -527,7 +504,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     let raw = support::read(fixture.store.clone(), move |connection| {
         connection
             .query_row(
-            "SELECT json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery' AND target='remote-server' AND json_extract(json_extract(payload,'$.record.body'),'$.payload.text')=?1",
+            "SELECT body FROM runtime_server_outbox WHERE server='remote-server' AND json_extract(body,'$.payload.text')=?1",
             [&unicode_for_query],
             |row| row.get::<_, String>(0),
         )
@@ -676,7 +653,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     let outbox_count: i64 = support::read(fixture.store.clone(), |connection| {
         connection
             .query_row(
-                "SELECT COUNT(*) FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='server_request' AND status='pending'",
+                "SELECT COUNT(*) FROM runtime_server_outbox WHERE state='queued'",
                 [],
                 |row| row.get::<_, i64>(0),
             )

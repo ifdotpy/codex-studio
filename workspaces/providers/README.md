@@ -26,11 +26,6 @@ Keep native SDK, credentials, transcript formats, and provider-specific semantic
 in their owning adapters. Shared callers consume normalized values or the
 adapter's explicit capabilities.
 
-Each adapter reports a typed capability list (`ProviderKind::capabilities`:
-steer, rewind, fork, model change, effort, compaction, approvals). The UI shows
-only the controls in that list, through the generated `providerSupports`. Do not
-test for a provider name to show or hide a control.
-
 To add a provider, extend the identity owner and its adapter, regenerate contracts,
 and implement the cases exposed by exhaustive checks. Verify the new boundary
 alongside existing providers and unknown input. Reuse the existing adapter and

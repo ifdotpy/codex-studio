@@ -12,7 +12,6 @@ import { onResume } from "../sync/resume";
 import type { paths } from "../generated/api";
 import { queueMutationMessageId } from "./queueMutationIdentity";
 import { useServerSync } from "../servers/ServerServicesContext";
-import { usePendingCommands } from "../usePendingCommands";
 
 type QueueMutation =
   paths["/api/queue"]["post"]["requestBody"]["content"]["application/json"];
@@ -62,7 +61,7 @@ function isQueueMutation(value: unknown): value is QueueMutation {
   )
     return false;
   const hasMessageId = typeof value.id === "string";
-  if (value.action === "send_now")
+  if (value.action === "cancel" || value.action === "send_now")
     return hasMessageId && typeof value.expectedText === "string";
   if (value.action === "edit")
     return (
@@ -84,8 +83,7 @@ export function useMessageQueue(p: {
   refresh: () => Promise<void>;
 }) {
   const { subscribeStateProjection } = useServerSync();
-  const { get, syncPost, command } = useServerApi();
-  const pendingCommands = usePendingCommands();
+  const { get, syncPost } = useServerApi();
   const storage = useServerStorage();
   const { updateLocalDraft } = useServerLocalDrafts();
   const serverStorageEventKey = useServerStorageEventKey();
@@ -201,6 +199,7 @@ export function useMessageQueue(p: {
       });
       await clearRequest(request);
       const messageId = queueMutationMessageId(request);
+      if (request.action === "cancel" && messageId) p.observed?.([messageId]);
       if (
         request.action === "edit" &&
         messageId &&
@@ -256,20 +255,8 @@ export function useMessageQueue(p: {
     setPending({ key, request });
     return execute(request);
   };
-  // A withdrawn message leaves the list at once, before the stream confirms it.
-  const withdrawn = new Set(
-    pendingCommands.flatMap((entry) =>
-      entry.kind === "withdraw" &&
-      entry.target === p.id &&
-      entry.message !== undefined
-        ? [entry.message]
-        : [],
-    ),
-  );
   return {
-    items: withdrawn.size
-      ? view.items.filter((item) => !withdrawn.has(item.id))
-      : view.items,
+    items: view.items,
     loading: state.key !== key || !state.loaded,
     error: failure.key === key ? failure.text : "",
     canReorder: !!view.capabilities?.reorder,
@@ -294,33 +281,8 @@ export function useMessageQueue(p: {
         expectedText: current?.text === text.trim() ? current.text : item.text,
       });
     },
-    // Withdraw is a command: the server deletes the queued message (see runtime-schema
-    // command.rs). A second click after a lost answer makes a new command, and the server
-    // answers that the message already left the queue.
-    cancel: async (item: QueueItemDto) => {
-      if (!p.id) throw new Error("The queue belongs to another chat.");
-      if (locks.current.has(key))
-        throw new Error("Wait for the current queue change.");
-      locks.current.add(key);
-      setBusy(key);
-      serial.current++;
-      try {
-        await command.withdraw(p.id, item.id, { workspaceId: p.workspaceId });
-        p.observed?.([item.id]);
-        if (currentKey.current === key) {
-          await reload().catch((error) => {
-            setFailure({ key, text: errorText(error) });
-          });
-          void p.refresh().catch(() => {});
-        }
-      } catch (error) {
-        if (currentKey.current === key) await reload().catch(() => {});
-        throw error;
-      } finally {
-        locks.current.delete(key);
-        setBusy((value) => (value === key ? null : value));
-      }
-    },
+    cancel: (item: QueueItemDto) =>
+      mutate({ action: "cancel", id: item.id, expectedText: item.text }),
     sendNow: (item: QueueItemDto) =>
       mutate({ action: "send_now", id: item.id, expectedText: item.text }),
     reorder: (ids: string[]) => mutate({ action: "reorder", ordered_ids: ids }),

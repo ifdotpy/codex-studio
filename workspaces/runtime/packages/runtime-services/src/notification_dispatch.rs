@@ -2597,7 +2597,7 @@ mod tests {
                  CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT NOT NULL,record TEXT NOT NULL);
                  CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT);
                  CREATE VIRTUAL TABLE runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61');
@@ -4253,7 +4253,7 @@ mod tests {
             .expect("agent retry state sets");
         connection
             .execute(
-                "INSERT INTO runtime_items(id,agent,record,created) VALUES('agent:answer','agent',?1,1.0)",
+                "INSERT INTO runtime_items VALUES('agent:answer','agent',?1,1.0)",
                 [json!({
                     "id":"agent:answer","role":"assistant","title":"Assistant","text":"old",
                     "truncated":false,"at":1.0,"streaming":true,"turnId":"turn","phase":null,
@@ -4349,7 +4349,7 @@ mod tests {
             .expect("agent epoch restored");
         connection
             .execute(
-                "INSERT INTO runtime_items(id,agent,record,created) VALUES('agent:malformed','agent',?1,1.0)",
+                "INSERT INTO runtime_items VALUES('agent:malformed','agent',?1,1.0)",
                 [
                     json!({"id":"agent:malformed","role":"assistant","text":"x","inputs":7})
                         .to_string(),

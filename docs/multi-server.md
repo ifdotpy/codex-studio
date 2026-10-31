@@ -128,37 +128,6 @@ without cookies. An unsigned preflight returns only CORS policy. It gives no
 API access. An unsigned request from another origin cannot obtain a session token.
 The existing same-origin phone can obtain its session token as before.
 
-### One signature scheme
-
-Peer federation requests use the same `studio-multi-server-v1` signature as
-paired clients. A federated peer is one more kind of principal:
-
-- `X-Studio-Client` is the sender state ID. `X-Studio-Server` is the recipient
-  state ID. A request addressed to another server is refused.
-- The signed path is the federation path, for example `/api/federation/v1/message`.
-  The method is `POST`.
-- The trusted peer list (`runtime_federation_peers`) stays separate. The public
-  key of the peer comes from that list. Pairing uses the key in the pairing body.
-- The server builds the federated principal only after the signature verifies.
-- Paired clients and federated peers share one nonce table, `runtime_access_nonces`.
-  A federated peer uses the client key `federation:<peer state ID>`. The peer keeps
-  its limit of 240 nonces each minute. Migration `2026-10-30-one-nonce-table` moves
-  the rows of the old `runtime_federation_nonces` table and drops that table.
-  A nonce seen before the update stays a replay after it.
-
-Response proofs (`studio-federation-response-v1`) and message envelope signatures
-(`studio-federation-message-v1`) sign data, not requests. They do not change.
-
-Rolling update window, one release:
-
-- A sender adds the `X-Studio-Federation-*` headers (retired `studio-federation-v1`
-  signature) next to the unified headers. A peer on the previous build reads only
-  the retired headers.
-- A receiver uses the unified headers when `X-Studio-Signature` is present. Without
-  it, the receiver accepts the retired signature. Both schemes use the same nonce table.
-- Remove the retired headers, `federation_signing_bytes` and the fallback in
-  the release after this one.
-
 ### Authenticate the sync stream
 
 Use `fetch` for `GET /api/sync/stream`. Sign its exact path and query with the
@@ -373,36 +342,3 @@ the server does not offer an identity replacement action.
 Historical replacement records remain readable, including `replacedBy` and
 `replacement`. The saved previous identity of this server has no Tailscale owner:
 its `tailscaleUser` is `null`.
-
-## Device identity and the shared trust list
-
-Owner: `runtime-services/src/device_trust.rs`. Decision:
-`docs/decisions/2026-10-28-target-client-server-architecture.md`, "Device identity".
-
-- A browser profile has one non-extractable Ed25519 key in IndexedDB
-  (`web/src/servers/deviceKey.ts`). Its id is `dev-` and the SHA-256 of the public key in
-  hex. The device uses that id as its client id on every server.
-- The list of trusted device keys and paired servers is the `runtime_access_clients`
-  table. A paired `ui` row is a trusted key with a `grant` (`full` by default, `observe`
-  when the owner chose it in the invitation). A `revoked` `ui` row is the tombstone.
-- A server sends its list to each paired server with the `device_trust` action and merges
-  the list that it gets back. `peer_projects` runs this exchange when the list changed
-  since the last exchange, when a pairing is new, and when a paired server reaches this
-  server again. An offline server catches up at its next contact.
-- Merge rules: a device that one server trusts is trusted on the others; a revoked row never
-  changes back; a revocation turns a paired row into a revoked row; a merge never changes
-  the key or the grant of a paired row. Only paired servers are shared. A server revocation
-  stays local.
-- The server reads the grant from its own row, never from the request. A row without a
-  `grant` field is `full`, so every pairing made before the list keeps working. Each old
-  pairing is one device entry; two pairs of one device cannot be proven, so they stay two
-  devices.
-- A device that gets `client_revoked` when it pairs replaces its key and pairs again.
-
-- The Tauri window signs in its Rust shell (the webview sends requests through the shell), so
-  the shell keeps the device key in its key store (`client-core/src/server_keys.rs`, entry
-  `device`, same id rule). The web IndexedDB key cannot sign there. A new pairing uses this
-  key and stores no key of its own. A pairing made before keeps its own key and client id,
-  so it still signs; it is one device entry on its server.
-
-Not done yet: the Electron credential store keeps one key for each pair.

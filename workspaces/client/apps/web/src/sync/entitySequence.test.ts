@@ -221,25 +221,4 @@ describe("entity sequence checkpoint", () => {
       getEntitySequenceCheckpoint("state:entities:v1", "schema-one"),
     ).toThrow();
   });
-
-  it("tells advance listeners the new sequence and when the sequence space resets", () => {
-    const checkpoint = new EntitySequenceCheckpoint();
-    const seen: Array<[number, boolean]> = [];
-    const stop = checkpoint.onAdvance((sequence, reset) =>
-      seen.push([sequence, reset]),
-    );
-    checkpoint.observeEpoch("one");
-    checkpoint.assign(5);
-    checkpoint.assignWithinEpoch(3);
-    checkpoint.assignWithinEpoch(9);
-    checkpoint.observeEpoch("two");
-    stop();
-    checkpoint.assign(1);
-    expect(seen).toEqual([
-      [5, false],
-      [5, false],
-      [9, false],
-      [-1, true],
-    ]);
-  });
 });

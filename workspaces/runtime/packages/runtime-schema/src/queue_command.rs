@@ -157,6 +157,7 @@ pub struct QueueSendNow {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum QueueCommand {
+    Cancel(QueueTarget),
     Edit(QueueEdit),
     First(QueueTarget),
     SendNow(QueueSendNow),
@@ -166,7 +167,7 @@ pub enum QueueCommand {
 impl QueueCommand {
     pub fn agent(&self) -> Option<&str> {
         match self {
-            Self::First(body) => body.agent.as_deref(),
+            Self::Cancel(body) | Self::First(body) => body.agent.as_deref(),
             Self::SendNow(body) => body.agent.as_deref(),
             Self::Edit(body) => body.agent.as_deref(),
             Self::Reorder(body) => body.agent.as_deref(),
@@ -174,7 +175,9 @@ impl QueueCommand {
     }
     pub fn request_id(&self) -> Option<&str> {
         match self {
-            Self::First(body) => body.request_id.as_ref().map(MonitorText::as_str),
+            Self::Cancel(body) | Self::First(body) => {
+                body.request_id.as_ref().map(MonitorText::as_str)
+            }
             Self::SendNow(body) => Some(body.request_id.as_str()),
             Self::Edit(body) => body.request_id.as_ref().map(MonitorText::as_str),
             Self::Reorder(body) => body.request_id.as_ref().map(MonitorText::as_str),
@@ -182,7 +185,7 @@ impl QueueCommand {
     }
     pub fn accepts_revision(&self, current: &str) -> bool {
         let field = match self {
-            Self::First(body) => &body.expected_revision,
+            Self::Cancel(body) | Self::First(body) => &body.expected_revision,
             Self::SendNow(body) => &body.expected_revision,
             Self::Edit(body) => &body.expected_revision,
             Self::Reorder(body) => return body.expected_revision == current,
@@ -195,7 +198,7 @@ impl QueueCommand {
     }
     pub fn target_id(&self) -> Option<&str> {
         match self {
-            Self::First(body) => Some(body.id.as_str()),
+            Self::Cancel(body) | Self::First(body) => Some(body.id.as_str()),
             Self::Edit(body) => Some(body.id.as_str()),
             Self::SendNow(body) => Some(body.id.as_str()),
             Self::Reorder(_) => None,
@@ -203,7 +206,7 @@ impl QueueCommand {
     }
     pub fn expected_text(&self) -> Option<&str> {
         match self {
-            Self::First(body) => body.expected_text.as_deref(),
+            Self::Cancel(body) | Self::First(body) => body.expected_text.as_deref(),
             Self::SendNow(body) => body.expected_text.as_deref(),
             Self::Edit(body) => body.expected_text.as_deref(),
             Self::Reorder(_) => None,
@@ -224,11 +227,13 @@ pub(crate) fn schemas() -> Vec<(&'static str, Value)> {
         .expect("tagged enum has variants")
         .clone()
         .into_iter();
+    let cancel = variants.next().expect("cancel");
     let edit = variants.next().expect("edit");
     let first = variants.next().expect("first");
     let send_now = variants.next().expect("send now");
     let reorder = variants.next().expect("reorder");
     vec![
+        ("QueueCancelBody", cancel),
         ("QueueEditBody", edit),
         ("QueueFirstBody", json!({"oneOf": [first, send_now]})),
         ("QueueReorderBody", reorder),
@@ -257,8 +262,7 @@ mod tests {
     fn queue_commands_reject_unknown_actions_fields_and_wrong_types() {
         for wire in [
             json!({"action":"unknown"}),
-            json!({"action":"cancel","id":"a"}),
-            json!({"action":"first","id":"a","extra":true}),
+            json!({"action":"cancel","extra":true}),
             json!({"action":"edit"}),
             json!({"action":"edit","text":42}),
             json!({"action":"first","id":42}),
@@ -286,6 +290,13 @@ mod tests {
             .into_iter()
             .collect::<std::collections::BTreeMap<_, _>>();
         for (name, wire, accepted) in [
+            ("QueueCancelBody", json!({"action":"cancel","id":"a"}), true),
+            (
+                "QueueCancelBody",
+                json!({"action":"cancel","message_id":"a"}),
+                false,
+            ),
+            ("QueueCancelBody", json!({"action":"cancel","id":""}), false),
             (
                 "QueueEditBody",
                 json!({"action":"edit","id":"a","text":"x"}),

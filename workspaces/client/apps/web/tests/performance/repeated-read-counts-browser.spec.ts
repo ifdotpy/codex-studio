@@ -1,5 +1,4 @@
 import { required } from "./performance-fixture.ts";
-import { commandOf } from "../messages/send-command.ts";
 import type { Browser, Request } from "@playwright/test";
 import type { ResourceChangeEvent, ResourceRef } from "../playwright.ts";
 
@@ -362,7 +361,9 @@ async function repeatedReadCountsScenario(
     await page.locator("#message").fill("Request count stream churn probe");
     await page.getByRole("button", { name: "Send message" }).click();
     await page.waitForResponse(
-      (response) => commandOf(response.request(), "send") !== undefined,
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === "/api/messages",
     );
     await page.waitForTimeout(900);
     const sendStreams = streamOpens.slice(streamStart);

@@ -98,18 +98,6 @@ it("cancels a rejected event response", async () => {
   expect(cancel).toHaveBeenCalledOnce();
   source.close();
 });
-it("reports the HTTP status of a refused event response", async () => {
-  vi.stubGlobal("location", { origin: "http://studio.test", search: "" });
-  const { SignedEventSource } = await import("./eventSource");
-  const source = new SignedEventSource(
-    "/api/sync/stream",
-    async () => new Response("no", { status: 403 }),
-  );
-  const refused = Promise.withResolvers<Event>();
-  source.onerror = (event) => refused.resolve(event);
-  expect(await refused.promise).toHaveProperty("status", 403);
-  source.close();
-});
 it("backpressures reads while staging and close interrupts an unfinished hold", async () => {
   vi.stubGlobal("location", { origin: "http://studio.test", search: "" });
   const { SignedEventSource } = await import("./eventSource");

@@ -5,22 +5,10 @@
 pub const ACCESS_PROTOCOL_VERSION: u64 = 1;
 /// Domain separator prefixed to every signed multi-server message.
 pub const MULTI_SERVER_SIGNING_DOMAIN: &str = "studio-multi-server-v1";
-/// Size of the random nonce that a client sends to prove a route's identity, in bytes.
-pub const IDENTITY_PROOF_NONCE_BYTES: usize = 24;
 /// File name of the remote access record in the state directory.
 pub const REMOTE_ACCESS_FILE: &str = "remote-access.json";
 /// Environment variable that overrides the public origin of this server.
 pub const PUBLIC_ORIGIN_ENVIRONMENT: &str = "CODEX_CANVAS_PUBLIC_ORIGIN";
-
-/// The message a server signs to prove its identity for `nonce`. The nonce is
-/// unpadded base64url of `IDENTITY_PROOF_NONCE_BYTES` bytes; any other value gives `None`.
-pub fn identity_proof_message(server_id: &str, nonce: &str) -> Option<String> {
-    let valid = nonce.len() == (IDENTITY_PROOF_NONCE_BYTES * 4).div_ceil(3)
-        && nonce
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
-    valid.then(|| format!("{MULTI_SERVER_SIGNING_DOMAIN}\nidentity\n{server_id}\n{nonce}"))
-}
 
 /// Fields of a schema-validated discovery response. Validate the complete
 /// DiscoveryIdentity schema before deserializing this view.
@@ -98,10 +86,6 @@ impl PersistedAccessInvite {
     pub fn tailscale_user(&self) -> &str {
         &self.tailscale_user
     }
-    /// A text field beyond the typed ones, such as the `grant` of the device that pairs.
-    pub fn extra_str(&self, key: &str) -> Option<&str> {
-        self.extra.get(key).and_then(serde_json::Value::as_str)
-    }
     pub fn mark_used(&mut self) {
         self.status = InviteStatus::Used;
     }
@@ -147,18 +131,6 @@ mod tests {
     }
 
     #[test]
-    fn identity_proof_message_is_fixed_and_checks_the_nonce() {
-        // The web copy (pairing.test.ts) asserts the same vector.
-        let nonce = "A".repeat(32);
-        assert_eq!(
-            super::identity_proof_message("srv", &nonce).as_deref(),
-            Some("studio-multi-server-v1\nidentity\nsrv\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
-        );
-        assert_eq!(super::identity_proof_message("srv", "short"), None);
-        assert_eq!(super::identity_proof_message("srv", &"+".repeat(32)), None);
-    }
-
-    #[test]
     fn discovery_view_tracks_schema_fields_and_valid_formats() {
         let document: Value = serde_json::from_slice(crate::OPENAPI).unwrap();
         let schema = &document["components"]["schemas"]["DiscoveryIdentity"];
@@ -166,7 +138,6 @@ mod tests {
             "autoPair",
             "label",
             "origin",
-            "proof",
             "protocol",
             "publicKey",
             "serverId",
@@ -179,9 +150,7 @@ mod tests {
         );
         let mut constraints = Value::Object(fields.clone());
         for field in constraints.as_object_mut().unwrap().values_mut() {
-            let field = field.as_object_mut().unwrap();
-            field.remove("title");
-            field.remove("description");
+            field.as_object_mut().unwrap().remove("title");
         }
         assert_eq!(
             constraints,
@@ -191,19 +160,12 @@ mod tests {
                 "publicKey":{"type":"string"},
                 "tailscaleUser":{"anyOf":[{"type":"null"},{"type":"string"}]},
                 "protocol":{"type":"integer","const":1,"minimum":1,"maximum":1},
-                "autoPair":{"type":"boolean"},
-                "proof":{"type":"string"}
+                "autoPair":{"type":"boolean"}
             })
         );
-        // `proof` is optional: only an answer to a nonce carries it.
         let required = schema["required"].as_array().unwrap();
-        assert_eq!(required.len(), expected.len() - 1);
-        assert!(
-            expected
-                .iter()
-                .filter(|name| **name != "proof")
-                .all(|name| required.contains(&json!(name)))
-        );
+        assert_eq!(required.len(), expected.len());
+        assert!(expected.iter().all(|name| required.contains(&json!(name))));
         assert_eq!(schema["additionalProperties"], false);
         let valid = json!({"serverId":"s", "label":"l", "origin":null, "publicKey":"k", "tailscaleUser":null, "protocol":1, "autoPair":true});
         for (field, replacement) in [

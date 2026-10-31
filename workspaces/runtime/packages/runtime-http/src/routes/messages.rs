@@ -17,6 +17,7 @@ pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/agent-chat", OperationStatus::Implemented, agent_chat),
         get("/api/messages", OperationStatus::Implemented, messages),
+        post("/api/messages", OperationStatus::Implemented, post_message),
         get(
             "/api/messages/receipts",
             OperationStatus::Implemented,
@@ -90,10 +91,9 @@ fn message_record(message: coordination::ValidatedMessage) -> crate::generated::
     }
 }
 
-/// The send path of the `send` command and of the chat commands that send a message.
-pub(super) async fn send_message(
-    state: HttpState,
-    body: crate::generated::ManagedMessageBody,
+pub(super) async fn post_message(
+    State(state): State<HttpState>,
+    ApiJson(body): ApiJson<crate::generated::ManagedMessageBody>,
 ) -> Result<Json<crate::generated::StudioApiWorkModelsMessageReceipt>, ApiError> {
     let store = state.store.ok_or_else(ApiError::internal)?;
     let wake = state.event_wake;
@@ -317,7 +317,7 @@ async fn delete_room(
     Ok(Json(value))
 }
 
-pub(super) fn coordination_error(error: CoordinationError) -> ApiError {
+fn coordination_error(error: CoordinationError) -> ApiError {
     match error {
         CoordinationError::RequestResult(error) => error.into(),
         CoordinationError::RequiresDependency(dependency) => ApiError::dependency(dependency),

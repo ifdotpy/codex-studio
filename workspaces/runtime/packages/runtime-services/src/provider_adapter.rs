@@ -20,7 +20,7 @@ use std::{
 };
 use studio_runtime_process::ProviderLaunchSpec;
 use studio_runtime_providers::Method;
-pub use studio_runtime_providers::{ProviderCapability, ProviderKind};
+pub use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::path_identity::CanonicalPath;
 
 /// Inputs for launching the retained provider session of one host account.
@@ -75,13 +75,6 @@ pub trait ProviderAdapter: Send + Sync + 'static {
     fn kind(&self) -> ProviderKind;
 
     fn capabilities(&self) -> Capabilities;
-
-    /// The controls that this adapter supports. The UI shows only these. The
-    /// list has one owner, `ProviderKind::capabilities`, so a new provider
-    /// must declare it.
-    fn supported_controls(&self) -> &'static [ProviderCapability] {
-        self.kind().capabilities()
-    }
 
     /// Provider-specific parts of `thread/start` and `thread/resume` params.
     fn shape_thread_params(
@@ -703,29 +696,6 @@ mod tests {
 
     use super::{ProviderKind, UsageCause, adapter};
     use serde_json::json;
-
-    #[test]
-    fn each_adapter_reports_its_typed_control_list() {
-        use super::ProviderCapability::{
-            Approvals, Compaction, Effort, Fork, ModelChange, Rewind, Steer,
-        };
-        assert_eq!(
-            adapter(ProviderKind::Codex).supported_controls(),
-            [Steer, Fork, ModelChange, Effort, Compaction, Approvals]
-        );
-        assert_eq!(
-            adapter(ProviderKind::Claude).supported_controls(),
-            [
-                Steer,
-                Rewind,
-                Fork,
-                ModelChange,
-                Effort,
-                Compaction,
-                Approvals
-            ]
-        );
-    }
 
     #[test]
     fn classifiers_share_the_core_and_differ_only_in_provider_evidence() {

@@ -1,4 +1,9 @@
 {
+  "workspaces/client/apps/desktop/dictation-permissions.test.ts": [
+    "return \"/tmp\";",
+    "return \"/tmp/not-installed-studio\";",
+    "__dirname: \"/tmp\","
+  ],
   "workspaces/client/apps/desktop/install-update-test.py": [
     "{\"executable\": \"/tmp/Codex Studio.app/Contents/MacOS/studio-native-client\"},"
   ],

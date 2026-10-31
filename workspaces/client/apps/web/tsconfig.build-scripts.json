@@ -9,6 +9,7 @@
     "scripts/audit-live-requests.ts",
     "scripts/build-client-wasm.ts",
     "scripts/check-client-wasm.ts",
+    "scripts/patch-rxdb-runtime.gc.ts",
     "scripts/verify-precompressed-assets.ts",
     "stryker.config.mjs"
   ]

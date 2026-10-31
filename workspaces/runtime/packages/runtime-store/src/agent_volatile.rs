@@ -202,16 +202,13 @@ pub fn schema_objects() -> impl Iterator<Item = (&'static str, &'static str, &'s
     )
 }
 
-/// The table and its owner-delete trigger, with the chat, turn and session
-/// tables that every agent write projects into, for schema-only test fixtures
+/// The table and its owner-delete trigger, for schema-only test fixtures
 /// that already declare `runtime_agents`.
 pub fn agent_volatile_table_sql() -> &'static str {
     static FIXTURE_SQL: LazyLock<String> = LazyLock::new(|| {
         format!(
-            "{} {}{} CREATE TRIGGER IF NOT EXISTS {} {} ON {} BEGIN {} END;",
+            "{} CREATE TRIGGER IF NOT EXISTS {} {} ON {} BEGIN {} END;",
             *TABLE_SQL,
-            crate::domain::tables_sql(),
-            crate::domain::check_triggers_sql(),
             OWNER_DELETE.name,
             OWNER_DELETE.event,
             OWNER_DELETE.table,
@@ -497,7 +494,6 @@ pub fn put(
     agent: &Value,
     insert_only: bool,
 ) -> StoreResult<bool> {
-    let agent_value = agent;
     let agent = object(id, agent)?;
     let record = stored_record(agent)?;
     let sql = if insert_only {
@@ -509,7 +505,6 @@ pub fn put(
     let written = connection.execute_cached(sql, params![id, record])? == 1;
     if written || !insert_only {
         put_fields(connection, id, agent)?;
-        crate::domain::project(connection, id, agent_value)?;
     }
     Ok(written)
 }
@@ -517,7 +512,6 @@ pub fn put(
 /// Replace agent `id`, a checked agent object, when its row exists; returns
 /// whether it exists. An unchanged record is not rewritten.
 pub fn update(connection: &Connection, id: &str, agent: &Value) -> StoreResult<bool> {
-    let agent_value = agent;
     let agent = object(id, agent)?;
     let record = stored_record(agent)?;
     let written = connection.execute_cached(
@@ -531,7 +525,6 @@ pub fn update(connection: &Connection, id: &str, agent: &Value) -> StoreResult<b
             .is_some();
     if exists {
         put_fields(connection, id, agent)?;
-        crate::domain::project(connection, id, agent_value)?;
     }
     Ok(exists)
 }

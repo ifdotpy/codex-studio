@@ -1,5 +1,6 @@
 import { buildLinuxVM } from "./native/linux-vm/build.ts";
-import { signingIdentity, signCode } from "./signing.ts";
+import { signingIdentity, signApplication, signCode } from "./signing.ts";
+import { setBundleDisplayName } from "./bundle-name.ts";
 import { runtimeBinaries, runtimeBinaryName } from "./runtime-binaries.ts";
 import { pythonResources } from "./python-resources.ts";
 import { bundleLayrBinary } from "./layr-binary.ts";
@@ -8,6 +9,7 @@ import {
   prebuiltReleaseDirectory,
 } from "./release-binaries.ts";
 import { execFileSync } from "node:child_process";
+import { packager } from "@electron/packager";
 import { cp, mkdir, mkdtemp, rm, access, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -17,6 +19,7 @@ const repositoryRoot = path.resolve(root, "../../../..");
 const packageOutput = path.resolve(
   process.env.CODEX_DESKTOP_PACKAGE_OUT || path.join(root, "dist"),
 );
+const resourcesOnly = process.argv.includes("--resources-only");
 const uiOnly =
   process.argv.includes("--ui-only") ||
   process.env.CODEX_DESKTOP_UI_ONLY === "1";
@@ -188,6 +191,7 @@ try {
       ["package.json", "package.json"],
       ["pnpm-workspace.yaml", "pnpm-workspace.yaml"],
       ["pnpm-lock.yaml", "pnpm-lock.yaml"],
+      ["patches/rxdb@17.6.0.patch", "patches/rxdb@17.6.0.patch"],
     ] as const) {
       const target = path.join(resources, destination);
       await mkdir(path.dirname(target), { recursive: true });
@@ -263,16 +267,59 @@ try {
           ...pythonResources.map((file) => path.join(root, file)),
         ]),
   ];
-  // The native shell (apps/native/package.ts) bundles these resources into its own app.
-  await mkdir(packageOutput, { recursive: true });
-  for (const source of extraResources) {
-    await cp(source, path.join(packageOutput, path.basename(source)), {
-      recursive: true,
-      errorOnExist: true,
-      force: false,
+  if (resourcesOnly) {
+    await mkdir(packageOutput, { recursive: true });
+    for (const source of extraResources) {
+      await cp(source, path.join(packageOutput, path.basename(source)), {
+        recursive: true,
+        errorOnExist: true,
+        force: false,
+      });
+    }
+    console.log(packageOutput);
+  } else {
+    const output = await packager({
+      dir: root,
+      name: "Codex Studio",
+      executableName: "Codex Studio",
+      icon: path.join(root, "assets/codex-studio.icns"),
+      appBundleId: "local.codex.agents",
+      appCategoryType: "public.app-category.developer-tools",
+      platform: "darwin",
+      arch: "arm64",
+      out: packageOutput,
+      overwrite: true,
+      asar: true,
+      prune: true,
+      extraResource: extraResources,
+      extendInfo: {
+        NSMicrophoneUsageDescription:
+          "Record dictation that you can review and convert to text.",
+        NSSpeechRecognitionUsageDescription:
+          "Convert your saved dictation to text on this computer.",
+      },
+      ignore: [
+        /^\/assets($|\/)/,
+        /^\/dist($|\/)/,
+        /^\/node_modules($|\/)/,
+        /^\/test\.ts$/,
+        /^\/(?:profile-export-fixture|sync-brotli-fixture|hidden-electron)\.ts$/,
+        /^\/multi-server-memory\.ts$/,
+        /^\/(?:backend-test|recovery-test|recovery-renderer-test|renderer-recovery-test|window-state-test|package-test|install-update-test)\.(?:ts|cts|cjs|py)$/,
+        /^\/recover_backend\.py$/,
+        /^\/install_update\.py$/,
+        /^\/__pycache__($|\/)/,
+        /^\/package\.ts$/,
+        /^\/README\.md$/,
+      ],
     });
+    for (const directory of output) {
+      const application = path.join(directory, "Codex Studio.app");
+      setBundleDisplayName(application, "LAYR Studio");
+      signApplication(application, identity);
+    }
+    console.log(output.join("\n"));
   }
-  console.log(packageOutput);
 } finally {
   await rm(stage, { recursive: true, force: true });
 }

@@ -1,6 +1,4 @@
 import type { FixturePullResponse } from "./helpers.ts";
-import { commandOf, sendReply } from "../messages/send-command.ts";
-import type { MessageDelivery } from "../../src/commands.ts";
 import { fixtureResources } from "./helpers.ts";
 import type {} from "./sync-required-browser.fixture.tsx";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -26,7 +24,13 @@ test("sync required browser", async ({ page: runnerPage }) => {
     root: fileURLToPath(new URL("../../../web", import.meta.url)),
     optimizeDeps: {
       ...FIXTURE_OPTIMIZE_DEPS,
-      include: [...FIXTURE_OPTIMIZE_DEPS.include],
+      include: [
+        ...FIXTURE_OPTIMIZE_DEPS.include,
+        "rxdb",
+        "rxdb/plugins/storage-dexie",
+        "rxdb/plugins/leader-election",
+        "rxdb/plugins/replication",
+      ],
     },
     server: { host: "127.0.0.1", port: 0 },
   });
@@ -55,12 +59,9 @@ test("sync required browser", async ({ page: runnerPage }) => {
             : { error: "Identity unavailable" },
       });
     });
-    await page.route("**/api/commands", (route) => {
-      if (!commandOf(route.request(), "send")) return route.fallback();
+    await page.route("**/api/messages", (route) => {
       sends++;
-      return route.fulfill({
-        json: sendReply({ status: "queued" } as MessageDelivery),
-      });
+      return route.fulfill({ json: { status: "queued" } });
     });
     const url = fixtureOrigin(server) + `/sync-check`;
     const mount = async () => (
@@ -210,7 +211,13 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
     root: fileURLToPath(new URL("../../../web", import.meta.url)),
     optimizeDeps: {
       ...FIXTURE_OPTIMIZE_DEPS,
-      include: [...FIXTURE_OPTIMIZE_DEPS.include],
+      include: [
+        ...FIXTURE_OPTIMIZE_DEPS.include,
+        "rxdb",
+        "rxdb/plugins/storage-dexie",
+        "rxdb/plugins/leader-election",
+        "rxdb/plugins/replication",
+      ],
     },
     server: { host: "127.0.0.1", port: 0 },
   });

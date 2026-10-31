@@ -361,7 +361,10 @@ async fn orphan_requires_the_completed_turn_receipt_and_no_uncertain_input() {
     );
     store
         .transaction(move |tx| {
-            studio_runtime_store::domain::complete_turn(tx, "agent", "old")?;
+            tx.execute(
+                "INSERT INTO runtime_completed_turns VALUES ('agent:old')",
+                [],
+            )?;
             Ok(())
         })
         .await
@@ -613,7 +616,7 @@ impl CompletionWriter for HoldWriter {
     fn start_held(
         &mut self,
         tx: &Transaction<'_>,
-        agent: &serde_json::Value,
+        _: &serde_json::Value,
         reason: &str,
         event_id: &str,
     ) -> Result<(), RecoveryError> {
@@ -621,10 +624,9 @@ impl CompletionWriter for HoldWriter {
             .lock()
             .map_err(|_| RecoveryError::CommitFailed)?
             .push(json!({"status":"interrupted","reason":reason,"id":event_id}));
-        studio_runtime_store::domain::complete_turn(
-            tx,
-            agent["id"].as_str().ok_or(RecoveryError::CommitFailed)?,
-            event_id,
+        tx.execute(
+            "INSERT INTO runtime_completed_turns(id) VALUES(?1)",
+            [event_id],
         )?;
         Ok(())
     }
@@ -821,7 +823,7 @@ async fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
         ("restore", "runtime_events"),
         ("restore", "runtime_agents"),
         ("waiting", "runtime_agents"),
-        ("hold", "turns"),
+        ("hold", "runtime_completed_turns"),
         ("hold", "runtime_agents"),
     ] {
         for timing in ["BEFORE", "AFTER"] {
@@ -835,7 +837,11 @@ async fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
             let before = snapshot(&store);
             let queue = events(&store);
             let renderer = projection(&store);
-            let op = if table == "turns" { "INSERT" } else { "UPDATE" };
+            let op = if table == "runtime_completed_turns" {
+                "INSERT"
+            } else {
+                "UPDATE"
+            };
             store.transaction(move |tx| {tx.execute_batch(&format!("CREATE TRIGGER recovery_fail {timing} {op} ON {table} BEGIN SELECT RAISE(ABORT,'injected'); END;"))?;Ok(())}).await.expect("trigger");
             let observation: studio_runtime_services::recovery_absence::RecoveryObservation =
                 serde_json::from_value(case["observation"].clone()).expect("observation");
@@ -875,11 +881,9 @@ async fn start_absence_failpoints_roll_back_restore_wait_and_hold() {
             let count: i64 = reopened
                 .test_reader()
                 .expect("read")
-                .query_row(
-                    "SELECT count(*) FROM turns WHERE state='completed'",
-                    [],
-                    |r| r.get(0),
-                )
+                .query_row("SELECT count(*) FROM runtime_completed_turns", [], |r| {
+                    r.get(0)
+                })
                 .expect("count");
             assert_eq!(count, 0);
         }
@@ -1016,7 +1020,10 @@ async fn seed_task(store: &Arc<RuntimeStore>, case: &serde_json::Value) {
             [json!({"id":"agent:item","turnId":"turn","toolStatus":"inProgress"}).to_string()],
         )?;
         if case["observation"]["completed_turn"] == "agent:turn" {
-            studio_runtime_store::domain::complete_turn(tx, "agent", "turn")?;
+            tx.execute(
+                "INSERT INTO runtime_completed_turns VALUES('agent:turn')",
+                [],
+            )?;
         }
         Ok(())
     })
@@ -1295,7 +1302,7 @@ async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
         store.transaction(move |tx|{match change{
             "agent"=>{tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.epoch',1)",[])?;},
             "task"=>{tx.execute("UPDATE runtime_tasks SET record=json_set(record,'$.processId','changed')",[])?;},
-            "completed"=>{tx.execute("DELETE FROM turns WHERE state='completed'",[])?;},_=>{}
+            "completed"=>{tx.execute("DELETE FROM runtime_completed_turns",[])?;},_=>{}
         }Ok(())}).await.expect("change");
         let rows = task_rows(&store);
         let observation: RecoveryObservation =

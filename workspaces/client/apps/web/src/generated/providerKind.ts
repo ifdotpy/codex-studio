@@ -12,22 +12,6 @@ export const PROVIDER_LABELS: Record<ProviderKind, string> = {
   claude: "Claude",
 };
 
-export const PROVIDER_CAPABILITIES = ["steer", "rewind", "fork", "model_change", "effort", "compaction", "approvals"] as const;
-export type ProviderCapability = (typeof PROVIDER_CAPABILITIES)[number];
-
-export const PROVIDER_CAPABILITY_LISTS: Record<ProviderKind, readonly ProviderCapability[]> = {
-  codex: ["steer", "fork", "model_change", "effort", "compaction", "approvals"],
-  claude: ["steer", "rewind", "fork", "model_change", "effort", "compaction", "approvals"],
-};
-
-export function providerCapabilities(value: unknown): readonly ProviderCapability[] {
-  return isProviderKind(value) ? PROVIDER_CAPABILITY_LISTS[value] : [];
-}
-
-export function providerSupports(value: unknown, capability: ProviderCapability): boolean {
-  return providerCapabilities(value).includes(capability);
-}
-
 export function providerToString(provider: ProviderKind): ProviderKind {
   return provider;
 }

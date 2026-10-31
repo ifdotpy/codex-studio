@@ -10,7 +10,6 @@ name = "studio-peer-link"
 path = "src/main.rs"
 
 [dependencies]
-getrandom.workspace = true
 quinn = { version = "=0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rustls.workspace = true
 rustls-pki-types.workspace = true

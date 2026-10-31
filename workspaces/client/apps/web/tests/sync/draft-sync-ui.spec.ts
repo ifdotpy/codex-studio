@@ -13,7 +13,7 @@ import {
   rustUiFixture,
   expect,
 } from "../playwright.ts";
-// Two browser profiles, real SQLite replication, no live model calls.
+// Two browser profiles, real SQLite/RxDB replication, no live model calls.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -357,20 +357,33 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       await fetch(`${origin}/api/sync/identity`)
     ).json();
     const documents = () => readDraftDocuments(origin);
-    // Observe the draft store of the mounted app. A successful HTTP response
-    // alone does not prove the remote row reached the page.
+    // Observe the actual Dexie transaction commit used by the mounted app.
+    // A successful HTTP response alone does not prove the remote row is local.
     await page.addInitScript(() => {
-      window.waitForDraftText = async (id, text) => {
-        const { syncDatabase } = await import("/src/sync/client.ts");
-        const { db } = await syncDatabase();
-        await new Promise<void>((resolve) => {
-          const subscription = db.drafts.findOne(id).$.subscribe((doc) => {
-            if (!doc || JSON.parse(doc.payload).text !== text) return;
-            subscription.unsubscribe();
-            resolve();
+      const committed = new Map<string, DraftVersion>();
+      const changes = new EventTarget();
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value, ...args) {
+        const request = put.call(this, value, ...args);
+        if (this.transaction.db.name.endsWith("--0--drafts")) {
+          const payload = JSON.parse(value.payload);
+          this.transaction.addEventListener("complete", () => {
+            committed.set(value.id, payload);
+            changes.dispatchEvent(new Event("commit"));
           });
-        });
+        }
+        return request;
       };
+      window.waitForDraftText = (id, text) =>
+        new Promise<void>((resolve) => {
+          const check = () => {
+            if (committed.get(id)?.text !== text) return;
+            changes.removeEventListener("commit", check);
+            resolve();
+          };
+          changes.addEventListener("commit", check);
+          check();
+        });
     });
     const sendRemote = async (
       value: DraftVersion,

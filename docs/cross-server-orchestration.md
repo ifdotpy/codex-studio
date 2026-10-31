@@ -4,21 +4,6 @@ Pair the servers with the owner-pairing API before use. See the multi-server
 credential contract. The channel uses signed requests through Tailscale Serve.
 The lead cannot supply an address or credentials through an agent tool.
 
-## Outgoing requests
-
-Every outgoing request to a paired server is one row of the shared `runtime_outbox`
-table: kind `remote_delivery`, `target` is the server, and the payload names the
-family (`server_request`, `federation_message`, `access_request`, `server_fetch`).
-The request id, the signature, and the stored body never change, so each retry sends
-the same request id and the exact body. A settled request leaves the table; its result
-is in `request_results`. The effect starts right after the commit. The pump sends only
-leftovers. After an unclean stop, a queued request whose action the receiver cannot
-replay becomes a claimed request and is not sent again by itself. When a QUIC
-connection to a paired server opens, the waiting requests of that server are due at
-once (`docs/peer-link.md`). The old tables `runtime_server_outbox`,
-`runtime_federation_outbox`, `runtime_access_outbound` and `runtime_server_fetch` stay
-read-only; the migration `2026-10-30-one-outbox` moves their pending rows.
-
 ## Worker control
 
 `orchestration_spawn` accepts `server` for the batch or each worker. Omit it to

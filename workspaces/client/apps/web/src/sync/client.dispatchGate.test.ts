@@ -11,7 +11,7 @@ import {
 } from "../generated/apiSchema";
 
 const mocks = vi.hoisted(() => ({
-  projections: undefined as unknown,
+  createRxDatabase: vi.fn(),
   watchResourceChanges: vi.fn(),
   pulls: undefined as number[] | undefined,
   accountsBaseline: undefined as
@@ -36,13 +36,18 @@ const mocks = vi.hoisted(() => ({
     | undefined,
 }));
 
-vi.mock("./thinCache", async (original) => ({
-  ...(await original<typeof import("./thinCache")>()),
-  createProjectionCache: () => ({
-    collection: mocks.projections,
-    flush: async () => {},
-    stop: () => {},
-  }),
+vi.mock("rxdb", () => ({
+  addRxPlugin: vi.fn(),
+  createRxDatabase: mocks.createRxDatabase,
+}));
+vi.mock("rxdb/plugins/storage-dexie", () => ({
+  getRxStorageDexie: vi.fn(() => ({})),
+}));
+vi.mock("rxdb/plugins/leader-election", () => ({
+  RxDBLeaderElectionPlugin: {},
+}));
+vi.mock("rxdb/plugins/replication", () => ({
+  replicateRxCollection: vi.fn(),
 }));
 vi.mock("./subscriptions/events", () => ({
   acknowledgeEntitySequences: vi.fn(),
@@ -125,7 +130,11 @@ async function setup({ ready = true } = {}) {
       $: { subscribe: vi.fn(() => subscription) },
     })),
   };
-  mocks.projections = projections;
+  mocks.createRxDatabase
+    .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+    .mockResolvedValueOnce({
+      addCollections: vi.fn(async () => ({ projections })),
+    });
   mocks.watchResourceChanges.mockImplementation(
     (resource: unknown, listener: typeof mocks.invalidate) => {
       const kind = (resource as { kind?: string }).kind;
@@ -393,7 +402,7 @@ describe("entity pull dispatch gate", () => {
     vi.resetModules();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    mocks.projections = undefined;
+    mocks.createRxDatabase.mockReset();
     mocks.watchResourceChanges.mockReset();
     mocks.pulls = undefined;
     mocks.pullResponse = undefined;

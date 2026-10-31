@@ -3038,7 +3038,7 @@ mod tests {
                      hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,
                      PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY);
-                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                  INSERT INTO runtime_agents VALUES
                      ('active','{\"id\":\"active\",\"provider\":\"codex\",\"deletedAt\":null}'),
@@ -3199,7 +3199,7 @@ mod tests {
                      hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,
                      PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY);
-                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                  INSERT INTO runtime_agents VALUES
                      ('active','{\"id\":\"active\",\"provider\":\"codex\",\"deletedAt\":null}'),

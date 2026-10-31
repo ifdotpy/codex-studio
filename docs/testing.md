@@ -93,6 +93,7 @@ their removed Python commands are not current instructions.
 | Real launcher process probe (lsof), manual            | `just test-real-process-probe`           |
 | Many-agent scenario, manual heavy                     | `just test-rust-many-agents`             |
 | Continuation corpus and store faults, manual heavy    | `just test-rust-usage-resume-corpora`    |
+| Hidden Electron profile migration, manual heavy       | `just test-native-profile-migration`     |
 | Hidden Rust native WebView scenarios, manual heavy    | `just test-native-webview`               |
 | Hidden Rust native WebView scenarios, manual heavy    | `just test-native-webview`               |
 

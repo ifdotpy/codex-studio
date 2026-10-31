@@ -1,8 +1,8 @@
 import { required } from "./helpers.ts";
-import { sentMessage } from "./send-command.ts";
+import { requestBody } from "./helpers.ts";
 import type { AddressInfo } from "node:net";
 import type {} from "./message-retry-http-browser.fixture.tsx";
-import type { MessageRequest } from "./helpers.ts";
+import type { ComplaintBody } from "./helpers.ts";
 import {
   readTestState,
   test,
@@ -67,7 +67,7 @@ test("message retry http browser", async ({ page: runnerPage }) => {
     const page = runnerPage;
     page.setDefaultTimeout(20000);
     const errors: string[] = [],
-      attempts: MessageRequest[] = [];
+      attempts: ComplaintBody[] = [];
     page.on("pageerror", (error) => errors.push((error as Error).message));
     await page.route("**/check", (route) =>
       route.fulfill({
@@ -82,10 +82,8 @@ test("message retry http browser", async ({ page: runnerPage }) => {
     const committed = new Promise<void>((resolve) => {
       markCommitted = resolve;
     });
-    await page.route("**/api/commands", async (route) => {
-      const sent = sentMessage(route.request());
-      if (!sent) return route.fallback();
-      attempts.push(sent);
+    await page.route("**/api/messages", async (route) => {
+      attempts.push(requestBody<import("./helpers.ts").MessageRequest>(route));
       const first = attempts.length === 1;
       const response = await route.fetch();
       assert.equal(response.status(), 200);
@@ -164,13 +162,11 @@ test("message retry http browser", async ({ page: runnerPage }) => {
       [1, 1],
       "The runtime and message history each contain one stored message",
     );
-    await page.unroute("**/api/commands");
+    await page.unroute("**/api/messages");
     let expiredAttempts = 0;
     const expired = { ...body, id: "00000000-0001-7000-8000-000000000000" };
-    await page.route("**/api/commands", async (route) => {
-      const sent = sentMessage(route.request());
-      if (!sent) return route.fallback();
-      assert.deepEqual(sent, expired);
+    await page.route("**/api/messages", async (route) => {
+      assert.deepEqual(requestBody(route), expired);
       expiredAttempts++;
       const response = await route.fetch();
       assert.equal(response.status(), 410);

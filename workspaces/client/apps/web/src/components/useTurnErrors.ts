@@ -1,5 +1,5 @@
 import { AgentStatus as GeneratedApiAgentStatus } from "../generated/api.ts";
-import type { DeepReadonly } from "../deepReadonly.ts";
+import type { DeepReadonly } from "rxdb";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useMemo, useState } from "react";
 import "../api";

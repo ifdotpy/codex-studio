@@ -234,15 +234,15 @@ committed snapshot; it includes both typed-record and specialized SQL tables):
   `runtime_agent_record_generation`, `runtime_annotations`, `runtime_assets`,
   `runtime_budget`, `runtime_capacity_retries`,
   `runtime_checkpoints`, `runtime_compactions`, `runtime_complaints`,
-  `runtime_completed_turns` (read only since 2026-10-30; Turn `Completed` in
-  `turns` replaces it), `runtime_context_manifests`, `runtime_context_reminders`.
+  `runtime_completed_turns`, `runtime_context_manifests`,
+  `runtime_context_reminders`.
 - Events and execution: `runtime_event_meta`, `runtime_execution_attempts`,
   `runtime_execution_effects`, `runtime_execution_inputs`,
   `runtime_execution_nodes`, `runtime_execution_runs`.
 - Federation: `runtime_federation_identity`, `runtime_federation_inbox`,
-  `runtime_federation_invites`, `runtime_federation_outbox`,
-  `runtime_federation_peers`, `runtime_federation_rooms`,
-  `runtime_federation_settings`.
+  `runtime_federation_invites`, `runtime_federation_nonces`,
+  `runtime_federation_outbox`, `runtime_federation_peers`,
+  `runtime_federation_rooms`, `runtime_federation_settings`.
 - Items and operations: `runtime_item_fulltext`, `runtime_items`,
   `runtime_lead_requests`, `runtime_monitors`, `runtime_operation_receipts`, `runtime_plans`,
   `runtime_profiles`, `runtime_projects`, `runtime_requests`, `runtime_rooms`,

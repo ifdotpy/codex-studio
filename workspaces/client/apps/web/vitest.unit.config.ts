@@ -12,7 +12,15 @@ export default defineConfig({
       optimizer: {
         ssr: {
           enabled: true,
-          include: ["@mantine/core", "lucide-react"],
+          include: [
+            "@mantine/core",
+            "lucide-react",
+            // RxDB and its plugins share one registration singleton.
+            "rxdb",
+            "rxdb/plugins/leader-election",
+            "rxdb/plugins/replication",
+            "rxdb/plugins/storage-memory",
+          ],
         },
       },
     },

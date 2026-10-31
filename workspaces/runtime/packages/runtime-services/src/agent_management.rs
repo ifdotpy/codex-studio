@@ -47,22 +47,7 @@ pub enum ManagementError {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
-    /// Interrupt the running turn of the target (and its descendants). The chat
-    /// stays active, `autoWake` and the queue stay, and the epoch does not change.
-    /// The turn ends as `interrupted` and the queue goes on with the next input.
     Stop {
-        target: String,
-        descendants: bool,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        sender: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        sender_epoch: Option<i64>,
-    },
-    /// Pause the target (and its descendants): interrupt, bump the epoch, clear
-    /// `autoWake` and cancel the pending queue. This is the former stop.
-    Pause {
         target: String,
         descendants: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,7 +92,7 @@ impl Action {
     /// The agent that issued the action, when it is not the target.
     pub fn acting_agent(&self) -> Option<&str> {
         match self {
-            Self::Stop { sender, .. } | Self::Pause { sender, .. } => sender.as_deref(),
+            Self::Stop { sender, .. } => sender.as_deref(),
             Self::Archive { actor, .. }
             | Self::Restore { actor, .. }
             | Self::Inspect { actor, .. } => Some(actor),
@@ -118,7 +103,6 @@ impl Action {
     pub fn target(&self) -> &str {
         match self {
             Self::Stop { target, .. }
-            | Self::Pause { target, .. }
             | Self::RemoteStop { target, .. }
             | Self::Delete { target }
             | Self::Archive { target, .. }
@@ -946,13 +930,6 @@ fn decide_inner(
             reason,
             sender,
             sender_epoch,
-        }
-        | Action::Pause {
-            target,
-            descendants,
-            reason,
-            sender,
-            sender_epoch,
         } => {
             let reason = if let Some(sender) = sender {
                 let epoch = sender_epoch.ok_or(ManagementError::Invalid("senderEpoch"))?;
@@ -979,7 +956,6 @@ fn decide_inner(
                 StopOptions {
                     descendants: *descendants,
                     delete: false,
-                    pause: matches!(action, Action::Pause { .. }),
                     reason: reason.as_deref(),
                     now,
                     live,
@@ -1022,7 +998,6 @@ fn decide_inner(
                 StopOptions {
                     descendants: true,
                     delete: false,
-                    pause: true,
                     reason: Some(reason),
                     now,
                     live,
@@ -1036,7 +1011,6 @@ fn decide_inner(
             StopOptions {
                 descendants: true,
                 delete: true,
-                pause: false,
                 reason: None,
                 now,
                 live,
@@ -1098,8 +1072,6 @@ fn inspect(snapshot: &ManagementSnapshot, agent: &Agent) -> Result<Decision, Man
 struct StopOptions<'a> {
     descendants: bool,
     delete: bool,
-    /// Pause the agents; without it a stop only interrupts the running turn.
-    pause: bool,
     now: f64,
     live: bool,
     reason: Option<&'a str>,
@@ -1114,7 +1086,6 @@ fn stop(
     let StopOptions {
         descendants,
         delete,
-        pause,
         reason,
         now,
         live,
@@ -1125,10 +1096,7 @@ fn stop(
     for agent in &agents {
         let mut effects = Vec::new();
         snapshot.stop_effects(agent, &mut effects, live, delete)?;
-        if !pause && !delete {
-            effects.retain(|kind| matches!(kind, LifecycleEffectKind::Interrupt));
-        }
-        if pause
+        if !delete
             && agent.identity.is_lead != Some(true)
             && agent.identity.parent_id.is_some()
             && (!descendants || agent.id() == target)
@@ -1180,20 +1148,6 @@ fn stop(
     let mut decision = Decision::result(result);
     for agent in agents {
         let mut record = agent.record.clone();
-        if !pause && !delete {
-            // Stop: the record, its queue and its epoch stay. Only the interrupt
-            // reaches the provider; the turn settles when the provider ends it.
-            for kind in required.remove(agent.id()).unwrap_or_default() {
-                decision.effects.push(LifecycleEffect::new(
-                    kind,
-                    agent.record.clone(),
-                    record.clone(),
-                    now,
-                ));
-            }
-            decision.write("runtime_agents", record);
-            continue;
-        }
         let epoch = next_epoch(agent)?;
         let object = record
             .as_object_mut()
@@ -1279,11 +1233,10 @@ fn stop(
         decision.cancel_pending.push(agent.id().to_owned());
     }
     for request in snapshot.rows("runtime_requests") {
-        if (pause || delete)
-            && request
-                .get("agent")
-                .and_then(Value::as_str)
-                .is_some_and(|id| ids.iter().any(|a| a == id))
+        if request
+            .get("agent")
+            .and_then(Value::as_str)
+            .is_some_and(|id| ids.iter().any(|a| a == id))
             && is_status(request, &["pending"])
             && request.get("method").and_then(Value::as_str) != Some("monitor/approve")
         {
@@ -1547,57 +1500,6 @@ mod lifecycle_scope_parity_tests {
     }
 
     #[test]
-    fn stop_interrupts_only_and_pause_keeps_the_former_stop() {
-        let records = Records {
-            tables: BTreeMap::from([(
-                "runtime_agents".to_owned(),
-                vec![{
-                    let mut lead = agent("lead", "lead", None, true);
-                    lead["status"] = json!("running");
-                    lead
-                }],
-            )]),
-        };
-        let snapshot = ManagementSnapshot::from_records(records).expect("snapshot");
-        let target = "lead".to_owned();
-        let stop = decide_with_effects(
-            &snapshot,
-            &Action::Stop {
-                target: target.clone(),
-                descendants: false,
-                reason: None,
-                sender: None,
-                sender_epoch: None,
-            },
-            10.0,
-        )
-        .expect("stop");
-        assert!(stop.cancel_pending.is_empty(), "stop keeps the queue");
-        let [write] = stop.writes.as_slice() else {
-            panic!("stop writes the agent once");
-        };
-        assert_eq!(write.record["epoch"], 1, "stop keeps the epoch");
-        assert_eq!(write.record["status"], "running", "stop does not pause");
-        assert_eq!(write.record["autoWake"], true, "stop keeps autoWake");
-        let pause = decide_with_effects(
-            &snapshot,
-            &Action::Pause {
-                target: target.clone(),
-                descendants: false,
-                reason: None,
-                sender: None,
-                sender_epoch: None,
-            },
-            10.0,
-        )
-        .expect("pause");
-        assert_eq!(pause.cancel_pending, [target]);
-        assert_eq!(pause.writes[0].record["epoch"], 2);
-        assert_eq!(pause.writes[0].record["status"], "paused");
-        assert_eq!(pause.writes[0].record["autoWake"], false);
-    }
-
-    #[test]
     fn scoped_lifecycle_decisions_match_full_snapshot_with_unrelated_history() {
         let full = Records {
             tables: BTreeMap::from([
@@ -1815,7 +1717,7 @@ mod lifecycle_scope_parity_tests {
             Action::Archive { .. } => assert_eq!(full_decision.result["status"], "blocked"),
             Action::Restore { .. } => assert_eq!(full_decision.result["status"], "restored"),
             Action::Inspect { .. } => assert!(full_decision.result["blockers"].is_array()),
-            Action::Delete { .. } | Action::Stop { .. } | Action::Pause { .. } => {
+            Action::Delete { .. } | Action::Stop { .. } => {
                 assert!(!full_decision.writes.is_empty())
             }
             Action::RemoteStop { .. } => unreachable!("not a scoped lifecycle fixture"),

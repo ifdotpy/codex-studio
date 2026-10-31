@@ -7,8 +7,6 @@ import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { JsonInput } from "../src/apiTypes.ts";
-import { messageReceipt } from "../src/commands.ts";
-import type { CommandRequest, CommandResponse } from "../src/commands.ts";
 import {
   parseVerifierApi,
   readVerifierResponse,
@@ -741,15 +739,11 @@ async function main() {
     saveJournal(journalPath, journal);
     await route.continue();
   });
-  await page.route("**/api/commands", async (route) => {
+  await page.route("**/api/messages", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
-    const command = readVerifierRequest<CommandRequest>(route.request());
-    if (command.kind !== "send") return route.continue();
-    const body: ApiSchemas["ManagedMessageBody"] = {
-      id: command.id,
-      room: command.target,
-      ...command.body,
-    };
+    const body = readVerifierRequest<ApiSchemas["ManagedMessageBody"]>(
+      route.request(),
+    );
     assert.equal(
       journal.model,
       SCALE_PROVIDER.model,
@@ -1081,17 +1075,17 @@ async function main() {
       const messageResponse = page.waitForResponse(
         (response) =>
           response.request().method() === "POST" &&
-          routePath(response.request()) === "/api/commands" &&
-          (response.request().postDataJSON() as CommandRequest | null)?.kind ===
-            "send",
+          routePath(response.request()) === "/api/messages",
         { timeout: MESSAGE_ACK_TIMEOUT_MS },
       );
       await page
         .getByRole("button", { name: "Send message", exact: true })
         .click();
       const response = await messageResponse;
-      const reply = await jsonResponse<CommandResponse>(response);
-      const body = reply ? messageReceipt(reply) : undefined;
+      const body =
+        await jsonResponse<
+          ApiSchemas["studio_api__work__models__MessageReceipt"]
+        >(response);
       assert.equal(
         response.status(),
         200,

@@ -6,16 +6,15 @@ import {
   isApiSchemaMismatch,
   onApiSchemaMismatch,
   syncGet,
-  command,
+  syncPost,
   ApiError,
   ApiSchemaMismatchError,
   errorText,
   refreshSession,
 } from "../api";
 
-import type { Doc } from "./localCollection";
-import { messageReceipt } from "../commands";
-import type { MessageDelivery, SendMessageBody } from "../commands";
+import type { RxDocument } from "rxdb";
+import type { PostBody, PostResult } from "../api";
 import { DeliveryStatusValues } from "../generated/persistence";
 
 import { syncDatabase, type SyncDocument } from "./client";
@@ -30,7 +29,9 @@ import {
 
 import type { Attachment } from "../components/ComposerAttachments";
 
-type MessageBody = SendMessageBody;
+type MessageBody = PostBody<"/api/messages">;
+
+type MessageDelivery = PostResult<"/api/messages">;
 
 type StoredMessageReceipt = Pick<MessageDelivery, "id" | "status"> &
   Partial<Pick<MessageDelivery, "deliveries" | "error" | "materialized">>;
@@ -220,7 +221,7 @@ function readIntention(payload: string, id: string): Intention {
   return decoded.intention;
 }
 
-const snapshots = (docs: Doc[]) =>
+const snapshots = (docs: RxDocument<SyncDocument>[]) =>
   docs.map((doc) => ({
     doc,
     decoded: decodeIntention(doc.getLatest().payload, doc.id),
@@ -239,7 +240,10 @@ const queuedDocuments = (entries: ReturnType<typeof snapshots>) =>
         a.doc.id.localeCompare(b.doc.id),
     );
 
-const updateIntention = (doc: Doc, change: Partial<Intention>) =>
+const updateIntention = (
+  doc: RxDocument<SyncDocument>,
+  change: Partial<Intention>,
+) =>
   doc.incrementalModify((record) => ({
     ...record,
     payload: JSON.stringify({
@@ -289,7 +293,7 @@ export function createOutbox(options: {
     | "isApiSchemaMismatch"
     | "onApiSchemaMismatch"
     | "syncGet"
-    | "command"
+    | "syncPost"
     | "refreshSession"
   >;
   syncDatabase: () => Promise<OutboxDatabaseHandle>;
@@ -299,7 +303,7 @@ export function createOutbox(options: {
     isApiSchemaMismatch,
     onApiSchemaMismatch,
     syncGet,
-    command,
+    syncPost,
     refreshSession,
   } = options.api;
   const { syncDatabase } = options;
@@ -310,7 +314,10 @@ export function createOutbox(options: {
   const sendingRooms = new Set<string>();
 
   async function deliver(
-    doc: Pick<Doc, "id" | "getLatest" | "incrementalModify">,
+    doc: Pick<
+      RxDocument<SyncDocument>,
+      "id" | "getLatest" | "incrementalModify"
+    >,
   ): Promise<SendResult> {
     let value: Intention = readIntention(doc.getLatest().payload, doc.id);
     if (value.status !== "queued" || !navigator.onLine)
@@ -355,13 +362,11 @@ export function createOutbox(options: {
       });
       value = readIntention(claimed.payload, doc.id);
       if (value.status !== "queued") return intentionResult(value);
-      const result = messageReceipt(
-        await command.send(value.body, {
-          workspaceId,
-          sessionToken: session.token,
-        }),
-      );
-      if (!matchesMessageDelivery(result, value.body.id) || !result)
+      const result = await syncPost("/api/messages", value.body, {
+        workspaceId,
+        sessionToken: session.token,
+      });
+      if (!matchesMessageDelivery(result, value.body.id))
         throw new Error("The delivery response does not match this message.");
       if (result.status === "failed" || result.status === "cancelled")
         throw new ApiError(
@@ -444,7 +449,7 @@ export function createOutbox(options: {
     }
   }
 
-  function once(doc: Doc): Promise<SendResult> {
+  function once(doc: RxDocument<SyncDocument>): Promise<SendResult> {
     let task = active.get(doc.id);
     if (!task) {
       task = (async () => {
@@ -837,7 +842,7 @@ export function createOutbox(options: {
             recoveringReceipts = false;
           });
       };
-      const handleOutboxDocuments = (docs: Doc[]) => {
+      const handleOutboxDocuments = (docs: RxDocument<SyncDocument>[]) => {
         const entries = snapshots(docs);
         const invalid = entries.flatMap(({ decoded }) =>
           decoded.kind === "invalid" ? [decoded.id] : [],
@@ -874,9 +879,9 @@ export function createOutbox(options: {
           const { db, workspaceId } = await syncDatabase();
           if (stop) return;
           let subscriptionReady = false;
-          let bufferedDocs: Doc[] | undefined;
+          let bufferedDocs: RxDocument<SyncDocument>[] | undefined;
           const sub = db.outbox.find().$.subscribe(
-            (docs: Doc[]) => {
+            (docs: RxDocument<SyncDocument>[]) => {
               if (!subscriptionReady) bufferedDocs = docs;
               else handleOutboxDocuments(docs);
             },
@@ -1015,7 +1020,7 @@ export const {
     isApiSchemaMismatch,
     onApiSchemaMismatch,
     syncGet,
-    command,
+    syncPost,
     refreshSession,
   },
   syncDatabase,

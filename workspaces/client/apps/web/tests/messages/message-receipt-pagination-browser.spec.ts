@@ -4,7 +4,7 @@ import type { TranscriptPageResponse } from "../playwright.ts";
 import type { Message } from "../../src/types.ts";
 import { responseJson } from "./helpers.ts";
 import { SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS } from "../../src/generated/sharedValues.ts";
-import { FIXTURE_OPTIMIZE_DEPS, readCachedRows } from "../playwright.ts";
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.ts";
 import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
@@ -403,7 +403,7 @@ async function runMessageReceiptScenario(
       cacheDir: join(temporary, "vite"),
       optimizeDeps: {
         noDiscovery: true,
-        include: [...FIXTURE_OPTIMIZE_DEPS.include, "rxjs"],
+        include: [...FIXTURE_OPTIMIZE_DEPS.include, "rxdb", "rxjs"],
       },
       server: {
         host: "127.0.0.1",
@@ -515,7 +515,7 @@ async function runMessageReceiptScenario(
       const url = new URL(request.url());
       if (
         request.method() === "POST" &&
-        ["/api/commands", "/api/queue"].includes(url.pathname)
+        ["/api/messages", "/api/queue"].includes(url.pathname)
       )
         posts.push(url.pathname);
       if (url.pathname === "/api/messages/receipts")
@@ -529,7 +529,7 @@ async function runMessageReceiptScenario(
     const bubble = (message: string) =>
       page.locator("#messages .message.user").filter({ hasText: message });
     // Keep the built renderer's runtime isolated from Vite's source dependencies.
-    // The seed tab reads the same durable outbox without loading a second store
+    // The seed tab reads the same durable outbox without loading a second Dexie
     // version into the app tab.
     const readOutboxReceipt = (key: string) =>
       storage.evaluate(
@@ -624,20 +624,48 @@ async function runMessageReceiptScenario(
     >[] = [];
     // Visible receipts do not imply that the projection writer has committed.
     await until(async () => {
-      // The thin cache keeps the transcript and its items in one record.
-      const record = await readCachedRows(page, `transcript:${agent.id}`, 0);
-      const meta = record.find((row) => row.id === `transcript:${agent.id}`);
-      if (!meta) return false;
-      const order: string[] = JSON.parse(meta.payload).order;
-      const items = order.map((key) =>
-        record.find((row) => row.id === `transcript:item:${agent.id}:${key}`),
-      );
-      if (items.some((item) => item === undefined)) return false;
-      const cached = [meta, ...items].map((row) => ({
-        id: row!.id,
-        payload: row!.payload,
-        seq: row!.seq,
-      }));
+      const cached = await storage.evaluate(async (agentId) => {
+        const collection = window.receiptFixtureDb.projections;
+        // Read the committed IndexedDB rows independently of the seed tab's
+        // RxDB instance; the built renderer owns the active projection writer.
+        const name = `rxdb-dexie-${collection.database.name}--${collection.schema.version}--projections`;
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+          const request = indexedDB.open(name);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        const read = (id: string) =>
+          new Promise<
+            import("../../src/sync/client.ts").SyncDocument | undefined
+          >((resolve, reject) => {
+            const request = db
+              .transaction("docs", "readonly")
+              .objectStore("docs")
+              .get(id);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          });
+        try {
+          const meta = await read(`transcript:${agentId}`);
+          if (!meta) return null;
+          const payload: import("../../src/sync/client.ts").TranscriptProjectionMeta =
+            JSON.parse(meta.payload);
+          const items = await Promise.all(
+            payload.order.map((key) =>
+              read(`transcript:item:${agentId}:${key}`),
+            ),
+          );
+          const committedItems = items.filter((item) => item !== undefined);
+          if (committedItems.length !== items.length) return null;
+          return [meta, ...committedItems].map(({ id, payload, seq }) => ({
+            id,
+            payload,
+            seq,
+          }));
+        } finally {
+          db.close();
+        }
+      }, agent.id);
       if (!cached) return false;
       shortCachedTranscript.push(...cached);
       return true;
@@ -858,19 +886,12 @@ async function runMessageReceiptScenario(
   }
 }
 
-// FIXME(thin-cache): this scenario shares one RxDB instance between a seed tab
-// and the app tab through IndexedDB, and reads settled outbox receipts back.
-// The thin cache keeps memory per tab and removes settled outbox rows, so the
-// scenario needs a new seed path (server-side receipts) before it can run.
-test.fixme("Message receipt pagination browser", async ({
-  browser,
-  context,
-}) => {
+test("Message receipt pagination browser", async ({ browser, context }) => {
   test.setTimeout(45_000);
   await runMessageReceiptScenario({ browser, context }, false);
 });
 
-test.fixme("delivered receipt reconciles a hidden accepted outbox entry", async ({
+test("delivered receipt reconciles a hidden accepted outbox entry", async ({
   browser,
   context,
 }) => {

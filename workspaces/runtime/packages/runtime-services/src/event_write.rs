@@ -793,7 +793,7 @@ mod tests {
                  CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  INSERT INTO sync_entities VALUES('agent','a',1,'old','{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"status\":\"idle\"}}',0);"),
             )
             .expect("write schema creates");
@@ -1231,7 +1231,7 @@ mod tests {
         .expect("paired input queues");
         assert!(result);
         let (server, body): (String, String) = connection
-            .query_row("SELECT target,json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery'", [], |row| {
+            .query_row("SELECT server,body FROM runtime_server_outbox", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .expect("stable outbox row");
@@ -1259,18 +1259,16 @@ mod tests {
         })
         .expect("lost response retry");
         let retry: String = connection
-            .query_row("SELECT json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery'", [], |r| r.get(0))
+            .query_row("SELECT body FROM runtime_server_outbox", [], |r| r.get(0))
             .expect("same outbox");
         assert_eq!(
             serde_json::from_str::<Value>(&retry).unwrap()["requestId"],
             root
         );
         let count: i64 = connection
-            .query_row(
-                "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT count(*) FROM runtime_server_outbox", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(count, 1);
         let public = studio_runtime_schema::persistence::RequestIdentity::issue_root();

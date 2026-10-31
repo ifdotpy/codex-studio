@@ -1,5 +1,4 @@
 import type { components } from "../../src/generated/api.ts";
-import type { CommandRequest, CommandResponse } from "../../src/commands.ts";
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
 
@@ -463,28 +462,16 @@ async function runAccountsUi(
       res.writeHead(503);
       return res.end();
     }
-    if (url.pathname === "/api/commands") {
-      const command = rawBody as CommandRequest;
-      if (command.kind === "withdraw") {
-        claudeQueue = claudeQueue.filter(
-          (item) => item.id !== command.body.message,
-        );
+    if (url.pathname === "/api/queue") {
+      const body = fixtureRequest("/api/queue", rawBody).body;
+      if (req.method === "POST" && body.action === "cancel") {
+        claudeQueue = claudeQueue.filter((item) => item.id !== body.id);
         if (stateForEntities.runtime.queuesByAgent?.["claude-chat"]) {
           stateForEntities.runtime.queuesByAgent["claude-chat"]!.items =
             claudeQueue;
           notifyEntityResources([{ kind: "queue", agentId: "claude-chat" }]);
         }
       }
-      return json({
-        status: "applied",
-        ref_kind: "message",
-        ref_id: command.id,
-        rev: 1,
-        seq: 0,
-        rows: [],
-      } satisfies CommandResponse);
-    }
-    if (url.pathname === "/api/queue") {
       return json({
         items: claudeQueue,
         revision: `claude-queue-${claudeQueue.length}`,
@@ -1715,13 +1702,13 @@ async function runAccountsUi(
           '[aria-label="Delete queued message 1"]',
         ),
     );
-    const withdrawal = bodies.find(
-      (request) =>
-        request.path === "/api/commands" && request.body.kind === "withdraw",
-    )?.body as Extract<CommandRequest, { kind: "withdraw" }> | undefined;
-    assert.equal(withdrawal?.target, "claude-chat");
-    assert.equal(withdrawal?.body.message, "claude-queued");
-    assert.ok(withdrawal?.id);
+    const cancellation = bodies.find(
+      (request): request is Extract<FixtureRequest, { path: "/api/queue" }> =>
+        request.path === "/api/queue" && request.body.action === "cancel",
+    );
+    assert.equal(cancellation?.body.id, "claude-queued");
+    assert.equal(cancellation?.body.expectedText, "Change the Claude task");
+    assert.ok(cancellation?.body.request_id);
     await openSettings();
     const manager = await openStudioAccounts();
     const profileRow = manager.locator(".server-account-row").filter({

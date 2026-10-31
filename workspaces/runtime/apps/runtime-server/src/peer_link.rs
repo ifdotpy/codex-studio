@@ -10,8 +10,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use studio_runtime_services::remote_transport::peer_link_config_line;
 use studio_runtime_store::{ObservedTable, RuntimeStore, StoreError};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -29,15 +29,9 @@ pub struct PeerLinkRuntime {
     task: Option<JoinHandle<()>>,
 }
 
-/// Called with the public key (PEM) of a paired server when a QUIC connection to it opens.
-pub type PeerReached = Arc<dyn Fn(String) + Send + Sync>;
-
 struct RunningLink {
     child: Child,
     stdin: ChildStdin,
-    /// Lines after the ready line: `{"connected": "<PEM>"}` for each new connection.
-    events: Lines<BufReader<ChildStdout>>,
-    events_open: bool,
     peers: Vec<String>,
     advert: String,
     started_at: tokio::time::Instant,
@@ -47,7 +41,6 @@ enum LinkEvent {
     Stop,
     Changed,
     Retry,
-    Connected(String),
     Child(std::io::Result<std::process::ExitStatus>),
 }
 
@@ -167,11 +160,6 @@ struct PeerUpdate<'a> {
 }
 
 #[derive(Deserialize)]
-struct PeerLinkConnected {
-    connected: String,
-}
-
-#[derive(Deserialize)]
 struct PeerLinkReady {
     ready: bool,
     port: u16,
@@ -190,8 +178,6 @@ impl PeerLinkRuntime {
         public_origin: String,
         state_root: PathBuf,
         advert: Arc<RwLock<Option<String>>>,
-        link_token: String,
-        reached: PeerReached,
     ) -> Result<Self, StoreError> {
         let (changed, changes) = mpsc::channel(1);
         // Subscribe before the first snapshot so a commit between registration
@@ -207,16 +193,12 @@ impl PeerLinkRuntime {
         let task_advert = Arc::clone(&advert);
         let task = tokio::spawn(run(
             store,
-            Backend {
-                port: backend_port,
-                public_origin,
-                link_token,
-            },
+            backend_port,
+            public_origin,
             state_root,
             task_advert,
             changes,
             task_stop,
-            reached,
         ));
         Ok(Self {
             stop,
@@ -240,28 +222,15 @@ impl Drop for PeerLinkRuntime {
     }
 }
 
-/// What the link process needs to know about this backend.
-struct Backend {
-    port: u16,
-    public_origin: String,
-    /// Secret that proves to the backend that a request came from the link.
-    link_token: String,
-}
-
 async fn run(
     store: Arc<RuntimeStore>,
-    backend: Backend,
+    backend_port: u16,
+    public_origin: String,
     state_root: PathBuf,
     advert: Arc<RwLock<Option<String>>>,
     mut changes: mpsc::Receiver<()>,
     stopped: CancellationToken,
-    reached: PeerReached,
 ) {
-    let Backend {
-        port: backend_port,
-        public_origin,
-        link_token,
-    } = backend;
     let forwarded_host = forwarded_host(&public_origin);
     let socket = state_root.join("multi-server").join("peer-link.sock");
     let mut running: Option<RunningLink> = None;
@@ -346,7 +315,6 @@ async fn run(
                 &forwarded_host,
                 backend_port,
                 peers,
-                &link_token,
                 &stopped,
             )
             .await;
@@ -382,7 +350,6 @@ async fn run(
                 LinkEvent::Stop => break,
                 LinkEvent::Changed => work.table_changed(),
                 LinkEvent::Retry => {}
-                LinkEvent::Connected(public_key) => reached(public_key),
                 LinkEvent::Child(Ok(status)) => {
                     eprintln!("peer-link child exited with {status}");
                     let uptime = started_at.elapsed();
@@ -467,30 +434,17 @@ async fn wait_for_link_event(
 ) -> LinkEvent {
     let wait = link.child.wait();
     tokio::pin!(wait);
-    let mut events_closed = false;
     let retry = retry_at
         .unwrap_or_else(|| tokio::time::Instant::now() + Duration::from_secs(365 * 24 * 60 * 60));
-    let event = tokio::select! {
+    tokio::select! {
         _ = stopped.cancelled() => LinkEvent::Stop,
         event = changes.recv() => match event {
             Some(()) => LinkEvent::Changed,
             None => LinkEvent::Stop,
         },
         _ = tokio::time::sleep_until(retry), if retry_at.is_some() => LinkEvent::Retry,
-        line = link.events.next_line(), if link.events_open => match line {
-            Ok(Some(line)) => serde_json::from_str::<PeerLinkConnected>(&line)
-                .map_or(LinkEvent::Retry, |event| LinkEvent::Connected(event.connected)),
-            _ => {
-                events_closed = true;
-                LinkEvent::Retry
-            }
-        },
         status = &mut wait => LinkEvent::Child(status),
-    };
-    if events_closed {
-        link.events_open = false;
     }
-    event
 }
 
 fn next_retry_delay(current: Duration) -> Duration {
@@ -563,7 +517,6 @@ async fn start_link(
     forwarded_host: &str,
     backend_port: u16,
     peers: &[String],
-    link_token: &str,
     stopped: &CancellationToken,
 ) -> Option<RunningLink> {
     if forwarded_host.is_empty() {
@@ -596,7 +549,6 @@ async fn start_link(
         let config_socket = socket.to_path_buf();
         let config_peers = peers.to_vec();
         let config_forwarded_host = forwarded_host.to_owned();
-        let config_link_token = link_token.to_owned();
         let config = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-server/peer-link-config",
             move || {
@@ -607,7 +559,6 @@ async fn start_link(
                     backend_port,
                     &config_forwarded_host,
                     &config_socket,
-                    &config_link_token,
                 )
             },
         )
@@ -652,8 +603,7 @@ async fn start_link(
             continue;
         }
 
-        let Some((child, stdin, ready, events)) =
-            wait_ready_or_cancel(child, stdin, stdout, stopped).await
+        let Some((child, stdin, ready)) = wait_ready_or_cancel(child, stdin, stdout, stopped).await
         else {
             if stopped.is_cancelled() {
                 return None;
@@ -663,8 +613,6 @@ async fn start_link(
         return Some(RunningLink {
             child,
             stdin,
-            events,
-            events_open: true,
             peers: peers.to_vec(),
             advert: format!("{address}:{}", ready.port),
             started_at: tokio::time::Instant::now(),
@@ -678,16 +626,10 @@ async fn wait_ready_or_cancel(
     stdin: ChildStdin,
     stdout: tokio::process::ChildStdout,
     stopped: &CancellationToken,
-) -> Option<(
-    Child,
-    ChildStdin,
-    PeerLinkReady,
-    Lines<BufReader<ChildStdout>>,
-)> {
-    let mut reader = BufReader::new(stdout);
+) -> Option<(Child, ChildStdin, PeerLinkReady)> {
     let ready_result = tokio::select! {
         _ = stopped.cancelled() => None,
-        result = tokio::time::timeout(START_TIMEOUT, read_ready_line(&mut reader)) => Some(result),
+        result = tokio::time::timeout(START_TIMEOUT, read_ready_line(stdout)) => Some(result),
     };
     let ready_line = match ready_result {
         Some(Ok(Ok(Some(line)))) => line,
@@ -705,10 +647,11 @@ async fn wait_ready_or_cancel(
             return None;
         }
     };
-    Some((child, stdin, ready, reader.lines()))
+    Some((child, stdin, ready))
 }
 
-async fn read_ready_line(reader: &mut BufReader<ChildStdout>) -> io::Result<Option<String>> {
+async fn read_ready_line(stdout: tokio::process::ChildStdout) -> io::Result<Option<String>> {
+    let mut reader = BufReader::new(stdout);
     let mut line = Vec::new();
     loop {
         let available = reader.fill_buf().await?;

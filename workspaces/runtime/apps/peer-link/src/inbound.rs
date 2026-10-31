@@ -15,8 +15,6 @@ use crate::frame::{self, RequestHead, ResponseHead};
 pub struct Inbound {
     pub backend_port: u16,
     pub forwarded_host: String,
-    /// Sent with the connection identity so the backend knows the link set it.
-    pub link_token: String,
     pub loopback: bool,
 }
 
@@ -55,15 +53,10 @@ pub async fn serve(endpoint: Endpoint, inbound: Arc<Inbound>, links: Arc<Links>)
 
 async fn accept_streams(connection: Connection, inbound: Arc<Inbound>) {
     let peer = connection.remote_address().ip();
-    let Some(id) = connection_id() else {
-        connection.close(VarInt::from_u32(3), b"no identity");
-        return;
-    };
     while let Ok((mut send, recv)) = connection.accept_bi().await {
         let inbound = inbound.clone();
-        let id = id.clone();
         tokio::spawn(async move {
-            if forward(&mut send, recv, peer, &id, &inbound).await.is_err() {
+            if forward(&mut send, recv, peer, &inbound).await.is_err() {
                 // The client sees a reset stream: the outcome of a sent request is unknown.
                 send.reset(VarInt::from_u32(1)).ok();
             }
@@ -71,18 +64,10 @@ async fn accept_streams(connection: Connection, inbound: Arc<Inbound>) {
     }
 }
 
-/// A random name for one connection. It is never reused, so a stale name selects nothing.
-fn connection_id() -> Option<String> {
-    let mut bytes = [0_u8; 16];
-    getrandom::fill(&mut bytes).ok()?;
-    Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
 async fn forward(
     send: &mut SendStream,
     mut recv: RecvStream,
     peer: IpAddr,
-    connection: &str,
     inbound: &Inbound,
 ) -> Result<(), String> {
     let head: RequestHead = frame::read(&mut recv)
@@ -101,13 +86,8 @@ async fn forward(
         text.push_str(&format!("{name}: {value}\r\n"));
     }
     text.push_str(&format!(
-        "Host: 127.0.0.1:{}\r\nX-Forwarded-Host: {}\r\nX-Forwarded-Proto: https\r\nX-Forwarded-For: {}\r\nX-Studio-Link-Token: {}\r\nX-Studio-Link-Connection: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        inbound.backend_port,
-        inbound.forwarded_host,
-        peer,
-        inbound.link_token,
-        connection,
-        head.body_length
+        "Host: 127.0.0.1:{}\r\nX-Forwarded-Host: {}\r\nX-Forwarded-Proto: https\r\nX-Forwarded-For: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        inbound.backend_port, inbound.forwarded_host, peer, head.body_length
     ));
     backend
         .write_all(text.as_bytes())

@@ -55,11 +55,6 @@ pub(crate) fn routes() -> RouteGroup {
             transcript_item,
         ),
         get(
-            "/api/transcript/blob",
-            OperationStatus::Implemented,
-            transcript_blob,
-        ),
-        get(
             "/api/transcript/search",
             OperationStatus::Implemented,
             transcript_search,
@@ -145,42 +140,6 @@ async fn transcript_item(
     Ok(Json(super::generated_json::<
         crate::generated::TranscriptItemResponse,
     >(value)?))
-}
-
-/// Full text of a cut item, by the hash that the item page carries. The
-/// client calls it when the user opens the full output, and caches by hash.
-async fn transcript_blob(
-    State(state): State<HttpState>,
-    query: QueryParams,
-) -> Result<Json<crate::generated::TextBlobResponse>, ApiError> {
-    let hash = query
-        .typed_value("hash")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let text = store
-        .read_async("runtime-http/transcript_blob", {
-            let hash = hash.clone();
-            move |transaction| studio_runtime_store::text_blobs::read(transaction, &hash)
-        })
-        .await
-        .map_err(|error| match error {
-            studio_runtime_store::StoreError::InvalidStoredRecord { .. } => {
-                ApiError::new(StatusCode::NOT_FOUND, "Text blob not found")
-            }
-            studio_runtime_store::StoreError::StateDirectory(io)
-                if io.kind() == std::io::ErrorKind::NotFound =>
-            {
-                ApiError::new(StatusCode::NOT_FOUND, "Text blob not found")
-            }
-            other => ApiError::stored(other),
-        })?;
-    Ok(Json(super::generated_json::<
-        crate::generated::TextBlobResponse,
-    >(
-        serde_json::json!({"hash": hash, "size": text.len(), "text": text}),
-    )?))
 }
 
 async fn transcript_search(

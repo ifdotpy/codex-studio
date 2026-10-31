@@ -1,4 +1,4 @@
-import type { DeepReadonly } from "../deepReadonly.ts";
+import type { DeepReadonly } from "rxdb";
 import { randomUUID } from "../uuid";
 import type { DraftJournal } from "./draftJournal";
 

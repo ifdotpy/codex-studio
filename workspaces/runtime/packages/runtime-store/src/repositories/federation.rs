@@ -1,6 +1,5 @@
 //! Local federation settings and projections over Python-written records.
 
-use super::remote_outbox::{RemoteEffect, RemoteOutbox};
 use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -93,16 +92,18 @@ impl FederationRepository {
             .map(|(id, v)| project(id, v, "runtime_federation_rooms", ROOM_FIELDS))
             .collect::<StoreResult<Vec<_>>>()?;
         // Validate every stored outbox record, including records excluded from the queue count.
+        let mut statement =
+            connection.prepare_cached("SELECT id,record FROM runtime_federation_outbox")?;
+        let outbox = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
         let mut queued = 0;
-        for entry in
-            RemoteOutbox::entries::<Value>(connection, RemoteEffect::FederationMessage, None)
-                .map_err(|_| invalid("runtime_outbox", "federation_message", "record"))?
-        {
-            let id = entry.request_id;
-            let value: OutboxRecord = serde_json::from_value(entry.record)
-                .map_err(|_| invalid("runtime_outbox", &id, "record"))?;
+        for row in outbox {
+            let (id, raw) = row?;
+            let value: OutboxRecord = serde_json::from_str(&raw)
+                .map_err(|_| invalid("runtime_federation_outbox", &id, "record"))?;
             if value.id != id {
-                return Err(invalid("runtime_outbox", &id, "id"));
+                return Err(invalid("runtime_federation_outbox", &id, "id"));
             }
             if value.status == FederationDeliveryState::Queued {
                 queued += 1;
@@ -178,21 +179,20 @@ impl FederationRepository {
             "UPDATE runtime_federation_peers SET record=?1 WHERE id=?2",
             params![peer.to_string(), id],
         )?;
-        let items = RemoteOutbox::entries::<Value>(tx, RemoteEffect::FederationMessage, Some(id))
-            .map_err(|_| invalid("runtime_outbox", id, "record"))?;
-        for entry in items {
-            let out_id = entry.request_id.clone();
-            let v = &entry.record;
-            if !v.is_object() {
-                return Err(invalid("runtime_outbox", &out_id, "record"));
-            }
+        let mut stmt =
+            tx.prepare_cached("SELECT id,record FROM runtime_federation_outbox WHERE peer_id=?1")?;
+        let items = stmt
+            .query_map([id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(stmt);
+        for (out_id, raw) in items {
+            let v = parse_record("runtime_federation_outbox", &out_id, &raw)?;
             if v.get("status").and_then(Value::as_str) == Some("queued") {
-                RemoteOutbox::delete(
-                    tx,
-                    RemoteEffect::FederationMessage,
-                    id,
-                    &out_id,
-                    &entry.signature,
+                tx.execute(
+                    "DELETE FROM runtime_federation_outbox WHERE id=?1",
+                    [&out_id],
                 )?;
                 let delivery = RecipientDelivery {
                     status: DeliveryStatus::Cancelled,
@@ -457,12 +457,7 @@ impl FederationRepository {
             FederationMessageKind::RoomInvite
         };
         let payload = json!({"room":room_id,"participants":room["localParticipants"],"shareNames":share_names,"shareStatus":share_status});
-        let existing = super::federation_messaging::FederationMessagingRepository::record(
-            tx,
-            super::federation_messaging::FederationTable::Outbox,
-            &message_id,
-            &peer_state,
-        )?;
+        let existing = record(tx, "runtime_federation_outbox", &message_id)?;
         if let Some(existing) = existing {
             if existing.get("kind") != Some(&json!(kind))
                 || existing.get("payload") != Some(&payload)
@@ -501,7 +496,10 @@ impl FederationRepository {
                     "federation queue is full".into(),
                 ));
             }
-            super::federation_messaging::put_outbox(tx, &message_id, &peer_state, &queued)?;
+            tx.execute(
+                "INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES(?1,?2,?3)",
+                params![message_id, peer_state, queued.to_string()],
+            )?;
         }
         Ok(())
     }

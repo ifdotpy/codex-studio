@@ -45,8 +45,8 @@ Browser draft notifications follow this flow:
 1. Read the [draft sequence owner](../workspaces/runtime/packages/runtime-store/src/repositories/sync_documents.rs) when a subscribed draft resource is invalidated.
 2. The shared content filter suppresses hints when that sequence is unchanged.
 3. Read changed drafts and retained tombstones as one bounded typed interval; validate each payload through the draft owner and preserve its stored bytes.
-4. Admit contiguous intervals directly as server rows of the draft store, without another pull. The stream watermark means accepted-contiguous; the draft store owns conflicts.
-5. Pull from the last accepted checkpoint for initial load, gaps, reconnects, epoch changes, oversized intervals, or apply/persistence errors.
+4. Admit contiguous intervals directly to RxDB's master stream, without another pull. The stream watermark means accepted-contiguous; RxDB owns durability and conflicts.
+5. Pull from RxDB's durable checkpoint for initial load, gaps, reconnects, epoch changes, oversized intervals, or apply/persistence errors.
 
 Server command output follows this flow:
 
@@ -301,9 +301,9 @@ Native composer draft synchronization follows this flow:
 
 Browser draft push acknowledgement follows this flow:
 
-1. Save edits locally immediately; the existing push gate groups remote writes, including edits received during an in-flight push.
+1. Save edits locally immediately; the existing RxDB push gate groups remote writes, including edits received during an in-flight push.
 2. Accept the conflicts-only HTTP result as acknowledgement of the exact attempted state.
-3. Deliver complete server draft intervals through the same server-row path.
+3. Deliver complete server draft intervals through the same RxDB master stream.
 4. Keep only the last two distinct acknowledged own payloads per branch; suppress a delayed echo only when it exactly matches the earlier payload and deletion state.
 5. Resolve genuine concurrent versions with the [draft conflict owner](../workspaces/client/apps/web/src/sync/conflicts.ts), keeping both texts; retry a lost response with its exact attempted state.
 
@@ -1173,9 +1173,8 @@ described above; its active-agent estimate is separate from this turn-start gate
 No terminal command controls agents. The Python `codex-control` command was removed
 with the Python backend ([CLI usage](cli.md)). Use the Studio window. A script can use
 the same server's HTTP API, for example `POST /api/agents` to create a chat,
-`POST /api/configure` for team settings, and `POST /api/commands` to send
-(`send` command), stop (`stop` command), or withdraw a queued message (`withdraw`
-command). A changed subagent concurrency carries the current setting
+`POST /api/messages` to send, `POST /api/configure` for team settings, and
+`POST /api/stop` to stop. A changed subagent concurrency carries the current setting
 revision and a request ID; after an uncertain response, repeat the same target value
 with the same request ID and expected revision, and do not save a fresh value to find
 out whether the earlier one applied.

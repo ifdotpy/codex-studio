@@ -3,9 +3,6 @@ import {
   MonitorInputKind,
   MonitorInputStatus,
 } from "./generated/api";
-import { createCommandClient } from "./commands";
-import { createPendingCommands } from "./pendingCommands";
-import { onEntitySequenceAdvance } from "./sync/entitySequence";
 import { randomUUID } from "./uuid";
 import { hasNativeClient } from "./native/client";
 
@@ -851,14 +848,6 @@ export function createApiScope(options: ApiScopeOptions) {
     options?: Omit<PostOptions, "timeoutMs">,
   ) => post(path, body, { ...options, timeoutMs: 15000 });
 
-  // Every write action goes through the one command path (`POST /api/commands`).
-  const pending = createPendingCommands();
-  const command = createCommandClient(
-    localStorage,
-    (body, options) => syncPost("/api/commands", body, options),
-    pending,
-  );
-
   async function refreshSession(): Promise<GetResult<"/api/session">> {
     const generation = ++sessionGeneration;
     pendingSessions.add(generation);
@@ -1007,8 +996,6 @@ export function createApiScope(options: ApiScopeOptions) {
     apiDownload,
     syncGet,
     syncPost,
-    command,
-    pending,
     refreshSession,
     saved,
     save,
@@ -1047,16 +1034,10 @@ export const {
   apiDownload,
   syncGet,
   syncPost,
-  command,
-  pending,
   refreshSession,
   saved,
   save,
   stableRequestId,
   clearStableRequestId,
 } = defaultApi;
-onEntitySequenceAdvance((sequence, reset) => {
-  if (reset) pending.resetClientSeq();
-  pending.observeClientSeq(sequence);
-});
 export type ServerApi = ReturnType<typeof createApiScope>;

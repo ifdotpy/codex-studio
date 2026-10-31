@@ -1081,7 +1081,7 @@ mod tests {
         store.transaction(move |tx| {
             studio_runtime_store::RemoteTransportRepository::reserve_multi_server_request(tx, &seed_id, &seed_request, &fingerprint, seeded_at)?;
             studio_runtime_store::RemoteTransportRepository::complete_multi_server_request(tx, &seed_id, &seed_request, &fingerprint, &response, seeded_at)?;
-            tx.execute_batch("CREATE TRIGGER no_invite_network BEFORE INSERT ON runtime_outbox WHEN NEW.kind='remote_delivery' BEGIN SELECT RAISE(ABORT,'network forbidden'); END;")?;
+            tx.execute_batch("CREATE TRIGGER no_invite_network BEFORE INSERT ON runtime_access_outbound BEGIN SELECT RAISE(ABORT,'network forbidden'); END;")?;
             Ok(())
         }).await.unwrap();
         let whoami: Arc<

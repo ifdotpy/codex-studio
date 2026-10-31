@@ -1,10 +1,8 @@
 import { required } from "../teams/helpers.ts";
 import type { Agent } from "../../src/types.ts";
-import { commandOf } from "../messages/send-command.ts";
+import { requestBody } from "../messages/helpers.ts";
 import type { Page } from "playwright";
-import type { GetResult } from "../../src/apiTypes.ts";
-import { standaloneCommand } from "../../src/commands.ts";
-import type { CommandRequest } from "../../src/commands.ts";
+import type { PostBody, GetResult } from "../../src/apiTypes.ts";
 import {
   readTestState,
   test,
@@ -19,8 +17,6 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-type WithdrawCommand = Extract<CommandRequest, { kind: "withdraw" }>;
 
 // These agent records were written by the isolated Studio runtime.
 function readAgentRecord(payload: string): Agent {
@@ -51,19 +47,19 @@ async function setupSendingRemovePointer(page: Page) {
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
   assert.ok(lead);
 
-  await fetch(`${origin}/api/commands`, {
+  await fetch(`${origin}/api/messages`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       Origin: origin,
       "X-Canvas-Token": initial.token,
     },
-    body: JSON.stringify(
-      standaloneCommand("send", lead!.id, {
-        text: "Pointer overlap while sending",
-        delivery: "current_turn",
-      }),
-    ),
+    body: JSON.stringify({
+      id: crypto.randomUUID(),
+      room: lead!.id,
+      text: "Pointer overlap while sending",
+      delivery: "current_turn",
+    }),
   }).then(async (response) => {
     assert.equal(response.status, 200, await response.text());
   });
@@ -160,15 +156,18 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
   const other = initial.threads.find((a) => a.name === "Other project");
   assert.ok(other);
 
-  const post = async (command: CommandRequest) => {
-    const response = await fetch(origin + "/api/commands", {
+  const post = async <Path extends "/api/queue" | "/api/stop">(
+    path: Path,
+    body: PostBody<Path>,
+  ) => {
+    const response = await fetch(origin + path, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         Origin: origin,
         "X-Canvas-Token": initial.token,
       },
-      body: JSON.stringify(command),
+      body: JSON.stringify(body),
     });
     assert.equal(response.status, 200, await response.clone().text());
     return response.json();
@@ -177,11 +176,16 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     fetch(`${origin}/api/queue?agent=${id}`).then((r) => r.json());
   for (const agent of initial.threads.filter((a) => a.source === "managed"))
     for (const item of (await queue(agent.id)).items)
-      await post(standaloneCommand("withdraw", agent.id, { message: item.id }));
+      await post("/api/queue", {
+        action: "cancel",
+        agent: agent.id,
+        id: item.id,
+        request_id: crypto.randomUUID(),
+      });
   // Seed persisted pending rows on stopped disposable agents. A held active
   // turn would still accept current-turn input before removal can inspect it.
   for (const agent of [lead!, other!])
-    await post(standaloneCommand("stop", agent.id, {}));
+    await post("/api/stop", { id: agent.id });
   const database = new DatabaseSync(
     join(rustFixtureStateDirectory(evidence), "canvas.sqlite3"),
   );
@@ -235,14 +239,18 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
   await fixturePage.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(10000);
   const errors: string[] = [],
-    mutations: WithdrawCommand[] = [],
+    mutations: PostBody<"/api/queue">[] = [],
     starts: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("request", (request) => {
-    if (new URL(request.url()).pathname !== "/api/commands") return;
-    const withdraw = commandOf(request, "withdraw");
-    if (withdraw) mutations.push(withdraw);
-    else starts.push(request.url());
+    if (request.method() === "POST") {
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/queue")
+        mutations.push(
+          requestBody<PostBody<"/api/queue">>({ request: () => request }),
+        );
+      if (path === "/api/messages" || path === "/api/stop") starts.push(path);
+    }
   });
   let loseResponse = true;
   await page.addInitScript(
@@ -282,7 +290,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
       key.startsWith("studio-remove-sending:"),
     );
     // These saved commands were written by the renderer under test.
-    const readCommand = (payload: string): WithdrawCommand =>
+    const readCommand = (payload: string): PostBody<"/api/queue"> =>
       JSON.parse(payload);
     return keys.map((key) => readCommand(localStorage.getItem(key)!));
   });
@@ -290,7 +298,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
   assert.equal(
     await page.evaluate(
       async ({ token, body }) => {
-        const response = await fetch("/api/commands", {
+        const response = await fetch("/api/queue", {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -305,7 +313,10 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     200,
   );
   await card("Remove one").waitFor({ state: "hidden" });
-  assert.equal(required(mutations[0]).id, required(mutations[1]).id);
+  assert.equal(
+    required(mutations[0]).request_id,
+    required(mutations[1]).request_id,
+  );
   const removeSecond = card("Remove two").getByRole("button", {
     name: "Remove sending message",
     exact: true,

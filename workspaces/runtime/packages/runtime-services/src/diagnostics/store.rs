@@ -153,22 +153,6 @@ pub fn migration_status(connection: &Connection) -> Result<Value, rusqlite::Erro
             "tasks": {"cursor": 0, "complete": false, "status": "pending", "updated": null, "error": null}
         }));
     }
-    if table_exists(connection, "runtime_payload_migrations")? {
-        let online = studio_runtime_store::online_migration::progress(connection)?;
-        if !online.is_empty() {
-            let by_name = online
-                .into_iter()
-                .map(|p| {
-                    (
-                        p.name,
-                        json!({"cursor": p.cursor, "complete": p.complete, "status": p.status,
-                            "updated": p.updated, "error": p.error, "dirty": p.dirty}),
-                    )
-                })
-                .collect::<serde_json::Map<_, _>>();
-            status.insert("online".to_owned(), Value::Object(by_name));
-        }
-    }
     if table_exists(connection, "sync_entity_meta")? {
         let mut values = connection.prepare(
             "SELECT key,value FROM sync_entity_meta WHERE key IN ('entity_tombstone_count','entity_tombstone_floor')",
@@ -282,27 +266,6 @@ mod tests {
         assert_eq!(
             execution_ledger(&connection).unwrap()["runs"][0]["extra"],
             42
-        );
-    }
-}
-
-#[cfg(test)]
-mod online_migration_status_tests {
-    use super::*;
-
-    #[test]
-    fn status_lists_online_migrations_with_progress() {
-        let db = Connection::open_in_memory().expect("memory db");
-        db.execute_batch(
-            "CREATE TABLE runtime_payload_migrations (name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pending',updated REAL,error TEXT);
-             INSERT INTO runtime_payload_migrations VALUES('online:chats',500,0,'running',1.5,NULL);",
-        )
-        .expect("fixture");
-        let status = migration_status(&db).expect("status");
-        assert_eq!(
-            status["online"]["chats"],
-            json!({"cursor": 500, "complete": false, "status": "running",
-                "updated": 1.5, "error": null, "dirty": 0})
         );
     }
 }

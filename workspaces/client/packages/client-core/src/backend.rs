@@ -759,7 +759,7 @@ pub(crate) mod tests {
         let response = Backend::new(&origin).unwrap().dispatch(Request {
             id: "transport-id".into(),
             method: "api.request".into(),
-            params: serde_json::json!({"path":"/api/commands","body":{"known":1,"vendor":{"nested":[null,"🦀"]}},"workspaceId":"workspace-one","requestId":"original-operation-id"}),
+            params: serde_json::json!({"path":"/api/messages","body":{"known":1,"vendor":{"nested":[null,"🦀"]}},"workspaceId":"workspace-one","requestId":"original-operation-id"}),
         }).await;
         let failure = response.error.unwrap();
         assert_eq!(failure.code, "http");
@@ -782,7 +782,7 @@ pub(crate) mod tests {
             reply(&mut session, r#"{"token":"native-token"}"#).await;
             let (mut command, _) = listener.accept().await.unwrap();
             let (headers, body) = read_http(&mut command).await;
-            assert!(headers.starts_with("POST /api/commands "));
+            assert!(headers.starts_with("POST /api/messages "));
             assert!(headers.to_ascii_lowercase().contains("content-length: 4"));
             assert!(
                 headers
@@ -795,7 +795,7 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
         });
-        let response = Backend::new(&origin).unwrap().dispatch(Request { id: "null-post".into(), method: "api.request".into(), params: serde_json::json!({"path":"/api/commands", "method":"POST", "body":null, "httpResponse":true}) }).await;
+        let response = Backend::new(&origin).unwrap().dispatch(Request { id: "null-post".into(), method: "api.request".into(), params: serde_json::json!({"path":"/api/messages", "method":"POST", "body":null, "httpResponse":true}) }).await;
         assert!(response.error.is_none());
         assert_eq!(response.result.unwrap()["status"], 204);
         server.await.unwrap();
@@ -846,7 +846,7 @@ pub(crate) mod tests {
             drop(session);
             let (mut mutation, _) = listener.accept().await.unwrap();
             let (headers, body) = read_http(&mut mutation).await;
-            assert!(headers.starts_with("POST /api/commands "));
+            assert!(headers.starts_with("POST /api/messages "));
             assert!(
                 headers
                     .to_ascii_lowercase()
@@ -877,7 +877,7 @@ pub(crate) mod tests {
         });
         let backend = Backend::new(&origin).unwrap();
         let response = backend.dispatch(Request { id: "transport-id".into(), method: "api.request".into(), params: serde_json::json!({
-            "path":"/api/commands", "body":{"id":"original-message-id","text":"Привет"}, "workspaceId":"workspace-one", "requestId":"original-operation-id", "apiSchema":"client-schema",
+            "path":"/api/messages", "body":{"id":"original-message-id","text":"Привет"}, "workspaceId":"workspace-one", "requestId":"original-operation-id", "apiSchema":"client-schema",
         }) }).await;
         assert_eq!(response.id, "transport-id");
         assert_eq!(response.error.unwrap().code, "network");
@@ -942,7 +942,7 @@ pub(crate) mod tests {
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let backend = Backend::new(&origin).unwrap();
         for field in ["requestId", "apiSchema", "workspaceId"] {
-            let mut params = serde_json::json!({"path":"/api/commands", "body":{"text":"hello"}});
+            let mut params = serde_json::json!({"path":"/api/messages", "body":{"text":"hello"}});
             params[field] = Value::String("injected\r\nX-Extra: value".into());
             let response = backend
                 .dispatch(Request {

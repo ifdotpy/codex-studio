@@ -101,7 +101,7 @@ const PROVIDER_COLUMN: AgentColumn =
 
 /// The indexed agent fields; see the module documentation. Changing this list
 /// changes the table and needs a new dated migration.
-pub const AGENT_COLUMNS: [AgentColumn; 37] = [
+pub const AGENT_COLUMNS: [AgentColumn; 40] = [
     column("root_id", "TEXT", "record->>'$.rootId'", ""),
     column("parent_id", "TEXT", "record->>'$.parentId'", ""),
     column("status", "TEXT", "record->>'$.status'", ""),
@@ -144,6 +144,24 @@ pub const AGENT_COLUMNS: [AgentColumn; 37] = [
         "native_tool_refresh_id",
         "TEXT",
         "record->>'$.nativeToolRefreshId'",
+        "",
+    ),
+    column(
+        "start_attempt_submitted",
+        "",
+        "record->>'$.startAttempt.submitted'",
+        "",
+    ),
+    column(
+        "start_attempt_connection_generation",
+        "",
+        "record->>'$.startAttempt.connectionGeneration'",
+        "",
+    ),
+    column(
+        "start_attempt_active_at_reservation",
+        "",
+        "record->>'$.startAttempt.activeAtReservation'",
         "",
     ),
     column(
@@ -513,31 +531,15 @@ mod tests {
                 Some(agent.clone())
             );
         }
-        let lead: (String, String, i64, i64, String) = reader
+        let lead: (String, String, i64, i64, i64, String) = reader
             .query_row(
-                "SELECT account_key,provider,in_flight,auto_wake,cwd \
+                "SELECT account_key,provider,in_flight,auto_wake,start_attempt_connection_generation,cwd \
                  FROM runtime_agents WHERE id='lead'",
                 [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
             )
             .expect("lead columns");
-        assert_eq!(lead, ("acct".into(), "claude".into(), 1, 1, "/w".into()));
-        let generation: i64 = reader
-            .query_row(
-                "SELECT attempt_connection_generation FROM turns WHERE chat='lead' AND attempt IS NOT NULL",
-                [],
-                |row| row.get(0),
-            )
-            .expect("the attempt generation is a column of the owner turn");
-        assert_eq!(generation, 4);
+        assert_eq!(lead, ("acct".into(), "claude".into(), 1, 1, 4, "/w".into()));
         let child: (String, f64, i64, i64, i64, i64) = reader
             .query_row(
                 "SELECT parent_id,deleted_at,agent_archived,review_archive_marked,\
@@ -609,8 +611,6 @@ mod tests {
                     "record TEXT NOT NULL",
                     "start_attempt_action TEXT GENERATED ALWAYS AS \
                  (record->>'$.startAttempt.action') STORED,\
-                 start_attempt_submitted GENERATED ALWAYS AS \
-                 (record->>'$.startAttempt.submitted') STORED,\
                  capacity_retry_id TEXT GENERATED ALWAYS AS \
                  (record->>'$.capacityRetry.id') STORED,\
                  start_attempt_capacity_retry_id TEXT GENERATED ALWAYS AS \

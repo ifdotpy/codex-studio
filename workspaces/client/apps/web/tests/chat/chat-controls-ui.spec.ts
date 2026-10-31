@@ -1,8 +1,7 @@
 import { waitForFixturePort } from "../playwright.ts";
 import type { Route } from "@playwright/test";
-import type { SendMessageBody } from "../../src/commands.ts";
-import { commandOf, sentMessage } from "../messages/send-command.ts";
-import { fixtureGetResult } from "./http.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
+import { fixturePostBody, fixtureGetResult } from "./http.ts";
 import {
   readTestState,
   installApiSchemaFixtureHeaders,
@@ -259,20 +258,25 @@ test("Chat controls", async ({ page }) => {
     true,
     "attachment-only message is enabled",
   );
-  const attachmentPosts: SendMessageBody[] = [];
+  const attachmentPosts: PostBody<"/api/messages">[] = [];
   page.on("request", (request) => {
-    const sent = sentMessage(request);
-    if (sent) attachmentPosts.push(sent);
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/messages"
+    )
+      attachmentPosts.push(
+        fixturePostBody("/api/messages", request.postDataJSON()),
+      );
   });
   let failAttachments = true;
   const failAttachmentSend = (route: Route) =>
-    failAttachments && commandOf(route.request(), "send")
+    failAttachments
       ? route.fulfill({
           status: 503,
           json: { error: "Test transport failure" },
         })
-      : route.fallback();
-  await page.route("**/api/commands", failAttachmentSend);
+      : route.continue();
+  await page.route("**/api/messages", failAttachmentSend);
   await page.locator("#send").click();
   await page.getByText("Test transport failure", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Stop retries", exact: true }).click();
@@ -311,7 +315,7 @@ test("Chat controls", async ({ page }) => {
       firstAttempt,
       "Retry preserves the message identity and all attachment IDs",
     );
-  await page.unroute("**/api/commands", failAttachmentSend);
+  await page.unroute("**/api/messages", failAttachmentSend);
   await page
     .locator("#messages")
     .getByRole("button", { name: "evidence.txt", exact: true })
@@ -397,8 +401,11 @@ test("Chat controls", async ({ page }) => {
   const failedSteerText = "Steering failure keeps this instruction";
   let failedSteerId: string | undefined;
   const failSteerRequests = async (route: Route) => {
-    const body = sentMessage(route.request());
-    if (body?.text !== failedSteerText) return route.fallback();
+    const body = fixturePostBody(
+      "/api/messages",
+      route.request().postDataJSON(),
+    );
+    if (body?.text !== failedSteerText) return route.continue();
     if (failedSteerId) assert.equal(body.id, failedSteerId);
     else failedSteerId = body.id;
     return route.fulfill({
@@ -406,7 +413,7 @@ test("Chat controls", async ({ page }) => {
       json: { error: "Fixture steer transport failure" },
     });
   };
-  await page.route("**/api/commands", failSteerRequests);
+  await page.route("**/api/messages", failSteerRequests);
   await page.locator("#send").click();
   const failedSteer = page
     .locator("#messages .message.user")
@@ -431,11 +438,11 @@ test("Chat controls", async ({ page }) => {
     false,
     "failed transport does not create a server queue row",
   );
-  await page.unroute("**/api/commands", failSteerRequests);
+  await page.unroute("**/api/messages", failSteerRequests);
 
   await page.locator("#message").fill("Keyboard instruction");
   await page.route(
-    "**/api/commands",
+    "**/api/messages",
     (r) =>
       r.fulfill({
         status: 503,
@@ -444,11 +451,11 @@ test("Chat controls", async ({ page }) => {
     { times: 1 },
   );
   const entered = page.waitForRequest(
-    (r) => commandOf(r, "send") !== undefined,
+    (r) => r.url().endsWith("/api/messages") && r.method() === "POST",
   );
   await page.locator("#message").press("Enter");
   assert.equal(
-    sentMessage(await entered)?.delivery,
+    fixturePostBody("/api/messages", (await entered).postDataJSON()).delivery,
     "current_turn",
     "Enter sends after-tool input",
   );

@@ -13,6 +13,7 @@
     "test:client:browser": "pnpm --filter codex-agents-web run test:browser",
     "test:server:bridge": "pnpm --filter studio-claude-bridge run test",
     "test:desktop": "pnpm --filter codex-agents-desktop test",
+    "test:desktop:native": "pnpm --filter codex-agents-desktop run test:native",
     "test:native:schema": "CODEX_NATIVE_SCHEMA=1 pnpm --filter codex-agents-web run test:unit -- nativeErrors.schema",
     "test:mutation": "pnpm --filter codex-agents-web run test:mutation",
     "lint:all": "node workspaces/tooling/apps/repository-checks/check-code.ts lint-all",

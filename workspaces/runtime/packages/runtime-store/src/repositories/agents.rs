@@ -66,9 +66,6 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     connection_functions: &[],
     bootstrap_tables: &[
         crate::agent_volatile::TABLE_REQUIREMENT,
-        crate::domain::TABLE_REQUIREMENTS[0],
-        crate::domain::TABLE_REQUIREMENTS[1],
-        crate::domain::TABLE_REQUIREMENTS[2],
         TableRequirement {
             name: "runtime_agents",
             columns: &["hold_status", "hold_incident"],

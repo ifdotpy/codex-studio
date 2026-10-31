@@ -46,6 +46,12 @@ enum Direction {
     Outgoing,
 }
 impl Direction {
+    fn table(self) -> &'static str {
+        match self {
+            Self::Incoming => "runtime_server_inbox",
+            Self::Outgoing => "runtime_server_outbox",
+        }
+    }
     fn namespace(self) -> &'static str {
         match self {
             Self::Incoming => "server-inbox",
@@ -152,16 +158,18 @@ fn pending_key(
     authority: &str,
     envelope: &Envelope,
 ) -> Result<String, AccessError> {
-    let exists: bool = match direction {
-        Direction::Incoming => tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_server_inbox WHERE id=?1 AND principal=?2)",
-            params![envelope.root, authority],
-            |r| r.get(0),
-        )?,
-        Direction::Outgoing => {
-            crate::server_outbox::find_for(tx, authority, &envelope.root)?.is_some()
-        }
+    let column = match direction {
+        Direction::Incoming => "principal",
+        Direction::Outgoing => "server",
     };
+    let exists: bool = tx.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM {} WHERE id=?1 AND {column}=?2)",
+            direction.table()
+        ),
+        params![envelope.root, authority],
+        |r| r.get(0),
+    )?;
     Ok(if exists && envelope.operation.is_empty() {
         envelope.root.clone()
     } else {
@@ -201,23 +209,9 @@ fn settle_delivery(
     signature: &str,
     result: &ExchangeOutcome,
 ) -> Result<(), AccessError> {
-    let mut outgoing = None;
     let (admission, principal, server, actor, body): (String, Option<String>,Option<String>, Option<String>, Option<String>) = match direction {
         Direction::Incoming => tx.query_row("SELECT admission,principal,NULL,actor,NULL FROM runtime_server_inbox WHERE id=?1 AND signature=?2", params![key,signature], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?,
-        Direction::Outgoing => {
-            let entry = crate::server_outbox::find(tx, key)?
-                .filter(|entry| entry.signature == signature)
-                .ok_or_else(|| refused(409, "receipt_missing", "The delivery claim is missing"))?;
-            let actor = serde_json::from_str::<Value>(&entry.record.body)
-                .ok()
-                .and_then(|body| body.pointer("/payload/actor").and_then(Value::as_str).map(str::to_owned));
-            let admission = serde_json::to_string(&entry.record.admission).map_err(|_| {
-                refused(503, "invalid_record", "Stored delivery admission is invalid")
-            })?;
-            let row = (admission, None, Some(entry.target.clone()), actor, Some(entry.record.body.clone()));
-            outgoing = Some(entry);
-            row
-        }
+        Direction::Outgoing => tx.query_row("SELECT admission,NULL,server,json_extract(body,'$.payload.actor'),body FROM runtime_server_outbox WHERE id=?1 AND fingerprint=?2", params![key,signature], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?,
     };
     let admission: AdmittedRequest = serde_json::from_str(&admission).map_err(|_| {
         refused(
@@ -285,12 +279,10 @@ fn settle_delivery(
             })?;
         }
     }
-    match outgoing {
-        Some(entry) => crate::server_outbox::delete(tx, &entry)?,
-        None => {
-            tx.execute("DELETE FROM runtime_server_inbox WHERE id=?1", [key])?;
-        }
-    }
+    tx.execute(
+        &format!("DELETE FROM {} WHERE id=?1", direction.table()),
+        [key],
+    )?;
     Ok(())
 }
 
@@ -783,33 +775,6 @@ impl RuntimeOrchestrationEffects {
         }
     }
 
-    /// `backup.put`: one chunk of a backup file from a paired server (docs/backup.md).
-    async fn peer_backup(
-        &self,
-        principal: &str,
-        envelope: &Value,
-    ) -> Result<ExchangeOutcome, AccessError> {
-        let root = self.store.root().to_path_buf();
-        let (principal, payload) = (principal.to_owned(), envelope["payload"].clone());
-        let result = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/peer_backup",
-            move || crate::peer_backup::receive(&root, &principal, &payload),
-        )
-        .await
-        .map_err(|_| refused(503, "backup_unavailable", "The backup write could not run"))?;
-        match result {
-            Ok(value) => applied(&value),
-            Err(crate::peer_backup::ReceiveError::Refused(message)) => {
-                Ok(ExchangeOutcome::NotApplied(message))
-            }
-            Err(crate::peer_backup::ReceiveError::Failed(_)) => Err(refused(
-                503,
-                "backup_unavailable",
-                "The backup write could not run",
-            )),
-        }
-    }
-
     async fn stop_worker(
         &self,
         principal: &str,
@@ -1206,14 +1171,7 @@ impl RuntimeOrchestrationEffects {
                             })?;
                         if target.root_id != worker.root_id
                             || target.id == worker.id
-                            || !crate::managed_host_tools::is_descendant(tx, &worker_id, target_id)
-                                .map_err(|_| {
-                                    refused(
-                                        503,
-                                        "invalid_record",
-                                        "A stored agent record is invalid",
-                                    )
-                                })?
+                            || !is_descendant_of(tx, target_id, &worker_id)?
                             || target.auto_wake != Some(true)
                         {
                             return Err(refused(
@@ -1734,6 +1692,32 @@ fn callback_error(error: crate::provider_callbacks::CallbackError) -> AccessErro
     }
 }
 
+fn is_descendant_of(
+    tx: &rusqlite::Transaction<'_>,
+    target_id: &str,
+    ancestor_id: &str,
+) -> Result<bool, AccessError> {
+    let mut current = studio_runtime_store::AgentRepository::get(
+        tx,
+        &studio_runtime_store::AgentId::from(target_id),
+    )?;
+    let mut seen = std::collections::HashSet::new();
+    while let Some(agent) = current {
+        let parent = agent.parent_id.as_deref().unwrap_or_default();
+        if parent == ancestor_id {
+            return Ok(true);
+        }
+        if parent.is_empty() || !seen.insert(parent.to_owned()) {
+            return Ok(false);
+        }
+        current = studio_runtime_store::AgentRepository::get(
+            tx,
+            &studio_runtime_store::AgentId::from(parent),
+        )?;
+    }
+    Ok(false)
+}
+
 impl OrchestrationEffects for RuntimeOrchestrationEffects {
     fn supports(&self, action: &str) -> bool {
         matches!(
@@ -1753,9 +1737,7 @@ impl OrchestrationEffects for RuntimeOrchestrationEffects {
             || (cfg!(unix) && SERVER_COMMAND_ACTIONS.contains(&action))
             || action == "projects"
             || action == crate::peer_projects::CHANGED_ACTION
-            || action == crate::device_trust::ACTION
             || crate::peer_updates::ACTIONS.contains(&action)
-            || action == crate::peer_backup::ACTION
             || (action == "stop" && self.lifecycle_ports.is_some())
     }
 
@@ -1861,27 +1843,6 @@ impl RuntimeOrchestrationEffects {
         }
     }
 
-    /// Merge a paired server's list of servers and device keys; answer with this server's
-    /// list (docs/decisions/2026-10-28-target-client-server-architecture.md, "Device identity").
-    async fn device_trust(
-        &self,
-        principal: &str,
-        envelope: &Value,
-    ) -> Result<ExchangeOutcome, AccessError> {
-        let local = self.store.local_server_id()?.unwrap_or_default();
-        let payload = envelope["payload"].clone();
-        let sender = principal.to_owned();
-        let now = crate::event_write::unix_time()
-            .map_err(|_| refused(503, "clock_unavailable", "The system clock is unavailable"))?;
-        let list = self
-            .store
-            .transaction_with(move |tx| {
-                crate::device_trust::receive(tx, &local, &sender, &payload, now)
-            })
-            .await?;
-        applied(&list)
-    }
-
     /// Python `runtime.projects()`: every project ordered by creation time and ID.
     async fn projects(&self) -> Result<ExchangeOutcome, AccessError> {
         let mut listed = crate::projects::list(&self.store).await.map_err(|_| {
@@ -1948,9 +1909,6 @@ impl RuntimeOrchestrationEffects {
         if action == "projects" {
             return self.projects().await;
         }
-        if action == crate::device_trust::ACTION {
-            return self.device_trust(principal, envelope).await;
-        }
         if action == crate::peer_projects::CHANGED_ACTION {
             if let Some(wake) = &self.projects_changed {
                 wake.peer_changed(principal);
@@ -1961,9 +1919,6 @@ impl RuntimeOrchestrationEffects {
         }
         if crate::peer_updates::ACTIONS.contains(&action) {
             return self.peer_update(principal, envelope).await;
-        }
-        if action == crate::peer_backup::ACTION {
-            return self.peer_backup(principal, envelope).await;
         }
         if GIT_CHANNEL_ACTIONS.contains(&action) {
             return self.git_channel(envelope).await;
@@ -2346,11 +2301,13 @@ fn exec_owner(
         handle,
         &[ServerOperationKind::Exec.as_str()],
     );
-    let row: Option<(String, String)> = match crate::server_outbox::find(tx, handle)? {
-        Some(entry) => Some(entry),
-        None => crate::server_outbox::find(tx, &scoped)?,
-    }
-    .map(|entry| (entry.target, entry.record.body));
+    let row: Option<(String, String)> = tx
+        .query_row(
+            "SELECT server,body FROM runtime_server_outbox WHERE id IN (?1,?2)",
+            params![handle, scoped],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
     let (saved_server, body) = match row {
         Some(row) => row,
         None => {
@@ -2559,25 +2516,18 @@ fn settle_exec_row(
 ) -> Result<(), AccessError> {
     match result {
         ExchangeOutcome::Applied(_) | ExchangeOutcome::NotApplied(_) => {
-            let entry = crate::server_outbox::find(tx, key)?
-                .ok_or_else(|| refused(409, "receipt_missing", "The delivery claim is missing"))?;
-            settle_delivery(tx, Direction::Outgoing, key, root, &entry.signature, result)?;
+            let signature: String = tx.query_row(
+                "SELECT fingerprint FROM runtime_server_outbox WHERE id=?1",
+                [key],
+                |row| row.get(0),
+            )?;
+            settle_delivery(tx, Direction::Outgoing, key, root, &signature, result)?;
         }
         ExchangeOutcome::Unknown | ExchangeOutcome::PreEffectWaiting => {
-            let entry = crate::server_outbox::find(tx, key)?
-                .ok_or_else(|| refused(409, "receipt_missing", "The delivery claim is missing"))?;
-            let record = crate::server_outbox::ServerRequestRecord {
-                attempts: entry.record.attempts + 1,
-                error: Some("unknown".into()),
-                ..entry.record.clone()
-            };
-            crate::server_outbox::update(
-                tx,
-                &entry,
-                state,
-                now.saturating_add(peer_retry_delay(attempts)) as f64,
-                &record,
-            )?;
+            tx.execute(
+            "UPDATE runtime_server_outbox SET state=?1,attempts=attempts+1,next_at=?2,error='unknown' WHERE id=?3",
+            params![state, now.saturating_add(peer_retry_delay(attempts)), key],
+        )?;
         }
     }
     Ok(())
@@ -2685,8 +2635,6 @@ const PEER_REPLAY_SAFE_ACTIONS: &[ServerOperationKind] = &[
     // Effect-free reads (Python `receive` runs them again for a running claim).
     ServerOperationKind::Projects,
     ServerOperationKind::ProjectsChanged,
-    // A merge of two lists: running it again changes nothing.
-    ServerOperationKind::DeviceTrust,
     ServerOperationKind::Folders,
     ServerOperationKind::Git,
     ServerOperationKind::Chunk,
@@ -2698,8 +2646,6 @@ const PEER_REPLAY_SAFE_ACTIONS: &[ServerOperationKind] = &[
     ServerOperationKind::UpdateExport,
     ServerOperationKind::UpdateChunk,
     ServerOperationKind::UpdateRelease,
-    // A chunk lands at its offset, so the same chunk again changes nothing (docs/backup.md).
-    ServerOperationKind::BackupPut,
 ];
 
 /// Worker calls that a remote worker sends to its home server (Python
@@ -2826,38 +2772,6 @@ fn check_project_reservation(
 
 /// Persist a peer-delivery intent in the caller's owning transaction. The
 /// caller sends it only after that transaction commits.
-/// A QUIC connection to the paired server with this public key (PEM) opened again.
-/// Its waiting deliveries become due now, so the pump sends them without a backoff
-/// wait. Returns the number of changed deliveries. `now` is in Unix seconds.
-pub fn release_peer(
-    tx: &Transaction<'_>,
-    public_key: &str,
-    now: i64,
-) -> Result<usize, AccessError> {
-    let server: Option<String> = tx
-        .query_row(
-            "SELECT id FROM runtime_access_clients \
-             WHERE json_extract(record,'$.kind')='server' \
-               AND json_extract(record,'$.status')='paired' \
-               AND json_extract(record,'$.publicKey')=?1",
-            [public_key],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(server) = server else {
-        return Ok(0);
-    };
-    Ok(crate::server_outbox::release(tx, &server, now)?)
-}
-
-/// After an unclean stop, hold the server requests whose commit that claimed them can be lost.
-pub fn hold_unclean_server_requests(tx: &Transaction<'_>) -> Result<usize, AccessError> {
-    Ok(crate::server_outbox::hold_unclean(
-        tx,
-        &outgoing_retry_sql_values(),
-    )?)
-}
-
 pub fn enqueue_in_transaction(
     transaction: &Transaction<'_>,
     server: &str,
@@ -2875,9 +2789,15 @@ pub fn enqueue_in_transaction(
         return Ok(());
     }
     envelope.key = pending_key(transaction, Direction::Outgoing, server, &envelope)?;
-    let prior = crate::server_outbox::find(transaction, &envelope.key)?;
-    if let Some(prior) = prior {
-        if prior.target != server || prior.signature != envelope.fingerprint {
+    let prior = transaction
+        .query_row(
+            "SELECT server,fingerprint FROM runtime_server_outbox WHERE id=?1",
+            [&envelope.key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    if let Some((saved_server, fingerprint)) = prior {
+        if saved_server != server || fingerprint != envelope.fingerprint {
             return Err(refused(
                 409,
                 "request_conflict",
@@ -2888,20 +2808,9 @@ pub fn enqueue_in_transaction(
     }
     check_project_reservation(transaction, action, payload)?;
     let admitted = admit_delivery(transaction, Direction::Outgoing, server, &envelope, now)?;
-    crate::server_outbox::insert(
-        transaction,
-        server,
-        &envelope.key,
-        &envelope.fingerprint,
-        ServerDeliveryState::Queued,
-        0.0,
-        &crate::server_outbox::ServerRequestRecord {
-            body: envelope.body.clone(),
-            admission: admitted,
-            attempts: 0,
-            error: None,
-        },
-        now,
+    transaction.execute(
+        "INSERT INTO runtime_server_outbox(id,server,body,state,created_at,next_at,fingerprint,attempts,admission) VALUES(?1,?2,?3,?7,?4,0,?5,0,?6)",
+        params![envelope.key, server, envelope.body, now, envelope.fingerprint, serde_json::to_string(&admitted).map_err(|_| refused(503,"invalid_record","Delivery admission could not be saved"))?,ServerDeliveryState::Queued],
     )?;
     Ok(())
 }
@@ -3023,84 +2932,28 @@ impl OrchestrationDriver {
         let mut envelope_for_claim = envelope.clone();
         let server_for_claim = server.to_owned();
         let in_flight_until = now.saturating_add(timeout.as_secs().max(1) as i64);
-        let (decision, key) = self
-            .store
-            .transaction_with(move |tx| {
-                if !is_local {
-                    require_paired(tx, &server_for_claim)?;
+        let (decision,key)=self.store.transaction_with(move |tx| {
+            if !is_local { require_paired(tx,&server_for_claim)?; }
+            if let Some(result) = replay_delivery(tx,Direction::Outgoing,&server_for_claim,&envelope_for_claim,now)? {
+                return Ok((DeliveryDecision::Return(result),envelope_for_claim.key));
+            }
+            envelope_for_claim.key=pending_key(tx,Direction::Outgoing,&server_for_claim,&envelope_for_claim)?;
+            let saved=outbox(tx,&envelope_for_claim.key)?;
+            let decision=decide_delivery(saved.as_ref(),&envelope_for_claim.fingerprint,Some(&server_for_claim),true,envelope_for_claim.action.as_str(),now)?;
+            if matches!(decision,DeliveryDecision::Execute) {
+                check_project_reservation(tx,envelope_for_claim.action.as_str(),&envelope_for_claim.value()["payload"])?;
+                // An in-flight claim is not due: the pump replays a running peer
+                // operation only after its exchange deadline has passed.
+                if saved.is_some() {
+                    tx.execute("UPDATE runtime_server_outbox SET state=?1,next_at=?2 WHERE id=?3",params![ServerDeliveryState::Running,in_flight_until,envelope_for_claim.key])?;
+                } else {
+                    let admitted = admit_delivery(tx,Direction::Outgoing,&server_for_claim,&envelope_for_claim,now)?;
+                    let admission = serde_json::to_string(&admitted).map_err(|_| refused(503,"invalid_record","Delivery admission could not be saved"))?;
+                    tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint,attempts,next_at,admission) VALUES(?1,?2,?3,?7,?4,?5,0,?6,?8)",params![envelope_for_claim.key,server_for_claim,envelope_for_claim.body,now,envelope_for_claim.fingerprint,in_flight_until,ServerDeliveryState::Running,admission])?;
                 }
-                if let Some(result) = replay_delivery(
-                    tx,
-                    Direction::Outgoing,
-                    &server_for_claim,
-                    &envelope_for_claim,
-                    now,
-                )? {
-                    return Ok((DeliveryDecision::Return(result), envelope_for_claim.key));
-                }
-                envelope_for_claim.key = pending_key(
-                    tx,
-                    Direction::Outgoing,
-                    &server_for_claim,
-                    &envelope_for_claim,
-                )?;
-                let saved = outbox(tx, &envelope_for_claim.key)?;
-                let decision = decide_delivery(
-                    saved.as_ref(),
-                    &envelope_for_claim.fingerprint,
-                    Some(&server_for_claim),
-                    true,
-                    envelope_for_claim.action.as_str(),
-                    now,
-                )?;
-                if matches!(decision, DeliveryDecision::Execute) {
-                    check_project_reservation(
-                        tx,
-                        envelope_for_claim.action.as_str(),
-                        &envelope_for_claim.value()["payload"],
-                    )?;
-                    // An in-flight claim is not due: the pump replays a running peer
-                    // operation only after its exchange deadline has passed.
-                    if saved.is_some() {
-                        let entry = crate::server_outbox::find(tx, &envelope_for_claim.key)?
-                            .ok_or_else(|| {
-                                refused(409, "receipt_missing", "The delivery claim is missing")
-                            })?;
-                        crate::server_outbox::update(
-                            tx,
-                            &entry,
-                            ServerDeliveryState::Running,
-                            in_flight_until as f64,
-                            &entry.record,
-                        )?;
-                    } else {
-                        let admitted = admit_delivery(
-                            tx,
-                            Direction::Outgoing,
-                            &server_for_claim,
-                            &envelope_for_claim,
-                            now,
-                        )?;
-                        crate::server_outbox::insert(
-                            tx,
-                            &server_for_claim,
-                            &envelope_for_claim.key,
-                            &envelope_for_claim.fingerprint,
-                            ServerDeliveryState::Running,
-                            in_flight_until as f64,
-                            &crate::server_outbox::ServerRequestRecord {
-                                body: envelope_for_claim.body.clone(),
-                                admission: admitted,
-                                attempts: 0,
-                                error: None,
-                            },
-                            now,
-                        )?;
-                    }
-                }
-                Ok::<_, AccessError>((decision, envelope_for_claim.key))
-            })
-            .await?;
+            }
+            Ok::<_,AccessError>((decision,envelope_for_claim.key))
+        }).await?;
         envelope.key = key;
         if let DeliveryDecision::Return(result) = decision {
             return Ok(result);
@@ -3170,14 +3023,13 @@ impl OrchestrationDriver {
                     &server_for_read,
                     &envelope_for_read,
                 )?;
-                let row = crate::server_outbox::find(tx, &key)?.map(|entry| {
-                    (
-                        entry.target,
-                        entry.record.body,
-                        entry.signature,
-                        entry.request_id,
+                let row = tx
+                    .query_row(
+                        "SELECT server,body,fingerprint,id FROM runtime_server_outbox WHERE id=?1",
+                        [key],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                     )
-                });
+                    .optional()?;
                 Ok::<_, AccessError>((replayed, row))
             })
             .await?;
@@ -3249,13 +3101,13 @@ impl OrchestrationDriver {
                 {
                     return Ok(saved);
                 }
-                let row: Option<(ServerDeliveryState, i64)> = crate::server_outbox::find(tx, &key)?
-                    .map(|entry| {
-                        (
-                            crate::server_outbox::state(entry.status),
-                            entry.record.attempts,
-                        )
-                    });
+                let row: Option<(ServerDeliveryState, i64)> = tx
+                    .query_row(
+                        "SELECT state,attempts FROM runtime_server_outbox WHERE id=?1",
+                        [&key],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()?;
                 let (state, attempts) = row.ok_or_else(|| {
                     refused(409, "receipt_missing", "The delivery claim is missing")
                 })?;
@@ -3296,31 +3148,17 @@ impl OrchestrationDriver {
                         "The delivery receipt does not match its claim",
                     ));
                 }
-                let entry = crate::server_outbox::find(tx, &key)?.ok_or_else(|| {
-                    refused(409, "receipt_missing", "The delivery claim is missing")
-                })?;
-                let record = crate::server_outbox::ServerRequestRecord {
-                    body,
-                    ..entry.record.clone()
-                };
-                crate::server_outbox::update(
-                    tx,
-                    &entry,
-                    ServerDeliveryState::Running,
-                    crate::server_outbox::next_at(&entry),
-                    &record,
+                tx.execute(
+                    "UPDATE runtime_server_outbox SET body=?1,fingerprint=COALESCE(fingerprint,?2) WHERE id=?3",
+                    params![body, fingerprint, key],
                 )?;
-                let attempts = record.attempts;
+                let attempts: i64 = tx.query_row(
+                    "SELECT attempts FROM runtime_server_outbox WHERE id=?1",
+                    [&key],
+                    |row| row.get(0),
+                )?;
                 // Python keeps an unsettled command row queued for the probe.
-                settle_exec_row(
-                    tx,
-                    &key,
-                    &root,
-                    ServerDeliveryState::Queued,
-                    attempts,
-                    &result,
-                    now,
-                )?;
+                settle_exec_row(tx, &key,&root, ServerDeliveryState::Queued, attempts, &result, now)?;
                 Ok(result)
             })
             .await
@@ -3519,13 +3357,23 @@ impl OrchestrationDriver {
         let pending = self
             .store
             .read_async("runtime-services/multi_server_orchestration", move |tx| {
-                crate::server_outbox::due(
-                    tx,
-                    now,
-                    MAX_OUTBOX_BATCH as i64,
-                    &outgoing_retry_sql_values(),
-                )
-                .map_err(StoreError::from)
+                let sql = format!(
+                    "SELECT server,body,state FROM runtime_server_outbox \
+                 WHERE next_at<=?1 AND (state='queued' OR (state='running' \
+                   AND json_extract(body,'$.action') IN ({}))) \
+                 ORDER BY rowid LIMIT ?2",
+                    outgoing_retry_sql_values()
+                );
+                let mut statement = tx.prepare(&sql)?;
+                let rows = statement.query_map(params![now, MAX_OUTBOX_BATCH as i64], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, ServerDeliveryState>(2)?,
+                    ))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(StoreError::from)
             })
             .await?;
         let mut count = 0;
@@ -3591,30 +3439,26 @@ impl OrchestrationDriver {
             ExchangeOutcome::Unknown | ExchangeOutcome::PreEffectWaiting
         ) {
             if outgoing_retry(action) && direction == Direction::Outgoing {
-                let key_for_update = key.to_owned();
-                self.store
-                    .transaction_with(move |tx| {
-                        if let Some(entry) = crate::server_outbox::find(tx, &key_for_update)?
-                            && crate::server_outbox::state(entry.status)
-                                == ServerDeliveryState::Running
-                        {
-                            let retry_delay = peer_retry_delay(entry.record.attempts.max(0));
-                            let record = crate::server_outbox::ServerRequestRecord {
-                                attempts: entry.record.attempts + 1,
-                                error: Some("unknown".into()),
-                                ..entry.record.clone()
-                            };
-                            crate::server_outbox::update(
-                                tx,
-                                &entry,
-                                ServerDeliveryState::Queued,
-                                now.saturating_add(retry_delay) as f64,
-                                &record,
-                            )?;
-                        }
-                        Ok::<_, AccessError>(())
+                let key_for_read = key.to_owned();
+                let attempts = self
+                    .store
+                    .read_async("runtime-services/multi_server_orchestration", move |tx| {
+                        tx.query_row(
+                            "SELECT attempts FROM runtime_server_outbox WHERE id=?1",
+                            [key_for_read],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .optional()
+                        .map(|value| value.unwrap_or_default().max(0) as u64)
+                        .map_err(StoreError::from)
                     })
                     .await?;
+                let retry_delay = peer_retry_delay(attempts as i64);
+                let key_for_update = key.to_owned();
+                self.store.transaction_with(move |tx| {
+                    tx.execute("UPDATE runtime_server_outbox SET state=?3,attempts=attempts+1,next_at=?1,error='unknown' WHERE id=?2 AND state=?4",params![now.saturating_add(retry_delay),key_for_update,ServerDeliveryState::Queued,ServerDeliveryState::Running])?;
+                    Ok::<_,AccessError>(())
+                }).await?;
             // Generic unknown input stays running: only a pre-effect proof permits retry.
             } else if direction == Direction::Incoming
                 && if action == ServerOperationKind::Input {
@@ -3692,14 +3536,13 @@ fn require_paired(tx: &Transaction<'_>, id: &str) -> Result<(), AccessError> {
     Ok(())
 }
 fn outbox(tx: &Transaction<'_>, key: &str) -> Result<Option<DeliverySnapshot>, AccessError> {
-    Ok(
-        crate::server_outbox::find(tx, key)?.map(|entry| DeliverySnapshot {
-            state: crate::server_outbox::state(entry.status),
-            next_at: crate::server_outbox::next_at(&entry),
-            signature: entry.signature,
-            server: Some(entry.target),
-        }),
-    )
+    Ok(tx
+        .query_row(
+            "SELECT state,fingerprint,server,next_at FROM runtime_server_outbox WHERE id=?1",
+            [key],
+            DeliverySnapshot::from_row,
+        )
+        .optional()?)
 }
 fn inbox(tx: &Transaction<'_>, key: &str) -> Result<Option<DeliverySnapshot>, AccessError> {
     Ok(tx
@@ -3713,7 +3556,18 @@ fn inbox(tx: &Transaction<'_>, key: &str) -> Result<Option<DeliverySnapshot>, Ac
 fn outbox_next_due_at(
     connection: &rusqlite::Connection,
 ) -> studio_runtime_store::StoreResult<Option<i64>> {
-    crate::server_outbox::next_due_at(connection, &outgoing_retry_sql_values()).map_err(Into::into)
+    let sql = format!(
+        "SELECT MIN(next_at) FROM runtime_server_outbox \
+         WHERE state='queued' OR (state='running' AND \
+           json_extract(body,'$.action') IN ({}))",
+        outgoing_retry_sql_values()
+    );
+    // Python stores next_at as float seconds. Round up so the scheduler never wakes
+    // before the row is due and spins until the next whole second.
+    connection
+        .query_row(&sql, [], |row| row.get::<_, Option<f64>>(0))
+        .map(|at| at.map(|at| at.ceil() as i64))
+        .map_err(Into::into)
 }
 
 /// Normalize a paired peer's wire value once before service admission.
@@ -3801,11 +3655,10 @@ mod tests {
             store
                 .test_reader()
                 .expect("reader")
-                .query_row(
-                    "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery'",
-                    [],
-                    |row| row.get::<_, i64>(0)
-                )
+                .query_row("SELECT count(*) FROM runtime_server_outbox", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
                 .expect("pending count"),
             0
         );
@@ -4029,9 +3882,7 @@ mod tests {
     };
     use rusqlite::params;
     use std::sync::Arc;
-    use studio_runtime_schema::persistence::ServerDeliveryState;
     use studio_runtime_store::RuntimeStore;
-    use studio_runtime_store::request_results::AdmittedRequest;
 
     #[test]
     fn expired_applied_reply_is_unknown() {
@@ -4142,49 +3993,6 @@ mod tests {
     }
 
     #[test]
-    fn restored_connection_makes_only_that_peers_waiting_deliveries_due_now() {
-        let mut db = rusqlite::Connection::open_in_memory().expect("database");
-        db.execute_batch(
-            "CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY, record TEXT NOT NULL);",
-        )
-        .expect("tables");
-        studio_runtime_store::receipt_schema::create(&db).expect("shared outbox");
-        db.execute(
-            "INSERT INTO runtime_access_clients VALUES('peer',?1)",
-            [
-                serde_json::json!({"kind":"server","status":"paired","publicKey":"PEM-A"})
-                    .to_string(),
-            ],
-        )
-        .expect("paired peer");
-        let tx = db.transaction().expect("transaction");
-        for server in ["peer", "other"] {
-            queue(
-                &tx,
-                server,
-                server,
-                "event",
-                ServerDeliveryState::Queued,
-                9999999999.0,
-            );
-        }
-        assert_eq!(super::release_peer(&tx, "PEM-A", 100).expect("release"), 1);
-        assert_eq!(
-            super::release_peer(&tx, "PEM-B", 100).expect("unknown key"),
-            0
-        );
-        tx.commit().expect("commit");
-        let due: Vec<String> = db
-            .prepare("SELECT target FROM runtime_outbox WHERE kind='remote_delivery' AND next_at<=100000")
-            .expect("query")
-            .query_map([], |row| row.get(0))
-            .expect("rows")
-            .collect::<Result<_, _>>()
-            .expect("servers");
-        assert_eq!(due, ["peer"]);
-    }
-
-    #[test]
     fn peer_retry_schedule_matches_python_and_caps_at_five_minutes() {
         assert_eq!(
             [0, 1, 2, 3, 4, 5, 6, 7].map(peer_retry_delay),
@@ -4193,63 +4001,49 @@ mod tests {
         assert_eq!(peer_retry_delay(-1), 5);
     }
 
-    /// A request in the shared outbox, as the delivery code stores it.
-    fn queue(
-        tx: &rusqlite::Transaction<'_>,
-        server: &str,
-        key: &str,
-        action: &str,
-        state: ServerDeliveryState,
-        due: f64,
-    ) {
-        crate::server_outbox::insert(
-            tx,
-            server,
-            key,
-            key,
-            state,
-            due,
-            &crate::server_outbox::ServerRequestRecord {
-                body: serde_json::json!({"action":action}).to_string(),
-                admission: AdmittedRequest::from_persisted_fields(key.into(), key.into(), 1),
-                attempts: 0,
-                error: None,
-            },
-            1,
-        )
-        .expect("outbox row");
-    }
-
     #[test]
     fn next_due_excludes_unknown_one_shot_running_rows() {
-        let mut connection = rusqlite::Connection::open_in_memory().expect("memory database");
-        studio_runtime_store::receipt_schema::create(&connection).expect("shared outbox");
-        let tx = connection.transaction().expect("transaction");
+        let connection = rusqlite::Connection::open_in_memory().expect("memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_server_outbox(server TEXT,body TEXT,state TEXT,next_at INTEGER);",
+            )
+            .expect("outbox table");
         for (action, state, due) in [
-            ("exec", ServerDeliveryState::Running, 1.0),
-            ("input", ServerDeliveryState::Running, 9.0),
-            ("message", ServerDeliveryState::Queued, 7.0),
+            ("exec", "running", 1),
+            ("input", "running", 9),
+            ("message", "queued", 7),
+            ("event", "completed", 0),
         ] {
-            queue(&tx, "peer", action, action, state, due);
+            connection
+                .execute(
+                    "INSERT INTO runtime_server_outbox(server,body,state,next_at) VALUES('peer',?1,?2,?3)",
+                    params![serde_json::json!({"action":action}).to_string(), state, due],
+                )
+                .expect("outbox row");
         }
-        assert_eq!(outbox_next_due_at(&tx).expect("deadline query"), Some(7));
+        assert_eq!(
+            outbox_next_due_at(&connection).expect("deadline query"),
+            Some(7)
+        );
     }
 
     #[test]
-    fn next_due_rounds_fractional_deadlines_up() {
-        let mut connection = rusqlite::Connection::open_in_memory().expect("memory database");
-        studio_runtime_store::receipt_schema::create(&connection).expect("shared outbox");
-        let tx = connection.transaction().expect("transaction");
-        queue(
-            &tx,
-            "peer",
-            "message",
-            "message",
-            ServerDeliveryState::Queued,
-            1792224926.4847271,
-        );
+    fn next_due_reads_python_float_deadlines() {
+        let connection = rusqlite::Connection::open_in_memory().expect("memory database");
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_server_outbox(server TEXT,body TEXT,state TEXT,next_at REAL);",
+            )
+            .expect("outbox table");
+        connection
+            .execute(
+                "INSERT INTO runtime_server_outbox(server,body,state,next_at) VALUES('peer',?1,'queued',?2)",
+                params![serde_json::json!({"action":"message"}).to_string(), 1792224926.4847271],
+            )
+            .expect("Python-written outbox row");
         assert_eq!(
-            outbox_next_due_at(&tx).expect("deadline query"),
+            outbox_next_due_at(&connection).expect("deadline query"),
             Some(1792224927)
         );
     }

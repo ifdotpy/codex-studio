@@ -47,22 +47,18 @@ struct ReadCorpus {
 }
 
 async fn seed(store: &RuntimeStore, tables: Tables) {
-    // Output history lives in the terminal output database, not in Canvas.
-    let archive = store.test_terminal_output().expect("archive connection");
-    for (terminal, start, end, text) in &tables.user_terminal_output {
-        archive
-            .execute(
-                "INSERT INTO user_terminal_output VALUES(?1,?2,?3,?4)",
-                rusqlite::params![terminal, start, end, text],
-            )
-            .expect("seed archived output");
-    }
     store
         .transaction(move |tx| {
             for (id, record, output, offset) in tables.user_terminals {
                 tx.execute(
                     "INSERT INTO user_terminals(id,record,output,offset) VALUES(?1,?2,?3,?4)",
                     rusqlite::params![id, record, output, offset],
+                )?;
+            }
+            for (terminal, start, end, text) in tables.user_terminal_output {
+                tx.execute(
+                    "INSERT INTO user_terminal_output VALUES(?1,?2,?3,?4)",
+                    rusqlite::params![terminal, start, end, text],
                 )?;
             }
             assert!(tables.user_terminal_receipts.is_empty());
@@ -120,7 +116,6 @@ fn python_table_rows(connection: &rusqlite::Connection, table: &str) -> Vec<Vec<
 
 fn assert_python_rows(store: &RuntimeStore, expected: &Tables) {
     let connection = store.test_reader().expect("read Rust state");
-    let archive = store.test_terminal_output().expect("read archive");
     for (table, rows) in [
         ("user_terminals", serde_json::json!(expected.user_terminals)),
         (
@@ -136,13 +131,8 @@ fn assert_python_rows(store: &RuntimeStore, expected: &Tables) {
             serde_json::json!(expected.user_terminal_decoder_state),
         ),
     ] {
-        let source = if table == "user_terminal_output" {
-            &archive
-        } else {
-            &connection
-        };
         assert_eq!(
-            serde_json::json!(python_table_rows(source, table)),
+            serde_json::json!(python_table_rows(&connection, table)),
             rows,
             "stored terminal table {table} differs from the frozen corpus"
         );

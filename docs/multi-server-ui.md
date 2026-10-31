@@ -152,6 +152,39 @@ Remote file views use the remote API.
 **Save As** can save an explicit remote download on the UI computer.
 Finder actions remain available for the local server.
 
+## UI-only desktop
+
+Build the web assets first.
+
+```sh
+pnpm --filter codex-agents-web run build
+pnpm --filter codex-agents-desktop run start:ui
+```
+
+The UI-only host serves assets on `127.0.0.1:4621`.
+Set `CODEX_UI_PORT` for another port.
+Set `CODEX_DESKTOP_PROFILE` for a separate native profile.
+The host rejects local API requests and an occupied port.
+It starts no Python backend or recovery service.
+
+Create a package outside the checkout:
+
+```sh
+CODEX_DESKTOP_PACKAGE_OUT=/tmp/studio-ui-package pnpm --filter codex-agents-desktop run package:ui
+```
+
+The package has an explicit UI-only marker.
+It includes Electron, the web assets, and the speech helper.
+It excludes the Python runtime source, backend recovery helper, role skills, and Linux VM helper.
+The existing package command still creates the combined application.
+
+Run a hidden check with a separate profile and an ephemeral port:
+
+```sh
+node workspaces/client/apps/desktop/ui-only-smoke.ts
+CODEX_UI_EXECUTABLE='/path/to/Codex Studio.app/Contents/MacOS/Codex Studio' node workspaces/client/apps/desktop/ui-only-smoke.ts
+```
+
 ## Verification
 
 The browser fixture verifies Ed25519 signatures and rejects reused nonces or remote canvas tokens.

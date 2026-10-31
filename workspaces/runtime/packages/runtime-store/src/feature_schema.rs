@@ -22,7 +22,6 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_analytics_projection (seq INTEGER PRIMARY KEY AUTOINCREMENT, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_event_meta (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_item_fulltext (id TEXT PRIMARY KEY, body TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS runtime_item_blobs (id TEXT PRIMARY KEY, hash TEXT NOT NULL, size INTEGER NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_search_next_meta (
                 id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL,
                 search_rowid INTEGER NOT NULL UNIQUE);
@@ -78,6 +77,11 @@ const FEATURE_SCHEMA: &str = r#"
         CREATE TABLE IF NOT EXISTS runtime_federation_inbox (
           peer_id TEXT NOT NULL, message_id TEXT NOT NULL, record TEXT NOT NULL,
           PRIMARY KEY(peer_id,message_id));
+        CREATE TABLE IF NOT EXISTS runtime_federation_nonces (
+          peer_id TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL,
+          PRIMARY KEY(peer_id,nonce));
+        CREATE INDEX IF NOT EXISTS runtime_federation_nonce_age
+          ON runtime_federation_nonces(created);
             CREATE INDEX IF NOT EXISTS runtime_workspace_operation_agent_phase ON runtime_workspace_operations(json_extract(record,'$.agent'),json_extract(record,'$.phase'));
             CREATE INDEX IF NOT EXISTS runtime_request_agent_status ON runtime_requests(json_extract(record,'$.agent'),json_extract(record,'$.status'));
             CREATE INDEX IF NOT EXISTS runtime_rule_agent_inflight ON runtime_rules(json_extract(record,'$.agent'),json_extract(record,'$.inFlight'));
@@ -152,7 +156,7 @@ const FEATURE_SCHEMA: &str = r#"
             CREATE TABLE IF NOT EXISTS runtime_model_status (agent TEXT, revision TEXT, at REAL, record TEXT, PRIMARY KEY(agent,revision));
             CREATE TABLE IF NOT EXISTS runtime_native_notices (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_agent_sweep_busy_v2 ON runtime_agents(account_key) WHERE provider='codex' AND (context_repair_phase IN ('preparing','submitted','unknown','ready') OR COALESCE(native_tool_refresh_id,'')!='');
-            CREATE INDEX IF NOT EXISTS runtime_agent_callback_context_v3 ON runtime_agents(account_key,thread_id,turn_id) WHERE status='running' AND auto_wake=1;
+            CREATE INDEX IF NOT EXISTS runtime_agent_callback_context_v2 ON runtime_agents(account_key,start_attempt_connection_generation,thread_id,turn_id) WHERE status='running' AND auto_wake=1;
             CREATE INDEX IF NOT EXISTS runtime_agent_sweep_cleanup_v2 ON runtime_agents(source_cleanup_account_key,source_cleanup_thread_id) WHERE source_cleanup_phase IN ('planned','submitted');
             CREATE INDEX IF NOT EXISTS runtime_agent_unsettled_legacy ON runtime_agents(id) WHERE legacy_unsettled=1;
             CREATE INDEX IF NOT EXISTS runtime_idle_compaction_deadline ON runtime_agents(idle_episode_type,idle_episode_fire_at,id,idle_episode_id) WHERE idle_episode_type='object';
@@ -240,8 +244,7 @@ pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
              INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
              SELECT '{collection}',OLD.id,(SELECT max(seq)+1 FROM (
                  SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
-                 SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents UNION ALL
-                 SELECT COALESCE(MAX(seq),0) FROM durable_rows)),
+                 SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents)),
                  sync_entity_hash({tombstone}),{tombstone},1
              WHERE EXISTS(SELECT 1 FROM sync_entities WHERE collection='{collection}' AND id=OLD.id AND deleted=0)
              ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=1;

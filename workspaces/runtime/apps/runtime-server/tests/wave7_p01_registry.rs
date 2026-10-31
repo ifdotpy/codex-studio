@@ -1513,11 +1513,12 @@ async fn accepted_http_message_wakes_retained_worker_and_receipt_replay_does_not
     let stop = Shutdown::default();
     let task = tokio::spawn(registry.run(wake, Arc::new(Notify::new()), stop.clone()));
     let message_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-    let body = json!({"id":message_id,"client":"test","number":1,"kind":"send","target":fixture.agents[0]["id"],"body":{"text":"committed through HTTP"}});
+    let body =
+        json!({"room":fixture.agents[0]["id"],"id":message_id,"text":"committed through HTTP"});
     for _ in 0..2 {
         let request = Request::builder()
             .method("POST")
-            .uri("/api/commands")
+            .uri("/api/messages")
             .header("host", "127.0.0.1:49171")
             .header("content-type", "application/json")
             .header("x-canvas-token", "fixture-token")
@@ -3244,12 +3245,12 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
     .await
     .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
-    let body = json!({"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"client":"test","number":1,"kind":"send","target":fixture.agents[0]["id"],"body":{"text":"host composition cutover"}});
+    let body = json!({"room":fixture.agents[0]["id"],"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"text":"host composition cutover"});
     let initial_revision = state.sync_changes_handle().snapshot().revision;
     let mut changes = state.sync_changes_handle().subscribe();
     let request = axum::http::Request::builder()
         .method("POST")
-        .uri("/api/commands")
+        .uri("/api/messages")
         .header("host", "127.0.0.1:49171")
         .header("content-type", "application/json")
         .header("x-canvas-token", "fixture-token")
@@ -3396,7 +3397,7 @@ async fn host_start_reattaches_existing_launch_and_delivers_http_input() {
 
     let request = axum::http::Request::builder()
         .method("POST")
-        .uri("/api/commands")
+        .uri("/api/messages")
         .header("host", "127.0.0.1:49171")
         .header("content-type", "application/json")
         .header("x-canvas-token", "fixture-token")
@@ -3981,12 +3982,12 @@ async fn direct_launch_mode_completes_http_turn_and_reaps_child() {
     .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let agent_id = fixture.agents[0]["id"].as_str().unwrap();
-    let body = json!({"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"client":"test","number":1,"kind":"send","target":agent_id,"body":{"text":"direct mode turn"}});
+    let body = json!({"room":agent_id,"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"text":"direct mode turn"});
     let mut changes = state.sync_changes_handle().subscribe();
     let post = || {
         axum::http::Request::builder()
             .method("POST")
-            .uri("/api/commands")
+            .uri("/api/messages")
             .header("host", "127.0.0.1:49171")
             .header("content-type", "application/json")
             .header("x-canvas-token", "fixture-token")
@@ -4324,11 +4325,11 @@ async fn direct_child_sigkill_settles_unknown_without_resend() {
     .unwrap();
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let agent_id = fixture.agents[0]["id"].as_str().unwrap();
-    let body = json!({"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"client":"test","number":1,"kind":"send","target":agent_id,"body":{"text":"crash in flight"}});
+    let body = json!({"room":agent_id,"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"text":"crash in flight"});
     let post = || {
         axum::http::Request::builder()
             .method("POST")
-            .uri("/api/commands")
+            .uri("/api/messages")
             .header("host", "127.0.0.1:49171")
             .header("content-type", "application/json")
             .header("x-canvas-token", "fixture-token")
@@ -4489,11 +4490,11 @@ async fn direct_child_crash_before_turn_write_retries_queued_input_once() {
     .with_account_driver(accounts.clone());
     let app = studio_runtime_http::router(state.clone()).unwrap();
     let agent_id = fixture.agents[0]["id"].as_str().unwrap();
-    let body = json!({"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"client":"test","number":1,"kind":"send","target":agent_id,"body":{"text":"queued before provider ready"}});
+    let body = json!({"room":agent_id,"id":studio_runtime_schema::persistence::RequestIdentity::issue_root(),"text":"queued before provider ready"});
     let post = || {
         axum::http::Request::builder()
             .method("POST")
-            .uri("/api/commands")
+            .uri("/api/messages")
             .header("host", "127.0.0.1:49171")
             .header("content-type", "application/json")
             .header("x-canvas-token", "fixture-token")
@@ -4575,10 +4576,10 @@ fn direct_message_post(
     id: &str,
     text: &str,
 ) -> axum::http::Request<axum::body::Body> {
-    let body = json!({"id":id,"client":"test","number":1,"kind":"send","target":agent_id,"body":{"text":text}});
+    let body = json!({"room":agent_id,"id":id,"text":text});
     axum::http::Request::builder()
         .method("POST")
-        .uri("/api/commands")
+        .uri("/api/messages")
         .header("host", "127.0.0.1:49171")
         .header("content-type", "application/json")
         .header("x-canvas-token", "fixture-token")
@@ -5058,7 +5059,7 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
     );
     ports
         .execute(
-            &studio_runtime_services::agent_management::Action::Pause {
+            &studio_runtime_services::agent_management::Action::Stop {
                 target: b.clone(),
                 descendants: false,
                 reason: None,

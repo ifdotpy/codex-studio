@@ -8,9 +8,6 @@ export type ReconnectCause =
   | "invalid-frame"
   | "local-state-error"
   | "network-online"
-  | "probe-timeout"
-  | "route-change"
-  | "auth-rejected"
   | "server-restart"
   | "unknown";
 
@@ -23,16 +20,16 @@ export const reconnectReasons: Record<ReconnectCause, string> = {
   "invalid-frame": "Received invalid server updates.",
   "local-state-error": "Could not prepare or apply local sync data.",
   "network-online": "The device is online again.",
-  "probe-timeout": "The server did not answer a connection check.",
-  "route-change": "A faster route to the server is available.",
-  "auth-rejected":
-    "The server refused this device. Retry after you check access.",
   "server-restart": "The server restarted.",
   unknown: "Reason unknown.",
 };
 
 export type ConnectingActivity =
-  "stopped" | "preparing" | "waiting-owner" | "connecting" | "open";
+  | "stopped"
+  | "preparing"
+  | "waiting-owner"
+  | "connecting"
+  | "open";
 export type ReconnectingActivity = ConnectingActivity | "retry-scheduled";
 
 export type ConnectionState =
@@ -52,7 +49,12 @@ export type ConnectionState =
 
 /** Coarse health is the existing cross-tab wire representation. */
 export type ConnectionHealth =
-  "connecting" | "live" | "degraded" | "offline" | "paused" | "schema-mismatch";
+  | "connecting"
+  | "live"
+  | "degraded"
+  | "offline"
+  | "paused"
+  | "schema-mismatch";
 export type ConnectionActivity =
   | ReconnectingActivity
   /** The open stream waits for a local write that outlasted its deadline. */

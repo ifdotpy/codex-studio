@@ -8,10 +8,7 @@ use serde_json::{Value, json};
 
 use super::{LOCK_SAMPLE_LIMIT, Ring, quantiles, try_with_state};
 
-/// Transactions at or over this hold time are listed in `slowTransactions`; the store logs the
-/// same ones as write transaction alerts (`studio_runtime_store` `write_alert`).
-const SLOW_TRANSACTION: Duration =
-    Duration::from_millis(studio_runtime_schema::shared_values::SQLITE_WRITE_TRANSACTION_ALERT_MS);
+const SLOW_TRANSACTION: Duration = Duration::from_secs(1);
 const ACTIVE_LIMIT: usize = 256;
 const HISTORY_LIMIT: usize = 64;
 const LONGEST_LIMIT: usize = 8;

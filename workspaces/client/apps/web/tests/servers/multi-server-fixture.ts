@@ -2,8 +2,6 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { components, AgentEntityDto } from "../../src/generated/api.ts";
 import type { PostBody, ApiPostPath } from "../../src/apiTypes.ts";
 import type { ResourceRef, TestStateView } from "../playwright.ts";
-import { sendReply } from "../messages/send-command.ts";
-import type { CommandRequest } from "../../src/commands.ts";
 import type { PreferenceFields } from "../../src/sync/uiPreferenceMerge.ts";
 
 type Account = components["schemas"]["Account"];
@@ -650,15 +648,9 @@ export async function fixture(
       });
       return;
     }
-    const command = body as unknown as CommandRequest;
-    if (url.pathname === "/api/commands" && command.kind === "send") {
-      writes.push({
-        ...command.body,
-        id: command.id,
-        room: command.target,
-        _canvasToken: request.headers["x-canvas-token"],
-      });
-      json(sendReply({ id: command.id, status: "queued" }));
+    if (url.pathname === "/api/messages") {
+      writes.push({ ...body, _canvasToken: request.headers["x-canvas-token"] });
+      json({ id: body.id, status: "queued" });
       return;
     }
     if (url.pathname === "/api/search") {

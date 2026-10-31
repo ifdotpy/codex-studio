@@ -1,5 +1,4 @@
 import type { components } from "../../src/generated/api.ts";
-import { commandOf } from "../messages/send-command.ts";
 import { installSchemaGateFixture } from "./fixtures/schemaGateBrowserFixture.ts";
 import { fixtureOrigin, fixtureResources } from "./helpers.ts";
 import type { GetResult, PostResult } from "../../src/apiTypes.ts";
@@ -178,7 +177,8 @@ test("a rollback without a schema header shows Update instead of stale chat data
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    if (commandOf(request, "send")) messageWrites++;
+    if (request.method() === "POST" && path === "/api/messages")
+      messageWrites++;
     if (path === "/api/sync/identity") {
       const response = await route.fetch();
       const headers = new Headers(response.headers());
@@ -265,7 +265,8 @@ test("a warm server rollback preserves the draft and stops the stale stream", as
     await page.route("**/api/**", async (route) => {
       const request = route.request();
       const path = new URL(request.url()).pathname;
-      if (commandOf(request, "send")) messageWrites++;
+      if (request.method() === "POST" && path === "/api/messages")
+        messageWrites++;
       if (path === "/api/sync/stream") {
         rejections++;
         return route.fulfill({

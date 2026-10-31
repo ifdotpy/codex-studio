@@ -8,8 +8,6 @@ import type { Page, Route } from "@playwright/test";
 import type { SessionResponse } from "../playwright.ts";
 
 import type { PostResult } from "../../src/apiTypes.ts";
-import type { MessageDelivery } from "../../src/commands.ts";
-import { commandOf, sendReply } from "../messages/send-command.ts";
 import {
   readTestState,
   test,
@@ -117,8 +115,7 @@ async function runSnapshotOrderUi(
         : { json: { token: initial.token } satisfies SessionResponse },
     );
   });
-  await page.route("**/api/commands", async (route) => {
-    if (!commandOf(route.request(), "send")) return route.fallback();
+  await page.route("**/api/messages", async (route) => {
     const fixtureId = `snapshot-revision-${revision}`;
     const committed = await fixtureCommand(fixtureId, {
       operation: "rename",
@@ -133,10 +130,10 @@ async function runSnapshotOrderUi(
     );
     mutationSequences.set(revision, committed.seq);
     return route.fulfill({
-      json: sendReply({
+      json: {
         id: fixtureRequestId(route.request().postDataJSON()),
         status: "sent",
-      } satisfies MessageDelivery),
+      } satisfies PostResult<"/api/messages">,
     });
   });
   await page.route("**/api/answer", async (route) => {

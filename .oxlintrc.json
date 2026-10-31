@@ -36,7 +36,9 @@
         "**/*.type-test.*",
         "**/*.fixture.*",
         "**/tests/**",
-        "**/fixtures/**"
+        "**/fixtures/**",
+        "workspaces/client/apps/desktop/test.ts",
+        "workspaces/client/apps/desktop/server-access-native.ts"
       ],
       "rules": {
         "typescript/ban-ts-comment": [

@@ -1,6 +1,6 @@
 import { required } from "./performance-fixture.ts";
 import type { PostResult } from "../../src/apiTypes.ts";
-import { commandOf, sendReply, sentMessage } from "../messages/send-command.ts";
+import { fixturePostBody } from "../mobile/browser-fixture.ts";
 import type { Request } from "@playwright/test";
 import type { Agent } from "../../src/types.ts";
 import type { components } from "../../src/generated/api.ts";
@@ -250,20 +250,22 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
       "Worker changed",
     );
     await expect(page.locator("#message")).toHaveValue("");
-    await page.route("**/api/commands", (route) => {
-      const body = sentMessage(route.request());
-      if (!body) return route.fallback();
-      return route.fulfill({
+    await page.route("**/api/messages", (route) =>
+      route.fulfill({
         headers: apiSchemaHeaders(),
-        json: sendReply({ id: body.id, status: "sent" }),
-      });
-    });
+        json: {
+          id: fixturePostBody<"/api/messages">(route.request()).id,
+          status: "sent",
+        },
+      }),
+    );
     await page.locator("#message").fill("Instruction for the selected worker.");
     const sent = page.waitForRequest(
-      (request) => commandOf(request, "send") !== undefined,
+      (request) =>
+        request.method() === "POST" && request.url().endsWith("/api/messages"),
     );
     await page.locator("#send").click();
-    const submitted = sentMessage(await sent)!;
+    const submitted = fixturePostBody<"/api/messages">(await sent);
     expect(submitted.room).toBe(required(workers[0]).id);
     expect(submitted.text).toBe("Instruction for the selected worker.");
     await expect(page.locator("#message")).toHaveValue("");

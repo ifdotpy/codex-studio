@@ -1,5 +1,5 @@
-import { sentMessage } from "../messages/send-command.ts";
-import type { SendMessageBody } from "../../src/commands.ts";
+import { requestBody } from "../messages/helpers.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
 import {
   test,
   expect,
@@ -39,16 +39,17 @@ test("offline send has one saved-message status and preserves its delivery ident
           colorScheme: scheme,
         });
         const text = `Saved offline ${width} ${scheme}`;
-        const posts: SendMessageBody[] = [];
+        const posts: PostBody<"/api/messages">[] = [];
         let release: () => void;
         const deliveryGate = new Promise<void>(
           (resolve) => (release = resolve),
         );
         try {
           await stubSessionCost(page);
-          await page.route("**/api/commands", async (route) => {
-            const body = sentMessage(route.request());
-            if (body?.text !== text) return route.fallback();
+          await page.route("**/api/messages", async (route) => {
+            if (route.request().method() !== "POST") return route.fallback();
+            const body = requestBody<PostBody<"/api/messages">>(route);
+            if (body.text !== text) return route.fallback();
             posts.push(body);
             await deliveryGate;
             await route.continue();

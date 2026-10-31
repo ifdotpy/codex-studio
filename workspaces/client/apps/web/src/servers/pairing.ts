@@ -2,7 +2,6 @@ import { randomUUID } from "../uuid";
 import { serveOrigin, type StudioServer } from "./registry";
 import {
   ACCESS_PROTOCOL_VERSION,
-  IDENTITY_PROOF_NONCE_BYTES,
   MULTI_SERVER_SIGNING_DOMAIN,
 } from "../generated/multiServerProtocol";
 export class PairingNotAppliedError extends Error {
@@ -65,7 +64,6 @@ export function pairedServer(
   receipt: PairReceipt,
   invitation: PairInvitation,
   clientId: string,
-  credentialId: string = clientId,
 ): StudioServer {
   if (
     receipt.protocol !== ACCESS_PROTOCOL_VERSION ||
@@ -86,7 +84,7 @@ export function pairedServer(
         ? receipt.label.slice(0, 128)
         : invitation.label || new URL(receipt.origin).hostname,
     origin: serveOrigin(receipt.origin),
-    credentialId,
+    credentialId: clientId,
   };
 }
 export function signatureInput(
@@ -111,55 +109,6 @@ export function signatureInput(
     hash,
   ].join("\n");
 }
-/** Unpadded base64url of `size` random bytes. */
-export function randomNonce(size: number) {
-  return btoa(
-    String.fromCharCode(...crypto.getRandomValues(new Uint8Array(size))),
-  )
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-/** A fresh challenge for a route that claims to be a server. */
-export function newIdentityNonce() {
-  return randomNonce(IDENTITY_PROOF_NONCE_BYTES);
-}
-/** The message a server signs for `nonce`; the Rust owner is `identity_proof_message`. */
-export function identityProofInput(serverId: string, nonce: string) {
-  return [MULTI_SERVER_SIGNING_DOMAIN, "identity", serverId, nonce].join("\n");
-}
-/** Whether `proof` is the signature of the server key `publicKey` (PEM) over the nonce. */
-export async function verifyIdentityProof(
-  publicKey: string,
-  serverId: string,
-  nonce: string,
-  proof: string,
-) {
-  try {
-    const der = Uint8Array.from(
-      atob(publicKey.replace(/-----[A-Z ]+-----|\s/g, "")),
-      (char) => char.charCodeAt(0),
-    );
-    const key = await crypto.subtle.importKey(
-      "spki",
-      der,
-      { name: "Ed25519" },
-      false,
-      ["verify"],
-    );
-    const signature = Uint8Array.from(atob(proof), (char) =>
-      char.charCodeAt(0),
-    );
-    return await crypto.subtle.verify(
-      "Ed25519",
-      key,
-      signature,
-      new TextEncoder().encode(identityProofInput(serverId, nonce)),
-    );
-  } catch {
-    return false;
-  }
-}
 export function publicKeyPem(bytes: ArrayBuffer) {
   const base64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
   return `-----BEGIN PUBLIC KEY-----\n${base64.match(/.{1,64}/g)!.join("\n")}\n-----END PUBLIC KEY-----\n`;
@@ -178,7 +127,12 @@ export async function signedRequest(
     (byte) => byte.toString(16).padStart(2, "0"),
   ).join("");
   const timestamp = String(Math.floor(Date.now() / 1000));
-  const nonce = randomNonce(24);
+  const nonce = btoa(
+    String.fromCharCode(...crypto.getRandomValues(new Uint8Array(24))),
+  )
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
   const signature = await crypto.subtle.sign(
     "Ed25519",
     privateKey,
@@ -225,7 +179,7 @@ export async function requestIdentity(request: Request): Promise<string> {
       [
         value.requestId,
         value.request_id,
-        ...(["/api/leads", "/api/assets", "/api/commands"].includes(
+        ...(["/api/messages", "/api/leads", "/api/assets"].includes(
           new URL(request.url).pathname,
         )
           ? [value.id]

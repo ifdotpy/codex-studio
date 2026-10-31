@@ -148,7 +148,7 @@ VaultSetup no longer polls. While awaiting a paper key it subscribes
 which sends a typed transient resource-progress frame with key-presence metadata
 after the subscription ack and on change. ClaudeSignIn/ClaudeAddSignIn subscribe
 `AuthProgressResource{requestId}`; the public login receipt travels only in
-transient resource-progress frames and is never persisted to SQLite or the client cache.
+transient resource-progress frames and is never persisted to SQLite or RxDB.
 HTTP login-status/facts reads remain for recovery or explicit refresh. Removing
 the last subscriber removes the source. The listener flush timer is removed;
 listeners publish once per event.

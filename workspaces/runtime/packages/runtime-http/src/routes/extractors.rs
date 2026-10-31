@@ -18,23 +18,6 @@ fn serde_location(section: &str, path: &serde_path_to_error::Path) -> Vec<Value>
     location
 }
 
-/// The authenticated caller, set by the boundary for every API request.
-#[allow(dead_code)] // Handlers that need the caller extract it; the edge already checked the class.
-pub(crate) struct Caller(pub studio_runtime_services::principal::Principal);
-
-impl<S: Send + Sync> FromRequestParts<S> for Caller {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
-        parts
-            .extensions
-            .get::<studio_runtime_services::principal::Principal>()
-            .cloned()
-            .map(Self)
-            .ok_or_else(ApiError::internal)
-    }
-}
-
 /// JSON request bodies read from the validated wire bytes.
 pub(crate) struct ApiJson<T>(pub T);
 

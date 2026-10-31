@@ -634,7 +634,7 @@ export function applyEntityChanges(
   return next;
 }
 
-/** Reconcile a complete store query, including rows omitted after a delete. */
+/** Reconcile a complete RxDB query, including rows omitted after a delete. */
 export function applyEntityRows(
   state: EntityProjection,
   rows: readonly EntityProjectionRow[],
@@ -655,7 +655,7 @@ export function applyEntityRows(
   for (const rowId of state.invalidReportedSeq.keys()) {
     if (!seen.has(rowId)) state.invalidReportedSeq.delete(rowId);
   }
-  // Store find queries omit tombstones. Missing IDs therefore represent deletes.
+  // RxDB find queries omit tombstones. Missing IDs therefore represent deletes.
   const missing: Array<[string, EntityRowState]> = [];
   for (const [rowId, previous] of state.rows) {
     if (seen.has(rowId)) continue;

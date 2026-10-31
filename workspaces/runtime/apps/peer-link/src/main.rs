@@ -35,8 +35,6 @@ struct Config {
     backend_port: u16,
     forwarded_host: String,
     socket: PathBuf,
-    /// Secret shared with the backend. The link sends it with the connection identity.
-    link_token: String,
 }
 
 #[derive(Deserialize)]
@@ -52,8 +50,6 @@ pub struct Links {
     key: Arc<CertifiedKey>,
     transport: Arc<TransportConfig>,
     keys: tls::PairedKeys,
-    /// The PEM of each paired key, to name a connection in the `connected` line.
-    names: RwLock<HashMap<Vec<u8>, String>>,
     inbound: Mutex<Vec<Connection>>,
     outbound: tokio::sync::Mutex<HashMap<(SocketAddr, Vec<u8>), Connection>>,
 }
@@ -72,26 +68,6 @@ impl Links {
             connections.retain(|connection| connection.close_reason().is_none());
             connections.push(connection.clone());
         }
-        self.announce(connection);
-    }
-
-    /// Tell the backend that a connection to a paired server opened: one JSON line on
-    /// stdout. The backend then sends the outbox entries of that server at once.
-    fn announce(&self, connection: &Connection) {
-        let Some(key) = peer_key(connection) else {
-            return;
-        };
-        let name = self
-            .names
-            .read()
-            .ok()
-            .and_then(|names| names.get(&key).cloned());
-        let Some(name) = name else {
-            return;
-        };
-        let mut stdout = std::io::stdout().lock();
-        writeln!(stdout, "{}", serde_json::json!({"connected": name})).ok();
-        stdout.flush().ok();
     }
 
     async fn connect(&self, address: SocketAddr, key: Vec<u8>) -> Result<Connection, String> {
@@ -124,11 +100,10 @@ impl Links {
             .map_err(|_| "The QUIC handshake timed out".to_owned())?
             .map_err(|error| error.to_string())?;
         connections.insert(slot, connection.clone());
-        self.announce(&connection);
         Ok(connection)
     }
 
-    async fn replace_keys(&self, keys: HashSet<Vec<u8>>, names: HashMap<Vec<u8>, String>) {
+    async fn replace_keys(&self, keys: HashSet<Vec<u8>>) {
         let revoked =
             |connection: &Connection| peer_key(connection).is_none_or(|key| !keys.contains(&key));
         if let Ok(connections) = self.inbound.lock() {
@@ -143,9 +118,6 @@ impl Links {
             connection.close(VarInt::from_u32(2), b"revoked");
             false
         });
-        if let Ok(mut current) = self.names.write() {
-            *current = names;
-        }
         if let Ok(mut current) = self.keys.write() {
             *current = keys;
         }
@@ -154,13 +126,6 @@ impl Links {
 
 fn paired_keys(peers: &[String]) -> Result<HashSet<Vec<u8>>, String> {
     peers.iter().map(|peer| tls::spki(peer)).collect()
-}
-
-fn peer_names(peers: &[String]) -> Result<HashMap<Vec<u8>, String>, String> {
-    peers
-        .iter()
-        .map(|peer| Ok((tls::spki(peer)?, peer.clone())))
-        .collect()
 }
 
 fn transport() -> Result<TransportConfig, String> {
@@ -216,7 +181,6 @@ async fn run() -> Result<(), String> {
         key,
         transport,
         keys,
-        names: RwLock::new(peer_names(&config.peers)?),
         inbound: Mutex::new(Vec::new()),
         outbound: tokio::sync::Mutex::new(HashMap::new()),
     });
@@ -227,10 +191,10 @@ async fn run() -> Result<(), String> {
     let inbound = Arc::new(inbound::Inbound {
         backend_port: config.backend_port,
         forwarded_host: config.forwarded_host,
-        link_token: config.link_token,
         loopback,
     });
-    // The ready line comes first: a `connected` line may follow it, never precede it.
+    tokio::spawn(inbound::serve(endpoint.clone(), inbound, links.clone()));
+    tokio::spawn(outbound::listen(listener, links.clone()));
     {
         let mut stdout = std::io::stdout().lock();
         writeln!(
@@ -241,14 +205,10 @@ async fn run() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
         stdout.flush().map_err(|error| error.to_string())?;
     }
-    tokio::spawn(inbound::serve(endpoint.clone(), inbound, links.clone()));
-    tokio::spawn(outbound::listen(listener, links.clone()));
     while let Some(line) = lines.next_line().await.map_err(|error| error.to_string())? {
         let update: Update =
             serde_json::from_str(&line).map_err(|_| "The key update is invalid".to_owned())?;
-        links
-            .replace_keys(paired_keys(&update.peers)?, peer_names(&update.peers)?)
-            .await;
+        links.replace_keys(paired_keys(&update.peers)?).await;
     }
     endpoint.close(VarInt::from_u32(0), b"exit");
     std::fs::remove_file(&config.socket).ok();

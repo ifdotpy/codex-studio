@@ -1,6 +1,6 @@
 import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
-import { DRAFT_SERVER_READY_TIMEOUT_MS, until } from "./draftServerFixture";
+import { DRAFT_SERVER_READY_TIMEOUT_MS } from "./draftServerFixture";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import fixture from "../../../../contracts/draft-replication.json";
+import type { RxDatabase } from "rxdb";
 import { firstValueFrom, ReplaySubject, filter, skip } from "rxjs";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 import type {
@@ -18,7 +19,10 @@ import type {
 } from "./subscriptions/events";
 
 const mocks = vi.hoisted(() => ({
-  replications: [] as import("./draftReplication").DraftReplication[],
+  databases: [] as RxDatabase[],
+  replications: [] as ReturnType<
+    typeof import("rxdb/plugins/replication").replicateRxCollection
+  >[],
   syncGet: vi.fn(),
   syncPost: vi.fn(
     async (
@@ -29,19 +33,39 @@ const mocks = vi.hoisted(() => ({
   ),
   invalidate: undefined as ((version?: ResourceVersion) => void) | undefined,
 }));
-vi.mock("./draftReplication", async (original) => {
-  const module = await original<typeof import("./draftReplication")>();
+vi.mock("rxdb", async (original) => {
+  const rxdb = await original<typeof import("rxdb")>();
+  return {
+    ...rxdb,
+    createRxDatabase: async (
+      options: Parameters<typeof rxdb.createRxDatabase>[0],
+    ) => {
+      const db = await rxdb.createRxDatabase({
+        ...options,
+        multiInstance: false,
+      });
+      mocks.databases.push(db);
+      return db;
+    },
+  };
+});
+vi.mock("rxdb/plugins/replication", async (original) => {
+  const module = await original<typeof import("rxdb/plugins/replication")>();
   return {
     ...module,
-    createDraftReplication: (
-      ...args: Parameters<typeof module.createDraftReplication>
+    replicateRxCollection: (
+      ...args: Parameters<typeof module.replicateRxCollection>
     ) => {
-      const current = module.createDraftReplication(...args);
+      const current = module.replicateRxCollection(...args);
       mocks.replications.push(current);
       return current;
     },
   };
 });
+vi.mock("rxdb/plugins/storage-dexie", async () => ({
+  getRxStorageDexie: (await import("rxdb/plugins/storage-memory"))
+    .getRxStorageMemory,
+}));
 vi.mock("../api", () => ({
   syncGet: mocks.syncGet,
   syncPost: mocks.syncPost,
@@ -68,6 +92,8 @@ let stop: (() => Promise<void>) | undefined;
 afterEach(async () => {
   await stop?.();
   stop = undefined;
+  await Promise.all(mocks.databases.map((db) => db.remove()));
+  mocks.databases = [];
   mocks.replications = [];
   mocks.syncGet.mockReset();
   mocks.syncPost.mockReset();
@@ -75,7 +101,7 @@ afterEach(async () => {
   vi.resetModules();
 });
 
-// The gate builds this fixture once. Vitest owns the real HTTP exchange;
+// The gate builds this fixture once. Vitest owns the real HTTP/RxDB exchange;
 // Rust nextest never launches Node or a second test runner.
 let origin: string;
 let headers: Record<string, string>;
@@ -363,9 +389,10 @@ it.each(fixture.orders)(
       expect(JSON.parse(current.payload).text).toBe(expectedText);
       if (order === "second-writer")
         expect(JSON.parse(current.payload).alternatives).toContain("edit-3");
-      const local = await until(
-        db.drafts.findOne(id).$,
-        (doc) => !!doc?.payload.includes("edit-3"),
+      const local = await firstValueFrom(
+        db.drafts
+          .findOne(id)
+          .$.pipe(filter((doc) => !!doc?.payload.includes("edit-3"))),
       );
       expect(local?.payload).toContain("edit-3");
       expect(
@@ -391,11 +418,9 @@ it.each(fixture.orders)(
           pulls: mocks.syncGet.mock.calls,
         }),
       );
-      // Intended behavior: the other writer's master reaches the page before
-      // its second push, and the page merges it first (both texts kept, as the
-      // alternatives assertion above shows). The server then sees no conflict.
-      // The replaced replication pushed first and took one server conflict.
-      expect(posts.filter((post) => post.conflicts.length)).toHaveLength(0);
+      expect(posts.filter((post) => post.conflicts.length)).toHaveLength(
+        order === "second-writer" ? 1 : 0,
+      );
       expect(posts.length).toBeLessThanOrEqual(
         order === "ack-first" || order === "echo-first" ? 2 : 3,
       );
@@ -454,7 +479,7 @@ it.each([false, true])(
     stop = await client.startDraftReplication(() => {});
     mocks.invalidate?.({ epoch: "witness", reason: "initial", revision: 0 });
     assert.ok(mocks.replications[0] != null);
-    await mocks.replications[0].awaitInSync();
+    await mocks.replications[0].awaitInitialReplication();
     const { db } = await client.syncDatabase();
     const before = (
       await request("/api/sync/pull?scope=drafts")
@@ -498,9 +523,8 @@ it.each([false, true])(
       },
     });
     await mocks.replications[0].awaitInSync();
-    const local = await until(
-      db.drafts.findOne(id).$,
-      (doc) => doc?.seq === master.seq,
+    const local = await firstValueFrom(
+      db.drafts.findOne(id).$.pipe(filter((doc) => doc?.seq === master.seq)),
     );
     expect(local?.payload).toBe(master.payload);
     expect(local?.seq).toBe(master.seq);

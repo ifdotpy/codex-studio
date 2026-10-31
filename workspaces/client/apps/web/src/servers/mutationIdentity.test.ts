@@ -111,7 +111,7 @@ it("preserves an unresolved write across retries and releases only a confirmed w
 });
 it("uses caller operation identities for sends and explicit request identities", async () => {
   expect(
-    (await beginServerMutation("/api/commands", { id: "send-once" }))!
+    (await beginServerMutation("/api/messages", { id: "send-once" }))!
       .requestId,
   ).toBe("send-once");
   expect(

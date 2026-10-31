@@ -36,7 +36,7 @@ line, so the private key is never in the arguments or the environment:
 }
 ```
 
-The process answers `{"ready": true, "port": N}`. After that line it writes `{"connected": "<SPKI PEM>"}` each time a QUIC connection to a paired server opens, inbound or outbound. The backend then makes the waiting outbox entries of that server due at once (`release_peer`), without a backoff wait. A later line `{"peers": [...]}` replaces the
+The process answers `{"ready": true, "port": N}`. A later line `{"peers": [...]}` replaces the
 paired keys and closes the connections of a removed key. The process exits when stdin closes,
 so it ends with its backend. The backend starts it on Unix when the Serve origin is known. After
 an exit it starts the process again with a doubling delay of at most 30 seconds; the delay resets
@@ -52,45 +52,8 @@ pairing key:
 - the server accepts only a client key of a paired server;
 - the server refuses a source address outside the Tailscale ranges before the handshake.
 
-The receiving backend checks each request as a Serve request (below), including the request
-signature. The Tailscale owner check (`tailscale status` and `tailscale whois`, about 190 ms
-together) runs once for each connection, not for each request:
-
-- The link gives each accepted connection a random name and sends it as
-  `X-Studio-Link-Connection`, with the secret `X-Studio-Link-Token`. The backend generates the
-  secret at start and writes it in the link configuration (`linkToken`). The link removes both
-  headers (and every `X-Studio-Link-*` header) from the peer's own request.
-- The backend uses the name only when the secret matches. It never takes a check result from a
-  request. The first request of a connection runs the check. Later requests of the same
-  connection and source address reuse the result.
-- A request that has a `Tailscale-User-Login` or an auto-pair probe is always checked. A request
-  without the secret (Serve, HTTPS) is always checked.
-- A result is dropped after 60 seconds without a request, the idle timeout of the link. A closed
-  connection cannot send a request, and its name is never used again. A new connection is
-  checked again. A removed paired key closes its connections (see Process).
-
-## Contract version
-
-A paired server states its contract version (the `api-schema` hash of
-`runtime-http/openapi.json`) on every signed request, in the header `X-Studio-API-Schema`. The
-sender is `remote_transport.rs`; the check is in `incoming_multi_server.rs`, after the signature
-check and for a paired server only (a paired window must match the current hash, as before).
-
-- A server accepts the current hash and the earlier hashes in its history. Any other hash gets
-  `426` with `X-Studio-API-Schema-Mismatch: 1`. A request with no hash comes from a build from
-  before this check; it is accepted as an earlier version. This case is removed one release
-  later (the missing hash is then refused like an unknown hash). So a rolling update keeps the
-  peers working, and a peer too far behind is refused.
-- The history has one owner: `runtime-schema/previous-api-schema-hashes.txt` (newest first),
-  read by `api_schema::previous_api_schema_hashes`. `pnpm run contracts:generate` writes it:
-  when the generated hash changes, the hash that was current until then is added in front.
-  The list keeps `api_schema::PEER_HASH_HISTORY_LEN` (20) hashes, because installs are less
-  frequent than contract changes: a peer one install behind is often several contract changes
-  behind. `contracts:check` fails when the file is not that value.
-- A field leaves the contract only one release after its last reader is gone, so a server
-  can decode a request of the previous version. A server decodes no other version.
-- The stream of a frontend uses the first frame instead: `/api/sync/stream` sends one
-  `api-schema` frame with `mismatch: true` and ends when the hash of the frontend differs.
+The receiving backend then checks each request as a Serve request (below), including the
+request signature and the Tailscale whois of the source address.
 
 ## Streams
 

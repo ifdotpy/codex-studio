@@ -425,7 +425,7 @@ async fn project_deletion_location_reservation_rechecks_the_checked_lifetime() {
             .test_reader()
             .expect("reader")
             .query_row(
-                "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery' AND request_id='location'",
+                "SELECT count(*) FROM runtime_server_outbox WHERE id='location'",
                 [],
                 |r| r.get::<_, i64>(0)
             )
@@ -680,7 +680,7 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
         .expect("canonical envelope");
     let fingerprint = studio_runtime_store::sha256_hex(encoded.as_bytes());
     let saved_fingerprint = fingerprint.clone();
-    store.transaction(move|tx|{studio_runtime_store::remote_outbox::RemoteOutbox::put(tx,studio_runtime_store::remote_outbox::RemoteEffect::ServerRequest,"peer","legacy",&fingerprint,studio_runtime_schema::persistence::OutboxStatus::Pending,Some(0),serde_json::json!({"body":encoded,"admission":{"id":"legacy","signature":fingerprint,"created":1},"attempts":0,"error":null}),1)?;Ok(())}).await.expect("legacy reservation");
+    store.transaction(move|tx|{tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,next_at,attempts,fingerprint) VALUES('legacy','peer',?1,'queued',1,0,0,?2)",rusqlite::params![encoded,fingerprint])?;Ok(())}).await.expect("legacy reservation");
     let replay = payload.clone();
     store
         .transaction_with(move |tx| {
@@ -735,10 +735,7 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
         .transaction_with(move |tx| {
             studio_runtime_services::event_write::settle_request(tx, &token, None, &saved)
                 .expect("settle legacy receipt");
-            tx.execute(
-                "DELETE FROM runtime_outbox WHERE kind='remote_delivery' AND request_id='legacy'",
-                [],
-            )?;
+            tx.execute("DELETE FROM runtime_server_outbox WHERE id='legacy'", [])?;
             Ok::<_, studio_runtime_services::multi_server_transport::AccessError>(())
         })
         .await

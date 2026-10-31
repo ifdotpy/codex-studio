@@ -1,10 +1,13 @@
-import { AgentSource as GeneratedApiAgentSource } from "../../generated/api.ts";
+import {
+  AgentSource as GeneratedApiAgentSource,
+  WorkspaceMode as GeneratedApiWorkspaceMode,
+} from "../../generated/api.ts";
 import { randomUUID } from "../../uuid";
+import { ProviderKind } from "../../generated/providerKind.ts";
 import { McpInventory } from "./McpInventory";
 import { isModelEnabled, useModelChoices } from "../models/modelChoices";
 import Tasks from "./Tasks";
 import ClaudeCheckpointRestore from "../ClaudeCheckpointRestore";
-import { showsFileRewind } from "./fileRewind";
 import {
   useServerApi,
   useServerSync,
@@ -738,7 +741,12 @@ function Plan(c: Context) {
 }
 
 function Checkpoints(c: Context) {
-  if (c.selected && showsFileRewind(c.selected)) {
+  if (
+    c.selected?.provider === ProviderKind.Claude &&
+    (c.selected.workspaceMode === GeneratedApiWorkspaceMode.shared ||
+      (!c.selected.worktree &&
+        c.selected.workspaceMode !== GeneratedApiWorkspaceMode.worktree))
+  ) {
     return (
       <ClaudeCheckpointRestore
         key={c.selected.id}

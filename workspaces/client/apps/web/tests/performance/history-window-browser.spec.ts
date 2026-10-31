@@ -32,6 +32,7 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
         "@mantine/core",
         "marked",
         "dompurify",
+        "dexie",
       ],
     },
     server: { host: "127.0.0.1", port: 0 },

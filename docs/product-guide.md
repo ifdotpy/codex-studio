@@ -127,7 +127,7 @@ pnpm install --frozen-lockfile
 git config --local core.hooksPath .githooks
 just install
 pnpm --filter codex-agents-web run build
-just package-native /tmp/studio-package
+pnpm --filter codex-agents-desktop run start
 ```
 
 The root `pnpm install --frozen-lockfile` installs Oxlint and Oxfmt. Set `core.hooksPath` once per clone
@@ -382,8 +382,7 @@ Tailscale access rules control who can open Studio. The phone uses the existing
 Serve session and token flow. Cross-server clients use signed device pairing.
 See the [multi-server access contract](multi-server.md).
 
-A remote browser keeps projections in memory and caches them in IndexedDB. Unsent
-messages and drafts stay in IndexedDB, with their identities, across
+RxDB replicates SQLite projections to IndexedDB. It keeps message identities across
 reloads and retries. Different browser drafts remain separate and can be combined.
 A lost response does not authorize another underlying command.
 After one complete online load, the browser can cache the interface for later use

@@ -28,6 +28,7 @@ async function createHarness(
         "react/jsx-dev-runtime",
         "react-dom",
         "react-dom/client",
+        "dexie",
       ],
     },
     server: { host: "127.0.0.1", port: 0 },
