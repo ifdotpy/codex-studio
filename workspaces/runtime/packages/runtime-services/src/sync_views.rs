@@ -405,7 +405,7 @@ pub(crate) fn agent_start_wait(
     ) -> Result<Option<AgentStartWait>, D::Error> {
         <AgentStartWait as serde::Deserialize>::deserialize(d).map(Some)
     }
-    let source: Source = serde_json::from_value(record.clone())?;
+    let source = <Source as serde::Deserialize>::deserialize(record)?;
     if !matches!(
         source.status,
         Some(
