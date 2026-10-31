@@ -183,6 +183,28 @@ impl ProjectsRepository {
         .transpose()
     }
 
+    pub fn list_records(
+        connection: &Connection,
+    ) -> StoreResult<Vec<(String, studio_runtime_schema::project_record::ProjectRecord)>> {
+        let mut statement = connection.prepare_cached(
+            "SELECT id,record FROM runtime_projects WHERE json_extract(record,'$.removal') IS NULL AND COALESCE(json_type(record,'$.sidebarHidden'),'')!='true' ORDER BY json_extract(record,'$.created'),id",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .map(|row| {
+                let (id, raw) = row?;
+                let project =
+                    serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredRecord {
+                        object: "runtime_projects",
+                        id: id.clone(),
+                    })?;
+                Ok((id, project))
+            })
+            .collect()
+    }
+
     pub fn location_request(
         connection: &Connection,
         project: &str,

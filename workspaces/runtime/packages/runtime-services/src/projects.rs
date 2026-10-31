@@ -110,9 +110,9 @@ pub async fn location_query(store: &RuntimeStore, query: Value) -> Result<Value,
     let matches = query.get("action").and_then(Value::as_str) == Some("matches");
     let (project, projects) = store
         .read_async("runtime-services/projects", move |db| {
-            let project = ProjectsRepository::get(db, &project_id)?.map(|(_, value)| value);
+            let project = ProjectsRepository::get_record(db, &project_id)?;
             let projects = if matches {
-                ProjectsRepository::list(db)?
+                ProjectsRepository::list_records(db)?
             } else {
                 Vec::new()
             };
@@ -131,23 +131,17 @@ pub async fn location_query(store: &RuntimeStore, query: Value) -> Result<Value,
 fn location_from_rows(
     query: &Value,
     server_id: &str,
-    project: &Value,
-    projects: Vec<(String, Value)>,
+    project: &studio_runtime_schema::project_record::ProjectRecord,
+    projects: Vec<(String, studio_runtime_schema::project_record::ProjectRecord)>,
 ) -> Result<Value, ProjectsError> {
     if query.get("action").and_then(Value::as_str) == Some("matches") {
         let origin = project
-            .get("locations")
-            .and_then(Value::as_array)
-            .and_then(|rows| {
-                rows.iter()
-                    .find_map(|row| row.get("gitOrigin").and_then(Value::as_str))
-            })
-            .map(str::to_owned)
+            .locations
+            .iter()
+            .find_map(|row| row.git_origin.clone())
             .or_else(|| {
-                project
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .filter(|path| !path.starts_with("project:"))
+                (!project.path.starts_with("project:"))
+                    .then_some(project.path.as_str())
                     .and_then(|path| git_origin(std::path::Path::new(path)))
             });
         let Some(origin) = origin else {
@@ -156,15 +150,12 @@ fn location_from_rows(
         let mut candidates = Vec::new();
         let mut seen = BTreeSet::new();
         for (id, candidate) in projects {
-            let Some(path) = candidate
-                .get("path")
-                .and_then(Value::as_str)
-                .filter(|path| !path.starts_with("project:"))
-            else {
+            let path = &candidate.path;
+            if path.starts_with("project:") {
                 continue;
-            };
+            }
             if seen.insert(path.to_owned()) {
-                candidates.push(json!({"projectId":id,"path":path,"name":candidate.get("name")}));
+                candidates.push(json!({"projectId":id,"path":path,"name":candidate.name}));
             }
         }
         if let Some(cwd) = query
@@ -221,16 +212,10 @@ fn location_from_rows(
         .filter(|path| !path.is_empty())
         .or_else(|| {
             project
-                .get("locations")
-                .and_then(Value::as_array)
-                .and_then(|rows| {
-                    rows.iter().find(|row| {
-                        row.get("serverId")
-                            .and_then(Value::as_str)
-                            .is_some_and(|id| id == server_id)
-                    })
-                })
-                .and_then(|row| row.get("path").and_then(Value::as_str))
+                .locations
+                .iter()
+                .find(|row| row.server_id == server_id)
+                .map(|row| row.path.as_str())
         })
         .ok_or(ProjectsError::BadRequest(
             "This server has no folder for the project",
@@ -423,6 +408,37 @@ fn peer_matches_from_rows(
 #[allow(clippy::disallowed_methods)]
 mod peer_location_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn local_location_query_refuses_malformed_project_locations() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+        crate::federation_credentials::Credentials::default()
+            .identity(store.clone(), None)
+            .await
+            .unwrap();
+        store
+            .transaction(|tx| {
+                tx.execute("INSERT INTO runtime_projects(id,record) VALUES('p',?1)",
+                [r#"{"id":"p","path":"/project","peerTeams":[],"locations":[{"serverId":42}]}"#])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let query = json!({"project":"p","server":"local","path":root.path().to_string_lossy()});
+        assert!(location_query(&store, query.clone()).await.is_err());
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_projects SET record=?1 WHERE id='p'",
+                    [r#"{"id":"p","path":"/project","peerTeams":[],"locations":[]}"#],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(location_query(&store, query).await.is_ok());
+    }
 
     #[tokio::test]
     async fn peer_location_reads_return_only_bounded_metadata_and_matches() {
