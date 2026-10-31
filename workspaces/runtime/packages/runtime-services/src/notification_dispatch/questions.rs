@@ -425,7 +425,31 @@ pub(super) fn completed(
         return Ok(());
     }
     if agent["isLead"] == true {
-        let record = json!({"id":id,"method":"agent/asyncQuestion","agent":agent["id"],"epoch":agent["epoch"],"turnId":params.get("turnId").filter(|v|!v.is_null() && **v != "").unwrap_or(&agent["turnId"]),"params":{"questions":questions},"status":"pending","createdAt":at});
+        #[derive(serde::Serialize)]
+        struct Params<'a> {
+            questions: &'a [Value],
+        }
+        let payload = serde_json::value::to_raw_value(&Params {
+            questions: &questions,
+        })?;
+        let mut record = RequestRecord::new(
+            id,
+            agent["id"]
+                .as_str()
+                .ok_or(NotificationDispatchError::invalid())?
+                .to_owned(),
+            studio_runtime_schema::request_record::RequestMethod::AsyncQuestion,
+            studio_runtime_schema::persistence::RequestCardStatus::Pending,
+            at,
+            payload,
+        );
+        record.epoch = agent["epoch"].as_u64();
+        record.turn_id = params
+            .get("turnId")
+            .filter(|v| !v.is_null() && **v != "")
+            .unwrap_or(&agent["turnId"])
+            .as_str()
+            .map(str::to_owned);
         put_request(tx, &record)?;
     } else {
         let text = format!(
@@ -462,32 +486,37 @@ pub(super) fn resolved(
         RecordOrder::RowId,
     )?;
     let mut pending = false;
-    for record in records {
-        let connection_id = record.connection_id().map(str::to_owned);
-        let mut status = record.status().map(str::to_owned);
-        let mut record = record.into_value();
+    for mut record in records {
         // A card names its provider generation: the Rust account worker stores
         // it under `supervisor`; Python named the connection after it.
-        let same_generation = record
-            .pointer("/supervisor/generation")
-            .and_then(Value::as_u64)
+        let same_generation = record.supervisor.as_ref().map(|scope| scope.generation)
             == Some(generation)
-            || connection_id.as_deref() == Some(format!("connection-{generation}").as_str());
-        if record["rpcId"] == params["requestId"]
-            && record.get("accountKey").unwrap_or(&json!("default")) == account
+            || record.connection_id.as_deref() == Some(format!("connection-{generation}").as_str());
+        #[derive(serde::Deserialize)]
+        struct Params {
+            #[serde(rename = "threadId")]
+            thread_id: Option<String>,
+        }
+        let thread = serde_json::from_str::<Params>(record.params.get())
+            .ok()
+            .and_then(|p| p.thread_id);
+        if json!(record.rpc_id) == params["requestId"]
+            && record.account_key.as_deref().unwrap_or("default") == account
             && same_generation
-            && record["params"]["threadId"] == params["threadId"]
+            && json!(thread) == params["threadId"]
             && matches!(
-                status.as_deref(),
-                Some("pending" | "answering" | "uncertain" | "blocked")
+                record.status,
+                studio_runtime_schema::persistence::RequestCardStatus::Pending
+                    | studio_runtime_schema::persistence::RequestCardStatus::Answering
+                    | studio_runtime_schema::persistence::RequestCardStatus::Uncertain
+                    | studio_runtime_schema::persistence::RequestCardStatus::Blocked
             )
         {
-            record["status"] = json!("resolved");
-            status = Some("resolved".into());
-            record["resolvedAt"] = json!(at);
+            record.status = studio_runtime_schema::persistence::RequestCardStatus::Resolved;
+            record.resolved_at = Some(at);
             put_request(tx, &record)?;
         }
-        pending |= status.as_deref() == Some("pending");
+        pending |= record.status == studio_runtime_schema::persistence::RequestCardStatus::Pending;
     }
     if agent["status"] == "approval"
         && !pending
@@ -498,19 +527,20 @@ pub(super) fn resolved(
     }
     Ok(())
 }
-fn put_request(tx: &Transaction<'_>, record: &Value) -> Result<(), NotificationDispatchError> {
-    let typed = RequestRecord::from_value(record.clone()).map_err(|_| {
-        stored(
-            "runtime_requests",
-            record["id"].as_str().unwrap_or("<missing>"),
-        )
-    })?;
-    Table::new(tx).put(&typed)?;
-    let id = record["id"]
-        .as_str()
-        .ok_or(NotificationDispatchError::invalid())?;
-    let view = crate::sync_views::project_persisted_record("request", record)
+fn put_request(
+    tx: &Transaction<'_>,
+    record: &RequestRecord,
+) -> Result<(), NotificationDispatchError> {
+    Table::new(tx).put(record)?;
+    let id = record.id.as_str();
+    let view = crate::sync_views::project_persisted_record("request", &json!(record))
         .ok_or_else(|| stored("runtime_requests", id))?;
-    SyncDocumentsRepository::put_entity(tx, "request", id, view, record["status"] != "pending")?;
+    SyncDocumentsRepository::put_entity(
+        tx,
+        "request",
+        id,
+        view,
+        record.status != studio_runtime_schema::persistence::RequestCardStatus::Pending,
+    )?;
     Ok(())
 }

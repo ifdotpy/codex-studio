@@ -177,18 +177,12 @@ impl PreparationResources {
             thread_config: Map<String, Value>,
             tools: Vec<thread::ToolDefinition>,
         }
-        let mut data: Bundled = decode(
-            serde_json::from_str(include_str!("../preparation-resources.json"))
-                .map_err(|_| invalid("preparation resources"))?,
-            "preparation resources",
-        )?;
-        let mut legacy_tools: Vec<thread::ToolDefinition> = decode(
-            serde_json::from_str(include_str!(
-                "../../../../../../../.agents/skills/codex-workspace/references/native-tools.json"
-            ))
-            .map_err(|_| invalid("legacy tools"))?,
-            "legacy tools",
-        )?;
+        let mut data: Bundled = serde_json::from_str(include_str!("../preparation-resources.json"))
+            .map_err(|_| invalid("preparation resources"))?;
+        let mut legacy_tools: Vec<thread::ToolDefinition> = serde_json::from_str(include_str!(
+            "../../../../../../../.agents/skills/codex-workspace/references/native-tools.json"
+        ))
+        .map_err(|_| invalid("legacy tools"))?;
         for tool in data.tools.iter_mut().chain(legacy_tools.iter_mut()) {
             studio_runtime_schema::task_results::apply_tool_contract(
                 &tool.name,
@@ -1179,8 +1173,9 @@ fn preserve_complaint(
         let Some(raw) = raw else {
             return Ok(true);
         };
-        let complaint: Value = serde_json::from_str(&raw).map_err(|_| invalid("complaint"))?;
-        if complaint["leadId"] != agent {
+        let complaint: studio_runtime_schema::complaint_record::ComplaintRecord =
+            serde_json::from_str(&raw).map_err(|_| invalid("complaint"))?;
+        if complaint.lead_id() != Some(agent) {
             return Ok(true);
         }
     }
@@ -1435,43 +1430,57 @@ pub(super) fn submission_snapshot(
     let plan=record_by_id(tx, "runtime_plans", root_id)?.map(|s|serde_json::from_str::<Value>(&s).map_err(|_|invalid("plan"))).transpose()?.filter(|v|v["native"].is_object()).map(|v|decode(json!({"id":v["id"],"rootId":v["rootId"],"steps":v["native"].get("plan").cloned().unwrap_or_else(||json!([])),"explanation":v["native"].get("explanation").filter(|v|!v.is_null()).cloned().unwrap_or(json!(""))}),"plan")).transpose()?;
     let mut complaints = Vec::new();
     for raw in lead_complaints(tx, &intent.agent_id)? {
-        let v: Value = serde_json::from_str(&raw).map_err(|_| invalid("complaint"))?;
-        // Python only projects unanswered lead-addressed complaints into context.
-        // Unrelated and closed records need no body projection.
-        if v["leadId"] != intent.agent_id
-            || v["recipient"] != "lead"
-            || matches!(v["status"].as_str(), Some("resolved" | "declined"))
+        use studio_runtime_schema::complaint_record::{
+            ComplaintRecipient, ComplaintRecord, ComplaintSource, ComplaintStatus,
+        };
+        let complaint: ComplaintRecord =
+            serde_json::from_str(&raw).map_err(|_| invalid("complaint"))?;
+        if complaint.lead_id() != Some(intent.agent_id.as_str())
+            || complaint.recipient != ComplaintRecipient::Lead
         {
             continue;
         }
-        let authors = v["responses"]
-            .as_array()
-            .ok_or_else(|| invalid("complaint/responses"))?
-            .iter()
-            .map(|r| decode(r["author"].clone(), "response/author"))
-            .collect::<Result<Vec<String>, _>>()?;
-        if !(v["sourceType"] == "user_task" && v["status"] == "open")
+        let status = match complaint.status {
+            ComplaintStatus::Open => turn::ComplaintStatus::Open,
+            ComplaintStatus::InProgress => turn::ComplaintStatus::InProgress,
+            ComplaintStatus::Resolved | ComplaintStatus::Declined => continue,
+        };
+        let authors: Vec<String> = complaint
+            .responses
+            .into_iter()
+            .map(|response| response.author)
+            .collect();
+        let legacy_user_task = complaint.source_type == Some(ComplaintSource::UserTask);
+        if !(legacy_user_task && complaint.status == ComplaintStatus::Open)
             && authors.contains(&intent.agent_id)
         {
             continue;
         }
-        let author: String = decode(v["author"].clone(), "complaint/author")?;
+        let author = complaint
+            .author
+            .ok_or_else(|| invalid("complaint/author"))?;
         let author_name = AgentRepository::get(tx, &AgentId::from(author.as_str()))?
             .map(|a| text(&a.value(), "name"))
             .transpose()?
             .flatten();
         complaints.push(turn::Complaint {
-            id: decode(v["id"].clone(), "complaint/id")?,
+            id: complaint.id,
             lead_id: intent.agent_id.clone(),
-            recipient: decode(v["recipient"].clone(), "complaint/recipient")?,
-            status: decode(v["status"].clone(), "complaint/status")?,
-            legacy_user_task: v["sourceType"] == "user_task",
+            recipient: turn::Recipient::Lead,
+            status,
+            legacy_user_task,
             response_authors: authors,
             author,
             author_name,
-            text: decode(v["text"].clone(), "complaint/text")?,
-            version: optional(&v, "version")?,
-            created: decode(v["created"].clone(), "complaint/created")?,
+            text: complaint.text.ok_or_else(|| invalid("complaint/text"))?,
+            version: complaint
+                .version
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| invalid("complaint/version"))?,
+            created: complaint
+                .created
+                .ok_or_else(|| invalid("complaint/created"))?,
         });
     }
     ensure_context_tables(tx)?;
@@ -1482,10 +1491,7 @@ pub(super) fn submission_snapshot(
         .query_map([&intent.agent_id], |r| r.get::<_, String>(0))?
         .map(|r| {
             let r = r?;
-            decode(
-                serde_json::from_str(&r).map_err(|_| invalid("manifest"))?,
-                "manifest",
-            )
+            serde_json::from_str(&r).map_err(|_| invalid("manifest"))
         })
         .collect::<Result<Vec<_>, WorkerError>>()?;
     let epoch = turn::Epoch(
@@ -1715,6 +1721,18 @@ mod resource_tests {
         };
         event.text = r#"{"complaints":[{"complaint_id":"bad"},{}]}"#.into();
         assert!(super::preserve_complaint(&tx, "lead", &event).is_err());
+        event.text = r#"{"complaints":[{"complaint_id":"ok"}]}"#.into();
+        assert!(super::preserve_complaint(&tx, "lead", &event).is_err());
+        for (id, lead) in [("ok", "lead"), ("foreign", "other")] {
+            let record = format!(
+                r#"{{"id":"{id}","author":"a","leadId":"{lead}","status":"open","text":"t","created":1,"readAt":null,"recipient":"lead","responses":[],"updated":null,"version":null}}"#
+            );
+            tx.execute(
+                "UPDATE runtime_complaints SET record=?1 WHERE id=?2",
+                [&record, id],
+            )
+            .unwrap();
+        }
         for (text, expected) in [
             (r#"{"complaints":[{}, {"complaint_id":"bad"}]}"#, true),
             (r#"{"complaints":[{"complaint_id":"ok"}]}"#, false),

@@ -732,6 +732,7 @@ impl SyncDocumentsRepository {
         payload: &str,
         deleted: bool,
     ) -> StoreResult<bool> {
+        // This hash detects content changes; it is not a request or receipt identity.
         let hash = hash_payload(payload);
         Self::write_entity_hash(
             transaction,

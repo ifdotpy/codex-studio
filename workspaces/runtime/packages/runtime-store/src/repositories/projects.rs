@@ -163,6 +163,48 @@ impl ProjectsRepository {
         .transpose()
     }
 
+    pub fn get_record(
+        connection: &Connection,
+        id: &str,
+    ) -> StoreResult<Option<studio_runtime_schema::project_record::ProjectRecord>> {
+        let raw: Option<String> = connection
+            .query_row(
+                "SELECT record FROM runtime_projects WHERE id=?1 AND json_extract(record,'$.removal') IS NULL",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| {
+            serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredRecord {
+                object: "runtime_projects",
+                id: id.to_owned(),
+            })
+        })
+        .transpose()
+    }
+
+    pub fn list_records(
+        connection: &Connection,
+    ) -> StoreResult<Vec<(String, studio_runtime_schema::project_record::ProjectRecord)>> {
+        let mut statement = connection.prepare_cached(
+            "SELECT id,record FROM runtime_projects WHERE json_extract(record,'$.removal') IS NULL AND COALESCE(json_type(record,'$.sidebarHidden'),'')!='true' ORDER BY json_extract(record,'$.created'),id",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .map(|row| {
+                let (id, raw) = row?;
+                let project =
+                    serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredRecord {
+                        object: "runtime_projects",
+                        id: id.clone(),
+                    })?;
+                Ok((id, project))
+            })
+            .collect()
+    }
+
     pub fn location_request(
         connection: &Connection,
         project: &str,
@@ -260,6 +302,23 @@ impl ProjectsRepository {
             project.clone(),
             project.get("sidebarHidden").and_then(Value::as_bool) == Some(true),
         )?;
+        Ok(())
+    }
+
+    /// Update selected fields while preserving the rest of the stored project.
+    pub fn patch_project<T: Serialize>(
+        transaction: &Transaction<'_>,
+        id: &str,
+        patch: &T,
+    ) -> StoreResult<()> {
+        let patch = serde_json::to_string(patch)?;
+        let (record, hidden): (String, bool) = transaction.query_row(
+            "UPDATE runtime_projects SET record=json_patch(record,json(?2)) WHERE id=?1 AND json_extract(record,'$.removal') IS NULL RETURNING record,json_type(record,'$.sidebarHidden')='true'",
+            params![id, patch],
+            |row| Ok((row.get(0)?, row.get::<_, Option<bool>>(1)?.unwrap_or(false))),
+        )?;
+        let record = serde_json::value::RawValue::from_string(record)?;
+        SyncDocumentsRepository::put_entity(transaction, "project", id, record, hidden)?;
         Ok(())
     }
 

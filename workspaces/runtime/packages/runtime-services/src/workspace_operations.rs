@@ -271,18 +271,7 @@ impl OperationSnapshot {
     }
 }
 
-/// Durable transport identity; response contents alone never authorize local mutation.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProviderTicket {
-    pub operation: String,
-    pub agent: String,
-    pub epoch: u64,
-    pub account: String,
-    pub thread: Option<String>,
-    pub connection: String,
-    pub generation: u64,
-    pub request: String,
-}
+pub use studio_runtime_schema::start_attempt::ProviderTicket;
 
 pub fn accept_provider_result(
     expected: &ProviderTicket,

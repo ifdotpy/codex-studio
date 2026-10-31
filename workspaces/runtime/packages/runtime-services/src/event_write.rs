@@ -389,8 +389,10 @@ fn enqueue(
     };
     if let Some((server, link, is_anchor)) = remote_owner(agent)? {
         let request_id = match metadata.extensions.get("remoteRequestId") {
-            Some(Value::String(root)) if !root.is_empty() => root.clone(),
-            Some(_) => return Err(EventWriteError::Conflict("Remote event outcome is unknown")),
+            Some(raw) => serde_json::from_str::<String>(raw.0.get())
+                .ok()
+                .filter(|root| !root.is_empty())
+                .ok_or(EventWriteError::Conflict("Remote event outcome is unknown"))?,
             None if existing => {
                 return Err(EventWriteError::Conflict("Remote event outcome is unknown"));
             }
@@ -400,9 +402,13 @@ fn enqueue(
                     .filter(|id| id.get_version_num() == 7)
                     .map(|_| id.clone())
                     .unwrap_or_else(RequestIdentity::issue_root);
-                metadata
-                    .extensions
-                    .insert("remoteRequestId".into(), json!(root));
+                metadata.extensions.insert(
+                    "remoteRequestId".into(),
+                    studio_runtime_schema::raw_json::RawJson(
+                        serde_json::value::to_raw_value(&root)
+                            .map_err(studio_runtime_store::StoreError::from)?,
+                    ),
+                );
                 QueueWriteRepository::put_typed_metadata(transaction, &id, &metadata)?;
                 root
             }
@@ -615,7 +621,10 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
         AgentStatus::Running | AgentStatus::Starting => {
             agent.in_flight != Some(true)
                 && agent.turn_id.as_deref().is_none_or(str::is_empty)
-                && !truthy(agent.extra.get("startAttempt"))
+                && agent
+                    .start_attempt
+                    .as_ref()
+                    .is_none_or(|a| a == &Default::default())
         }
         AgentStatus::Approval => false,
         AgentStatus::Unknown
@@ -684,29 +693,24 @@ pub fn assert_delegation(agent: &AgentRecord) -> Result<(), EventWriteError> {
 
 pub fn recovery_pending(agent: &AgentRecord) -> bool {
     let extra = &agent.extra;
-    let matches = |recovery: &Value| {
-        recovery.get("epoch").and_then(Value::as_i64) == Some(agent.epoch)
-            && recovery.get("accountKey").and_then(Value::as_str)
-                == Some(agent.account_key.as_str())
-            && recovery.get("threadId").and_then(Value::as_str) == agent.thread_id.as_deref()
+    let matches = |recovery: &studio_runtime_schema::recovery_record::RecoveryFields| {
+        recovery
+            .epoch
+            .as_ref()
+            .and_then(|value| value.number().as_i64())
+            == Some(agent.epoch)
+            && recovery.account_key.as_deref() == Some(agent.account_key.as_str())
+            && recovery.thread_id.as_deref() == agent.thread_id.as_deref()
     };
-    let root = extra
-        .get("restartRecovery")
-        .and_then(Value::as_object)
-        .map(|recovery| {
-            recovery.get("stage").and_then(Value::as_str) == Some("pending")
-                && recovery.get("autoWake").and_then(Value::as_bool) == Some(true)
-                && matches(&Value::Object(recovery.clone()))
-        })
-        .unwrap_or(false);
-    let disconnect = extra
-        .get("disconnectRecovery")
-        .and_then(Value::as_object)
-        .map(|recovery| {
-            recovery.get("autoWake").and_then(Value::as_bool) == Some(true)
-                && matches(&Value::Object(recovery.clone()))
-        })
-        .unwrap_or(false);
+    let root = agent.restart_recovery.as_deref().is_some_and(|recovery| {
+        recovery.stage.as_deref() == Some("pending")
+            && recovery.auto_wake == Some(true)
+            && matches(recovery)
+    });
+    let disconnect = agent
+        .disconnect_recovery
+        .as_deref()
+        .is_some_and(|recovery| recovery.auto_wake == Some(true) && matches(recovery));
     let recovery = !agent_auto_wake(agent).unwrap_or(true)
         && agent.status != AgentStatus::Paused
         && !agent.is_deleted()

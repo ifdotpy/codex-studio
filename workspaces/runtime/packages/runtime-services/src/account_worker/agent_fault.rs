@@ -434,11 +434,11 @@ pub(super) fn hold_agent(
 fn unsubmitted_attempt(
     agent: &studio_runtime_store::AgentRecord,
 ) -> Option<studio_runtime_store::TurnAttemptIdentity> {
-    let attempt = agent.extra.get("startAttempt")?;
-    (attempt["submitted"] == false).then(|| studio_runtime_store::TurnAttemptIdentity {
+    let attempt = agent.start_attempt.as_ref()?;
+    (attempt.submitted == Some(false)).then(|| studio_runtime_store::TurnAttemptIdentity {
         agent_id: agent.id.0.clone(),
-        epoch: attempt["epoch"].as_i64().unwrap_or(agent.epoch),
-        attempt_id: attempt["id"].as_str().unwrap_or_default().to_owned(),
+        epoch: attempt.epoch.unwrap_or(agent.epoch),
+        attempt_id: attempt.id.clone().unwrap_or_default(),
     })
 }
 

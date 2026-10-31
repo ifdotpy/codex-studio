@@ -48,6 +48,7 @@ pub(crate) mod m2026_10_30_monitor_queue;
 pub(crate) mod m2026_10_30_monitor_status;
 mod m2026_10_30_project_teams;
 mod m2026_10_30_radio_room;
+mod m2026_10_30_request_record;
 mod m2026_10_30_retire_graph_agents;
 mod m2026_10_30_rule_monitor_records;
 mod m2026_10_30_start_wait;
@@ -55,6 +56,7 @@ mod m2026_10_30_task_records;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
+mod m2026_10_31_native_status_error;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -119,6 +121,11 @@ const OCTOBER_29: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
     day: 29,
+};
+const OCTOBER_31: MigrationDate = MigrationDate {
+    year: 2026,
+    month: 10,
+    day: 31,
 };
 const OCTOBER_30: MigrationDate = MigrationDate {
     year: 2026,
@@ -788,6 +795,16 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| m2026_10_30_complaint_record::apply(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-request-record",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Request records before strict typed state",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_request_record::apply(c.transaction),
+    },
     &RegistryMigration,
     &SqlMigration {
         definition: MigrationDefinition {
@@ -828,6 +845,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_branch_phase::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-native-status-error",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent native status errors stored as objects",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_31_native_status_error::apply(c.transaction),
     },
 ];
 

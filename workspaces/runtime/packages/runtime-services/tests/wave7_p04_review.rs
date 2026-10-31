@@ -617,7 +617,7 @@ async fn deferring_a_question_publishes_the_request_entity() {
     let request = id.clone();
     store
         .transaction_with_error(move |tx| {
-            studio_runtime_services::questions_write::defer_question(tx, &request, true, |_| true)
+            studio_runtime_services::questions_write::defer_question(tx, &request, true)
         })
         .await
         .expect("defer the question");
@@ -652,20 +652,37 @@ async fn non_radio_async_answer_is_steered_and_acknowledged() {
     let (_root, store, context) = fixture().await;
     let agent = context.agent.clone();
     let agent_for_setup = agent.clone();
-    store.transaction(move |tx| {
-        tx.execute("DELETE FROM runtime_events WHERE agent=?1", [&agent_for_setup])?;
-        let mut record = AgentRepository::get(tx, &AgentId::from(agent_for_setup.as_str()))?.unwrap();
-        record.status = studio_runtime_store::AgentStatus::Running;
-        record.in_flight = Some(true);
-        record.auto_wake = Some(true);
-        record.thread_id = Some("thread-0".to_string());
-record.turn_id = Some("turn-0".to_string());
-record.is_lead = Some(true);
-record.extra.insert("startAttempt".into(), json!({"id":"start","epoch":3,"submitted":true,"turnId":"turn-0","threadId":"thread-0","accountKey":"default","events":["initial"],"connectionGeneration":7}));
-        AgentRepository::put(tx, &record)?;
-        Ok(())
-    }).await.unwrap();
-    card(&store, &json!({"id":"question","agent":agent,"epoch":3,"turnId":"turn-0","method":"agent/asyncQuestion","status":"pending","params":{"questions":[{"id":"q","question":"Choose"},{"id":"secret","question":"Token","isSecret":true},{"id":"legacy","question":"Optional"}]}})).await;
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "DELETE FROM runtime_events WHERE agent=?1",
+                [&agent_for_setup],
+            )?;
+            let mut record =
+                AgentRepository::get(tx, &AgentId::from(agent_for_setup.as_str()))?.unwrap();
+            record.status = studio_runtime_store::AgentStatus::Running;
+            record.in_flight = Some(true);
+            record.auto_wake = Some(true);
+            record.thread_id = Some("thread-0".to_string());
+            record.turn_id = Some("turn-0".to_string());
+            record.is_lead = Some(true);
+            record.start_attempt = Some(Box::new(studio_runtime_store::StartAttemptView {
+                id: Some("start".into()),
+                epoch: Some(3),
+                submitted: Some(true),
+                turn_id: Some("turn-0".into()),
+                thread_id: Some("thread-0".into()),
+                account_key: Some("default".into()),
+                events: Some(vec!["initial".into()]),
+                connection_generation: Some(7),
+                ..Default::default()
+            }));
+            AgentRepository::put(tx, &record)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    card(&store, &json!({"id":"question","agent":agent,"epoch":3,"turnId":"turn-0","method":"agent/asyncQuestion","status":"pending","createdAt":1.0,"params":{"questions":[{"id":"q","question":"Choose"},{"id":"secret","question":"Token","isSecret":true},{"id":"legacy","question":"Optional"}]}})).await;
     let prepared = PreparedHost::load(&store).await.unwrap();
     let agent_for_write = agent.clone();
     store
@@ -673,26 +690,24 @@ record.extra.insert("startAttempt".into(), json!({"id":"start","epoch":3,"submit
             let data = json!({"answers":{"q":{"answers":["yes"]},"secret":{"answers":["private"]},"legacy":{"answers":null}},"decision":null});
             let input = |data, now| AsyncQuestionAnswerInput {
                 id: "question", data, admission: &Allow, prepared: &prepared, now,
-                validate: |_: &serde_json::Value| true,
             };
             let mut malformed = data.clone();
             malformed["answers"]["q"]["answers"] = json!(["yes", 7]);
-            assert!(answer_async_question(tx, input(&malformed, 29.0)).is_err());
+            assert!(answer_async_question(tx, &input(&malformed, 29.0)).is_err());
             answer_async_question(
                 tx,
-                AsyncQuestionAnswerInput {
+                &AsyncQuestionAnswerInput {
                     id: "question",
                     data: &data,
                     admission: &Allow,
                     prepared: &prepared,
                     now: 30.0,
-                    validate: |_: &serde_json::Value| true,
-                },
+                    },
             )?;
-            assert!(!answer_async_question(tx, input(&data, 30.5))?.event_inserted);
+            assert!(!answer_async_question(tx, &input(&data, 30.5))?.event_inserted);
             let mut changed = data.clone();
             changed.as_object_mut().unwrap().remove("decision");
-            assert!(answer_async_question(tx, input(&changed, 30.6)).is_err(), "null and omission keep distinct raw signatures");
+            assert!(answer_async_question(tx, &input(&changed, 30.6)).is_err(), "null and omission keep distinct raw signatures");
             let record: String = tx.query_row("SELECT record FROM runtime_requests WHERE id='question'", [], |row| row.get(0)).map_err(studio_runtime_store::StoreError::from)?;
             let record: serde_json::Value = serde_json::from_str(&record)?;
             assert_eq!(record["answerHistory"][0]["answer"], json!(["yes"]));

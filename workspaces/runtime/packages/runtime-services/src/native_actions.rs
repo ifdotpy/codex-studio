@@ -523,14 +523,7 @@ pub fn reserve(
     Ok(Snapshot { agent, ..checked })
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct NativeRequest {
-    pub root_request_id: String,
-    pub admitted_request: Option<AdmittedRequest>,
-    pub ticket: ProviderTicket,
-    pub method: String,
-    pub params: Value,
-}
+pub use studio_runtime_schema::start_attempt::NativeRequest;
 /// Reserve the exact provider obligation in the transaction changing its owner.
 /// A saved final token is reused without admitting another provider attempt.
 pub fn reserve_provider_intent(

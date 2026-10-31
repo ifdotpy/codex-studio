@@ -235,13 +235,7 @@ pub fn publish_agent(transaction: &Transaction<'_>, record: &Value) -> Result<Va
 }
 
 fn same_intent(saved: &str, requested: &str) -> bool {
-    match (
-        serde_json::from_str::<Value>(saved),
-        serde_json::from_str::<Value>(requested),
-    ) {
-        (Ok(saved), Ok(requested)) => saved == requested,
-        _ => false,
-    }
+    saved == requested
 }
 
 fn replay_lead(
@@ -760,6 +754,53 @@ mod tests {
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
+    }
+
+    #[test]
+    fn legacy_lead_signature_is_not_equivalent_to_new_bytes() {
+        assert!(!super::same_intent(r#"{"id": "lead"}"#, r#"{"id":"lead"}"#));
+    }
+
+    #[test]
+    fn old_rename_signature_is_refused_without_reexecution() {
+        let mut connection = database();
+        studio_runtime_store::receipt_schema::create(&connection).expect("receipt schema");
+        connection.execute_batch("CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);").expect("settings and sync metadata");
+        let tx = connection.transaction().expect("transaction");
+        let record = json!({"compactions":0,"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle","name":"Before","isLead":true,"autoWake":true,"cwd":"/project","serverId":"server"});
+        super::save_agent(&tx, &record, &|_, _| true).expect("agent");
+        let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let old_signature = "53bbc5c020499da23063082195d71442534d8185f130191aaef5286830dafa44";
+        super::rename(
+            &tx,
+            "agent",
+            Some("First"),
+            Some(&request),
+            old_signature,
+            |_, _| true,
+        )
+        .expect("legacy request");
+        super::rename(&tx, "agent", Some("Later"), None, "later", |_, _| true)
+            .expect("later rename");
+        let signature = super::operations::rename_signature("agent", Some("First"));
+        assert!(matches!(
+            super::rename(
+                &tx,
+                "agent",
+                Some("First"),
+                Some(&request),
+                &signature,
+                |_, _| true
+            ),
+            Err(super::MutationError::Request(
+                studio_runtime_store::request_results::RequestResultError::Conflict { .. }
+            ))
+        ));
+        let record = super::load_agent_value(&tx, "agent", &|_, _| true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record["name"], "Later");
     }
 
     #[test]

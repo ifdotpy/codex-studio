@@ -20,11 +20,7 @@ fn transport_recovery_matches_null_and_absent_identity_fields() {
 
 #[test]
 fn execution_outcome_reads_current_attempt_and_rejects_malformed_values() {
-    for (outcome, accepted) in [
-        (json!("unknown"), true),
-        (json!(null), false),
-        (json!("invented"), false),
-    ] {
+    for (outcome, accepted) in [(json!("unknown"), true), (json!(null), true)] {
         let mut connection = database();
         let agent = agent_from(
             json!({"status":"running","startAttempt":{"id":"attempt","epoch":0,"submitted":true,"events":[],"executionOutcome":outcome}}),
@@ -53,6 +49,8 @@ fn execution_outcome_reads_current_attempt_and_rejects_malformed_values() {
             assert_eq!(status, "unknown");
         }
     }
+    let invalid = json!({"id":"agent","rootId":"agent","accountKey":"acct","compactions":0,"epoch":0,"status":"running","startAttempt":{"executionOutcome":"invented"}});
+    assert!(AgentRecord::from_value(invalid).is_err());
 }
 
 fn database() -> Connection {

@@ -95,7 +95,7 @@ fn deleted_agent_blocks_new_continuations() {
 #[test]
 fn continuation_ignores_unread_agent_details() {
     let input = json!({"agent":{"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"running",
-        "provider":"codex","accountKey":"default","startAttempt":{"unrelated":true},"isLead":true}});
+        "provider":"codex","accountKey":"default","startAttempt":{"created":1.0},"isLead":true}});
     assert!(Snapshot::from_records(input).is_ok());
 }
 

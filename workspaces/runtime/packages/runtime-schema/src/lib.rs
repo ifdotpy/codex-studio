@@ -35,6 +35,7 @@ pub mod persistence;
 pub mod plan_record;
 pub mod pricing;
 pub mod process_controls;
+pub mod project_record;
 pub mod provider_call_contract;
 pub mod provider_diagnostics;
 pub mod provider_errors;
@@ -53,6 +54,7 @@ pub mod request_record;
 pub mod rule_record;
 pub mod shared_values;
 pub mod shell_policy;
+pub mod start_attempt;
 mod stored_record;
 pub use stored_record::AgentCounter;
 pub mod tool_result;
@@ -1401,14 +1403,14 @@ mod tests {
         assert!(
             validate(
                 "PersistedRequestRecord",
-                &json!({"id":"q","connectionId":null,"agent":null,"status":"pending"})
+                &json!({"id":"q","connectionId":null,"agent":"a","method":"agent/asyncQuestion","status":"pending","createdAt":1,"params":{}})
             )
             .expect("persisted request schema accepts nullable connection identity")
         );
         assert!(
             !validate(
                 "PersistedRequestRecord",
-                &json!({"id":"q","connectionId":7})
+                &json!({"id":"q","connectionId":7,"agent":"a","method":"agent/asyncQuestion","status":"pending","createdAt":1,"params":{}})
             )
             .expect("persisted request schema exists")
         );

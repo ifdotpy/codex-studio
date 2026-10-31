@@ -102,6 +102,9 @@ async fn seed(store: &RuntimeStore, records: Records) {
                         "INSERT INTO voice_sessions(id,agent,created,ended,state) VALUES(?1,?2,1,?3,?4)",
                         params![row["id"].as_str(), row["agent"].as_str(), row["ended"].as_f64(), row["state"].as_str()],
                     )?;
+                } else if table == "runtime_requests" {
+                    let request: studio_runtime_store::RequestRecord = serde_json::from_str(&row.to_string())?;
+                    studio_runtime_store::Table::<studio_runtime_store::RequestRecord>::new(tx).put(&request)?;
                 } else { agent_management::write(tx, &table, &row)?; }
             }
         }
@@ -756,14 +759,13 @@ impl InterruptFixture {
                         if agent.deleted_at.is_none() {
                             continue;
                         }
-                        let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
+                        let attempt = agent.start_attempt.as_ref();
                         let needs_settlement = agent.in_flight == Some(true)
                             || agent
                                 .turn_id
                                 .as_deref()
                                 .is_some_and(|turn| !turn.is_empty())
-                            || attempt.get("activeAtReservation").and_then(Value::as_bool)
-                                == Some(true)
+                            || attempt.and_then(|value| value.active_at_reservation) == Some(true)
                             || matches!(
                                 agent.status,
                                 studio_runtime_store::AgentStatus::Running
@@ -777,10 +779,10 @@ impl InterruptFixture {
                         agent.turn_id = None;
                         agent.activity = None;
                         agent.active_tools = Some(Vec::new());
-                        if let Some(attempt) = agent.extra.get_mut("startAttempt")
-                            && attempt.get("activeAtReservation") == Some(&json!(true))
+                        if let Some(attempt) = agent.start_attempt.as_mut()
+                            && attempt.active_at_reservation == Some(true)
                         {
-                            attempt["activeAtReservation"] = json!(false);
+                            attempt.active_at_reservation = Some(false);
                         }
                         studio_runtime_store::AgentRepository::put(tx, &agent)?;
                     }
@@ -2128,7 +2130,11 @@ async fn successful_adapter_cannot_replace_attempt_or_provider_identity() {
             effect: &LifecycleEffect,
         ) -> Result<(), ManagementError> {
             let mut changed = effect.stopped().clone();
-            changed[self.0] = json!("replacement");
+            changed[self.0] = if self.0 == "startAttempt" {
+                json!({"id":"replacement"})
+            } else {
+                json!("replacement")
+            };
             agent_management::write(tx, "runtime_agents", &changed)?;
             Ok(())
         }

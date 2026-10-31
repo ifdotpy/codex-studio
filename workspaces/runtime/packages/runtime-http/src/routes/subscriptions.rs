@@ -516,7 +516,7 @@ async fn content_fingerprint(state: HttpState, resource: ResourceRef) -> Option<
             // A scoped stream hint may precede the next stored transcript flush.
             let publication = state
                 .resource_notifications
-                .published_revision(&serde_json::to_value(&resource).ok()?)
+                .published_revision(&resource)
                 .ok()?;
             let store = state.store?;
             store

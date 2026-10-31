@@ -1082,12 +1082,19 @@ fn publish_direct(
         }
         return studio_runtime_store::RulesRepository::publish_entity(transaction, &record);
     }
-    let record = serde_json::from_str::<Value>(raw)?;
-    if collection == "work" {
-        publish_work_detail(transaction, id, &record, validate)?;
-    }
     if collection == "request" {
-        let question = crate::questions_reads::question_history_entity(raw)
+        let record: studio_runtime_store::RequestRecord =
+            serde_json::from_str(raw).map_err(|_| StoreError::InvalidStoredRecord {
+                object: "requests",
+                id: id.to_owned(),
+            })?;
+        if record.id != id {
+            return Err(StoreError::InvalidStoredRecord {
+                object: "requests",
+                id: id.to_owned(),
+            });
+        }
+        let question = crate::questions_reads::question_history_entity(&record)
             .map_err(|_| StoreError::RecordContract("invalid question history entity"))?;
         match question {
             Some(value) => {
@@ -1095,9 +1102,17 @@ fn publish_direct(
             }
             None => retire_if_live(transaction, "questionHistory", id, validate)?,
         }
+        if record.status != studio_runtime_schema::persistence::RequestCardStatus::Pending {
+            return retire_if_live(transaction, collection, id, validate);
+        }
+        if let Some(projected) = project_persisted_record(collection, &serde_json::json!(record)) {
+            put_projection(transaction, collection, id, projected, false, validate)?;
+        }
+        return Ok(());
     }
-    if collection == "request" && record.get("status").and_then(Value::as_str) != Some("pending") {
-        return retire_if_live(transaction, collection, id, validate);
+    let record = serde_json::from_str::<Value>(raw)?;
+    if collection == "work" {
+        publish_work_detail(transaction, id, &record, validate)?;
     }
     match project_persisted_record(collection, &record) {
         Some(projected) => put_projection(transaction, collection, id, projected, false, validate),

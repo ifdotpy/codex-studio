@@ -24,6 +24,22 @@ fn present_start_wait<'de, D: serde::Deserializer<'de>>(
     studio_runtime_schema::agent_progress::AgentStartWait::deserialize(d).map(Some)
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDraft {
+    pub text: String,
+    pub prefix_text: String,
+    pub assets: Vec<studio_runtime_schema::transcript_asset::TranscriptAssetView>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+fn present_agent_draft<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Box<AgentDraft>>, D::Error> {
+    AgentDraft::deserialize(d).map(Box::new).map(Some)
+}
+
 macro_rules! string_id {
     ($name:ident) => {
         #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -312,6 +328,12 @@ pub enum AgentSandbox {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRecord {
     pub id: AgentId,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_agent_draft"
+    )]
+    pub draft: Option<Box<AgentDraft>>,
     pub root_id: AgentId,
     #[serde(deserialize_with = "deserialize_agent_epoch")]
     pub epoch: i64,
@@ -395,6 +417,12 @@ pub struct AgentRecord {
     pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_job: Option<StoredTitleJob>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_attempt: Option<Box<StartAttemptView>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disconnect_recovery: Option<Box<studio_runtime_schema::recovery_record::RecoveryFields>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_recovery: Option<Box<studio_runtime_schema::recovery_record::RecoveryFields>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_outcome_hold: Option<StoredStartOutcomeHold>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -645,65 +673,9 @@ impl StoredStartOutcomeHold {
     }
 }
 
-/// Typed projection of the scheduler-owned fields in a start attempt.
-/// Other owners retain their fields in the original object.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StartAttemptView {
-    pub id: Option<String>,
-    pub epoch: Option<i64>,
-    pub account_key: Option<String>,
-    pub thread_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub observed_turn_id: Option<String>,
-    pub events: Option<Vec<String>>,
-    pub submitted: Option<bool>,
-    pub active_at_reservation: Option<bool>,
-    pub created: Option<f64>,
-    #[serde(default, deserialize_with = "start_attempt_action")]
-    pub action: Option<StartAttemptAction>,
-    pub execution_outcome: Option<studio_runtime_schema::persistence::ExecutionStatus>,
-    pub request_ticket: Option<String>,
-    pub connection_id: Option<String>,
-    pub connection_generation: Option<u64>,
-    pub native_operation_id: Option<String>,
-    pub root_request_id: Option<String>,
-    pub interrupt: Option<StartInterruptView>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StartAttemptAction {
-    Compact,
-    Review,
-    Capacity,
-    Safety,
-}
-
-fn start_attempt_action<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<StartAttemptAction>, D::Error> {
-    StartAttemptAction::deserialize(deserializer).map(Some)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InterruptOutcome {
-    Unknown,
-    Unsent,
-    Accepted,
-    Rejected,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StartInterruptView {
-    pub request_ticket: Option<String>,
-    pub thread_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub generation: Option<u64>,
-    pub outcome: Option<InterruptOutcome>,
-}
+pub use studio_runtime_schema::start_attempt::{
+    InterruptOutcome, StartAttemptAction, StartAttemptView, StartInterruptView,
+};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -713,9 +685,12 @@ pub struct ActiveExecutionView {
 }
 
 macro_rules! start_attempt_setters {
-    ($($name:ident: $ty:ty = $field:literal;)+) => {
+    ($($name:ident: $ty:ty => $field:ident = $convert:expr;)+) => {
         $(pub fn $name(&mut self, value: $ty) -> StoreResult<()> {
-            self.set_start_attempt_field($field, &value)
+            let attempt = self.start_attempt.as_mut()
+                .ok_or(crate::StoreError::RecordContract("missing start attempt"))?;
+            attempt.$field = ($convert)(value);
+            Ok(())
         })+
     };
 }
@@ -729,6 +704,7 @@ impl AgentRecord {
     pub fn test_defaults() -> Self {
         Self {
             id: AgentId::from(""),
+            draft: None,
             root_id: AgentId::from(""),
             epoch: 0,
             status: AgentStatus::Unknown,
@@ -768,6 +744,9 @@ impl AgentRecord {
             thread_id: None,
             turn_id: None,
             title_job: None,
+            start_attempt: None,
+            disconnect_recovery: None,
+            restart_recovery: None,
             start_outcome_hold: None,
             fired_events: BTreeSet::new(),
             native_review_thread: None,
@@ -814,37 +793,19 @@ impl AgentRecord {
         self.set_active_execution_field("attemptId", &value)
     }
 
-    pub fn start_attempt(&self) -> Result<Option<StartAttemptView>, serde_json::Error> {
-        self.extra
-            .get("startAttempt")
-            .filter(|value| !value.is_null())
-            .map(StartAttemptView::deserialize)
-            .transpose()
-    }
-
-    fn set_start_attempt_field<T: Serialize>(&mut self, field: &str, value: &T) -> StoreResult<()> {
-        let attempt = self
-            .extra
-            .get_mut("startAttempt")
-            .and_then(|value| value.as_object_mut())
-            .ok_or(crate::StoreError::RecordContract("missing start attempt"))?;
-        attempt.insert(field.into(), crate::projection_value(value));
-        Ok(())
-    }
-
     start_attempt_setters! {
-        set_start_attempt_submitted: bool = "submitted";
-        set_start_attempt_account_key: &str = "accountKey";
-        set_start_attempt_thread_id: Option<&str> = "threadId";
-        set_start_attempt_connection_id: Option<&str> = "connectionId";
-        set_start_attempt_native_operation_id: &str = "nativeOperationId";
-        set_start_attempt_not_submitted_reason: &str = "notSubmittedReason";
-        set_start_attempt_retired_events: &[String] = "retiredEvents";
-        set_start_attempt_turn_id: Option<&str> = "turnId";
-        set_start_attempt_observed_turn_id: Option<&str> = "observedTurnId";
-        set_start_attempt_execution_outcome: studio_runtime_schema::persistence::ExecutionStatus = "executionOutcome";
-        set_start_attempt_request_ticket: &str = "requestTicket";
-        set_start_attempt_connection_generation: u64 = "connectionGeneration";
+        set_start_attempt_submitted: bool => submitted = Some;
+        set_start_attempt_account_key: &str => account_key = |v: &str| Some(v.to_owned());
+        set_start_attempt_thread_id: Option<&str> => thread_id = |v: Option<&str>| v.map(str::to_owned);
+        set_start_attempt_connection_id: Option<&str> => connection_id = |v: Option<&str>| v.map(str::to_owned);
+        set_start_attempt_native_operation_id: &str => native_operation_id = |v: &str| Some(v.to_owned());
+        set_start_attempt_not_submitted_reason: &str => not_submitted_reason = |v: &str| Some(v.to_owned());
+        set_start_attempt_retired_events: &[String] => retired_events = |v: &[String]| Some(v.to_vec());
+        set_start_attempt_turn_id: Option<&str> => turn_id = |v: Option<&str>| v.map(str::to_owned);
+        set_start_attempt_observed_turn_id: Option<&str> => observed_turn_id = |v: Option<&str>| v.map(str::to_owned);
+        set_start_attempt_execution_outcome: studio_runtime_schema::persistence::ExecutionStatus => execution_outcome = Some;
+        set_start_attempt_request_ticket: &str => request_ticket = |v: &str| Some(v.to_owned());
+        set_start_attempt_connection_generation: u64 => connection_generation = Some;
     }
 
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
@@ -1179,11 +1140,23 @@ impl JsonRecord for RequestRecord {
     fn record_key(&self) -> Option<&String> {
         Some(self.id())
     }
+    fn encode_stored(&self, _connection: &Connection, row_id: &str) -> StoreResult<String> {
+        if self.id != row_id
+            || !self.created_at.is_finite()
+            || !self.params.get().trim_start().starts_with('{')
+        {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: Self::TABLE,
+                id: row_id.to_owned(),
+            });
+        }
+        Ok(serde_json::to_string(self)?)
+    }
 }
 #[cfg(test)]
 mod request_typed_tests {
     use super::{RequestRecord, Table};
-    use serde_json::{Value, json};
+    use serde_json::Value;
 
     #[test]
     fn shared_decoder_requires_object_for_direct_records() {
@@ -1216,15 +1189,15 @@ mod request_typed_tests {
         assert!(Table::<RequestRecord>::new(&db).get(&"r".into()).is_err());
         db.execute(
             "UPDATE runtime_requests SET record=?1",
-            [r#"{"id":"r","status":"future","method":"x","params":{"opaque":[1,null]}}"#],
+            [r#"{"id":"r","agent":"a","createdAt":1,"status":"pending","method":"agent/asyncQuestion","params":{"opaque":[1,null]}}"#],
         )
         .unwrap();
         let row = Table::<RequestRecord>::new(&db)
             .get(&"r".into())
             .unwrap()
             .unwrap();
-        assert_eq!(row.status(), Some("future"));
-        assert_eq!(row.into_value()["params"], json!({"opaque":[1,null]}));
+        assert_eq!(row.status.as_str(), "pending");
+        assert_eq!(row.params.get(), r#"{"opaque":[1,null]}"#);
         db.execute(
             "UPDATE runtime_requests SET record=?1",
             [r#"{"id":"other","status":"pending"}"#],
@@ -2588,27 +2561,33 @@ mod tests {
     }
 
     #[test]
+    fn agent_rejects_malformed_start_attempt_on_decode() {
+        let raw = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"startAttempt":{"id":"attempt","submitted":"false"}}"#;
+        assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
+    }
+
+    #[test]
     fn start_attempt_view_and_field_writes_preserve_existing_payloads() {
         // Shapes from the execution migration and the scheduler's claim writer.
         for attempt in [
             json!({"id":"attempt-0"}),
             json!({"id":"attempt","epoch":1,"events":["event"],"submitted":false,
                 "activeAtReservation":false,"accountKey":"default","created":1.0,
-                "nativeRequest":{"params":{"vendorExtension":[1,2]}}}),
+                "nativeRequest":{"ticket":{"operation":"op","agent":"agent","epoch":1,"account":"default","connection":"c","generation":1,"request":"r"},"method":"m","params":{"vendorExtension":[1,2]}}}),
         ] {
             let mut record = agent(
                 json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":attempt}),
             );
-            let before = record.extra.get("startAttempt").cloned().expect("attempt");
-            let view = record.start_attempt().expect("view").expect("attempt");
+            let before = record.start_attempt.clone().expect("attempt");
+            let view = record.start_attempt.as_ref().expect("attempt");
             assert!(view.id.is_some());
-            assert_eq!(record.extra.get("startAttempt"), Some(&before));
+            assert_eq!(record.start_attempt.as_ref(), Some(&before));
             record
                 .set_start_attempt_submitted(false)
                 .expect("field write");
             let mut expected = before;
-            expected["submitted"] = json!(false);
-            assert_eq!(record.extra.get("startAttempt"), Some(&expected));
+            expected.submitted = Some(false);
+            assert_eq!(record.start_attempt.as_ref(), Some(&expected));
         }
     }
 
@@ -2620,37 +2599,12 @@ mod tests {
             );
             assert!(
                 record
-                    .start_attempt()
-                    .expect("valid view")
+                    .start_attempt
+                    .as_ref()
                     .expect("attempt")
                     .action
                     .is_some()
             );
-        }
-        for action in [
-            json!(null),
-            json!(false),
-            json!(0),
-            json!(""),
-            json!([]),
-            json!({}),
-        ] {
-            let record = agent(
-                json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
-            );
-            assert!(record.start_attempt().is_err());
-        }
-        for action in [
-            json!(true),
-            json!(1),
-            json!("other"),
-            json!([1]),
-            json!({"x":1}),
-        ] {
-            let record = agent(
-                json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
-            );
-            assert!(record.start_attempt().is_err());
         }
     }
 
@@ -2898,11 +2852,9 @@ mod tests {
             Value::Bool(true)
         );
 
-        let request = RequestRecord::from_value(json!({
-            "id":"request-1", "connectionId":null
-        }))
+        let request: RequestRecord = serde_json::from_str(r#"{"id":"request-1","agent":"a","method":"agent/asyncQuestion","status":"pending","createdAt":1,"params":{},"connectionId":null}"#)
         .expect("Python may persist a request without a connection identity");
-        assert_eq!(request.value().get("connectionId"), Some(&Value::Null));
+        assert!(request.connection_id.is_none());
     }
 
     #[test]

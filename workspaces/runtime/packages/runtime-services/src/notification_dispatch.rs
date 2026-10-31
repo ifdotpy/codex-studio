@@ -4283,11 +4283,11 @@ mod tests {
         let agent = TranscriptRepository::agent(&connection, "agent")
             .expect("agent reads")
             .expect("agent exists");
-        assert_eq!(agent["tail"], "previous tail");
-        assert_eq!(agent["nativeResponseTurn"], "turn");
-        assert!(agent.get("nativeStatus").is_none());
+        assert_eq!(agent.tail.as_deref(), Some("previous tail"));
+        assert_eq!(agent.native_response_turn.as_deref(), Some("turn"));
+        assert!(agent.native_status.is_none());
 
-        let mut no_turn_agent = agent;
+        let mut no_turn_agent = agent.into_value();
         no_turn_agent["turnId"] = Value::Null;
         no_turn_agent["nativeStatus"] = json!({"phase":"retrying","turnId":null});
         connection
@@ -4310,8 +4310,8 @@ mod tests {
         let agent = TranscriptRepository::agent(&connection, "agent")
             .expect("updated agent reads")
             .expect("updated agent exists");
-        assert!(agent.get("nativeResponseTurn").is_none());
-        assert!(agent.get("nativeStatus").is_none());
+        assert!(agent.native_response_turn.is_none());
+        assert!(agent.native_status.is_none());
     }
 
     #[test]
@@ -4409,8 +4409,8 @@ mod tests {
                 .expect("flush")
                 .expect("flush changes the buffer");
         let agent = stored(&transaction);
-        assert_eq!(agent["events"], 5);
-        assert!(agent["lastEvent"].is_string());
+        assert_eq!(agent.events, Some(5));
+        assert!(agent.last_event.is_some());
         assert_eq!(streams.pending_bytes(), 0);
     }
 

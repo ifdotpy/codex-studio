@@ -15,6 +15,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use studio_runtime_providers::Method;
+use studio_runtime_schema::transcript_asset::TranscriptAssetView;
 use studio_runtime_schema::{queue_command::Field, workspace_operation::OperationPhase};
 use studio_runtime_services::account_session_runtime::SessionOutcome as ReceiptOutcome;
 use studio_runtime_services::account_session_runtime::{
@@ -37,9 +38,10 @@ const BRANCH_TURNS_PER_PAGE: u32 = 10;
 // or opaque provider evidence. Keep that evidence and its presence verbatim.
 #[derive(Deserialize, Serialize)]
 struct BranchOperation {
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    signature: Field<Value>,
+    signature: String,
     phase: OperationPhase,
+    #[serde(rename = "forkTurnId", default)]
+    fork_turn_id: Option<String>,
     #[serde(
         rename = "legacyPhase",
         default,
@@ -60,10 +62,25 @@ struct BranchOperation {
     legacy_record: Field<Box<serde_json::value::RawValue>>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     provider: Field<Value>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    result: Field<Value>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "decode_result"
+    )]
+    result: Option<Box<serde_json::value::RawValue>>,
     #[serde(flatten)]
     other: serde_json::Map<String, Value>,
+}
+
+fn decode_result<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Box<serde_json::value::RawValue>>, D::Error> {
+    let result = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+    // The inspected 2026-10-31 snapshot contained zero null branch results.
+    if result.get() == "null" {
+        return Err(serde::de::Error::custom("null branch result"));
+    }
+    Ok(Some(result))
 }
 
 fn decode_branch_operation(raw: &str) -> Result<BranchOperation, serde_json::Error> {
@@ -217,7 +234,7 @@ async fn branch(
                     .optional()?
                 {
                     let mut prior = decode_branch_operation(&prior)?;
-                    if prior.signature.value().and_then(Value::as_str) != Some(signature.as_str()) {
+                    if prior.signature != signature {
                         return Err(studio_runtime_store::StoreError::SchemaMismatch(
                             "branch request id has different content".into(),
                         ));
@@ -230,7 +247,7 @@ async fn branch(
                         OperationPhase::Failed => {
                             prior.set_phase(OperationPhase::ProviderPending);
                             prior.provider = Field::Missing;
-                            prior.result = Field::Missing;
+                            prior.result = None;
                             prior.other.remove("error");
                             tx.execute(
                                 "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
@@ -340,13 +357,14 @@ async fn branch(
                         ("created".into(), json!(unix_time())),
                     ]);
                     let record = BranchOperation {
-                        signature: Field::Value(json!(signature)),
+                        signature,
                         phase: OperationPhase::ProviderPending,
+                        fork_turn_id: None,
                         legacy_phase: Field::Missing,
                         legacy_phase_collision: Field::Missing,
                         legacy_record: Field::Missing,
                         provider: Field::Missing,
-                        result: Field::Missing,
+                        result: None,
                         other,
                     };
                     tx.execute(
@@ -378,18 +396,14 @@ async fn branch(
     if needs_catalog {
         ensure_branch_model_catalog(&state, &account).await?;
     }
-    if let Some(result) = operation
+    if let Some(op) = operation
         .as_ref()
-        .and_then(|op| BranchOperation::value(&op.result))
-        .filter(|_| {
-            operation
-                .as_ref()
-                .is_some_and(|op| op.phase == OperationPhase::Completed)
-        })
+        .filter(|op| op.phase == OperationPhase::Completed)
     {
-        return Ok(Json(super::generated_json::<
-            crate::generated::BranchResponse,
-        >(result.clone())?));
+        let result = op.result.as_ref().ok_or_else(ApiError::internal)?;
+        return serde_json::from_str::<crate::generated::BranchResponse>(result.get())
+            .map(Json)
+            .map_err(ApiError::json);
     }
     let prior_provider = operation
         .as_ref()
@@ -860,11 +874,11 @@ async fn persist_fork_turn(
                 [operation_id.as_str()],
                 |row| row.get(0),
             )?;
-            let mut operation: Value = serde_json::from_str(&raw)?;
-            operation["forkTurnId"] = fork_turn.map_or(Value::Null, |turn| json!(turn));
+            let mut operation = decode_branch_operation(&raw)?;
+            operation.fork_turn_id = fork_turn;
             tx.execute(
                 "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
-                params![operation_id.as_str(), operation.to_string()],
+                params![operation_id.as_str(), serde_json::to_string(&operation)?],
             )?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
@@ -947,7 +961,7 @@ async fn branch_needs_catalog(
                 return Ok(true);
             };
             let operation = decode_branch_operation(&raw).map_err(|_| ApiError::internal())?;
-            if operation.signature.value().and_then(Value::as_str) != Some(signature.as_str()) {
+            if operation.signature != signature {
                 return Err(bad_request("branch request id has different content"));
             }
             Ok(operation.phase != OperationPhase::Completed)
@@ -961,27 +975,6 @@ async fn branch_needs_catalog(
 struct BranchTurn {
     turn_id: Option<String>,
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BranchItem {
-    #[serde(default)]
-    turn_id: Value,
-    role: Option<String>,
-    title: Option<String>,
-    text: Option<String>,
-    assets: Option<Value>,
-    inputs: Option<Vec<BranchInput>>,
-}
-#[derive(Deserialize)]
-struct BranchInput {
-    id: Option<String>,
-    kind: Option<studio_runtime_schema::persistence::EventKind>,
-    created: Option<serde_json::Number>,
-    at: Option<serde_json::Number>,
-    assets: Option<Value>,
-    text: Option<String>,
-}
-
 struct BranchCopy<'a> {
     source: &'a str,
     target: &'a str,
@@ -1017,9 +1010,9 @@ async fn copy_branch_history(
     let operation_id = operation_id.to_owned();
     let (result, _) = store.transaction_with_post_commit(move |tx|{
         let raw:String=tx.query_row("SELECT record FROM runtime_workspace_operations WHERE id=?1",[operation_id.as_str()],|r|r.get(0))?;
-        let mut operation:Value=serde_json::from_str(&raw)?;
+        let mut operation=decode_branch_operation(&raw)?;
         let current=AgentRepository::get(tx,&AgentId::from(source.as_str()))?.ok_or(studio_runtime_store::StoreError::SchemaMismatch("missing branch source".into()))?;
-        if CheckpointsRepository::workspace_source(&current.value()) != operation["source"]
+        if CheckpointsRepository::workspace_source(&current.value()) != *operation.other.get("source").unwrap_or(&Value::Null)
             || current.extra.get("workspaceReservationId").and_then(Value::as_str) != Some(operation_id.as_str())
         {
             return Err(studio_runtime_store::StoreError::SchemaMismatch("branch source changed before local copy".into()));
@@ -1040,15 +1033,15 @@ async fn copy_branch_history(
             Some(fork_turn) => rows.iter().filter_map(|(_,raw,created)|serde_json::from_str::<studio_runtime_schema::json_object::JsonObject<BranchTurn>>(raw).ok().map(|r| r.0).filter(|r|r.turn_id.as_deref()==Some(fork_turn.as_str())).map(|_|*created)).reduce(f64::max).unwrap_or(f64::NEG_INFINITY),
             None => f64::NEG_INFINITY,
         };
-        let mut assets=BTreeMap::<String,Value>::new();
+        let mut assets=BTreeMap::<String,TranscriptAssetView>::new();
         for (old_id, raw, _created) in rows.into_iter().take_while(|(_, _, created)| *created <= cutoff) {
-            let source_record = serde_json::from_str::<studio_runtime_schema::json_object::JsonObject<BranchItem>>(&raw)
-                .map_err(|_| studio_runtime_store::StoreError::InvalidStoredObject { table: "runtime_items", id: old_id.clone() })?.0;
-            if before && source_record.turn_id.as_str()==selected.record.turn_id().value().map(String::as_str){continue;}
+            let source_record = serde_json::from_str::<studio_runtime_schema::transcript_record::TranscriptItemRecord>(&raw)
+                .map_err(|_| studio_runtime_store::StoreError::InvalidStoredObject { table: "runtime_items", id: old_id.clone() })?;
+            if before && source_record.turn_id().value()==selected.record.turn_id().value(){continue;}
             let local_id=old_id.split_once(':').map(|(_,id)|id).unwrap_or(&old_id);
             let id=format!("{target}:{local_id}");
-            let role = source_record.role.as_deref().unwrap_or("assistant");
-            let source_title = source_record.title.as_deref()
+            let role = source_record.role().as_str();
+            let source_title = source_record.title()
                 .filter(|title| !title.is_empty());
             let index_kind = source_title.unwrap_or(role).to_owned();
             let title = source_title.map(str::to_owned).unwrap_or_else(|| match role {
@@ -1057,32 +1050,33 @@ async fn copy_branch_history(
                     "system" => "System".to_owned(),
                     other => other.to_owned(),
                 });
-            let mut item_assets = source_record.assets.clone().unwrap_or_else(|| json!([]));
-            copy_asset_views(tx,&source,&target,&mut item_assets,&mut assets)?;
-            let source_inputs = source_record.inputs.as_ref();
+            let mut item_assets = decode_asset_views(source_record.assets())?;
+            copy_asset_views(tx,&target,&mut item_assets,&mut assets)?;
+            let source_inputs = source_record.inputs().value();
             let mut inputs = Vec::new();
             if let Some(source_inputs) = source_inputs {
                 let mut remaining = 20_000usize;
                 for input in source_inputs {
-                    if input.id.is_none() || input.kind.is_none() || input.created.as_ref().or(input.at.as_ref()).is_none() || input.text.is_none() || input.assets.as_ref().and_then(Value::as_array).is_none() {
+                    let timestamp = input.created_or_at()?;
+                    if input.id().is_none() || input.kind().is_none() || timestamp.is_none() || input.text().is_none() || input.assets().value().is_none() {
                         return Err(studio_runtime_store::StoreError::TranscriptInputsIncomplete { id: old_id.clone() });
                     }
-                    let mut input_assets = input.assets.clone().unwrap_or_else(|| json!([]));
-                    copy_asset_views(tx,&source,&target,&mut input_assets,&mut assets)?;
-                    let input_text = input.text.as_deref().unwrap_or_default();
+                    let mut input_assets = decode_asset_views(input.assets())?;
+                    copy_asset_views(tx,&target,&mut input_assets,&mut assets)?;
+                    let input_text = input.text().unwrap_or_default();
                     let excerpt = input_text.chars().take(remaining).collect::<String>();
                     remaining = remaining.saturating_sub(excerpt.chars().count());
                     inputs.push(json!({
-                        "id":input.id,
-                        "at":input.created.as_ref().or(input.at.as_ref()),
-                        "kind":input.kind,
+                        "id":input.id(),
+                        "at":timestamp,
+                        "kind":input.kind(),
                         "text":excerpt,
                         "truncated":excerpt.chars().count() < input_text.chars().count(),
                         "assets":input_assets
                     }));
                 }
             }
-            let text = source_record.text.as_deref().unwrap_or_default();
+            let text = source_record.text().value().map(String::as_str).unwrap_or_default();
             let visible_text = text.chars().take(20_000).collect::<String>();
             let copied_at = unix_time();
             let mut record = json!({
@@ -1092,7 +1086,7 @@ async fn copy_branch_history(
                 "text":visible_text,
                 "truncated":text.chars().count() > 20_000,
                 "at":copied_at,
-                "turnId":source_record.turn_id,
+                "turnId":source_record.turn_id().value(),
                 "streaming":false,
                 "assets":item_assets
             });
@@ -1122,13 +1116,15 @@ async fn copy_branch_history(
                 &message_id,
                 &mut assets,
             )?;
-            child.extra.insert("draft".into(), draft);
+            child.draft = Some(Box::new(draft));
         }
         let value=child.value(); AgentRepository::put(tx,&child)?;
         studio_runtime_services::agents_create::publish_agent(tx,&value)?;
         let result=value.clone();
-        operation["phase"]=json!("completed"); operation["result"]=result.clone(); operation["updated"]=json!(unix_time());
-        tx.execute("UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",params![operation_id.as_str(),operation.to_string()])?;
+        operation.set_phase(OperationPhase::Completed);
+        operation.result = Some(serde_json::value::to_raw_value(&result)?);
+        operation.other.insert("updated".into(), json!(unix_time()));
+        tx.execute("UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",params![operation_id.as_str(),serde_json::to_string(&operation)?])?;
         if let Some(mut actor)=AgentRepository::get(tx,&AgentId::from(source))? {
             actor.extra.remove("workspaceReservationId");
             actor.extra.insert("workspaceOperation".into(),Value::Null);
@@ -1136,8 +1132,6 @@ async fn copy_branch_history(
             AgentRepository::put(tx,&actor)?;
             studio_runtime_services::agents_create::publish_agent(tx,&actor_value)?;
         }
-        operation["result"] = result.clone();
-        tx.execute("UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",params![operation_id.as_str(),operation.to_string()])?;
         Ok::<_,studio_runtime_store::StoreError>(result)
     }, move |_| wake.notify_one()).await.map_err(ApiError::stored)?;
     Ok(result)
@@ -1157,10 +1151,11 @@ async fn ensure_branch_source(
                 [operation_id.as_str()],
                 |row| row.get(0),
             )?;
-            let operation: Value = serde_json::from_str(&raw)?;
+            let operation = decode_branch_operation(&raw)?;
             let current = AgentRepository::get(tx, &AgentId::from(agent_id))?
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-            if CheckpointsRepository::workspace_source(&current.value()) != operation["source"]
+            if CheckpointsRepository::workspace_source(&current.value())
+                != *operation.other.get("source").unwrap_or(&Value::Null)
                 || current
                     .extra
                     .get("workspaceReservationId")
@@ -1183,11 +1178,9 @@ fn branch_draft_payload(
     target: &str,
     selected: &studio_runtime_store::TranscriptItem,
     message_id: &str,
-    assets: &mut BTreeMap<String, Value>,
-) -> Result<Value, studio_runtime_store::StoreError> {
+    assets: &mut BTreeMap<String, TranscriptAssetView>,
+) -> Result<studio_runtime_store::AgentDraft, studio_runtime_store::StoreError> {
     let record = &selected.record;
-    // Branch asset copying still needs the canonical Value projection; typed asset views are follow-up debt.
-    let projected = record.value();
     let inputs = record.inputs().value();
     let prompt_index = inputs.and_then(|inputs| {
         inputs.iter().enumerate().position(|(index, input)| {
@@ -1206,49 +1199,39 @@ fn branch_draft_payload(
     let mut prefix = Vec::new();
     let mut prefix_assets = Vec::new();
     if let (Some(inputs), Some(prompt_index)) = (inputs, prompt_index) {
-        for (index, input) in inputs[..prompt_index].iter().enumerate() {
+        for input in &inputs[..prompt_index] {
             if input.kind() != Some("user") {
                 continue;
             }
             prefix.push(input.text().unwrap_or(""));
-            if let Some(views) = projected
-                .get("inputs")
-                .and_then(Value::as_array)
-                .and_then(|items| items.get(index))
-                .and_then(|item| item.get("assets"))
-                .cloned()
-            {
-                prefix_assets.push(views);
-            }
+            prefix_assets.extend(decode_asset_views(input.assets())?);
         }
     }
     let mut prompt_assets = match prompt {
-        Some(_) => prompt_index.and_then(|index| {
-            projected
-                .get("inputs")
-                .and_then(Value::as_array)
-                .and_then(|items| items.get(index))
-                .and_then(|item| item.get("assets"))
-        }),
-        None => projected.get("assets"),
-    }
-    .cloned()
-    .unwrap_or_else(|| json!([]));
-    let mut prefix_asset_views = Value::Array(
-        prefix_assets
-            .into_iter()
-            .flat_map(|value| value.as_array().cloned().unwrap_or_default())
-            .collect(),
-    );
-    copy_asset_views(tx, source, target, &mut prompt_assets, assets)?;
-    copy_asset_views(tx, source, target, &mut prefix_asset_views, assets)?;
-    let mut all_assets = prefix_asset_views.as_array().cloned().unwrap_or_default();
-    all_assets.extend(prompt_assets.as_array().cloned().unwrap_or_default());
-    Ok(json!({
-        "text": text,
-        "prefixText": prefix.join("\n\n"),
-        "assets": all_assets,
-    }))
+        Some(input) => decode_asset_views(input.assets())?,
+        None => decode_asset_views(record.assets())?,
+    };
+    copy_asset_views(tx, target, &mut prompt_assets, assets)?;
+    copy_asset_views(tx, target, &mut prefix_assets, assets)?;
+    let mut all_assets = prefix_assets;
+    all_assets.extend(prompt_assets);
+    Ok(studio_runtime_store::AgentDraft {
+        text: text.to_owned(),
+        prefix_text: prefix.join("\n\n"),
+        assets: all_assets,
+        extra: BTreeMap::new(),
+    })
+}
+
+fn decode_asset_views(
+    views: &Field<Vec<Box<serde_json::value::RawValue>>>,
+) -> Result<Vec<TranscriptAssetView>, studio_runtime_store::StoreError> {
+    views
+        .value()
+        .into_iter()
+        .flatten()
+        .map(|view| serde_json::from_str(view.get()).map_err(Into::into))
+        .collect()
 }
 
 fn transcript_store_error(
@@ -1263,31 +1246,22 @@ fn transcript_store_error(
                 "invalid stored object {table}/{id}"
             ))
         }
-        TranscriptStoreError::ActiveTurn => studio_runtime_store::StoreError::SchemaMismatch(
-            "transcript unexpectedly belongs to an active turn".into(),
-        ),
     }
 }
 
 fn copy_asset_views(
     tx: &rusqlite::Transaction<'_>,
-    _source: &str,
     target: &str,
-    views: &mut Value,
-    map: &mut BTreeMap<String, Value>,
+    views: &mut [TranscriptAssetView],
+    map: &mut BTreeMap<String, TranscriptAssetView>,
 ) -> Result<(), studio_runtime_store::StoreError> {
-    let Some(array) = views.as_array_mut() else {
-        return Ok(());
-    };
-    for view in array {
-        let Some(old) = view.get("id").and_then(Value::as_str) else {
-            continue;
-        };
-        if let Some(existing) = map.get(old) {
+    for view in views {
+        let old = view.id().to_owned();
+        if let Some(existing) = map.get(&old) {
             *view = existing.clone();
             continue;
         }
-        let Some(asset) = WorkspaceFilesRepository::asset(tx, old)? else {
+        let Some(asset) = WorkspaceFilesRepository::asset(tx, &old)? else {
             return Err(studio_runtime_store::StoreError::SchemaMismatch(
                 "missing transcript asset".into(),
             ));
@@ -1296,12 +1270,8 @@ fn copy_asset_views(
         let mut asset = asset;
         asset.retarget(id.clone(), target.to_owned());
         WorkspaceFilesRepository::insert_asset(tx, &id, &asset)?;
-        let record = asset.into_value();
-        let mut copied_view = record.clone();
-        if let Some(object) = copied_view.as_object_mut() {
-            object.remove("path");
-        }
-        map.insert(old.to_owned(), copied_view.clone());
+        let copied_view = asset.into_view();
+        map.insert(old, copied_view.clone());
         *view = copied_view;
     }
     Ok(())
@@ -1342,10 +1312,13 @@ mod tests {
 
     #[test]
     fn branch_operation_requires_a_known_phase() {
-        assert!(decode_branch_operation(r#"{"phase":"local_mutation"}"#).is_ok());
+        assert!(decode_branch_operation(r#"{"phase":"local_mutation"}"#).is_err());
+        assert!(decode_branch_operation(r#"{"phase":"local_mutation","signature":null}"#).is_err());
         assert!(decode_branch_operation("{}").is_err());
-        assert!(decode_branch_operation(r#"{"phase":{"completed":null}}"#).is_err());
-        let operation = decode_branch_operation(r#"{"phase":"local_mutation","legacyPhase":{"old":2},"legacyPhaseCollision":[{"older":3},{"new":1}]}"#).expect("migrated operation");
+        assert!(
+            decode_branch_operation(r#"{"phase":{"completed":null},"signature":"abc"}"#).is_err()
+        );
+        let operation = decode_branch_operation(r#"{"phase":"local_mutation","signature":"abc","legacyPhase":{"old":2},"legacyPhaseCollision":[{"older":3},{"new":1}]}"#).expect("migrated operation");
         assert_eq!(
             operation
                 .legacy_phase
@@ -1362,6 +1335,94 @@ mod tests {
                 .get(),
             r#"[{"older":3},{"new":1}]"#
         );
+    }
+
+    #[test]
+    fn branch_operation_rejects_non_string_signature() {
+        assert!(
+            decode_branch_operation(r#"{"phase":"local_mutation","signature":{"bad":true}}"#)
+                .is_err()
+        );
+        assert!(decode_branch_operation(r#"{"phase":"local_mutation","signature":"abc"}"#).is_ok());
+    }
+
+    #[test]
+    fn branch_operation_preserves_opaque_result_bytes() {
+        let raw = r#"{"signature":"s","phase":"completed","result":{"vendor":  {"x":  1}}}"#;
+        let operation = decode_branch_operation(raw).unwrap();
+        let encoded = serde_json::to_string(&operation).unwrap();
+        assert!(encoded.contains(r#""result":{"vendor":  {"x":  1}}"#));
+        assert!(
+            decode_branch_operation(r#"{"signature":"s","phase":"completed","result":null}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn branch_item_rejects_non_string_turn_id() {
+        assert!(
+            serde_json::from_str::<studio_runtime_schema::transcript_record::TranscriptItemRecord>(
+                r#"{"id":"i","role":"assistant","turnId":7}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<studio_runtime_schema::transcript_record::TranscriptItemRecord>(
+                r#"{"id":"i","role":"assistant","turnId":"turn"}"#
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn branch_item_rejects_invalid_asset_view() {
+        let invalid: studio_runtime_schema::transcript_record::TranscriptItemRecord =
+            serde_json::from_str(r#"{"id":"i","role":"assistant","assets":[{"id":5}]}"#).unwrap();
+        let valid: studio_runtime_schema::transcript_record::TranscriptItemRecord =
+            serde_json::from_str(r#"{"id":"i","role":"assistant","assets":[{"id":"asset"}]}"#)
+                .unwrap();
+        assert!(decode_asset_views(invalid.assets()).is_err());
+        assert!(decode_asset_views(valid.assets()).is_ok());
+    }
+
+    #[test]
+    fn agent_record_rejects_invalid_branch_draft() {
+        let raw = r#"{"id":"agent","rootId":"agent","epoch":0,"status":"idle","accountKey":"default","compactions":0,"draft":{"text":42,"prefixText":"","assets":[]}}"#;
+        assert!(serde_json::from_str::<studio_runtime_store::AgentRecord>(raw).is_err());
+        let value = json!({"id":"agent","rootId":"agent","epoch":0,"status":"idle","accountKey":"default","compactions":0,"draft":{"text":"hello","prefixText":"","assets":[{"id":"asset","vendor":{"x":1}}]}});
+        let agent = studio_runtime_store::AgentRecord::from_value(value).unwrap();
+        assert_eq!(agent.draft.unwrap().assets[0].id(), "asset");
+    }
+
+    #[tokio::test]
+    async fn copied_asset_views_reuse_projection_without_storage_path() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        store.transaction(|tx| {
+            let asset: studio_runtime_store::TranscriptAssetRecord = serde_json::from_str(
+                r#"{"id":"asset","agent":"source","name":"n","path":"private","mime":"text/plain","image":false,"size":1,"hash":"h","created":2,"vendor":{"x":  1}}"#,
+            )?;
+            WorkspaceFilesRepository::insert_asset(tx, "asset", &asset)?;
+            let mut views: Vec<TranscriptAssetView> = serde_json::from_str(r#"[{"id":"asset"},{"id":"asset"}]"#)?;
+            let mut copied = BTreeMap::new();
+            copy_asset_views(tx, "child", &mut views, &mut copied)?;
+            assert_eq!(views[0].id(), views[1].id());
+            assert_eq!(copied.len(), 1);
+            let wire = serde_json::to_string(&views)?;
+            assert!(!wire.contains("private"));
+            assert!(wire.contains(r#""vendor":{"x":  1}"#));
+            let selected = studio_runtime_store::TranscriptItem {
+                id: "source:message".into(),
+                agent: "source".into(),
+                record: serde_json::from_str(r#"{"id":"source:message","role":"user","text":"hello","assets":[{"id":"asset"}]}"#)?,
+            };
+            let draft = branch_draft_payload(tx, "source", "child", &selected, "source:message", &mut copied)?;
+            assert_eq!(draft.assets[0].id(), views[0].id());
+            let wire = serde_json::to_string(&draft)?;
+            assert!(!wire.contains("private"));
+            assert!(wire.contains(r#""vendor":{"x":  1}"#));
+            Ok::<_, studio_runtime_store::StoreError>(())
+        }).await.unwrap();
     }
     use axum::response::IntoResponse;
     use std::sync::Mutex;
@@ -1382,9 +1443,9 @@ mod tests {
         store.transaction(move |tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('source',?1)", [source.to_string()])?;
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('child',?1)", [child.to_string()])?;
-            tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('op',?1)", [json!({"source":source_identity,"phase":"provider_ready"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('op',?1)", [json!({"source":source_identity,"signature":"s","phase":"provider_ready"}).to_string()])?;
             tx.execute("INSERT INTO runtime_assets(id,record) VALUES('asset',?1)", [json!({"id":"asset","agent":"source","name":"file.txt","path":asset_path,"mime":"text/plain","image":false,"size":1,"hash":"h","created":1}).to_string()])?;
-            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:a','source',?1,1)", [r#"{"role":"assistant","text":"first","turnId":"t","assets":[{"id":"asset"}],"inputs":[{"text":"second","created":null,"at":2,"assets":[{"id":"asset"}]}]}"#])?;
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:a','source',?1,1)", [r#"{"id":"source:a","role":"assistant","text":"first","turnId":"t","assets":[{"id":"asset"}],"inputs":[{"text":"second","created":null,"at":2,"assets":[{"id":"asset"}]}]}"#])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:b','source',?1,1)", [r#"{"turnId":"t","text":null,"assets":null}"#])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:c','source',?1,1)", [json!({"turnId":7,"text":"🦀".repeat(20_001),"inputs":[{"text":"Ж".repeat(19_999)},{"text":"AB"}]}).to_string()])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:after','source',?1,2)", [r#"{"turnId":"later","future":1e400}"#])?;
@@ -1465,7 +1526,7 @@ mod tests {
             }
         }
         store.transaction(|tx| {
-            tx.execute("INSERT OR REPLACE INTO runtime_workspace_operations(id,record) VALUES('branch:legacy',?1)", [r#"{"agent":null,"provider":[1,null],"result":false,"vendor":{"opaque":true}}"#])?;
+            tx.execute("INSERT OR REPLACE INTO runtime_workspace_operations(id,record) VALUES('branch:legacy',?1)", [r#"{"signature":"s","agent":null,"provider":[1,null],"result":false,"vendor":{"opaque":true}}"#])?;
             studio_runtime_store::migrations::migrate_branch_phase(tx)?;
             Ok(())
         }).await.unwrap();
@@ -1489,6 +1550,66 @@ mod tests {
         assert_eq!(record["vendor"]["opaque"], true);
     }
 
+    #[tokio::test]
+    async fn branch_catalog_refuses_unreconstructible_signature_without_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+        for raw in [
+            r#"{"phase":"completed"}"#,
+            r#"{"phase":"completed","signature":null}"#,
+        ] {
+            let expected = raw.to_owned();
+            let stored = expected.clone();
+            store.transaction(move |tx| {
+                tx.execute("INSERT OR REPLACE INTO runtime_workspace_operations(id,record) VALUES('branch:legacy',?1)", [stored])?;
+                Ok(())
+            }).await.unwrap();
+            assert!(
+                branch_needs_catalog(&store, "branch:legacy", "s")
+                    .await
+                    .is_err()
+            );
+            let actual: String = store
+                .read_async("branch witness", |db| {
+                    Ok::<_, studio_runtime_store::StoreError>(db.query_row(
+                        "SELECT record FROM runtime_workspace_operations WHERE id='branch:legacy'",
+                        [],
+                        |row| row.get(0),
+                    )?)
+                })
+                .await
+                .unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn fork_turn_refuses_unreconstructible_operation_without_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        let raw = r#"{"phase":"provider_pending","signature":null}"#;
+        store.transaction(move |tx| {
+            tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('branch:legacy',?1)", [raw])?;
+            Ok(())
+        }).await.unwrap();
+        assert!(
+            persist_fork_turn(&store, "branch:legacy", Some("turn"))
+                .await
+                .is_err()
+        );
+        let actual: String = store
+            .read_async("branch witness", |db| {
+                Ok::<_, studio_runtime_store::StoreError>(db.query_row(
+                    "SELECT record FROM runtime_workspace_operations WHERE id='branch:legacy'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(actual, raw);
+    }
+
     #[test]
     fn branch_draft_uses_typed_input_identity_and_prefix() {
         let mut db = rusqlite::Connection::open_in_memory().unwrap();
@@ -1509,10 +1630,9 @@ mod tests {
             &mut assets,
         )
         .unwrap();
-        assert_eq!(
-            payload,
-            json!({"text":"second","prefixText":"first","assets":[]})
-        );
+        assert_eq!(payload.text, "second");
+        assert_eq!(payload.prefix_text, "first");
+        assert!(payload.assets.is_empty());
         let parent = branch_draft_payload(
             &tx,
             "agent",
@@ -1522,7 +1642,9 @@ mod tests {
             &mut assets,
         )
         .unwrap();
-        assert_eq!(parent, json!({"text":"parent","prefixText":"","assets":[]}));
+        assert_eq!(parent.text, "parent");
+        assert_eq!(parent.prefix_text, "");
+        assert!(parent.assets.is_empty());
     }
 
     #[test]
@@ -1556,11 +1678,25 @@ mod tests {
             let child = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"child","rootId":"child","epoch":0,"status":"queued","provider":"codex"}))?;
             AgentRepository::put(tx, &source)?;
             AgentRepository::put(tx, &child)?;
-            let operation = json!({"id":"operation","agent":"source","phase":"provider_pending","source":CheckpointsRepository::workspace_source(&source.value())});
+            let operation = json!({"id":"operation","signature":"s","agent":"source","phase":"provider_pending","source":CheckpointsRepository::workspace_source(&source.value())});
             tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('operation',?1)", [operation.to_string()])?;
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.expect("seed");
         (root, store)
+    }
+
+    #[tokio::test]
+    async fn branch_source_rejects_unreconstructible_operation() {
+        let (_root, store) = status_fixture().await;
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_workspace_operations SET record=json_set(record,'$.signature',NULL) WHERE id='operation'", [])?;
+            Ok(())
+        }).await.unwrap();
+        assert!(
+            ensure_branch_source(&store, "operation", "source")
+                .await
+                .is_err()
+        );
     }
 
     fn assert_stored_status(store: &RuntimeStore, id: &str, expected: &str) {
@@ -1606,6 +1742,74 @@ mod tests {
         .expect("copy");
         assert_eq!(result["status"], "idle");
         assert_stored_status(&store, "child", "idle");
+    }
+
+    #[tokio::test]
+    async fn branch_copy_refuses_unreconstructible_operation() {
+        let (_root, store) = status_fixture().await;
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_workspace_operations SET record=json_set(record,'$.signature',NULL) WHERE id='operation'", [])?;
+            Ok(())
+        }).await.unwrap();
+        let selected = studio_runtime_store::TranscriptItem {
+            id: "message".into(),
+            agent: "source".into(),
+            record: serde_json::from_str(r#"{"id":"message","role":"assistant","turnId":"turn"}"#)
+                .unwrap(),
+        };
+        let provider = json!({"thread":{"id":"new-thread"}});
+        let result = copy_branch_history(
+            &store,
+            BranchCopy {
+                source: "source",
+                target: "child",
+                selected: &selected,
+                message_id: "message",
+                fork_turn: None,
+                before: false,
+                provider: &provider,
+                operation_id: "operation",
+            },
+            Arc::new(tokio::sync::Notify::new()),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_stored_status(&store, "child", "queued");
+    }
+
+    #[tokio::test]
+    async fn branch_copy_refuses_unreconstructible_transcript_row() {
+        let (_root, store) = status_fixture().await;
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:legacy','source',?1,1)", [r#"{"turnId":"t","text":"legacy"}"#])?;
+            Ok(())
+        }).await.unwrap();
+        let selected = studio_runtime_store::TranscriptItem {
+            id: "source:legacy".into(),
+            agent: "source".into(),
+            record: serde_json::from_str(
+                r#"{"id":"source:legacy","role":"assistant","turnId":"t"}"#,
+            )
+            .unwrap(),
+        };
+        let provider = json!({"thread":{"id":"new-thread"}});
+        let result = copy_branch_history(
+            &store,
+            BranchCopy {
+                source: "source",
+                target: "child",
+                selected: &selected,
+                message_id: "source:legacy",
+                fork_turn: Some("t"),
+                before: false,
+                provider: &provider,
+                operation_id: "operation",
+            },
+            Arc::new(tokio::sync::Notify::new()),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_stored_status(&store, "child", "queued");
     }
 
     const HISTORY_TURNS: usize = 100;
