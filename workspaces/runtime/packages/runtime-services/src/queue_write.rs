@@ -504,6 +504,7 @@ pub fn publish_queue(
                 QueueWriteError::Json(error) => StoreError::Json(error),
                 QueueWriteError::InvalidRequest(_)
                 | QueueWriteError::Conflict(_)
+                | QueueWriteError::HeldByTurn
                 | QueueWriteError::InvalidStoredObject { .. }
                 | QueueWriteError::RemoteEventsUnavailable => StoreError::InvalidSyncObject {
                     scope: "queue".into(),
