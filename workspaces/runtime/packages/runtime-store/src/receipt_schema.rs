@@ -40,13 +40,25 @@ pub fn create(connection: &Connection) -> rusqlite::Result<()> {
         kind=enum_check::<OutboxKind>("kind"), owner=enum_check::<OwnerKind>("owner_kind"),
         status=enum_check::<OutboxStatus>("status"), incident=enum_check::<IncidentKind>("kind"),
         pending=OutboxStatus::Pending.as_str(),unknown=OutboxStatus::Unknown.as_str(),unrecognized=OutboxStatus::Unrecognized.as_str(),
-    ))
+    ))?;
+    install_dismissed_index(connection)
+}
+
+pub(crate) fn install_dismissed_index(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute_batch("CREATE INDEX IF NOT EXISTS runtime_error_incidents_dismissed ON runtime_error_incidents(id,dismissed_at) WHERE dismissed_at IS NOT NULL")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use strum::VariantNames;
+    #[test]
+    fn dismissal_scan_uses_partial_covering_index() {
+        let db = Connection::open_in_memory().expect("fresh");
+        create(&db).expect("DDL");
+        let plan: String = db.query_row("EXPLAIN QUERY PLAN SELECT id,dismissed_at FROM runtime_error_incidents WHERE dismissed_at IS NOT NULL", [], |row| row.get(3)).expect("plan");
+        assert!(plan.contains("runtime_error_incidents_dismissed"), "{plan}");
+    }
     #[test]
     fn receipt_target_schema_checks_and_indexes_are_live() {
         let mut db = Connection::open_in_memory().expect("fresh");

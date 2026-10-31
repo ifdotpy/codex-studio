@@ -20,7 +20,10 @@ fn monitor_fixture(fields: &Value) -> Value {
         "activityGeneration":0,"bytes":0,"command":"","created":1.0,"cwd":"/",
         "interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("test.log"),"stallTimeoutSeconds":0,
         "stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit"});
-    monitor.as_object_mut().expect("valid fixture").extend(fields.as_object().expect("valid fixture").clone());
+    monitor
+        .as_object_mut()
+        .expect("valid fixture")
+        .extend(fields.as_object().expect("valid fixture").clone());
     monitor
 }
 
@@ -69,7 +72,7 @@ fn template(root: &Path) {
 const NOW: f64 = 1_234_567.5;
 
 fn seed_records() -> Value {
-    let mut lead = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":3,"status":"idle","name":"Lead","cwd":"/fixture","isLead":true,"autoWake":true,"inFlight":false,"created":1.0});
+    let mut lead = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":3,"status":"idle","name":"Lead","cwd":"/fixture","isLead":true,"autoWake":true,"inFlight":false,"created":1.0});
     let mut worker = lead.clone();
     worker["id"] = json!("worker");
     worker["parentId"] = json!("lead");
@@ -105,7 +108,7 @@ fn case(name: &str) -> Value {
         }
         "stop-True" => {
             records["tables"]["runtime_events"] = json!([{"id":"pending","agent":"lead","epoch":3,"status":"pending"},{"id":"uncertain","agent":"lead","epoch":3,"status":"uncertain"}]);
-            records["tables"]["runtime_requests"] = json!([{"id":"question","agent":"lead","status":"pending","method":"agent/asyncQuestion"},{"id":"approval","agent":"lead","status":"pending","method":"monitor/approve"}]);
+            records["tables"]["runtime_requests"] = json!([{"id":"question","agent":"lead","status":"pending","method":"agent/asyncQuestion","createdAt":1.0,"params":{}},{"id":"approval","agent":"lead","status":"pending","method":"monitor/approve","createdAt":1.0,"params":{}}]);
             records["tables"]["runtime_agents"][0]
                 .as_object_mut()
                 .expect("lead")
@@ -126,7 +129,10 @@ fn case(name: &str) -> Value {
 async fn seed(store: &RuntimeStore, records: Records) {
     store.transaction(move |tx| {
         for (table, records) in records.tables {
-            for row in records {
+            for mut row in records {
+                if table == "runtime_agents" {
+                    row.as_object_mut().expect("agent fixture").entry("compactions").or_insert(json!(0));
+                }
                 if table == "runtime_events" {
                     tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,'user','input',?3,1,?4)", params![row["id"].as_str(),row["agent"].as_str(),row["status"].as_str(),row["epoch"].as_i64()])?;
                 } else { agent_management::write(tx, &table, &row)?; }
@@ -526,10 +532,10 @@ async fn lifecycle_effect_refusals_preserve_rows_and_projections() {
                     .transaction(move |tx| {
                         tx.execute(
                             "INSERT INTO runtime_monitors(id,record) VALUES('live-monitor',?1)",
-                            [
-                                monitor_fixture(&json!({"id":"live-monitor","agent":"worker","status":status}))
-                                    .to_string(),
-                            ],
+                            [monitor_fixture(
+                                &json!({"id":"live-monitor","agent":"worker","status":status}),
+                            )
+                            .to_string()],
                         )?;
                         Ok(())
                     })
@@ -704,7 +710,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
             for lead in 0..leads {
                 let root_id = format!("lead-{lead:04}");
                 agents.push(root_id.clone());
-                let lead_record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":root_id,"rootId":root_id,"epoch":1,"status":"idle",
+                let lead_record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":root_id,"rootId":root_id,"epoch":1,"status":"idle",
                     "isLead":true,"autoWake":true,"name":format!("Lead {lead}"),"cwd":cwd,"threadId":format!("thread-{root_id}")});
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -713,7 +719,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
                 for worker in 0..WORKERS_PER_TEAM_ROWS {
                     let id = format!("worker-{lead:04}-{worker}");
                     agents.push(id.clone());
-                    let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root_id,"parentId":root_id,"epoch":1,
+                    let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root_id,"parentId":root_id,"epoch":1,
                         "status":"idle","name":format!("Worker {lead}.{worker}"),"cwd":cwd});
                     tx.execute(
                         "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -785,7 +791,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
                 let id = format!("task-{index:07}");
                 task.execute(params![
                     id,
-                    json!({"id":id,"agent":agent,"kind":"command","status":status,"created":index as f64})
+                    json!({"id":id,"agent":agent,"itemId":id,"turnId":"turn","type":"commandExecution","name":"command","kind":"command","status":status,"created":index as f64})
                         .to_string()
                 ])?;
             }

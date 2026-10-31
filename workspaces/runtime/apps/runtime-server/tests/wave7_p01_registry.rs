@@ -62,14 +62,12 @@ fn claude_launch(
     account: &str,
     environment: BTreeMap<String, String>,
 ) -> Result<ProviderLaunchSpec, WorkerError> {
-    let profile =
-        studio_runtime_services::claude_bridge::ClaudeLaunchProfile::from_record(profile)
-            .map_err(|_| {
-                WorkerError::PreparationRefused(
-                    studio_runtime_services::provider_adapter::CLAUDE_ACCOUNT_IDENTITY_REFUSAL
-                        .into(),
-                )
-            })?;
+    let profile = studio_runtime_services::claude_bridge::ClaudeLaunchProfile::from_record(profile)
+        .map_err(|_| {
+            WorkerError::PreparationRefused(
+                studio_runtime_services::provider_adapter::CLAUDE_ACCOUNT_IDENTITY_REFUSAL.into(),
+            )
+        })?;
     adapter(ProviderKind::Claude)
         .host_launch(HostLaunch {
             profile: Some(&profile),
@@ -817,17 +815,18 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
                         let mut record = record;
                         record["id"] = json!(stored_project_root.to_string_lossy());
                         record["path"] = json!(stored_project_root.to_string_lossy());
-                        if let Some(locations) = record["locations"].as_array_mut() {
-                            for location in locations {
-                                location["path"] = json!(stored_project_root.to_string_lossy());
-                            }
-                        }
+                        record["locations"] = json!([{
+                            "serverId": "local-test",
+                            "path": stored_project_root.to_string_lossy(),
+                            "projectId": stored_project_root.to_string_lossy()
+                        }]);
                         row["id"] = json!(stored_project_root.to_string_lossy());
                         row["record"] = json!(record.to_string());
                     }
                     if table == "agents" {
                         let mut record: Value =
                             serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
+                        record["compactions"] = json!(0);
                         record["cwd"] = json!(stored_project_root.to_string_lossy());
                         if record.get("projectId").is_some() {
                             record["projectId"] = json!(stored_project_root.to_string_lossy());
@@ -838,6 +837,7 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
                         let mut record: Value =
                             serde_json::from_str(row["record"].as_str().unwrap()).unwrap();
                         record["projectPath"] = json!(stored_project_root.to_string_lossy());
+                        record["radio"]["direct"] = json!(false);
                         row["record"] = json!(record.to_string());
                     }
                     let fields = row.as_object().unwrap();
@@ -1699,7 +1699,7 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
             "parent":null,"role":"implementer","isLead":true,"executionMode":null,"moving":false}});
     let saved_response = response.clone();
     store.transaction(move |tx| {
-        let actor = json!({"id":"managed-actor","rootId":"managed-actor","epoch":0,"status":"running","autoWake":true,"inFlight":true,
+        let actor = json!({"compactions":0,"id":"managed-actor","rootId":"managed-actor","epoch":0,"status":"running","autoWake":true,"inFlight":true,
             "provider":"claude","accountKey":"default","threadId":"retained-thread","turnId":"retained-turn","parentId":null,"role":"implementer","isLead":true,
             "turnEpoch":0,"startAttempt":{"id":"retained-attempt","epoch":0,"accountKey":"default",
                 "threadId":"retained-thread","turnId":"retained-turn","submitted":true,"created":1.0,
@@ -1958,10 +1958,20 @@ async fn recovery_selection_matches_frozen_scheduler_roster_without_changing_sto
         })
         .collect::<BTreeMap<_, _>>();
     let mut expected = fixture.agents["stored"].clone();
-    for record in expected.as_object_mut().expect("agent records").values_mut().chain(stored.values_mut()) {
+    for record in expected
+        .as_object_mut()
+        .expect("agent records")
+        .values_mut()
+        .chain(stored.values_mut())
+    {
         let fields = record.as_object_mut().expect("agent record");
-        for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS.into_iter().chain(["parentId", "threadId", "turnId"]) {
-            if fields.get(key).is_some_and(Value::is_null) { fields.remove(key); }
+        for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
+            .into_iter()
+            .chain(["parentId", "threadId", "turnId"])
+        {
+            if fields.get(key).is_some_and(Value::is_null) {
+                fields.remove(key);
+            }
         }
     }
     assert_eq!(json!(stored), expected);
@@ -2136,7 +2146,7 @@ fn backlog_database(count: usize, each_account: bool) -> (rusqlite::Connection, 
     let mut db = studio_runtime_store::test_canvas();
     let tx = db.transaction().unwrap();
     let agent = studio_runtime_store::AgentRecord::from_value(
-        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+        json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"source", "rootId":"source", "epoch":1, "status":"queued",
             "autoWake":true, "accountKey":"default", "contextRepairWait":"blocked"
         }),

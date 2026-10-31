@@ -1029,6 +1029,18 @@ fn verify_retired_directory(builds: &Path, path: &Path) -> Result<(), NativeRunt
 }
 
 fn hash_file(path: &Path) -> Result<String, NativeRuntimeError> {
+    // ctime detects content changes even when the modification time is restored.
+    #[cfg(unix)]
+    let stamp = file_stamp(path)?;
+    #[cfg(unix)]
+    if let Some((_, hash)) = HASHES
+        .lock()
+        .map_err(|_| NativeRuntimeError::Poisoned)?
+        .get(path)
+        .filter(|(cached, _)| *cached == stamp)
+    {
+        return Ok(hash.clone());
+    }
     let mut file = File::open(path)?;
     let mut digest = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
@@ -1039,7 +1051,39 @@ fn hash_file(path: &Path) -> Result<String, NativeRuntimeError> {
         }
         digest.update(&buffer[..read]);
     }
-    Ok(data_encoding::HEXLOWER.encode(&digest.finalize()))
+    let hash = data_encoding::HEXLOWER.encode(&digest.finalize());
+    #[cfg(unix)]
+    {
+        if file_stamp(path)? != stamp {
+            return Err(NativeRuntimeError::InvalidBundle);
+        }
+        HASHES
+            .lock()
+            .map_err(|_| NativeRuntimeError::Poisoned)?
+            .insert(path.to_owned(), (stamp, hash.clone()));
+    }
+    Ok(hash)
+}
+
+#[cfg(unix)]
+type FileStamp = (u64, u64, u64, i64, i64, i64, i64);
+#[cfg(unix)]
+static HASHES: std::sync::LazyLock<Mutex<std::collections::HashMap<PathBuf, (FileStamp, String)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(unix)]
+fn file_stamp(path: &Path) -> Result<FileStamp, NativeRuntimeError> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::symlink_metadata(path)?;
+    Ok((
+        metadata.dev(),
+        metadata.ino(),
+        metadata.len(),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    ))
 }
 
 fn hash_bundle(

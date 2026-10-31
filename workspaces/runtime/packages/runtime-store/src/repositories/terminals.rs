@@ -78,6 +78,30 @@ pub struct TerminalRow {
 pub struct TerminalsRepository;
 
 impl TerminalsRepository {
+    /// Raw stored state for transient subscription change detection.
+    pub fn fingerprint(connection: &Connection, id: &str) -> StoreResult<Option<Vec<u8>>> {
+        let row = connection
+            .query_row(
+                "SELECT record,output,offset,output_generation FROM user_terminals WHERE id=?1",
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(|row| {
+            serde_json::to_vec(&row)
+                .map(|bytes| crate::sha256_hex(&bytes).into_bytes())
+                .map_err(StoreError::from)
+        })
+        .transpose()
+    }
+
     pub fn append_and_retain(
         transaction: &rusqlite::Transaction<'_>,
         id: &str,

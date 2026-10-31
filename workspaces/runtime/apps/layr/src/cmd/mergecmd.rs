@@ -27,6 +27,33 @@ pub fn merge_states(
     parents: Vec<String>,
     message: &str,
 ) -> Result<(StateRec, merge::Outcome)> {
+    #[cfg(target_os = "macos")]
+    let prepared = PREPARED_MERGE
+        .with(|p| p.borrow_mut().take())
+        .filter(|p| p.line == line.id && p.base == base && p.ours == ours && p.theirs == theirs && p.label == theirs_label);
+    #[cfg(target_os = "macos")]
+    let prepared = prepared.map(|p| (p.work, p.out));
+    #[cfg(not(target_os = "macos"))]
+    let prepared = None;
+    let (work, out) = match prepared {
+        Some(p) => p,
+        None => merge_trees(ctx, repo, line, base, ours, theirs, theirs_label)?,
+    };
+    let mut st = repo.new_state(ctx, &work.path, StateKind::Commit, parents, message, Some(line))?;
+    st.conflicts = out.conflicts.clone();
+    Ok((st, out))
+}
+
+/// The three-way merge of the trees of three states into a new writable folder.
+fn merge_trees(
+    ctx: &Ctx,
+    repo: &Repo,
+    line: &Line,
+    base: &str,
+    ours: &str,
+    theirs: &str,
+    theirs_label: &str,
+) -> Result<(crate::repo::Temp, merge::Outcome)> {
     let base_root = repo.state_root(base)?;
     let ours_root = repo.state_root(ours)?;
     let theirs_root = repo.state_root(theirs)?;
@@ -56,9 +83,87 @@ pub fn merge_states(
             }
         }
     }
-    let mut st = repo.new_state(ctx, &work.path, StateKind::Commit, parents, message, Some(line))?;
-    st.conflicts = out.conflicts.clone();
-    Ok((st, out))
+    Ok((work, out))
+}
+
+/// A merge computed before the store lock (APFS): the states are immutable, so their merge
+/// needs no lock. Copying and merging the trees took minutes under the lock in a large project,
+/// and every other command of the project waited. Under the lock `merge_states` takes this
+/// result when the line, its head and the source did not move; else it merges again.
+#[cfg(target_os = "macos")]
+struct PreparedMerge {
+    line: String,
+    base: String,
+    ours: String,
+    theirs: String,
+    label: String,
+    work: crate::repo::Temp,
+    out: merge::Outcome,
+}
+#[cfg(target_os = "macos")]
+thread_local! {
+    static PREPARED_MERGE: std::cell::RefCell<Option<PreparedMerge>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(target_os = "macos")]
+thread_local! {
+    /// The status of the line before the lock, with the head and the index it was read with.
+    static PREPARED_STATUS: std::cell::RefCell<Option<(work::AddToken, crate::repo::Status)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The reads of `merge <rev>` before the store lock (APFS): the automatic state of the working
+/// folder, the status, the trees of the states, and the merge result. Errors only lose the
+/// preparation; the merge under the lock reads everything again.
+#[cfg(target_os = "macos")]
+fn prepare_merge(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str) -> Result<()> {
+    let _t = crate::trace::span("prepare merge");
+    repo.prepare_save(line)?;
+    let token = work::add_token(repo, line)?;
+    let st = repo.status(line)?.0;
+    PREPARED_STATUS.with(|p| *p.borrow_mut() = Some((token, st)));
+    let theirs = revs::resolve(repo, Some(line), rev)?;
+    let head = line.head.as_str();
+    if theirs == head || repo.is_ancestor(&theirs, head)? {
+        return Ok(());
+    }
+    if repo.is_ancestor(head, &theirs)? {
+        // A fast-forward reads the tree of the new head.
+        repo.state_root(&theirs)?;
+        return Ok(());
+    }
+    let Some(base) = repo.merge_base(head, &theirs)? else { return Ok(()) };
+    let label = repo.p.db.line_by_name(rev)?.map(|l| l.name).unwrap_or_else(|| rev.to_string());
+    let (work, out) = merge_trees(ctx, repo, line, &base, head, &theirs, &label)?;
+    crate::storage::prepare_snapshot(&work.path, &repo.p.work_dir(), true)?;
+    PREPARED_MERGE.with(|p| {
+        *p.borrow_mut() = Some(PreparedMerge { line: line.id.clone(), base, ours: head.to_string(), theirs, label, work, out })
+    });
+    Ok(())
+}
+
+/// The status of a line under the lock: the one read before the lock when the head and the
+/// index did not change since; the working folder is never under the lock.
+fn locked_status(repo: &Repo, line: &Line) -> Result<crate::repo::Status> {
+    #[cfg(target_os = "macos")]
+    if let Some((token, st)) = PREPARED_STATUS.with(|p| p.borrow_mut().take()) {
+        if token == work::add_token(repo, line)? {
+            return Ok(st);
+        }
+    }
+    Ok(repo.status(line)?.0)
+}
+
+/// Delete what the preparation left (after the lock).
+fn discard_prepared(repo: &Repo) {
+    #[cfg(target_os = "macos")]
+    {
+        PREPARED_STATUS.with(|p| p.borrow_mut().take());
+        PREPARED_MERGE.with(|p| p.borrow_mut().take());
+        for p in crate::storage::take_prepared() {
+            let _ = repo.p.trash(&p);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = repo;
 }
 
 /// The merge of the follow overlays of two lines (docs/overlays.md, section 1): it goes with the
@@ -537,7 +642,9 @@ pub fn merge(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     let rev = a.pos.first().ok_or_else(|| exit(128, "usage: layr merge <rev> [--expect <state>]"))?.clone();
     let before = line.head.clone();
-    let code = merge_rev(ctx, &h.repo, &line, &rev, &a)?;
+    let code = merge_rev(ctx, &h.repo, &line, &rev, &a);
+    discard_prepared(&h.repo);
+    let code = code?;
     // The caches of a merged line go with it (docs/cache-overlays.md, section 5). They are
     // regenerable: a failure is reported and never undoes the merge.
     if let Some(theirs) = h.repo.p.db.line_by_name(&rev)? {
@@ -690,6 +797,10 @@ fn merge_rev_inner(
         _ => None,
     };
     repo.authorize_line(ctx, line, crate::repo::LineOp::Merge { expect, hint: hint.as_deref() })?;
+    #[cfg(target_os = "macos")]
+    if queue.is_none() {
+        let _ = prepare_merge(ctx, repo, line, rev);
+    }
     let lock = repo.p.lock()?;
     let line = repo.line(&line.id)?;
     if let Some(q) = queue {
@@ -759,7 +870,7 @@ fn merge_rev_inner(
         }
         return Ok(0);
     }
-    let (st, _scan, _it, _idx) = repo.status(&line)?;
+    let st = locked_status(repo, &line)?;
     if !st.staged.is_empty() {
         return Err(exit(1, "error: you have staged changes; save or park them before merging."));
     }

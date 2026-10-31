@@ -120,6 +120,7 @@ fn line_command(ctx: &Ctx, args: &[String], sub: &str) -> Result<i32> {
                     return Err(exit(1, format!("error: the line '{name}' is not fully merged.\nIf you are sure you want to delete it, run 'layr line delete -D {name}'.")));
                 }
             }
+            repo.prepare_save(&l)?;
             let _lock = repo.p.lock()?;
             // Automatic states leave overlay files out: uncommitted changes of them would be lost.
             if !a.has("-f") && repo.is_stacked(&l)? && repo.working(&l).exists() {
@@ -154,12 +155,16 @@ fn line_command(ctx: &Ctx, args: &[String], sub: &str) -> Result<i32> {
             rec.data = serde_json::json!({"name": l.name, "final_state": last});
             repo.commit_record(ctx, rec)?;
             crate::fsutil::git_writable(&repo.working(&l), true);
-            crate::storage::delete_tree(&repo.working(&l))?;
+            // Into the trash, emptied after the store lock: a folder with build output takes
+            // minutes to delete, and other commands must not wait for it.
+            repo.p.trash(&repo.working(&l))?;
             repo.drop_stage(&l)?;
             repo.set_pending_moves(&l, &Default::default())?;
             repo.prune_bases(&l, None, 0)?;
             // The owner of a deleted line no longer reads the git objects.
             crate::gitbridge::sync_store_access(repo)?;
+            // The line's head no longer keeps its caches.
+            super::admin::trash_excess_caches(repo)?;
             outln!(ctx, "Deleted line {} (was {}).", l.name, ids::short(&l.head));
         }
         return Ok(0);

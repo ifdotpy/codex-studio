@@ -53,11 +53,7 @@ async fn log(
             let agent = AgentRepository::get(connection, &AgentId::from(owner))
                 .map_err(store_read_error)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Unknown agent"))?;
-            let agent_value = agent.value();
-            if agent_value
-                .get("deletedAt")
-                .is_some_and(|value| studio_runtime_store::truthy(Some(value)))
-            {
+            if agent.deleted_at.is_some_and(|time| time != 0.0) {
                 return Err(ApiError::new(
                     StatusCode::BAD_REQUEST,
                     "This agent was deleted",

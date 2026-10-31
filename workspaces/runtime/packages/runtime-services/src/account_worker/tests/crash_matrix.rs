@@ -229,14 +229,20 @@ async fn a_replacement_waits_for_its_own_recovery_before_the_health_turn() {
             owner.status = studio_runtime_store::AgentStatus::Queued;
             owner.in_flight = Some(false);
             owner.auto_wake = Some(true);
-            owner.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":{
-                "id":"matrix-held-start","epoch":epoch,"accountKey":"default","threadId":"fake-thread-0",
-                "events":["annotation:input"],"submitted":true,"executionOutcome":"unknown",
-                "requestTicket":"matrix-held-ticket","connectionGeneration":1,"connectionId":"original"}}));
+            owner.restart_recovery = Some(Box::new(studio_runtime_schema::recovery_record::RecoveryFields {
+                stage: Some("held".into()),
+                start_attempt: Some(Box::new(studio_runtime_store::StartAttemptView {
+                    id: Some("matrix-held-start".into()), epoch: Some(epoch), account_key: Some("default".into()),
+                    thread_id: Some("fake-thread-0".into()), events: Some(vec!["annotation:input".into()]),
+                    submitted: Some(true), execution_outcome: Some(studio_runtime_schema::persistence::ExecutionStatus::Unknown),
+                    request_ticket: Some("matrix-held-ticket".into()), connection_generation: Some(1), connection_id: Some("original".into()),
+                    ..Default::default()
+                })), ..Default::default()
+            }));
             owner.extra.insert("contextRepairWait".into(), json!({"scope":"native","events":["annotation:input"],
                 "source":{"id":agent,"epoch":epoch,"accountKey":"default","threadId":"fake-thread-0","attemptId":null},
                 "error":"Context repair waits for a confirmed input receipt: annotation:input","nextCheckAt":0}));
-            owner.extra.remove("startAttempt");
+            owner.start_attempt.take();
             AgentRepository::put(tx, &owner)?;
             tx.execute("UPDATE runtime_events SET status='uncertain',error='Unknown native input outcome' WHERE id='annotation:input'", [])?;
             Ok(())
@@ -655,7 +661,7 @@ async fn health_turn_waits_for_pending_recovery_history() {
                 let attempt = json!({"id":"restart-attempt","epoch":agent.epoch,"accountKey":"default",
                     "threadId":"fake-thread-0","events":[event],"submitted":true,
                     "executionOutcome":"unknown","created":1.0,"connectionGeneration":1});
-                agent.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":attempt}));
+                agent.restart_recovery = Some(Box::new(studio_runtime_schema::recovery_record::RecoveryFields { stage: Some("held".into()), start_attempt: Some(Box::new(serde::Deserialize::deserialize(attempt).expect("typed fixture"))), ..Default::default() }));
                 agent.extra.insert("contextRepairWait".into(), json!({"error":"unconfirmed input",
                     "scope":"native","events":[event],"nextCheckAt":0,
                     "source":{"id":agent_id,"epoch":agent.epoch,"accountKey":"default","threadId":"fake-thread-0","attemptId":null}}));

@@ -83,6 +83,7 @@ struct PeerProject {
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+// Peer projections may omit the name and project ID present in stored aliases.
 struct ProjectAlias {
     server_id: String,
 }
@@ -94,13 +95,20 @@ struct ProjectList {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProjectMirror {
-    created: Option<f64>, home_server_id: String, id: String, name: Option<String>,
-    path: Option<String>, server_label: String, updated: Option<f64>,
+    created: Option<f64>,
+    home_server_id: String,
+    id: String,
+    name: Option<String>,
+    path: Option<String>,
+    server_label: String,
+    updated: Option<f64>,
 }
 
 fn local_aliases(tx: &Transaction<'_>) -> Result<BTreeSet<(String, String)>, StoreError> {
     let mut query = tx.prepare("SELECT json_extract(a.value,'$.serverId'),json_extract(a.value,'$.projectId') FROM runtime_projects p, json_each(CASE WHEN json_type(p.record,'$.projectAliases')='array' THEN json_extract(p.record,'$.projectAliases') ELSE '[]' END) a WHERE json_extract(p.record,'$.removal') IS NULL AND COALESCE(json_type(p.record,'$.sidebarHidden'),'')!='true' AND a.type='object' AND json_type(a.value,'$.serverId')='text' AND json_type(a.value,'$.projectId')='text'")?;
-    Ok(query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?)
+    Ok(query
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_, _>>()?)
 }
 
 /// Entities that mirror `items` of one paired server, skipping the projects that this server
@@ -125,7 +133,15 @@ fn mirrored(
             continue;
         }
         let bound = |s: &str| s.chars().take(crate::sync_views::SYNC_TEXT_CHARS).collect();
-        let record = ProjectMirror { id: bound(&entity_id(server, id)), path: item.path.as_deref().map(bound), name: item.name.as_deref().map(bound), created: item.created, updated: item.updated, home_server_id: bound(server), server_label: bound(label) };
+        let record = ProjectMirror {
+            id: bound(&entity_id(server, id)),
+            path: item.path.as_deref().map(bound),
+            name: item.name.as_deref().map(bound),
+            created: item.created,
+            updated: item.updated,
+            home_server_id: bound(server),
+            server_label: bound(label),
+        };
         result.insert(entity_id(server, id), record);
     }
     result
@@ -354,25 +370,50 @@ mod tests {
 
     #[test]
     fn typed_aliases_filter_mirrors_and_keep_projection() {
-        let items: ProjectList = serde_json::from_str(r#"{"items":[{"id":"one","name":"First"},{"id":"two","name":"Second"}]}"#).unwrap();
+        let items: ProjectList = serde_json::from_str(
+            r#"{"items":[{"id":"one","name":"First"},{"id":"two","name":"Second"}]}"#,
+        )
+        .unwrap();
         let aliases = BTreeSet::from([(PEER.to_owned(), "one".to_owned())]);
         let result = mirrored(PEER, "Peer", &items.items, &aliases, "local");
         assert_eq!(result.len(), 1);
         let view = json!({"id":"peer:peer-server:two","path":null,"name":"Second","created":null,"updated":null,"homeServerId":PEER,"serverLabel":"Peer"});
         let old = crate::sync_views::project_entity_view(&view, None, None, None).unwrap();
-        assert_eq!(serde_json::to_string(&result[&entity_id(PEER, "two")]).unwrap(), serde_json::to_string(&old).unwrap());
+        assert_eq!(
+            serde_json::to_string(&result[&entity_id(PEER, "two")]).unwrap(),
+            serde_json::to_string(&old).unwrap()
+        );
     }
 
     #[test]
     fn local_aliases_ignore_hidden_removed_and_non_object_entries() {
         let mut db = rusqlite::Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL)").unwrap();
+        db.execute_batch("CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .unwrap();
         for (id, record) in [
-            ("shown", json!({"projectAliases":["invalid", 7, null, {"serverId":"s","projectId":"p"}]})),
-            ("hidden", json!({"sidebarHidden":true,"projectAliases":[{"serverId":"hidden","projectId":"p"}]})),
-            ("removed", json!({"removal":{},"projectAliases":[{"serverId":"removed","projectId":"p"}]})),
-        ] { db.execute("INSERT INTO runtime_projects VALUES(?1,?2)", rusqlite::params![id, record.to_string()]).unwrap(); }
-        assert_eq!(local_aliases(&db.transaction().unwrap()).unwrap(), BTreeSet::from([("s".into(), "p".into())]));
+            (
+                "shown",
+                json!({"projectAliases":["invalid", 7, null, {"serverId":"s","projectId":"p"}]}),
+            ),
+            (
+                "hidden",
+                json!({"sidebarHidden":true,"projectAliases":[{"serverId":"hidden","projectId":"p"}]}),
+            ),
+            (
+                "removed",
+                json!({"removal":{},"projectAliases":[{"serverId":"removed","projectId":"p"}]}),
+            ),
+        ] {
+            db.execute(
+                "INSERT INTO runtime_projects VALUES(?1,?2)",
+                rusqlite::params![id, record.to_string()],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            local_aliases(&db.transaction().unwrap()).unwrap(),
+            BTreeSet::from([("s".into(), "p".into())])
+        );
     }
     /// Test-only identity of the local server (a throwaway key pair).
     const IDENTITY: &str = "{\"label\":\"Studio server\",\"privateKey\":\"-----BEGIN PRIVATE KEY-----\\nMC4CAQAwBQYDK2VwBCIEIEABs3CR9YO/2snXAA7CZxSJcf+AXY62nmdKhdyv14QS\\n-----END PRIVATE KEY-----\\n\",\"publicKey\":\"-----BEGIN PUBLIC KEY-----\\nMCowBQYDK2VwAyEAElmQYRu24EVfx1oxPVvQb30C+R3RQaB0QboX7Xsi6OQ=\\n-----END PUBLIC KEY-----\\n\",\"serverId\":\"628c18136e1542fa9f45b899f3b75503\"}";

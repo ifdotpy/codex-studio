@@ -120,7 +120,8 @@ pub fn monitor_cleanup_allowed(
     Ok(settings.pressure_cleanup
         && eligible(db, agent)?
         && monitor.activity_generation.get() == marker.generation
-        && now >= marker.at && (now - marker.at) * 1000.0 <= TICK_MS as f64
+        && now >= marker.at
+        && (now - marker.at) * 1000.0 <= TICK_MS as f64
         && now - agent["shellPolicyLastActiveAt"].as_f64().unwrap_or(now)
             >= PRESSURE_IDLE_MS as f64 / 1000.0)
 }
@@ -139,16 +140,32 @@ pub fn maintain_monitor(
     use crate::monitor_policy::{Effect, MonitorError};
     let agent = actor.value();
     let monitor = before.record();
-    use studio_runtime_schema::{monitor_record::{MonitorCancelStatus, MonitorCancelDispatch, ShellPressureCleanup}, studio_errors::MonitorStatus};
-    if monitor.epoch.get() != actor.epoch { return Ok(()); }
-    if let Some(cleanup) = &monitor.shell_pressure_cleanup
-        && monitor.cancel_dispatch.as_ref().is_some_and(|dispatch| dispatch.status == MonitorCancelStatus::Unknown) {
-        let report = json!({"id":format!("monitor:{}:{}:cleanup_unknown", before.id(), cleanup.generation),"kind":"cleanup_unknown","message":format!("Critical memory pressure: the stop outcome for monitor {} is unknown. Inspect the monitor before another stop.",before.id())});
-        observe(tx, &agent, &report, now).map_err(|_| MonitorError::Refused("Could not record the shell cleanup outcome"))?;
+    use studio_runtime_schema::{
+        monitor_record::{MonitorCancelDispatch, MonitorCancelStatus, ShellPressureCleanup},
+        studio_errors::MonitorStatus,
+    };
+    if monitor.epoch.get() != actor.epoch {
+        return Ok(());
     }
-    if monitor.status != MonitorStatus::Running || monitor.cancel_requested == Some(true)
-        || monitor.rule_id.is_some() || monitor.reattach_recovery.is_some()
-        || monitor.operation.is_none() || !eligible(tx, &agent)? { return Ok(()); }
+    if let Some(cleanup) = &monitor.shell_pressure_cleanup
+        && monitor
+            .cancel_dispatch
+            .as_ref()
+            .is_some_and(|dispatch| dispatch.status == MonitorCancelStatus::Unknown)
+    {
+        let report = json!({"id":format!("monitor:{}:{}:cleanup_unknown", before.id(), cleanup.generation),"kind":"cleanup_unknown","message":format!("Critical memory pressure: the stop outcome for monitor {} is unknown. Inspect the monitor before another stop.",before.id())});
+        observe(tx, &agent, &report, now)
+            .map_err(|_| MonitorError::Refused("Could not record the shell cleanup outcome"))?;
+    }
+    if monitor.status != MonitorStatus::Running
+        || monitor.cancel_requested == Some(true)
+        || monitor.rule_id.is_some()
+        || monitor.reattach_recovery.is_some()
+        || monitor.operation.is_none()
+        || !eligible(tx, &agent)?
+    {
+        return Ok(());
+    }
     let generation = monitor.activity_generation.get();
     let activity = monitor.activity_at.seconds();
     let quiet_ms = (now - activity).max(0.0) * 1000.0;
@@ -158,7 +175,8 @@ pub fn maintain_monitor(
     let restart_guard = last_reap.is_some_and(|last| {
         last > agent["shellPolicyLastActiveAt"].as_f64().unwrap_or(now)
             && monitor.created.seconds() > last
-            && (monitor.created.seconds() - last) * 1000.0 < studio_runtime_schema::shell_policy::PRESSURE_RESTART_GUARD_MS as f64
+            && (monitor.created.seconds() - last) * 1000.0
+                < studio_runtime_schema::shell_policy::PRESSURE_RESTART_GUARD_MS as f64
     });
     let reap = critical
         && settings.pressure_cleanup
@@ -210,11 +228,22 @@ pub fn maintain_monitor(
     decision
         .effects
         .retain(|effect| !matches!(effect, Effect::StallEvent { .. } | Effect::Probe { .. }));
-    decision.record.stall_wake_generation = generation.try_into().map_err(|_| MonitorError::Refused("Invalid monitor generation"))?;
+    decision.record.stall_wake_generation = generation
+        .try_into()
+        .map_err(|_| MonitorError::Refused("Invalid monitor generation"))?;
     if reap {
         decision.record.cancel_requested = Some(true);
-        decision.record.cancel_dispatch = Some(MonitorCancelDispatch { status: MonitorCancelStatus::Pending, attempts: Some(0), updated_at: None, next_attempt_at: None, error: None });
-        decision.record.shell_pressure_cleanup = Some(ShellPressureCleanup { at: now, generation });
+        decision.record.cancel_dispatch = Some(MonitorCancelDispatch {
+            status: MonitorCancelStatus::Pending,
+            attempts: Some(0),
+            updated_at: None,
+            next_attempt_at: None,
+            error: None,
+        });
+        decision.record.shell_pressure_cleanup = Some(ShellPressureCleanup {
+            at: now,
+            generation,
+        });
         actor
             .extra
             .insert("shellPolicyLastReapAt".into(), json!(now));
@@ -538,7 +567,7 @@ mod receipt_tests {
         let directory = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"claude","threadId":"thread","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"claude","threadId":"thread","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
             tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
             Ok::<_, StoreError>(())
         }).await.unwrap();
@@ -568,7 +597,7 @@ mod receipt_tests {
         store.transaction_with(|tx| {
             for (id, value) in [
                 ("a-partial", json!({"id":"a-partial","provider":"claude","threadId":"t","accountKey":"inactive","status":"idle","autoWake":true})),
-                ("z-valid", json!({"id":"z-valid","rootId":"z-valid","epoch":1,"provider":"claude","threadId":"t","accountKey":"default","status":"idle","autoWake":true})),
+                ("z-valid", json!({"compactions":0,"id":"z-valid","rootId":"z-valid","epoch":1,"provider":"claude","threadId":"t","accountKey":"default","status":"idle","autoWake":true})),
             ] {
                 tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", (id, value.to_string()))?;
                 tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", (format!("task-{id}"), json!({"id":format!("task-{id}"),"agent":id,"status":"running","name":"local_bash"}).to_string()))?;
@@ -637,7 +666,7 @@ mod receipt_tests {
         let directory = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","accountKey":"default","epoch":7,"autoWake":true,"status":"idle"}).to_string()))?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"compactions":0,"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","accountKey":"default","epoch":7,"autoWake":true,"status":"idle"}).to_string()))?;
             tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
             Ok::<_, StoreError>(())
         }).await.unwrap();
@@ -692,7 +721,7 @@ mod receipt_tests {
 
     #[test]
     fn shell_projection_agrees_with_persisted_agent_owner_on_valid_fields() {
-        let value = json!({"id":"a","rootId":"r","epoch":3,"status":"idle","accountKey":"default","threadId":"t","turnId":"","autoWake":true,"inFlight":false,"executionMode":"host","deletedAt":null,"accountTransferId":"transfer","remoteWorker":false,"remoteAnchor":null});
+        let value = json!({"compactions":0,"id":"a","rootId":"r","epoch":3,"status":"idle","accountKey":"default","threadId":"t","turnId":"","autoWake":true,"inFlight":false,"executionMode":"host","deletedAt":null,"accountTransferId":"transfer","remoteWorker":false,"remoteAnchor":null});
         let owner = studio_runtime_store::AgentRecord::from_value(value.clone()).unwrap();
         let partial = ShellPolicyAgent::deserialize(value).unwrap();
         assert_eq!(partial.id.as_deref(), Some(owner.id.0.as_str()));
@@ -703,23 +732,14 @@ mod receipt_tests {
             partial.account_key.as_deref(),
             Some(owner.account_key.as_str())
         );
+        assert_eq!(partial.turn_id.as_deref(), owner.turn_id.as_deref());
+        assert_eq!(partial.execution_mode.as_deref(), Some("host"));
         assert_eq!(
-            partial.turn_id.as_deref(),
-            owner.turn_id.as_deref()
+            owner.execution_mode,
+            Some(studio_runtime_store::AgentExecutionMode::Host)
         );
-        assert_eq!(
-            partial.execution_mode.as_deref(),
-            Some("host")
-        );
-        assert_eq!(owner.execution_mode, Some(studio_runtime_store::AgentExecutionMode::Host));
-        assert_eq!(
-            partial.auto_wake,
-            owner.auto_wake.unwrap_or(false)
-        );
-        assert_eq!(
-            partial.in_flight,
-            owner.in_flight.unwrap_or(false)
-        );
+        assert_eq!(partial.auto_wake, owner.auto_wake.unwrap_or(false));
+        assert_eq!(partial.in_flight, owner.in_flight.unwrap_or(false));
         assert_eq!(
             partial.thread_id.as_ref().and_then(Value::as_str),
             owner.thread_id.as_deref()
@@ -743,7 +763,7 @@ mod receipt_tests {
         let directory = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","accountKey":"default","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"compactions":0,"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","accountKey":"default","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
             tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
             Ok::<_, StoreError>(())
         }).await.unwrap();

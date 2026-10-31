@@ -2,7 +2,7 @@
 //! analytics and volatile rates are immutable values for the caller after commit.
 use crate::notification_dispatch::{
     DispatchOutcome, NotificationDispatchError, NotificationEffects, NotificationObservation,
-    NotificationPostCommit, ProviderDeliveryIdentity, SharedJson,
+    NotificationPostCommit, ObservationTime, ProviderDeliveryIdentity, SharedJson,
 };
 use serde_json::Value;
 use std::future::Future;
@@ -48,7 +48,7 @@ impl NotificationEffects for RuntimeNotificationEffects {
         after: Option<&Value>,
         frame: &Value,
         identity: &ProviderDeliveryIdentity,
-        at: f64,
+        at: ObservationTime,
         outcome: &DispatchOutcome,
     ) -> Vec<NotificationPostCommit> {
         let method = frame["method"].as_str().unwrap_or_default();
@@ -61,7 +61,10 @@ impl NotificationEffects for RuntimeNotificationEffects {
             params: params.clone(),
             delivery: identity.clone(),
             observed_at: at,
-            provider_at: event_time(frame).filter(|time| *time != 0.0).unwrap_or(at),
+            provider_at: event_time(frame)
+                .filter(|time| *time != 0.0)
+                .and_then(ObservationTime::new)
+                .unwrap_or(at),
         };
         let mut result = Vec::new();
         if matches!(
@@ -328,7 +331,7 @@ mod tests {
             Some(&agent),
             &frame,
             &identity,
-            12.0,
+            ObservationTime::new(12.0).unwrap(),
             &DispatchOutcome::Written,
         );
         let observations = effects

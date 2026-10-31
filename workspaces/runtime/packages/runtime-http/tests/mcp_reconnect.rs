@@ -122,7 +122,7 @@ async fn fixture(
         })
         .await
         .unwrap();
-    let agent = json!({"id":"agent","rootId":"agent","epoch":2,"cwd":root.path(),"model":"model","role":"orchestrator","provider":provider,"accountKey":"account","threadId":"thread","status":"paused","autoWake":false});
+    let agent = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":2,"cwd":root.path(),"model":"model","role":"orchestrator","provider":provider,"accountKey":"account","threadId":"thread","status":"paused","autoWake":false});
     store
         .transaction(move |tx| {
             tx.execute(

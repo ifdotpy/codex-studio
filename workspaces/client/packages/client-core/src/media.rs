@@ -209,7 +209,7 @@ pub async fn dispatch(request: crate::protocol::Request) -> crate::protocol::Res
                 #[cfg(target_os = "macos")]
                 {
                     mac::on_main(move || mac::start(id, sender)).await?;
-                    Ok(json!({"sampleRate": DICTATION_RATE}))
+                    Ok::<Value, String>(json!({"sampleRate": DICTATION_RATE}))
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
@@ -220,8 +220,8 @@ pub async fn dispatch(request: crate::protocol::Request) -> crate::protocol::Res
             Command::CaptureStop(CaptureId(id)) => {
                 #[cfg(target_os = "macos")]
                 {
-                    Ok(Value::Bool(
-                        mac::on_main(move || Ok(mac::stop(&id, true))).await?,
+                    Ok::<Value, String>(Value::Bool(
+                        mac::on_main(move || Ok::<_, String>(mac::stop(&id, true))).await?,
                     ))
                 }
                 #[cfg(not(target_os = "macos"))]
@@ -257,7 +257,7 @@ pub fn close_all() {
 pub(crate) mod mac {
     use super::*;
     use block2::RcBlock;
-    use objc2::{AnyThread, rc::Retained, runtime::Bool};
+    use objc2::{rc::Retained, runtime::Bool};
     use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
     use objc2_avf_audio::{AVAudioEngine, AVAudioPCMBuffer, AVAudioTime};
     use std::{cell::RefCell, ptr::NonNull, sync::Arc};

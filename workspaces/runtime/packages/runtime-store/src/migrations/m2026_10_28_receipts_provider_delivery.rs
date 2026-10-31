@@ -737,7 +737,7 @@ mod tests {
     fn receipt_provider_delivery_migration_root_is_v7_and_stable_across_phase_resume() {
         let mut db = database();
         let tx = db.transaction().expect("transaction");
-        tx.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);INSERT INTO runtime_monitors VALUES('monitor','{\"operation\":{}}')").expect("monitor");
+        tx.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);INSERT INTO runtime_monitors(id,record) VALUES('monitor','{\"operation\":{}}')").expect("monitor");
         let key = fixture(&tx, "monitor:monitor", &json!("Unknown"));
         let source = read_receipt_batch(
             &tx,

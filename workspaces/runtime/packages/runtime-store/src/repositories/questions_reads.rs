@@ -3,7 +3,7 @@
 use crate::StoreResult;
 use crate::records::{AgentRecord, CheckpointRecord, ComplaintRecord, RequestRecord, Table};
 use crate::schema::{SchemaRequirements, TableRequirement};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
@@ -62,9 +62,9 @@ mod tests {
              CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_checkpoints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             INSERT INTO runtime_agents(id,record) VALUES('a','{\"id\":\"a\",\"provider\":\"codex\",\"accountKey\":\"default\",\"rootId\":\"a\",\"epoch\":0,\"status\":\"idle\"}');
+             INSERT INTO runtime_agents(id,record) VALUES('a','{\"id\":\"a\",\"provider\":\"codex\",\"accountKey\":\"default\",\"rootId\":\"a\",\"epoch\":0,\"status\":\"idle\",\"compactions\":0}');
              INSERT INTO runtime_requests VALUES('q','{\"id\":\"q\",\"agent\":\"a\",\"method\":\"mcpServer/elicitation/request\",\"status\":\"pending\",\"params\":{\"mode\":\"form\",\"requestedSchema\":{\"properties\":{\"password\":{},\"color\":{}}}}}');
-             INSERT INTO runtime_complaints VALUES('c','{\"id\":\"c\",\"leadId\":\"a\",\"author\":\"user\",\"text\":\"Review\",\"status\":\"open\",\"created\":1}');
+             INSERT INTO runtime_complaints VALUES('c','{\"id\":\"c\",\"leadId\":\"a\",\"author\":\"user\",\"text\":\"Review\",\"status\":\"open\",\"recipient\":\"lead\",\"version\":null,\"created\":1,\"updated\":null,\"readAt\":null,\"responses\":[]}');
              INSERT INTO runtime_checkpoints VALUES('p','{\"id\":\"p\",\"agent\":\"a\",\"created\":1,\"items\":[\"hidden\"]}');"),
         )
         .expect("families create");
@@ -105,6 +105,18 @@ impl QuestionsReadsRepository {
 
     pub fn complaint(connection: &Connection, id: &str) -> StoreResult<Option<ComplaintRecord>> {
         Table::<ComplaintRecord>::new(connection).get(&id.to_owned())
+    }
+
+    /// Raw stored bytes for change detection; the view reader validates the record.
+    pub fn complaint_fingerprint(connection: &Connection, id: &str) -> StoreResult<Option<String>> {
+        connection
+            .query_row(
+                "SELECT record FROM runtime_complaints WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     pub fn checkpoints(connection: &Connection) -> StoreResult<Vec<CheckpointRecord>> {

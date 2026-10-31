@@ -49,6 +49,11 @@
           "additionalProperties": {
             "$ref": "#/$defs/JsonValue"
           },
+          "properties": {
+            "direct": { "type": "boolean" },
+            "active": { "type": ["object", "null"] }
+          },
+          "required": ["direct", "active"],
           "type": "object"
         },
         {

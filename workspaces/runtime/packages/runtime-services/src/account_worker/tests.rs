@@ -339,7 +339,7 @@ const FIXTURE_AGENT_EPOCH: i64 = 0;
 async fn seed_fixture_root(root: &std::path::Path) -> RuntimeStore {
     std::fs::create_dir_all(root).unwrap();
     let store = RuntimeStore::open(Some(root)).await.unwrap();
-    let mut record = json!({
+    let mut record = json!({"compactions":0,
         "id":FIXTURE_AGENT_ID,"rootId":FIXTURE_AGENT_ID,"epoch":FIXTURE_AGENT_EPOCH,
         "status":"queued","name":"Rust turn fixture","cwd":root,"autoWake":true,
         "accountKey":"default","threadId":"fake-thread-0","model":"fake-model",
@@ -1158,7 +1158,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                 let write_bad_id = bad_id.clone();
                 let write_good_id = good_id.clone();
                 store.transaction_with(move |tx| {
-                    let invalid = json!({
+                    let invalid = json!({"compactions":0,
                         "id": write_bad_id.clone(),
                         "rootId": write_good_id.clone(),
                         "epoch": good_epoch,
@@ -1335,7 +1335,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES('racy',?1)",
-                [json!({"accountKey":"default",
+                [json!({"compactions":0,"accountKey":"default",
                     "id":"racy", "rootId":17, "epoch":1,
                     "provider":studio_runtime_schema::ProviderKind::Codex,
                     "status":"idle", "isLead":true
@@ -1376,6 +1376,8 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         | error @ StoreError::InvalidStoredObject { .. }
         | error @ StoreError::SchemaValidation(_)
         | error @ StoreError::RecordContract(_)
+        | error @ StoreError::TranscriptFullTextUnavailable { .. }
+        | error @ StoreError::TranscriptInputsIncomplete { .. }
         | error @ StoreError::WriterPoisoned
         | error @ StoreError::WriterActorInitialization(_)
         | error @ StoreError::WriterActorControl(_)
@@ -1388,11 +1390,13 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         .transaction(move |tx| {
             AgentRepository::put(
                 tx,
-                &studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default",
-                    "id":"racy", "rootId":"racy", "epoch":1,
-                    "provider":studio_runtime_schema::ProviderKind::Codex,
-                    "status":"idle", "isLead":true
-                }))?,
+                &studio_runtime_store::AgentRecord::from_value(
+                    json!({"compactions":0,"accountKey":"default",
+                        "id":"racy", "rootId":"racy", "epoch":1,
+                        "provider":studio_runtime_schema::ProviderKind::Codex,
+                        "status":"idle", "isLead":true
+                    }),
+                )?,
             )?;
             Ok(())
         })
@@ -1462,7 +1466,7 @@ async fn unresolved_receipt_for_held_invalid_agent_does_not_block_recovery() {
                         } => Ok((pointer, reason)),
                         error @ StoreError::StateDirectory(_) | error @ StoreError::AlreadyOwned | error @ StoreError::MissingDatabase(_) | error @ StoreError::UnsafeStateDirectory | error @ StoreError::SchemaMismatch(_) | error @ StoreError::InvalidSyncObject { .. } | error @ StoreError::InvalidStoredRecord { .. } | error @ StoreError::SchemaObjectMismatch { .. } | error @ StoreError::Sqlite(_) | error @ StoreError::CommitOutcomeUnknown(_) | error @ StoreError::RequestResult(_)
         | error @ StoreError::Outbox(_)
-        | error @ StoreError::Json(_) | error @ StoreError::InvalidStoredObject { .. } | error @ StoreError::SchemaValidation(_) | error @ StoreError::RecordContract(_) | error @ StoreError::WriterPoisoned | error @ StoreError::WriterActorInitialization(_) | error @ StoreError::WriterActorControl(_) | error @ StoreError::CommitActorOutcomeUnknown(_) | error @ StoreError::Migration { .. } | error @ StoreError::ReadTaskFailed => Err(error),
+        | error @ StoreError::Json(_) | error @ StoreError::InvalidStoredObject { .. } | error @ StoreError::SchemaValidation(_) | error @ StoreError::RecordContract(_) | error @ StoreError::TranscriptFullTextUnavailable { .. } | error @ StoreError::TranscriptInputsIncomplete { .. } | error @ StoreError::WriterPoisoned | error @ StoreError::WriterActorInitialization(_) | error @ StoreError::WriterActorControl(_) | error @ StoreError::CommitActorOutcomeUnknown(_) | error @ StoreError::Migration { .. } | error @ StoreError::ReadTaskFailed => Err(error),
                     }
                 }).await?;
                 store::hold_invalid_agent_record(
@@ -2071,7 +2075,9 @@ impl crate::provider_callbacks::tools::StatusWatchPort for GatedShutdownStatus {
     > {
         Box::pin(async move {
             Ok(crate::provider_callbacks::tools::RulesActionResult {
-                value: studio_runtime_schema::raw_json::RawJson(serde_json::value::to_raw_value(&Value::Null).expect("JSON")),
+                value: studio_runtime_schema::raw_json::RawJson(
+                    serde_json::value::to_raw_value(&Value::Null).expect("JSON"),
+                ),
                 cancel_monitor_ids: Vec::new(),
             })
         })
@@ -2156,7 +2162,9 @@ impl crate::provider_callbacks::tools::StatusWatchPort for SameAccountProviderSt
     > {
         Box::pin(async move {
             Ok(crate::provider_callbacks::tools::RulesActionResult {
-                value: studio_runtime_schema::raw_json::RawJson(serde_json::value::to_raw_value(&Value::Null).expect("JSON")),
+                value: studio_runtime_schema::raw_json::RawJson(
+                    serde_json::value::to_raw_value(&Value::Null).expect("JSON"),
+                ),
                 cancel_monitor_ids: Vec::new(),
             })
         })
@@ -2688,8 +2696,12 @@ async fn worker_barrier(worker: &AccountHandle) {
     let mut finished = worker.completion_signal();
     let exited = async {
         loop {
-            if *finished.borrow_and_update() { break; }
-            if finished.changed().await.is_err() { break; }
+            if *finished.borrow_and_update() {
+                break;
+            }
+            if finished.changed().await.is_err() {
+                break;
+            }
         }
     };
     tokio::select! {
@@ -4827,7 +4839,8 @@ async fn vm_actor_turn_with_host_mcp(child: bool) {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
@@ -4943,7 +4956,8 @@ async fn vm_session_identity_refusal_holds_one_actor_and_keeps_sibling_usable() 
                     primary.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     primary.extra.insert("layrReady".into(), json!(true));
                     primary.cwd = Some("/home/studio/project".into());
-                    primary.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    primary.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     primary.thread_id = None;
                     AgentRepository::put(tx, &primary)?;
 
@@ -4955,7 +4969,7 @@ async fn vm_session_identity_refusal_holds_one_actor_and_keeps_sibling_usable() 
                     sibling_record.auto_wake = Some(true);
                     sibling_record.in_flight = Some(false);
                     sibling_record.extra.insert("error".into(), Value::Null);
-                    sibling_record.extra.remove("startAttempt");
+                    sibling_record.start_attempt.take();
                     sibling_record.extra.remove("preparationWake");
                     AgentRepository::put(tx, &sibling_record)
                 })
@@ -5106,7 +5120,8 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
                     primary.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     primary.extra.insert("layrReady".into(), json!(true));
                     primary.cwd = Some("/home/studio/project".into());
-                    primary.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    primary.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     primary.thread_id = None;
                     AgentRepository::put(tx, &primary)?;
 
@@ -5118,7 +5133,7 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
                     sibling_record.auto_wake = Some(true);
                     sibling_record.in_flight = Some(false);
                     sibling_record.extra.insert("error".into(), Value::Null);
-                    sibling_record.extra.remove("startAttempt");
+                    sibling_record.start_attempt.take();
                     sibling_record.extra.remove("preparationWake");
                     AgentRepository::put(tx, &sibling_record)
                 })
@@ -5321,7 +5336,8 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
                     record.extra.insert("provider".into(), json!("claude"));
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.extra.insert("claudeOptions".into(), json!({}));
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
@@ -5428,7 +5444,7 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
 async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
-    let vm_actor = AgentRecord::from_value(json!({
+    let vm_actor = AgentRecord::from_value(json!({"compactions":0,
         "id":"vm-actor","rootId":"vm-actor","epoch":4,"status":"running",
         "provider":"codex","accountKey":"default","executionMode":"vm",
         "threadId":"vm-thread","autoWake":true,"inFlight":true,"turnEpoch":4,
@@ -5438,7 +5454,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
             "executionOutcome":"unknown","events":[]}
     }))
     .unwrap();
-    let sibling = AgentRecord::from_value(json!({
+    let sibling = AgentRecord::from_value(json!({"compactions":0,
         "id":"sibling","rootId":"sibling","epoch":7,"status":"running",
         "provider":"codex","accountKey":"default","executionMode":"host",
         "threadId":"sibling-thread","autoWake":true,"inFlight":true,"turnEpoch":7,
@@ -5448,7 +5464,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
             "executionOutcome":"unknown","events":[]}
     }))
     .unwrap();
-    let vm_sibling = AgentRecord::from_value(json!({
+    let vm_sibling = AgentRecord::from_value(json!({"compactions":0,
         "id":"vm-sibling","rootId":"vm-sibling","epoch":6,"status":"running",
         "provider":"codex","accountKey":"default","executionMode":"vm",
         "threadId":"vm-sibling-thread","autoWake":true,"inFlight":true,"turnEpoch":6,
@@ -5458,7 +5474,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
             "executionOutcome":"unknown","events":[]}
     }))
     .unwrap();
-    let completed_vm = AgentRecord::from_value(json!({
+    let completed_vm = AgentRecord::from_value(json!({"compactions":0,
         "id":"vm-completed","rootId":"vm-completed","epoch":8,"status":"completed",
         "provider":"codex","accountKey":"default","executionMode":"vm",
         "threadId":"completed-thread","autoWake":false,"inFlight":false,"turnEpoch":8
@@ -5512,7 +5528,10 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         .unwrap()
         .unwrap();
     assert_eq!(saved.status, studio_runtime_store::AgentStatus::Running);
-    assert_eq!(saved.extra["startAttempt"]["executionOutcome"], "unknown");
+    assert_eq!(
+        saved.start_attempt.as_ref().unwrap().execution_outcome,
+        Some(studio_runtime_schema::persistence::ExecutionStatus::Unknown)
+    );
     assert_eq!(saved.in_flight, Some(true));
 
     let vm_entry = JournalEntry {
@@ -5574,7 +5593,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         studio_runtime_store::AgentStatus::Interrupted
     );
     assert_eq!(retired.in_flight, Some(false));
-    assert!(retired.extra.contains_key("disconnectRecovery"));
+    assert!(retired.disconnect_recovery.is_some());
     assert_eq!(surviving.status, studio_runtime_store::AgentStatus::Running);
     assert_eq!(surviving.in_flight, Some(true));
     assert!(
@@ -5606,7 +5625,8 @@ async fn retained_vm_notification_is_epoch_fenced_and_committed_before_delivery(
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
@@ -5691,7 +5711,8 @@ async fn retained_vm_auth_callback_replies_through_the_account_session() {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
@@ -5766,7 +5787,8 @@ async fn retained_vm_reply_uses_its_actor_cursor_when_host_cursor_is_zero() {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = Some("fake-thread-0".to_string());
                     AgentRepository::put(tx, &record)
                 })
@@ -5867,7 +5889,8 @@ async fn retained_unknown_replay_precedes_changed_vm_session_fence() {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
@@ -6020,7 +6043,8 @@ async fn vm_auth_callback_is_not_sent_after_account_reconnect_at_final_fence() {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
@@ -6102,7 +6126,8 @@ async fn vm_auth_callback_shutdown_waits_for_final_generation_fence() {
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.thread_id = None;
                     AgentRepository::put(tx, &record)
                 })
@@ -6186,7 +6211,8 @@ async fn vm_worker_restart_reconciles_uncertain_provider_start_without_resending
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.extra.insert("layrReady".into(), json!(true));
                     record.cwd = Some("/home/studio/project".into());
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     AgentRepository::put(tx, &record)
                 })
                 .await?;
@@ -6336,7 +6362,7 @@ async fn cold_vm_lead_prepares_with_fake_guest_and_returns_guest_workspace_token
             .unwrap();
     let agent_id = "turn-start-vm-lead";
     let attempt_id = "turn-start-attempt";
-    let record = AgentRecord::from_value(json!({
+    let record = AgentRecord::from_value(json!({"compactions":0,
         "id":agent_id,"rootId":agent_id,"epoch":3,"status":"starting",
         "provider":"codex","accountKey":"default","autoWake":true,
         "executionMode":"vm","isLead":true,"workspaceMode":"layr",
@@ -6487,7 +6513,7 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
                 let mutation_agent = agent.clone();
                 store.transaction_with(move |tx| {
                     tx.execute("UPDATE runtime_events SET kind='complaint',text=?1 WHERE id='annotation:input'", [json!({"complaints":[{"complaint_id":"resolved"}]}).to_string()])?;
-                    tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('resolved',?1)", [json!({"id":"resolved","leadId":mutation_agent,"recipient":"lead","status":"open","responses":[],"author":mutation_agent,"text":"A response is needed","created":1.0,"version":1}).to_string()])?;
+                    tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('resolved',?1)", [json!({"id":"resolved","leadId":mutation_agent,"recipient":"lead","status":"open","responses":[],"author":mutation_agent,"text":"A response is needed","created":1.0,"readAt":null,"updated":null,"version":1}).to_string()])?;
                     Ok::<(), StoreError>(())
                 }).await?;
             }

@@ -17,7 +17,11 @@ impl MonitorTime {
 impl TryFrom<f64> for MonitorTime {
     type Error = &'static str;
     fn try_from(value: f64) -> Result<Self, Self::Error> {
-        if value.is_finite() && value >= 0.0 { Ok(Self(value)) } else { Err("invalid monitor time") }
+        if value.is_finite() && value >= 0.0 {
+            Ok(Self(value))
+        } else {
+            Err("invalid monitor time")
+        }
     }
 }
 impl<'de> Deserialize<'de> for MonitorTime {
@@ -47,16 +51,27 @@ impl MonitorExitCodes {
 impl TryFrom<Vec<i64>> for MonitorExitCodes {
     type Error = &'static str;
     fn try_from(mut values: Vec<i64>) -> Result<Self, Self::Error> {
-        if !(1..=16).contains(&values.len()) { return Err("invalid exit code count"); }
+        if !(1..=16).contains(&values.len()) {
+            return Err("invalid exit code count");
+        }
         values.sort_unstable();
         values.dedup();
-        Ok(Self(values.into_iter().map(TryInto::try_into).collect::<Result<_, _>>()?))
+        Ok(Self(
+            values
+                .into_iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
+        ))
     }
 }
 impl<'de> Deserialize<'de> for MonitorExitCodes {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let items = Vec::deserialize(d)?;
-        if (1..=16).contains(&items.len()) { Ok(Self(items)) } else { Err(serde::de::Error::custom("invalid exit code count")) }
+        if (1..=16).contains(&items.len()) {
+            Ok(Self(items))
+        } else {
+            Err(serde::de::Error::custom("invalid exit code count"))
+        }
     }
 }
 impl schemars::JsonSchema for MonitorExitCodes {
@@ -130,7 +145,11 @@ pub struct MonitorInputAttempt {
     pub finished: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub response: Option<crate::raw_json::RawJson>,
 }
 
@@ -234,17 +253,23 @@ pub enum MonitorQueueEvent {
 impl MonitorQueueEvent {
     pub fn cursor(&self) -> &str {
         match self {
-            Self::Output { cursor, .. } | Self::Probe { cursor, .. } | Self::Exit { cursor, .. } => cursor,
+            Self::Output { cursor, .. }
+            | Self::Probe { cursor, .. }
+            | Self::Exit { cursor, .. } => cursor,
         }
     }
     pub fn byte_length(&self) -> u64 {
         match self {
-            Self::Output { byte_length, .. } | Self::Probe { byte_length, .. } | Self::Exit { byte_length, .. } => *byte_length,
+            Self::Output { byte_length, .. }
+            | Self::Probe { byte_length, .. }
+            | Self::Exit { byte_length, .. } => *byte_length,
         }
     }
     pub fn operation(&self) -> &MonitorOperationRecord {
         match self {
-            Self::Output { operation, .. } | Self::Probe { operation, .. } | Self::Exit { operation, .. } => operation,
+            Self::Output { operation, .. }
+            | Self::Probe { operation, .. }
+            | Self::Exit { operation, .. } => operation,
         }
     }
 }
@@ -257,8 +282,14 @@ pub enum MonitorStream {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum MonitorProbeResult {
-    Completed { #[serde(rename = "exitCode")] exit_code: i64, output: String },
-    Failed { error: String },
+    Completed {
+        #[serde(rename = "exitCode")]
+        exit_code: i64,
+        output: String,
+    },
+    Failed {
+        error: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -275,14 +306,25 @@ pub struct StreamValues<T> {
     pub stderr: Option<T>,
 }
 impl<T> Default for StreamValues<T> {
-    fn default() -> Self { Self { stdout: None, stderr: None } }
+    fn default() -> Self {
+        Self {
+            stdout: None,
+            stderr: None,
+        }
+    }
 }
 impl<T> StreamValues<T> {
     pub fn get(&self, stream: MonitorStream) -> Option<&T> {
-        match stream { MonitorStream::Stdout => self.stdout.as_ref(), MonitorStream::Stderr => self.stderr.as_ref() }
+        match stream {
+            MonitorStream::Stdout => self.stdout.as_ref(),
+            MonitorStream::Stderr => self.stderr.as_ref(),
+        }
     }
     pub fn slot(&mut self, stream: MonitorStream) -> &mut Option<T> {
-        match stream { MonitorStream::Stdout => &mut self.stdout, MonitorStream::Stderr => &mut self.stderr }
+        match stream {
+            MonitorStream::Stdout => &mut self.stdout,
+            MonitorStream::Stderr => &mut self.stderr,
+        }
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -339,7 +381,10 @@ pub struct DeliveryFailure {
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct MonitorTaskGate { pub task_id: String, pub result_id: String }
+pub struct MonitorTaskGate {
+    pub task_id: String,
+    pub result_id: String,
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MonitorProbeLease {
@@ -363,7 +408,12 @@ impl TryFrom<ProbeFields> for MonitorProbeState {
     fn try_from(fields: ProbeFields) -> Result<Self, Self::Error> {
         match (fields.stall_probe_generation, fields.stall_probe_started) {
             (None, None) => Ok(Self(None)),
-            (Some(stall_probe_generation), Some(stall_probe_started)) => Ok(Self(Some(MonitorProbeLease { stall_probe_generation, stall_probe_started }))),
+            (Some(stall_probe_generation), Some(stall_probe_started)) => {
+                Ok(Self(Some(MonitorProbeLease {
+                    stall_probe_generation,
+                    stall_probe_started,
+                })))
+            }
             _ => Err("incomplete monitor probe lease"),
         }
     }
@@ -371,8 +421,14 @@ impl TryFrom<ProbeFields> for MonitorProbeState {
 impl From<MonitorProbeState> for ProbeFields {
     fn from(value: MonitorProbeState) -> Self {
         match value.0 {
-            Some(lease) => Self { stall_probe_generation: Some(lease.stall_probe_generation), stall_probe_started: Some(lease.stall_probe_started) },
-            None => Self { stall_probe_generation: None, stall_probe_started: None },
+            Some(lease) => Self {
+                stall_probe_generation: Some(lease.stall_probe_generation),
+                stall_probe_started: Some(lease.stall_probe_started),
+            },
+            None => Self {
+                stall_probe_generation: None,
+                stall_probe_started: None,
+            },
         }
     }
 }
@@ -543,7 +599,10 @@ mod tests {
         let input: MonitorInputAttempt = serde_json::from_str(raw).unwrap();
         assert!(matches!(input.method, MonitorInputMethod::Write(_)));
         assert_eq!(input.operation.agent.as_str(), "a");
-        assert_eq!(input.operation.evidence.root_request_id.as_deref(), Some("root"));
+        assert_eq!(
+            input.operation.evidence.root_request_id.as_deref(),
+            Some("root")
+        );
         assert_eq!(input.response.unwrap().0.get(), r#"{"ok":true}"#);
     }
     #[test]
@@ -564,9 +623,18 @@ mod tests {
     #[test]
     fn probe_lease_requires_both_fields() {
         #[derive(Deserialize)]
-        struct Record { #[serde(flatten)] probe: MonitorProbeState }
+        struct Record {
+            #[serde(flatten)]
+            probe: MonitorProbeState,
+        }
         let complete = r#"{"stallProbeGeneration":1,"stallProbeStarted":2}"#;
-        assert!(serde_json::from_str::<Record>(complete).unwrap().probe.0.is_some());
+        assert!(
+            serde_json::from_str::<Record>(complete)
+                .unwrap()
+                .probe
+                .0
+                .is_some()
+        );
         assert!(serde_json::from_str::<Record>(r#"{"stallProbeGeneration":1}"#).is_err());
     }
     #[test]
@@ -577,10 +645,22 @@ mod tests {
         assert!(!serde_json::to_string(&record).unwrap().contains("unknown"));
     }
     #[test]
-    fn stored_monitor_schema_matches_type() { check_schema_parity().unwrap(); }
+    fn stored_monitor_schema_matches_type() {
+        check_schema_parity().unwrap();
+    }
     #[test]
     fn operation_identity_is_bounded() {
-        assert!(serde_json::from_str::<MonitorOperationRecord>(r#"{"agent":"","epoch":1,"accountKey":"a","connectionId":"c"}"#).is_err());
-        assert!(serde_json::from_str::<MonitorOperationRecord>(r#"{"agent":"a","epoch":-1,"accountKey":"a","connectionId":"c"}"#).is_err());
+        assert!(
+            serde_json::from_str::<MonitorOperationRecord>(
+                r#"{"agent":"","epoch":1,"accountKey":"a","connectionId":"c"}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<MonitorOperationRecord>(
+                r#"{"agent":"a","epoch":-1,"accountKey":"a","connectionId":"c"}"#
+            )
+            .is_err()
+        );
     }
 }

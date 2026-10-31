@@ -259,11 +259,12 @@ fn checked_agent_cwd(
     agent: Option<studio_runtime_store::AgentRecord>,
 ) -> Result<(String, String, PathBuf), TerminalError> {
     let agent = agent.ok_or(TerminalError::InvalidRequest)?;
-    if agent.is_deleted()
-    {
+    if agent.is_deleted() {
         return Err(TerminalError::InvalidRequest);
     }
-    let agent_cwd = agent.cwd.as_deref()
+    let agent_cwd = agent
+        .cwd
+        .as_deref()
         .ok_or(TerminalError::InvalidRequest)?
         .to_owned();
     let canonical = CanonicalPath::existing(Path::new(&agent_cwd))

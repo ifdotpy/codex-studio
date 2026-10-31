@@ -243,7 +243,10 @@ pub(crate) fn guest_request(
         );
         params.insert(
             "cwd".into(),
-            args.get("cwd").cloned().or_else(|| actor_cwd.map(|cwd| json!(cwd))).unwrap_or(Value::Null),
+            args.get("cwd")
+                .cloned()
+                .or_else(|| actor_cwd.map(|cwd| json!(cwd)))
+                .unwrap_or(Value::Null),
         );
         params.insert("timeoutSeconds".into(), timeout);
         params.insert("operationId".into(), json!(identity));

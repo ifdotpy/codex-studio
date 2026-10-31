@@ -20,6 +20,7 @@ enum Publication {
     Costs,
     SessionCosts(Option<String>),
     AgentRows(Vec<i64>),
+    AgentRowsFull,
     Desktop,
 }
 
@@ -89,6 +90,31 @@ where
     }
 }
 
+fn watch_account_changes(
+    signal: &studio_runtime_services::account_driver::AccountChangeSignal,
+    sender: mpsc::UnboundedSender<Publication>,
+) {
+    let mut changes = signal.subscribe();
+    let mut registry = signal.subscribe_registry();
+    let session_sender = sender.clone();
+    tokio::spawn(async move {
+        while changes.changed().await.is_ok() {
+            for publication in [Publication::Accounts, Publication::Costs] {
+                if session_sender.send(publication).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+    tokio::spawn(async move {
+        while registry.changed().await.is_ok() {
+            if sender.send(Publication::SessionCosts(None)).is_err() {
+                return;
+            }
+        }
+    });
+}
+
 /// One ordered writer owns the durable summaries for this HTTP workspace.
 /// Source observers only enqueue; filesystem reads remain outside SQL callbacks.
 pub(crate) async fn start(state: &HttpState) -> Result<(), StoreError> {
@@ -120,7 +146,7 @@ where
     store.add_table_row_change_observer(ObservedTable::Agents, move |change| {
         let _queued = agents.send(match change {
             studio_runtime_store::TableChange::Rows(rows) => Publication::AgentRows(rows.to_vec()),
-            studio_runtime_store::TableChange::Full => Publication::SessionCosts(None),
+            studio_runtime_store::TableChange::Full => Publication::AgentRowsFull,
         });
     });
     let analytics = sender.clone();
@@ -135,21 +161,7 @@ where
         }
     });
     if let Some(driver) = &state.account_driver {
-        let mut changes = driver.change_signal().subscribe();
-        let sender = sender.clone();
-        runtime.spawn(async move {
-            while changes.changed().await.is_ok() {
-                for publication in [
-                    Publication::Accounts,
-                    Publication::Costs,
-                    Publication::SessionCosts(None),
-                ] {
-                    if sender.send(publication).is_err() {
-                        return;
-                    }
-                }
-            }
-        });
+        watch_account_changes(&driver.change_signal(), sender.clone());
     }
     let mut auth = studio_runtime_services::account_driver::auth_status_changes();
     let auth_sender = sender.clone();
@@ -175,6 +187,7 @@ where
                         Publication::Desktop,
                         Publication::Costs,
                         Publication::SessionCosts(None),
+                        Publication::AgentRowsFull,
                     ] {
                         let _queued = source_sender.send(publication);
                     }
@@ -209,6 +222,7 @@ where
             }
             let mut roots = BTreeSet::new();
             let mut full = pending.contains(&Publication::SessionCosts(None));
+            let mut rescan_agents = false;
             for publication in pending {
                 let result = match publication {
                     Publication::Accounts => publish_accounts(&state).await,
@@ -218,6 +232,11 @@ where
                         Ok(())
                     }
                     Publication::SessionCosts(None) => Ok(()),
+                    Publication::AgentRowsFull => {
+                        full = true;
+                        rescan_agents = true;
+                        Ok(())
+                    }
                     Publication::AgentRows(rows) => {
                         match changed_agent_roots(&store, &mut agent_roots, rows).await {
                             Ok(changed) => {
@@ -225,6 +244,7 @@ where
                             }
                             Err(error) => {
                                 full = true;
+                                rescan_agents = true;
                                 eprintln!("Could not resolve changed cost roots: {error}");
                             }
                         }
@@ -239,11 +259,13 @@ where
             if full || !roots.is_empty() {
                 let _refresh = pricing.request();
             }
-            let result = if full {
+            if rescan_agents {
                 match read_agent_roots(&store).await {
                     Ok(current) => agent_roots = current,
                     Err(error) => eprintln!("Could not rebuild cost root identities: {error}"),
                 }
+            }
+            let result = if full {
                 publish_session_roots(&state, None, pricing.readiness()).await
             } else if !roots.is_empty() {
                 publish_session_roots(&state, Some(roots), pricing.readiness()).await
@@ -364,14 +386,47 @@ async fn replace(
     write_entities(store, collection, rows, None).await
 }
 
-async fn read_agent_roots(store: &Arc<RuntimeStore>) -> Result<BTreeMap<i64, String>, StoreError> {
+#[derive(Clone, Debug, PartialEq)]
+struct AgentCostSource {
+    id: String,
+    root: String,
+    deleted: bool,
+    fields: Option<AgentCostFields>,
+}
+
+#[derive(Clone, Debug, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct AgentCostFields {
+    #[serde(default)]
+    is_lead: Option<bool>,
+    #[serde(flatten)]
+    member: studio_runtime_store::cost_aggregate::CostMember,
+}
+
+fn agent_cost_source(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<AgentCostSource> {
+    let record: String = row.get(offset + 3)?;
+    Ok(AgentCostSource {
+        id: row.get(offset)?,
+        root: row.get(offset + 1)?,
+        deleted: row.get(offset + 2)?,
+        // Unknown legacy records must still trigger conservative refreshes.
+        fields: serde_json::from_str(&record).ok(),
+    })
+}
+
+const AGENT_ROOTS_SQL: &str =
+    "SELECT rowid,id,COALESCE(root_id,id),deleted_at IS NOT NULL,record FROM runtime_agents";
+
+async fn read_agent_roots(
+    store: &Arc<RuntimeStore>,
+) -> Result<BTreeMap<i64, AgentCostSource>, StoreError> {
+    #[cfg(test)]
+    tests::record_agent_root_read(store.root());
     store
         .read_async("bounded-entities/agent-roots", |tx| {
-            let mut statement = tx.prepare(
-                "SELECT rowid, COALESCE(json_extract(record,'$.rootId'),id) FROM runtime_agents",
-            )?;
+            let mut statement = tx.prepare(AGENT_ROOTS_SQL)?;
             Ok(statement
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .query_map([], |row| Ok((row.get(0)?, agent_cost_source(row, 1)?)))?
                 .collect::<rusqlite::Result<_>>()?)
         })
         .await
@@ -379,20 +434,30 @@ async fn read_agent_roots(store: &Arc<RuntimeStore>) -> Result<BTreeMap<i64, Str
 
 async fn changed_agent_roots(
     store: &Arc<RuntimeStore>,
-    previous: &mut BTreeMap<i64, String>,
+    previous: &mut BTreeMap<i64, AgentCostSource>,
     rows: Vec<i64>,
 ) -> Result<BTreeSet<String>, StoreError> {
     let current = store.read_async("bounded-entities/changed-agent-roots", move |tx| {
-        let mut statement = tx.prepare("SELECT COALESCE(json_extract(record,'$.rootId'),id) FROM runtime_agents WHERE rowid=?1")?;
-        rows.into_iter().map(|rowid| Ok((rowid, statement.query_row([rowid], |row| row.get::<_, String>(0)).optional()?))).collect::<Result<Vec<_>, StoreError>>()
+        let mut statement = tx.prepare("SELECT id,COALESCE(root_id,id),deleted_at IS NOT NULL,record FROM runtime_agents WHERE rowid=?1")?;
+        rows.into_iter().collect::<BTreeSet<_>>().into_iter().map(|rowid| Ok((rowid, statement.query_row([rowid], |row| agent_cost_source(row, 0)).optional()?))).collect::<Result<Vec<_>, StoreError>>()
     }).await?;
     let mut roots = BTreeSet::new();
     for (rowid, root) in current {
-        if let Some(old) = previous.remove(&rowid) {
-            roots.insert(old);
+        let old = previous.remove(&rowid);
+        let unchanged = match (&old, &root) {
+            (Some(old), Some(new)) => old.fields.is_some() && old == new,
+            (None, None) => true,
+            _ => false,
+        };
+        if !unchanged {
+            if let Some(old) = &old {
+                roots.insert(old.root.clone());
+            }
+            if let Some(new) = &root {
+                roots.insert(new.root.clone());
+            }
         }
         if let Some(root) = root {
-            roots.insert(root.clone());
             previous.insert(rowid, root);
         }
     }
@@ -772,6 +837,55 @@ async fn publish_desktop(state: &HttpState) -> Result<(), StoreError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn root_scan_does_not_decode_json_in_sql() {
+        assert!(!AGENT_ROOTS_SQL.contains("json_"));
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, root_id TEXT, deleted_at TEXT, record TEXT);\
+             INSERT INTO runtime_agents VALUES('lead','lead',NULL,'{}'),('child','lead',NULL,'{}'),('legacy',NULL,NULL,'{}');",
+        )
+        .expect("agents");
+        let mut statement = db.prepare(AGENT_ROOTS_SQL).expect("root query");
+        let roots = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(2)?))
+            })
+            .expect("root rows")
+            .collect::<rusqlite::Result<BTreeMap<_, _>>>()
+            .expect("root identities");
+        assert_eq!(
+            roots,
+            BTreeMap::from([(1, "lead".into()), (2, "lead".into()), (3, "legacy".into())])
+        );
+    }
+
+    static AGENT_ROOT_READS: std::sync::LazyLock<
+        std::sync::Mutex<BTreeMap<std::path::PathBuf, usize>>,
+    > = std::sync::LazyLock::new(Default::default);
+
+    pub(super) fn record_agent_root_read(root: &std::path::Path) {
+        *AGENT_ROOT_READS
+            .lock()
+            .expect("agent reads")
+            .entry(root.into())
+            .or_default() += 1;
+    }
+
+    #[tokio::test]
+    async fn retained_session_changes_do_not_request_session_costs() {
+        let signal = studio_runtime_services::account_driver::AccountChangeSignal::new();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        watch_account_changes(&signal, sender);
+        signal.publish_session_change();
+        assert_eq!(receiver.recv().await, Some(Publication::Accounts));
+        assert_eq!(receiver.recv().await, Some(Publication::Costs));
+        assert!(
+            matches!(receiver.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "retained session must not request session costs"
+        );
+    }
+
     static COST_READ_WITNESSES: std::sync::LazyLock<
         std::sync::Mutex<
             BTreeMap<std::path::PathBuf, studio_runtime_store::analytics::CostReadWitness>,
@@ -1067,6 +1181,14 @@ mod tests {
             "ready"
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            AGENT_ROOT_READS
+                .lock()
+                .expect("agent reads")
+                .remove(root.path()),
+            Some(1),
+            "pricing-only full publication must not rescan agent records"
+        );
         assert!(
             !tokio::fs::try_exists(root.path().join("account-costs"))
                 .await
@@ -1709,6 +1831,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_cost_agent_changes_only_republish_cost_inputs() {
+        let (_root, state) = state().await;
+        let store = state.store.as_ref().expect("store");
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('a',?1)", [json!({"id":"a","rootId":"a","isLead":true,"provider":"codex","accountKey":"default","threadId":"thread"}).to_string()])?;
+            Ok(())
+        }).await.expect("agent");
+        let mut roots = read_agent_roots(store).await.expect("initial roots");
+        let rowid = *roots.keys().next().expect("rowid");
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.tail','new output') WHERE id='a'", [])?;
+            Ok(())
+        }).await.expect("output update");
+        assert!(
+            changed_agent_roots(store, &mut roots, vec![rowid])
+                .await
+                .expect("roots")
+                .is_empty(),
+            "unrelated output must not trigger a session-cost read"
+        );
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.threadId','new-thread') WHERE id='a'", [])?;
+            Ok(())
+        }).await.expect("thread update");
+        assert_eq!(
+            changed_agent_roots(store, &mut roots, vec![rowid])
+                .await
+                .expect("roots"),
+            BTreeSet::from(["a".into()])
+        );
+        for (path, value) in [
+            ("$.accountKey", json!("other")),
+            ("$.provider", json!("claude")),
+            (
+                "$.accountHistory",
+                json!([{"provider":"codex","accountKey":"old","threadId":"past"}]),
+            ),
+            ("$.isLead", json!(false)),
+            ("$.deletedAt", json!(1)),
+        ] {
+            let value = value.to_string();
+            store.transaction(move |tx| {
+                tx.execute("UPDATE runtime_agents SET record=json_set(record,?1,json(?2)) WHERE id='a'", rusqlite::params![path, value])?;
+                Ok(())
+            }).await.expect("cost field update");
+            assert_eq!(
+                changed_agent_roots(store, &mut roots, vec![rowid, rowid])
+                    .await
+                    .expect("roots"),
+                BTreeSet::from(["a".into()]),
+                "changed {path}"
+            );
+        }
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.rootId','b') WHERE id='a'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("move");
+        assert_eq!(
+            changed_agent_roots(store, &mut roots, vec![rowid])
+                .await
+                .expect("roots"),
+            BTreeSet::from(["a".into(), "b".into()])
+        );
+    }
+
+    #[tokio::test]
     async fn scoped_session_cost_update_and_delete_preserve_an_unrelated_team() {
         let (_root, state) = state().await;
         let store = state.store.as_ref().expect("store");
@@ -1741,7 +1935,7 @@ mod tests {
         let mut roots = read_agent_roots(store).await.expect("root identities");
         let rowid = *roots
             .iter()
-            .find(|(_, root)| *root == "a")
+            .find(|(_, root)| root.root == "a")
             .expect("a rowid")
             .0;
         store
@@ -2071,7 +2265,7 @@ mod tests {
             .expect("pricing directory");
         tokio::fs::write(root.path().join("model-pricing/models-dev-v1.json"),json!({"version":1,"catalog":{"providers":{"openai":{"models":{"gpt-test":{"cost":{"input":1,"output":1}}}},"anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":1}}}}}}}).to_string()).await.expect("pricing source");
         let store = state.store.as_ref().expect("store");
-        store.transaction(|tx|{tx.execute("INSERT INTO runtime_agents(id,record) VALUES('lead',?1)",[json!({"id":"lead","rootId":"lead","epoch":1,"isLead":true,"status":"idle","provider":"codex","model":"gpt-test","cwd":"/fixture","accountKey":"default"}).to_string()])?;Ok(())}).await.expect("chat source");
+        store.transaction(|tx|{tx.execute("INSERT INTO runtime_agents(id,record) VALUES('lead',?1)",[json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,"isLead":true,"status":"idle","provider":"codex","model":"gpt-test","cwd":"/fixture","accountKey":"default"}).to_string()])?;Ok(())}).await.expect("chat source");
         publish_sessions(&state)
             .await
             .expect("session costs published");

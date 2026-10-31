@@ -178,14 +178,14 @@ pub async fn hold_unstarted(
                     || agent.epoch != epoch
                     || agent.auto_wake != Some(true)
                     || agent.in_flight == Some(true)
-                    || agent.extra.contains_key("startAttempt")
+                    || agent.start_attempt.is_some()
                     || agent.is_deleted()
                 {
                     continue;
                 }
                 agent.status = AgentStatus::Failed;
                 agent.extra.insert("error".into(), json!(reason));
-                agent.extra.remove(crate::account_start_gate::WAIT_FIELD);
+                agent.start_wait = None;
                 AgentRepository::put(tx, &agent)?;
                 held.push(agent_id);
             }
@@ -194,6 +194,20 @@ pub async fn hold_unstarted(
         .await?,
     )
 }
+
+const RELEASE_HELD_SQL: &str = "SELECT a.id,json_extract(a.record,'$.epoch'), \
+                   COALESCE(json_extract(a.record,'$.accountKey'),'default'), \
+                   json_extract(a.record,'$.error'), \
+                   (SELECT MIN(e.created) FROM runtime_events e WHERE e.agent=a.id \
+                      AND e.epoch=json_extract(a.record,'$.epoch') AND e.status='pending') AS first \
+                 FROM runtime_agents a \
+                 WHERE a.status='failed' AND a.auto_wake=1 \
+                   AND COALESCE(a.in_flight,0)=0 AND a.deleted_at IS NULL \
+                   AND json_extract(a.record,'$.autoWake')=1 \
+                   AND COALESCE(json_extract(a.record,'$.inFlight'),0)=0 \
+                   AND json_extract(a.record,'$.error') IN (SELECT value FROM json_each(?1)) \
+                   AND first IS NOT NULL \
+                 ORDER BY first,a.rowid";
 
 /// A held turn: its agent, the epoch of its pending input and its hold reason.
 struct Held {
@@ -213,21 +227,7 @@ pub async fn release_held(
     let reasons = json!(hold_reasons()).to_string();
     let held = store
         .read_async("runtime-services/account_auth_gate", move |db| {
-            let mut statement = db.prepare_cached(
-                "SELECT a.id,json_extract(a.record,'$.epoch'), \
-                   COALESCE(json_extract(a.record,'$.accountKey'),'default'), \
-                   json_extract(a.record,'$.error'), \
-                   (SELECT MIN(e.created) FROM runtime_events e WHERE e.agent=a.id \
-                      AND e.epoch=json_extract(a.record,'$.epoch') AND e.status='pending') AS first \
-                 FROM runtime_agents a \
-                 WHERE json_extract(a.record,'$.status')='failed' \
-                   AND json_extract(a.record,'$.autoWake')=1 \
-                   AND COALESCE(json_extract(a.record,'$.inFlight'),0)=0 \
-                   AND json_extract(a.record,'$.deletedAt') IS NULL \
-                   AND json_extract(a.record,'$.error') IN (SELECT value FROM json_each(?1)) \
-                   AND first IS NOT NULL \
-                 ORDER BY first,a.rowid",
-            )?;
+            let mut statement = db.prepare_cached(RELEASE_HELD_SQL)?;
             let rows = statement
                 .query_map([reasons], |row| {
                     Ok((
@@ -311,7 +311,7 @@ pub(crate) async fn release_loop(
     mut shutdown: watch::Receiver<bool>,
     mut pass: impl FnMut(Option<usize>),
 ) {
-    let mut accounts = driver.change_signal().subscribe();
+    let mut accounts = driver.change_signal().subscribe_registry();
     let mut auth = crate::account_driver::auth_status_changes();
     loop {
         pass(None);
@@ -337,6 +337,46 @@ mod tests {
     use crate::account_driver::{AccountStatus, CHANGED_ERROR};
     use serde_json::json;
     use studio_runtime_providers::ProviderKind;
+
+    #[test]
+    fn release_scan_does_not_parse_idle_agent_records() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
+            .unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_events(agent TEXT, epoch INTEGER, status TEXT, created REAL)",
+        )
+        .unwrap();
+        for n in 0..20 {
+            let id = format!("idle-{n}");
+            let raw = json!({"compactions":0,"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default"});
+            db.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, raw.to_string()],
+            )
+            .unwrap();
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        db.create_scalar_function(
+            "json_extract",
+            2,
+            rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC
+                | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
+            move |_| {
+                counted.fetch_add(1, Ordering::Relaxed);
+                Ok(None::<i64>)
+            },
+        )
+        .unwrap();
+        let mut query = db.prepare(super::RELEASE_HELD_SQL).unwrap();
+        assert!(query.query(["[]"]).unwrap().next().unwrap().is_none());
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
 
     #[test]
     fn claude_identity_upgrade_preserves_admission_but_changed_org_holds() {

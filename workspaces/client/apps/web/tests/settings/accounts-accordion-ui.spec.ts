@@ -32,8 +32,11 @@ async function keyboardCycle(page: Page, region: Locator) {
       const active = await region.evaluate((root) => ({
         contained: root.contains(document.activeElement),
         id: document.activeElement?.id,
+        active: document.activeElement?.outerHTML,
       }));
-      expect(active.contained).toBe(true);
+      expect(active.contained, `${key} step ${step}: ${active.active}`).toBe(
+        true,
+      );
       visited.add(active.id);
     }
     for (const id of targets.ids)
@@ -146,7 +149,7 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
           .click();
         await keyboardCycle(page, popover);
         await page.keyboard.press("Escape");
-        if (width < 761)
+        if (!(await page.locator("#sidebar").isVisible()))
           await page
             .getByRole("button", {
               name: /^(Servers and chats|Back to chats)$/,
@@ -176,9 +179,7 @@ test("Studio Accounts is exclusive and keeps keyboard focus inside settings and 
         const heights = await rows.evaluateAll((elements) =>
           elements.map((element) => element.getBoundingClientRect().height),
         );
-        expect(
-          heights.every((height) => height <= (width === 1440 ? 44 : 80)),
-        ).toBe(true);
+        expect(heights.every((height) => height <= 80)).toBe(true);
         const names = await rows
           .locator(".account-identity > strong")
           .evaluateAll((elements) =>

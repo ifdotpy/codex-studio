@@ -167,7 +167,7 @@ pub(crate) fn accept_turn(
         return Ok(());
     }
     ensure_context_tables(tx)?;
-    let current=tx.query_row("SELECT record FROM runtime_context_manifests WHERE agent=?1 AND thread_id=?2 AND compactions=?3",rusqlite::params![context.intent.agent_id,prepared.epoch.0.as_deref().unwrap_or(""),i64::try_from(prepared.epoch.1).map_err(|_|invalid("manifest compactions"))?],|r|r.get::<_,String>(0)).optional()?.map(|s|decode(serde_json::from_str(&s).map_err(|_|invalid("manifest"))?,"manifest")).transpose()?;
+    let current=tx.query_row("SELECT record FROM runtime_context_manifests WHERE agent=?1 AND thread_id=?2 AND compactions=?3",rusqlite::params![context.intent.agent_id,prepared.epoch.0.as_deref().unwrap_or(""),i64::try_from(prepared.epoch.1).map_err(|_|invalid("manifest compactions"))?],|r|r.get::<_,String>(0)).optional()?.map(|s|serde_json::from_str::<turn::ContextManifest>(&s).map_err(|_|invalid("manifest"))).transpose()?;
     let transition = turn::accept(
         prepared,
         &turn::NativeReceipt {

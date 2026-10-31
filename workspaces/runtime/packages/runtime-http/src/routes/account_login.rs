@@ -218,7 +218,46 @@ async fn register(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<RegisterAccountBody>,
 ) -> Result<Json<crate::generated::AccountsResponse>, ApiError> {
-    run_mutation(state, move |driver| driver.register(&body.home)).await
+    let Some(driver) = state.account_driver.clone() else {
+        return Err(runtime_availability("account-driver/runtime"));
+    };
+    let (snapshot, key) = run_account_operation(&state, driver.clone(), move |driver| {
+        driver.register_with_key(&body.home)
+    })
+    .await?;
+    let catalog_state = state.clone();
+    tokio::spawn(async move { start_registered_catalog(&catalog_state, driver, key).await });
+    accounts_response(snapshot)
+}
+
+pub(super) async fn start_registered_catalog(
+    state: &HttpState,
+    driver: Arc<AccountDriver>,
+    key: String,
+) {
+    let Ok(Ok(snapshot)) = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/account_login/catalog_accounts",
+        move || driver.listing_snapshot(),
+    )
+    .await
+    else {
+        return;
+    };
+    state
+        .model_catalog
+        .retain_public_accounts(&snapshot.accounts);
+    state
+        .model_catalog
+        .set_account_session(state.account_session.clone());
+    if let Some((home, provider)) = snapshot
+        .accounts
+        .iter()
+        .find(|row| row.id.as_str() == Some(&key))
+        .and_then(|account| Some((account.home.as_str()?.to_owned(), account.provider_kind()?)))
+    {
+        let catalog = state.model_catalog.clone();
+        let _ = catalog.read(&key, &home, provider, false).await;
+    }
 }
 
 async fn run_mutation(

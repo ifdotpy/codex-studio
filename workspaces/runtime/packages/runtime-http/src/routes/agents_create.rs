@@ -84,6 +84,18 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { .. } => {
                     Ok(())
                 }
+                // A slow or failed refresh does not stop creation while a recent
+                // last good catalog can validate the model.
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
+                | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable
+                    if self
+                        .catalog
+                        .service
+                        .last_good(account_key, home, provider)
+                        .is_some() =>
+                {
+                    Ok(())
+                }
                 studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
                 | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
                     Err(E::Unavailable("provider-session/model-list"))
@@ -219,7 +231,7 @@ mod workspace_admission_tests {
     #[test]
     fn native_parent_admits_native_layr_without_image_metadata() {
         let native = studio_runtime_store::AgentRecord::from_value(
-            serde_json::json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            serde_json::json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"native-parent","rootId":"native-parent","epoch":1,"status":"queued",
                 "workspaceMode":"layr-native","cwd":"/fake/project"
             }),
@@ -238,7 +250,7 @@ mod workspace_admission_tests {
             .expect("runtime store opens");
         let record = |id: &str, epoch: i64, status: &str| {
             studio_runtime_store::AgentRecord::from_value(
-                serde_json::json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                serde_json::json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                     "id":id,"rootId":"lead","epoch":epoch,"status":status,
                     "workspaceMode":"shared","cwd":"/fake/project"
                 }),
@@ -558,32 +570,30 @@ impl RouteCreationCatalog {
                 "provider-session/model-list",
             ))?;
         let provider = account.provider;
-        let (value, fresh_key, fresh_home, fresh_provider, expires_at) =
-            match self.service.read_for_admission(account_key, home, provider) {
-                studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
-                    value,
-                    account_key,
-                    home,
-                    provider,
-                    expires_at,
-                    ..
-                } => (value, account_key, home, provider, expires_at),
-                studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
-                | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
-                    return Err(CreateError::CapabilityUnavailable(
-                        "provider-session/model-list",
-                    ));
-                }
-            };
-        if fresh_key != account_key
-            || fresh_home != home
-            || fresh_provider != provider
-            || expires_at <= std::time::Instant::now()
-        {
-            return Err(CreateError::CapabilityUnavailable(
+        // A fresh catalog decides. When no fresh read exists (a slow or failed
+        // read on a loaded machine), the last good catalog of this account decides
+        // while it is younger than MODEL_CATALOG_LAST_GOOD_MAX_AGE_SECONDS.
+        let fresh = match self.service.read_for_admission(account_key, home, provider) {
+            studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
+                value,
+                account_key: fresh_key,
+                home: fresh_home,
+                provider: fresh_provider,
+                expires_at,
+                ..
+            } => (fresh_key == account_key
+                && fresh_home == home
+                && fresh_provider == provider
+                && expires_at > std::time::Instant::now())
+            .then_some(value),
+            studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
+            | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => None,
+        };
+        let value = fresh
+            .or_else(|| self.service.last_good(account_key, home, provider))
+            .ok_or(CreateError::CapabilityUnavailable(
                 "provider-session/model-list",
-            ));
-        }
+            ))?;
         value
             .data
             .iter()
@@ -1013,7 +1023,8 @@ fn stored_parent_defaults(
     parent_id: &str,
     ignore_stored_worker_account: bool,
 ) -> studio_runtime_store::StoreResult<Option<StoredParentDefaults>> {
-    let Some(parent) = studio_runtime_store::WorkspaceViewsRepository::agent(connection, parent_id)?
+    let Some(parent) =
+        studio_runtime_store::WorkspaceViewsRepository::agent(connection, parent_id)?
     else {
         return Ok(None);
     };
@@ -1021,8 +1032,9 @@ fn stored_parent_defaults(
         parent_account: Some(parent.account_key.clone()),
         ..StoredParentDefaults::default()
     };
-    let root = studio_runtime_store::system_reads::get(connection, "runtime_agents", &parent.root_id.0)?
-        .unwrap_or_else(|| parent.value());
+    let root =
+        studio_runtime_store::system_reads::get(connection, "runtime_agents", &parent.root_id.0)?
+            .unwrap_or_else(|| parent.value());
     if !ignore_stored_worker_account {
         defaults.selected_account = root
             .pointer("/workerDefaults/accountKey")
@@ -1778,7 +1790,7 @@ mod title_http_tests {
                 .await
                 .expect("runtime store opens"),
         );
-        let agent = AgentRecord::from_value(json!({
+        let agent = AgentRecord::from_value(json!({"compactions":0,
             "id":"title-http-agent",
             "rootId":"title-http-agent",
             "epoch":1,

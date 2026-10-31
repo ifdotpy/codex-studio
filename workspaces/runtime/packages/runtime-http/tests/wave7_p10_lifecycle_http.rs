@@ -116,7 +116,7 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
     store
         .transaction(|tx| {
             let agent = AgentRecord::from_value(
-                json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                     "id":"agent", "rootId":"agent", "epoch":4,
                     "status":"running", "isLead":true, "name":"Lead",
                     "cwd":"/fixture", "autoWake":true, "inFlight":true,
@@ -224,8 +224,8 @@ async fn committed_delete_route_succeeds_with_unrelated_failing_cleanup() {
     let cwd = root.path().to_path_buf();
     store.transaction(move |tx| {
         for record in [
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "isLead":true, "autoWake":false}),
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"a-unrelated", "rootId":"a-unrelated", "epoch":1, "status":"paused", "deletedAt":1,
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "isLead":true, "autoWake":false}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"a-unrelated", "rootId":"a-unrelated", "epoch":1, "status":"paused", "deletedAt":1,
                 "cwd":cwd, "worktreeReady":true, "agentArchive":{"at":1,"epoch":1,"cleanupPending":true},
                 "workspaceCleanupIntent":studio_runtime_services::workspace_cleanup_runtime::queued_cleanup_intent("a-unrelated", 1, studio_runtime_services::workspace_cleanup_runtime::CleanupAction::Archive)})
         ] {
@@ -268,7 +268,7 @@ async fn production_delete_route_interrupts_and_settles_active_turn() {
     store
         .transaction(|tx| {
             let agent = AgentRecord::from_value(
-                json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                     "id":"agent", "rootId":"agent", "epoch":4,
                     "status":"running", "isLead":true, "name":"Lead",
                     "cwd":"/fixture", "autoWake":true, "inFlight":true,

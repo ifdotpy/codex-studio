@@ -1,4 +1,5 @@
 //! Family-typed outstanding obligations. Unknown is never a send selector.
+use crate::CachedSql;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::{Serialize, de::DeserializeOwned};
 use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
@@ -50,7 +51,7 @@ impl Outbox {
     }
 
     pub fn put<P: Serialize>(tx: &Transaction<'_>, row: &OutboxRow<P>) -> Result<()> {
-        let changed = tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,payload,created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT(id) DO UPDATE SET status=excluded.status,next_at=excluded.next_at,payload=excluded.payload WHERE kind=excluded.kind AND owner_kind=excluded.owner_kind AND owner_id=excluded.owner_id AND request_id IS excluded.request_id AND signature=excluded.signature AND account IS excluded.account AND stream_id IS excluded.stream_id AND generation IS excluded.generation AND ordinal IS excluded.ordinal AND created=excluded.created", params![row.id,row.kind,row.owner_kind,row.owner_id,row.request_id,row.signature,row.status,row.account,row.stream_id,row.generation,row.ordinal,row.next_at,serde_json::to_string(&row.payload)?,row.created])?;
+        let changed = tx.execute_cached("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,payload,created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT(id) DO UPDATE SET status=excluded.status,next_at=excluded.next_at,payload=excluded.payload WHERE kind=excluded.kind AND owner_kind=excluded.owner_kind AND owner_id=excluded.owner_id AND request_id IS excluded.request_id AND signature=excluded.signature AND account IS excluded.account AND stream_id IS excluded.stream_id AND generation IS excluded.generation AND ordinal IS excluded.ordinal AND created=excluded.created", params![row.id,row.kind,row.owner_kind,row.owner_id,row.request_id,row.signature,row.status,row.account,row.stream_id,row.generation,row.ordinal,row.next_at,serde_json::to_string(&row.payload)?,row.created])?;
         if changed == 0 {
             return Err(OutboxError::Conflict(row.id.clone()));
         }
@@ -217,6 +218,7 @@ mod tests {
             created: 1,
         };
         Outbox::put(&tx, &row).expect("admit");
+        Outbox::put(&tx, &row).expect("repeat exact write");
         assert_eq!(
             Outbox::get::<Input>(&tx, &row.id).expect("get"),
             Some(row.clone())

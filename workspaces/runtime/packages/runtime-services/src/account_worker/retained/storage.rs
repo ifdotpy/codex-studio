@@ -299,9 +299,8 @@ pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<b
                 .all(|key| matches!(key.as_str(), "cwd" | "includeLayers"))
         })
         && call.params.get("cwd").is_some_and(|cwd| {
-            cwd.as_str().is_some_and(|cwd| {
-                agent_record.cwd.as_deref() == Some(cwd)
-            })
+            cwd.as_str()
+                .is_some_and(|cwd| agent_record.cwd.as_deref() == Some(cwd))
         })
         && if let Some(monitor_id) = config_monitor_id {
             tx.query_row(
@@ -422,18 +421,33 @@ fn authorize_retained_monitor_control(
     let Some(record) = studio_runtime_store::MonitorsRepository::get(tx, id)? else {
         return Ok(false);
     };
-    let Some(operation) = record.operation.as_ref() else { return Ok(false); };
-    if record.status != crate::monitor_policy::MonitorStatus::Running || record.agent != actor.agent
-        || record.epoch.get() != actor.epoch || operation.agent.as_str() != actor.agent
-        || operation.epoch.get() != actor.epoch || operation.account_key.as_str() != call.scope.account
-        || vm_actor(tx, &actor.agent)? { return Ok(false); }
-    let Some(original) = monitor_command_scope(tx, id, operation)? else { return Ok(false); };
-    if original.account != call.scope.account || original.generation != call.scope.generation { return Ok(false); }
+    let Some(operation) = record.operation.as_ref() else {
+        return Ok(false);
+    };
+    if record.status != crate::monitor_policy::MonitorStatus::Running
+        || record.agent != actor.agent
+        || record.epoch.get() != actor.epoch
+        || operation.agent.as_str() != actor.agent
+        || operation.epoch.get() != actor.epoch
+        || operation.account_key.as_str() != call.scope.account
+        || vm_actor(tx, &actor.agent)?
+    {
+        return Ok(false);
+    }
+    let Some(original) = monitor_command_scope(tx, id, operation)? else {
+        return Ok(false);
+    };
+    if original.account != call.scope.account || original.generation != call.scope.generation {
+        return Ok(false);
+    }
     if call.method == Method::CommandExecTerminate {
-        return Ok(record.cancel_requested == Some(true) && call.operation == format!("monitor-cancel:{id}")
+        return Ok(record.cancel_requested == Some(true)
+            && call.operation == format!("monitor-cancel:{id}")
             && call.params == json!({"processId":id}));
     }
-    let Some(attempt) = record.input_attempt.as_ref() else { return Ok(false); };
+    let Some(attempt) = record.input_attempt.as_ref() else {
+        return Ok(false);
+    };
     let params_match = match (&attempt.method, call.method) {
         (studio_runtime_schema::monitor_record::MonitorInputMethod::Write(expected), Method::CommandExecWrite) =>
             <studio_runtime_schema::monitor_record::MonitorWriteParams as serde::Deserialize>::deserialize(&call.params).is_ok_and(|actual| actual == *expected),
@@ -441,13 +455,19 @@ fn authorize_retained_monitor_control(
             <studio_runtime_schema::monitor_record::MonitorResizeParams as serde::Deserialize>::deserialize(&call.params).is_ok_and(|actual| actual == *expected),
         _ => false,
     };
-    Ok(current.epoch == actor.epoch && current.auto_wake == Some(true)
+    Ok(current.epoch == actor.epoch
+        && current.auto_wake == Some(true)
         && !current.is_deleted()
-        && current.extra.get("deleted") != Some(&json!(true)) && record.interactive
-        && record.cancel_requested != Some(true) && !attempt.id.is_empty()
+        && current.extra.get("deleted") != Some(&json!(true))
+        && record.interactive
+        && record.cancel_requested != Some(true)
+        && !attempt.id.is_empty()
         && attempt.status == studio_runtime_schema::monitor_record::MonitorInputStatus::Submitted
-        && attempt.operation.agent == operation.agent && attempt.operation.epoch == operation.epoch
-        && attempt.operation.account_key == operation.account_key && attempt.operation.connection_id == operation.connection_id && params_match
+        && attempt.operation.agent == operation.agent
+        && attempt.operation.epoch == operation.epoch
+        && attempt.operation.account_key == operation.account_key
+        && attempt.operation.connection_id == operation.connection_id
+        && params_match
         && call.operation == format!("monitor-input:{id}:{}", attempt.id))
 }
 
@@ -481,9 +501,13 @@ fn authorize_recovered_monitor_cancel(
     else {
         return Ok(false);
     };
-    let Some(operation) = record.operation.as_ref() else { return Ok(false); };
-    Ok(record.agent == actor.agent && record.epoch.get() == actor.epoch
-        && operation.agent.as_str() == actor.agent && operation.epoch.get() == actor.epoch
+    let Some(operation) = record.operation.as_ref() else {
+        return Ok(false);
+    };
+    Ok(record.agent == actor.agent
+        && record.epoch.get() == actor.epoch
+        && operation.agent.as_str() == actor.agent
+        && operation.epoch.get() == actor.epoch
         && operation.account_key.as_str() == call.scope.account
         && record.status == crate::monitor_policy::MonitorStatus::Running
         && record.cancel_requested == Some(true)
@@ -1322,6 +1346,7 @@ mod replay_identity_tests {
         struct Agent<'a> {
             id: &'a str,
             root_id: &'a str,
+            compactions: u64,
             epoch: i64,
             status: &'a str,
             auto_wake: bool,
@@ -1368,6 +1393,7 @@ mod replay_identity_tests {
         let agent = studio_runtime_store::projection_value(&Agent {
             id: "agent-1",
             root_id: "agent-1",
+            compactions: 0,
             epoch: 7,
             status: "waiting",
             auto_wake: true,
@@ -1380,8 +1406,7 @@ mod replay_identity_tests {
         store
             .transaction(move |tx| {
                 AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(agent)?)?;
-                studio_runtime_store::Table::new(tx)
-                    .put(&watch)
+                studio_runtime_store::Table::new(tx).put(&watch)
             })
             .await
             .expect("owners");
@@ -1528,7 +1553,7 @@ mod replay_identity_tests {
             request.method = Method::ClaudeShellPolicy;
             request.operation = "shell-policy:agent-1:tick".into();
             request.params = json!({"threadId":"thread-1","settings":studio_runtime_schema::shell_policy::Settings::default(),"eligible":true,"critical":true});
-            let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default","provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
+            let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
             AgentRepository::put(tx,&agent)?;
             assert!(authorize(tx,&request).expect("eligible handoff"));
             agent.in_flight = Some(true); AgentRepository::put(tx,&agent)?;
@@ -1685,9 +1710,9 @@ mod replay_identity_tests {
         store
             .transaction(|tx| {
                 for record in [
-                    json!({"accountKey":"default","id":"stopped","rootId":"stopped","epoch":8,"status":"paused","autoWake":false,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
-                    json!({"accountKey":"default","id":"deleted","rootId":"deleted","epoch":8,"deletedAt":1,"status":"paused","autoWake":false,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
-                    json!({"accountKey":"default","id":"woken","rootId":"woken","epoch":8,"status":"queued","autoWake":true,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
+                    json!({"compactions":0,"accountKey":"default","id":"stopped","rootId":"stopped","epoch":8,"status":"paused","autoWake":false,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
+                    json!({"compactions":0,"accountKey":"default","id":"deleted","rootId":"deleted","epoch":8,"deletedAt":1,"status":"paused","autoWake":false,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
+                    json!({"compactions":0,"accountKey":"default","id":"woken","rootId":"woken","epoch":8,"status":"queued","autoWake":true,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
                 ] {
                     AgentRepository::put(
                         tx,
@@ -1769,7 +1794,7 @@ mod replay_identity_tests {
         let root = tempfile::tempdir().expect("root");
         let store = database(root.path()).await;
         store.transaction(|tx| {
-            AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default","id":"agent-1","rootId":"agent-1","epoch":9,"deletedAt":1,"status":"interrupted","autoWake":false,"provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
+            AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"agent-1","rootId":"agent-1","epoch":9,"deletedAt":1,"status":"interrupted","autoWake":false,"provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
             let mut watch = monitor_fixture();
             watch.cancel_requested = Some(true);
             watch.reattached_connection_id = Some("new-connection".into());
@@ -1868,7 +1893,7 @@ mod replay_identity_tests {
         let store = database(root.path()).await;
         let cwd = root.path().to_owned();
         store.transaction_with(move |tx| {
-            AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"accountKey":"target","status":"queued","autoWake":true})).expect("actor"))?;
+            AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"accountKey":"target","status":"queued","autoWake":true})).expect("actor"))?;
             let original = Call {operation:"monitor:watch".into(),method:Method::CommandExec,params:json!({"processId":"watch","command":["true"],"cwd":cwd}),..call()};
             let key=original.key();
             let request=RecoveredRequest{ticket:RequestTicket{id:RequestId::String(key.clone()),generation:4,method:Method::CommandExec},operation_id:OperationId(key),thread_id:None,lightweight:true,deadline_ms:60000,unknown:true,remote_id:None};

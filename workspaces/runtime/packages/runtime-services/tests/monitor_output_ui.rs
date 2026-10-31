@@ -249,7 +249,7 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
     let store = RuntimeStore::open(Some(root.path())).await.unwrap();
     let cwd = root.path().to_string_lossy().into_owned();
     let first = store.transaction_with(move |tx| {
-        let owner = AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"owner","rootId":"owner","epoch":2,"cwd":cwd,"autoWake":true,"yoloMode":true,"status":"idle"}))
+        let owner = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"owner","rootId":"owner","epoch":2,"cwd":cwd,"autoWake":true,"yoloMode":true,"status":"idle"}))
             .map_err(studio_runtime_store::StoreError::from)?;
         AgentRepository::put(tx, &owner)?;
         monitor_runtime::create_in_transaction(tx, &monitor_runtime::MonitorAdmission {
@@ -275,7 +275,10 @@ async fn confirmed_restart_is_atomic_replay_safe_and_waits_for_exit() {
         Some(studio_runtime_services::process_controls::digest(&body).as_str())
     );
     assert_eq!(new.command.as_str(), "printf test");
-    assert_eq!(new.output_patterns.as_deref(), Some(["test complete".to_owned()].as_slice()));
+    assert_eq!(
+        new.output_patterns.as_deref(),
+        Some(["test complete".to_owned()].as_slice())
+    );
     let db = store.test_reader().unwrap();
     assert!(!monitor_runtime::restart_ready(&db, &new).unwrap());
     assert!(

@@ -144,9 +144,11 @@ async fn studio_errors_list_studio_caused_endings_and_hide_a_dismissed_row() {
         .transaction(move |tx| {
             AgentRepository::put(
                 tx,
-                &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,
+                &AgentRecord::from_value(
+                    json!({"compactions":0,"id":"owner","rootId":"owner","epoch":0,
                     "status":"waiting","autoWake":true,"cwd":path.to_string_lossy(),
-                    "accountKey":"default","provider":"codex","name":"Fixture worker"}))?,
+                    "accountKey":"default","provider":"codex","name":"Fixture worker"}),
+                )?,
             )?;
             for record in [
                 monitor(
@@ -268,9 +270,11 @@ async fn repeated_failures_of_one_rule_or_command_are_one_row() {
         .transaction(move |tx| {
             AgentRepository::put(
                 tx,
-                &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,
+                &AgentRecord::from_value(
+                    json!({"compactions":0,"id":"owner","rootId":"owner","epoch":0,
                     "status":"idle","autoWake":true,"cwd":owner_path.to_string_lossy(),
-                    "accountKey":"default","provider":"codex","name":"Fixture lead"}))?,
+                    "accountKey":"default","provider":"codex","name":"Fixture lead"}),
+                )?,
             )?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
@@ -482,7 +486,7 @@ async fn liveness_rows_name_each_stuck_state() {
     store
         .transaction(move |tx| {
             let agent = |id: &str, name: &str, fields: Value| {
-                let mut record = json!({"id":id,"rootId":id,"epoch":0,"status":"completed",
+                let mut record = json!({"compactions":0,"id":id,"rootId":id,"epoch":0,"status":"completed",
                     "autoWake":true,"cwd":path.to_string_lossy(),"accountKey":"default",
                     "provider":"codex","name":name});
                 for (key, value) in fields.as_object().unwrap() {
@@ -613,9 +617,11 @@ async fn batch_fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, axum::Router)
         .transaction(move |tx| {
             AgentRepository::put(
                 tx,
-                &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,
+                &AgentRecord::from_value(
+                    json!({"compactions":0,"id":"owner","rootId":"owner","epoch":0,
             "status":"waiting","autoWake":true,"cwd":path.to_string_lossy(),
-            "accountKey":"default","provider":"codex","name":"Fixture worker"}))?,
+            "accountKey":"default","provider":"codex","name":"Fixture worker"}),
+                )?,
             )?;
             for id in ["one", "two", "three"] {
                 let mut record = monitor(
@@ -751,7 +757,9 @@ async fn actual_lost_monitor_settlement_preserves_identity_and_unknown_effects()
         json!({"accountKey":"default","epoch":0,"status":"running","startedAt":now});
     record["command"] = json!("password=command-canary");
     store
-        .transaction(move |tx| Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?))
+        .transaction(move |tx| {
+            Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?)
+        })
         .await
         .unwrap();
     let mut stream = incident_stream(&app).await;
@@ -879,10 +887,13 @@ async fn a_malformed_source_timestamp_uses_observation_time_and_still_streams() 
     let now = studio_runtime_services::event_write::unix_time().unwrap();
     let record = monitor(root.path(), "bad-clock", "running", Value::Null, "", now);
     store
-        .transaction(move |tx| Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?))
+        .transaction(move |tx| {
+            Table::new(tx).put(&serde_json::from_value::<MonitorRecord>(record)?)
+        })
         .await
         .unwrap();
     let mut stream = incident_stream(&app).await;
+    // Recreate legacy malformed evidence with the keys its migration would write.
     store.transaction(|tx| {tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','lost','$.finished',-1) WHERE id='bad-clock'",[])?;Ok(())}).await.unwrap();
     let (_, body) = call(&app, "GET", "/api/studio-errors", None).await;
     let row = body["items"]
@@ -920,7 +931,7 @@ async fn malformed_receipts_agents_and_owners_do_not_poison_startup_or_following
     let (_root, store, app) = batch_fixture().await;
     store.transaction(|tx| {
         for (id,status) in [("bad-agent","failed"),("bad-owner","waiting")] {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",rusqlite::params![id,json!({"accountKey":"default","id":id,"rootId":id,"epoch":"epoch-private-canary","status":status,"provider":"codex","name":"private-name-canary","error":"private-error-canary"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",rusqlite::params![id,json!({"compactions":0,"accountKey":"default","id":id,"rootId":id,"epoch":"epoch-private-canary","status":status,"provider":"codex","name":"private-name-canary","error":"private-error-canary"}).to_string()])?;
         }
         tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.agent','bad-owner') WHERE id='one'",[])?;
         for (id,encoded) in [("http:bad-json","{"),("http:bad-shape","{\"private\":\"receipt-private-canary\"}"),("http:bad-identity","{\"id\":\"wrong-id\",\"kind\":\"http_failure\",\"reason\":\"private\",\"action\":\"details\",\"detail\":\"\",\"subject\":\"\",\"at\":1,\"diagnostics\":{\"context\":{\"source\":\"http\",\"route\":\"GET /api/example\",\"requestId\":null,\"status\":500,\"class\":\"store_data\"},\"certainty\":\"unknown\",\"causes\":[]}}") ] {
@@ -955,10 +966,7 @@ async fn malformed_receipts_agents_and_owners_do_not_poison_startup_or_following
     assert!(!body.to_string().contains("private-name-canary"));
     let streamed =
         streamed_incident(&mut stream, "stored:runtime_agents:bad-agent", "upsert").await;
-    assert_eq!(
-        streamed["value"]["diagnostics"]["causes"][0]["pointer"],
-        ""
-    );
+    assert_eq!(streamed["value"]["diagnostics"]["causes"][0]["pointer"], "");
     let raw: String = store
         .test_reader()
         .unwrap()
@@ -982,6 +990,15 @@ async fn malformed_failed_monitor_fields_remain_candidates_and_stream_after_a_he
         .unwrap();
     let now = studio_runtime_services::event_write::unix_time().unwrap();
     let path = root.path().to_path_buf();
+    for (field, invalid) in [
+        ("status", json!("unknown")),
+        ("created", json!(-1)),
+        ("exitCode", json!("invalid")),
+    ] {
+        let mut record = monitor(&path, "new-invalid", "running", Value::Null, "", now);
+        record[field] = invalid;
+        assert!(serde_json::from_value::<MonitorRecord>(record).is_err());
+    }
     store
         .transaction(move |tx| {
             for id in [
@@ -1006,6 +1023,7 @@ async fn malformed_failed_monitor_fields_remain_candidates_and_stream_after_a_he
         .await
         .unwrap();
     let mut stream = incident_stream(&app).await;
+    // These retained records and their keys match the legacy migration.
     store.transaction(|tx| {
         tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','failed','$.exitCode','exit-private-canary') WHERE id='bad-exit'",[])?;
         tx.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','failed','$.exitCode',json('{\"private\":\"exit-private-canary\"}')) WHERE id='object-exit'",[])?;
@@ -1019,7 +1037,10 @@ async fn malformed_failed_monitor_fields_remain_candidates_and_stream_after_a_he
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.name','Healthy following source') WHERE id='owner'",[])?;
         Ok(())
     }).await;
-    assert!(following.is_err(), "strict monitor projection rejects malformed retained rows");
+    assert!(
+        following.is_err(),
+        "strict monitor projection rejects malformed retained rows"
+    );
     let (_, body) = call(&app, "GET", "/api/studio-errors", None).await;
     for id in [
         "bad-exit",
@@ -1073,7 +1094,7 @@ async fn a_submitted_provider_rejection_cannot_spoof_not_sent_certainty_with_err
         .unwrap();
     let now = studio_runtime_services::event_write::unix_time().unwrap();
     store.transaction(move|tx| {
-        AgentRepository::put(tx,&AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,"status":"starting","autoWake":true,"inFlight":true,"turnEpoch":0,"error":null,"provider":"codex","name":"Worker","accountKey":"default","threadId":"thread","startAttempt":{"id":"start","epoch":0,"submitted":true,"activeAtReservation":false,"accountKey":"default","threadId":"thread","events":["submitted-input"],"connectionGeneration":1,"requestTicket":"ticket","created":now}}))?)?;
+        AgentRepository::put(tx,&AgentRecord::from_value(json!({"compactions":0,"id":"owner","rootId":"owner","epoch":0,"status":"starting","autoWake":true,"inFlight":true,"turnEpoch":0,"error":null,"provider":"codex","name":"Worker","accountKey":"default","threadId":"thread","startAttempt":{"id":"start","epoch":0,"submitted":true,"activeAtReservation":false,"accountKey":"default","threadId":"thread","events":["submitted-input"],"connectionGeneration":1,"requestTicket":"ticket","created":now}}))?)?;
         tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('submitted-input','owner','user','Exact input','dispatching',?1,0)",[now])?;
         tx.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES('start','run',?1)",[json!({"id":"start","epoch":0,"runId":"run","events":["submitted-input"],"submission":"accepted"}).to_string()])?;
         assert!(studio_runtime_store::SchedulerRepository::settle_start_rejected_provider(tx,"owner",0,"start","ticket","default",1,"thread",json!({"message":studio_runtime_schema::shared_values::PROVIDER_START_NOT_SENT_ERROR}))?);
@@ -1111,7 +1132,7 @@ async fn review_completed_turn_identity_survives_dismissal_and_the_next_real_set
         ("second-attempt", "turn-two"),
     ] {
         store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,"status":"running","autoWake":true,"inFlight":true,"turnId":turn,"turnEpoch":0,"error":null,"provider":"codex","name":"Worker","accountKey":"default","threadId":"thread","startAttempt":{"id":attempt,"epoch":0,"submitted":true,"turnId":turn,"observedTurnId":turn,"accountKey":"default","threadId":"thread","events":[attempt],"connectionGeneration":1,"requestTicket":attempt}}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"id":"owner","rootId":"owner","epoch":0,"status":"running","autoWake":true,"inFlight":true,"turnId":turn,"turnEpoch":0,"error":null,"provider":"codex","name":"Worker","accountKey":"default","threadId":"thread","startAttempt":{"id":attempt,"epoch":0,"submitted":true,"turnId":turn,"observedTurnId":turn,"accountKey":"default","threadId":"thread","events":[attempt],"connectionGeneration":1,"requestTicket":attempt}}))?)?;
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,'owner','user','Exact turn input','dispatching',1,0)",[attempt])?;
             let error=json!({"message":"provider-private-canary"});
             assert!(studio_runtime_store::SchedulerRepository::settle_terminal(tx,"owner",0,attempt,turn,studio_runtime_store::AgentStatus::Failed,Some(error.clone()),"failed",Some(&error),&[])?);

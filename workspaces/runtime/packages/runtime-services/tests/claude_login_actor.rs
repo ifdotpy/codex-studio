@@ -93,7 +93,7 @@ async fn auth_repair_regression_post_login_allows_only_fresh_safe_continuation()
     let key = account.clone();
     store.transaction(move |tx| {
         for id in ["auth", "stopped", "active", "restart", "unrelated", "deleted", "workspace"] {
-            let mut value = json!({
+            let mut value = json!({"compactions":0,
                 "id":id,"rootId":id,"epoch":1,"status":"failed","isLead":true,
                 "provider":"claude","accountKey":key,"threadId":format!("thread-{id}"),
                 "model":"claude-opus-4-6","cwd":"/fixture","autoWake":true,"inFlight":false,

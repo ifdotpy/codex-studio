@@ -880,7 +880,7 @@ mod tests {
         } else {
             "account-fixture"
         };
-        let agent = json!({"id":"agent-fixture","rootId":"agent-fixture","isLead":true,"epoch":epoch,"status":"idle","name":"New chat","needsTitle":true,"provider":provider,"model":model,"accountKey":account});
+        let agent = json!({"compactions":0,"id":"agent-fixture","rootId":"agent-fixture","isLead":true,"epoch":epoch,"status":"idle","name":"New chat","needsTitle":true,"provider":provider,"model":model,"accountKey":account});
         store
             .transaction(move |tx| {
                 tx.execute(

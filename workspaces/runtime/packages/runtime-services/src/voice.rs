@@ -222,10 +222,9 @@ pub async fn speak(request: SpeakRequest) -> Result<Value, provider::VoiceProvid
             move |connection| -> Result<Option<String>, VoiceError> {
                 let agent =
                     AgentRepository::get(connection, &AgentId::from(agent_for_check.as_str()))?;
-                let Some(agent) = agent.filter(|agent| {
-                    agent.is_lead == Some(true)
-                        && !agent.is_deleted()
-                }) else {
+                let Some(agent) =
+                    agent.filter(|agent| agent.is_lead == Some(true) && !agent.is_deleted())
+                else {
                     return Err(VoiceError::InvalidRequest(
                         "Voice is available in an orchestrator chat only",
                     ));
@@ -396,13 +395,11 @@ pub async fn approvals(store: &RuntimeStore, agent_id: &str) -> Result<Value, Vo
     validate_agent(agent, agent_id)?;
     let mut requests = Vec::new();
     for row in rows {
-        if row.agent() == Some(agent_id)
-            && row.status() == Some("pending")
-            && row
-                .method()
-                .is_some_and(|method| APPROVAL_METHODS.contains(&method))
+        if row.agent == agent_id
+            && row.status == studio_runtime_schema::persistence::RequestCardStatus::Pending
+            && APPROVAL_METHODS.contains(&row.method.as_str())
         {
-            requests.push(row.into_value());
+            requests.push(row);
         }
     }
     Ok(json!({"requests": requests}))

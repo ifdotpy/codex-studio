@@ -18,7 +18,7 @@ async fn bridge_startup_recovers_transfer_phases_before_exposing_workers() {
         .transaction(|tx| {
             for id in ["lead", "submitted", "lazy-submitted", "interrupting"] {
                 let row = AgentRecord::from_value(
-                    json!({"id":id,"rootId":"lead","epoch":1,"status":"idle",
+                    json!({"compactions":0,"id":id,"rootId":"lead","epoch":1,"status":"idle",
                 "provider":"codex","accountKey":"source","isLead":id=="lead"}),
                 )?;
                 AgentRepository::put(tx, &row)?;

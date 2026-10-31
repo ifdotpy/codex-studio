@@ -24,7 +24,11 @@ pub(crate) struct Observation {
 }
 
 #[cfg(test)]
-impl Observation { pub fn output_events_is_empty(&self) -> bool { self.output_events.is_empty() } }
+impl Observation {
+    pub fn output_events_is_empty(&self) -> bool {
+        self.output_events.is_empty()
+    }
+}
 
 pub(crate) async fn read(
     store: &RuntimeStore,
@@ -104,7 +108,15 @@ fn read_in(
     };
     if deadline.is_some() && !terminal && !after_sequence.is_some_and(|initial| sequence > initial)
     {
-        return Ok((Observation { record, output_events: vec![], wait_expired: deadline.is_some_and(|end| tokio::time::Instant::now() >= end) }, sequence, terminal));
+        return Ok((
+            Observation {
+                record,
+                output_events: vec![],
+                wait_expired: deadline.is_some_and(|end| tokio::time::Instant::now() >= end),
+            },
+            sequence,
+            terminal,
+        ));
     }
     let mut events = Vec::new();
     for id in record.output_event_ids.as_deref().unwrap_or_default() {
@@ -118,10 +130,22 @@ fn read_in(
             .map_err(StoreError::from)?;
         if let Some((status, text)) = event {
             let payload = serde_json::from_str(&text).map_err(StoreError::from)?;
-            events.push(ObservedOutputEvent { payload, id: id.clone(), status });
+            events.push(ObservedOutputEvent {
+                payload,
+                id: id.clone(),
+                status,
+            });
         }
     }
-    Ok((Observation { record, output_events: events, wait_expired: false }, sequence, terminal))
+    Ok((
+        Observation {
+            record,
+            output_events: events,
+            wait_expired: false,
+        },
+        sequence,
+        terminal,
+    ))
 }
 
 #[cfg(test)]
@@ -129,7 +153,9 @@ mod tests {
     use super::*;
     fn complete(fields: Value) -> Value {
         let mut record = json!({"id":"watch","agent":"owner","epoch":1,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
-        let Value::Object(fields) = fields else { panic!("monitor fixture must be an object") };
+        let Value::Object(fields) = fields else {
+            panic!("monitor fixture must be an object")
+        };
         record.as_object_mut().unwrap().extend(fields);
         record
     }
@@ -138,7 +164,7 @@ mod tests {
     #[test]
     fn rejects_invalid_observation_fields_and_accepts_legacy_sequence() {
         let db = rusqlite::Connection::open_in_memory().expect("database");
-        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_events(id TEXT,agent TEXT,status TEXT,text TEXT);").expect("schema");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);CREATE TABLE runtime_events(id TEXT,agent TEXT,status TEXT,text TEXT);").expect("schema");
         db.execute(
             "INSERT INTO runtime_agents VALUES('owner',?1)",
             [json!({"epoch":1,"autoWake":true}).to_string()],
@@ -151,7 +177,7 @@ mod tests {
         ] {
             let record = complete(json!({"status":status,"outputEventSequence":sequence}));
             db.execute(
-                "INSERT OR REPLACE INTO runtime_monitors VALUES('watch',?1)",
+                "INSERT OR REPLACE INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
                 [record.to_string()],
             )
             .unwrap();
@@ -159,14 +185,14 @@ mod tests {
         }
         let missing = json!({"agent":"owner","epoch":1});
         db.execute(
-            "INSERT OR REPLACE INTO runtime_monitors VALUES('watch',?1)",
+            "INSERT OR REPLACE INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
             [missing.to_string()],
         )
         .unwrap();
         assert!(read_in(&db, "owner", 1, "default", "watch", None, None).is_err());
         let record = complete(json!({"status":"running"}));
         db.execute(
-            "INSERT OR REPLACE INTO runtime_monitors VALUES('watch',?1)",
+            "INSERT OR REPLACE INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
             [record.to_string()],
         )
         .unwrap();
@@ -176,7 +202,7 @@ mod tests {
         assert!(!terminal);
         let record = complete(json!({"status":"completed"}));
         db.execute(
-            "INSERT OR REPLACE INTO runtime_monitors VALUES('watch',?1)",
+            "INSERT OR REPLACE INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
             [record.to_string()],
         )
         .unwrap();
@@ -189,13 +215,17 @@ mod tests {
     #[test]
     fn unchanged_wait_does_not_select_events() {
         let db = rusqlite::Connection::open_in_memory().expect("database");
-        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_events(id TEXT,agent TEXT,status TEXT,text TEXT);").expect("schema");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);CREATE TABLE runtime_events(id TEXT,agent TEXT,status TEXT,text TEXT);").expect("schema");
         db.execute(
             "INSERT INTO runtime_agents VALUES('owner',?1)",
             [json!({"epoch":1,"autoWake":true}).to_string()],
         )
         .unwrap();
-        db.execute("INSERT INTO runtime_monitors VALUES('watch',?1)", [complete(json!({"outputEventSequence":1,"outputEventIds":["event"]})).to_string()]).unwrap();
+        db.execute(
+            "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+            [complete(json!({"outputEventSequence":1,"outputEventIds":["event"]})).to_string()],
+        )
+        .unwrap();
         db.execute(
             r#"INSERT INTO runtime_events VALUES('event','owner','sent','{"monitorId":"watch","epoch":1,"sequence":1,"matches":[],"final":false}')"#,
             [],
@@ -225,13 +255,13 @@ mod tests {
     #[test]
     fn transferred_monitor_output_belongs_to_its_current_actor_not_its_old_model_account() {
         let db = rusqlite::Connection::open_in_memory().expect("database");
-        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_events(id TEXT,agent TEXT,status TEXT,text TEXT);").expect("schema");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);CREATE TABLE runtime_events(id TEXT,agent TEXT,status TEXT,text TEXT);").expect("schema");
         db.execute(
             "INSERT INTO runtime_agents VALUES('owner',?1)",
             [json!({"id":"owner","epoch":1,"autoWake":true,"accountKey":"target"}).to_string()],
         )
         .expect("transferred owner");
-        db.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",[complete(json!({"tail":"kept output","operation":{"agent":"owner","epoch":1,"accountKey":"source","connectionId":"original"}})).to_string()]).expect("original source monitor");
+        db.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",[complete(json!({"tail":"kept output","operation":{"agent":"owner","epoch":1,"accountKey":"source","connectionId":"original"}})).to_string()]).expect("original source monitor");
         let (record, _, terminal) = read_in(&db, "owner", 1, "target", "watch", None, None)
             .expect("read the existing process after transfer");
         assert_eq!(record.record.tail.as_str(), "kept output");

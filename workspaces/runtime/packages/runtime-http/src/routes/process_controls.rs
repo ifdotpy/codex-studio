@@ -254,7 +254,11 @@ async fn execute(
     let admitted = record.admitted_request.clone();
     let scope = request.scope();
     match &request {
-        ProcessControlRequest::BackgroundCommand { item_id, response_target, .. } => {
+        ProcessControlRequest::BackgroundCommand {
+            item_id,
+            response_target,
+            ..
+        } => {
             let outcome = background_command(
                 &state,
                 response_target,
@@ -276,7 +280,9 @@ async fn execute(
                 outcome,
             }));
         }
-        ProcessControlRequest::StopResponse { response_target, .. } => {
+        ProcessControlRequest::StopResponse {
+            response_target, ..
+        } => {
             let outcome = stop_response(
                 &state,
                 response_target,

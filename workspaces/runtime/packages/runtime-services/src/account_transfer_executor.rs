@@ -329,7 +329,7 @@ mod reconnect_read_tests {
         }
         let expected = saved.clone();
         store.transaction(move |tx| {
-            let agent = studio_runtime_store::AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"member","rootId":"member","epoch":3,
+            let agent = studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"member","rootId":"member","epoch":3,
                 "status":"completed","isLead":true,"autoWake":false,"accountKey":"target","accountTransferId":"move"}))?;
             studio_runtime_store::AgentRepository::put(tx, &agent)?;
             let operation = json!({"id":"move","leadId":"member","targetAccountKey":"target",
@@ -1313,17 +1313,18 @@ impl TransferExecutor for AccountTransferExecutor {
                 .ok_or(TransferError::Requires("provider-session/account-worker"))?;
             let attempt_id = format!("account-transfer:{transfer_id}:{agent_id}");
             let generation = scope.generation;
-            let prepared =
-                Box::pin(crate::account_worker::preparation::prepare_account_transfer_native_thread(
+            let prepared = Box::pin(
+                crate::account_worker::preparation::prepare_account_transfer_native_thread(
                     Arc::clone(&self.store),
                     &self.preparation,
                     agent_id,
                     transfer_id,
                     &attempt_id,
                     generation,
-                ))
-                .await
-                .map_err(|_| TransferError::Refused("Destination thread preparation failed"))?;
+                ),
+            )
+            .await
+            .map_err(|_| TransferError::Refused("Destination thread preparation failed"))?;
             let mut params = prepared.params;
             params["model"] = settings["model"].clone();
             if let Some(config) = params.get_mut("config").and_then(Value::as_object_mut) {
@@ -2338,7 +2339,8 @@ mod retained_executor_tests {
                 .await
                 .expect("test fixture operation succeeds"),
         );
-        let lead = AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":0,
+        let lead = AgentRecord::from_value(
+            json!({"compactions":0,"id":"lead","rootId":"lead","epoch":0,
             "status":"queued","isLead":true,"autoWake":true,"accountKey":"source",
             "provider":"codex","model":"gpt-6-astra","cwd":"/tmp/work","threadId":"source-thread",
             "accountTransfer":{"id":"abde1958-090d-4a79-8516-3780b6469e81","status":"pending",
@@ -2346,7 +2348,8 @@ mod retained_executor_tests {
                 "finishHistory":true,"total":3,"completed":2,"moved":1,"movingNow":0,
                 "nativeHistoryPending":1,"canFinishHistory":false,"interrupted":[],
                 "leftOnSource":[],"blocked":[],"waitingCount":0,"needsAttention":true,
-                "canRetry":true,"waiting":"Waiting for background work or a tool response"}}))
+                "canRetry":true,"waiting":"Waiting for background work or a tool response"}}),
+        )
         .expect("test fixture operation succeeds");
         store
             .transaction_with_error(move |tx| {
@@ -2441,9 +2444,11 @@ mod retained_executor_tests {
                 .await
                 .expect("test fixture operation succeeds"),
         );
-        let lead = AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
+        let lead = AgentRecord::from_value(
+            json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,
             "status":"idle","isLead":true,"accountKey":"source","provider":"codex",
-            "model":"gpt-6-astra","cwd":"/tmp/work","threadId":"source-thread"}))
+            "model":"gpt-6-astra","cwd":"/tmp/work","threadId":"source-thread"}),
+        )
         .expect("test fixture operation succeeds");
         store
             .transaction_with_error(move |tx| {
@@ -2569,9 +2574,11 @@ mod retained_executor_tests {
                 .await
                 .expect("test fixture operation succeeds"),
         );
-        let lead = AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
+        let lead = AgentRecord::from_value(
+            json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,
             "status":"idle","isLead":true,"accountKey":"source","provider":"codex",
-            "model":"gpt-6-astra","cwd":"/tmp/work","threadId":"source-thread"}))
+            "model":"gpt-6-astra","cwd":"/tmp/work","threadId":"source-thread"}),
+        )
         .expect("test fixture operation succeeds");
         store
             .transaction_with_error(move |tx| {
@@ -2709,9 +2716,11 @@ mod retained_executor_tests {
                 .await
                 .expect("test fixture operation succeeds"),
         );
-        let lead = AgentRecord::from_value(json!({"id":"lead","rootId":"lead","epoch":1,
+        let lead = AgentRecord::from_value(
+            json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,
             "status":"idle","isLead":true,"accountKey":"source","provider":"codex",
-            "model":"gpt-6-astra","cwd":cwd,"threadId":"source-thread"}))
+            "model":"gpt-6-astra","cwd":cwd,"threadId":"source-thread"}),
+        )
         .expect("test fixture operation succeeds");
         store
             .transaction_with_error(move |tx| {

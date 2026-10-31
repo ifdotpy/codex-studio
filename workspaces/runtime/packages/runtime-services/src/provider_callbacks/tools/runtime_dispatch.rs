@@ -978,10 +978,22 @@ async fn input_attempt(
     request_id: &str,
 ) -> Result<Option<studio_runtime_schema::monitor_record::MonitorInputAttempt>, Error> {
     let (monitor_id, request_id) = (monitor_id.to_owned(), request_id.to_owned());
-    store.read_async("runtime-services/provider_callbacks/runtime_dispatch", move |connection| {
-        let record = studio_runtime_store::MonitorsRepository::get(connection, &monitor_id)?;
-        Ok(record.and_then(|record| [record.last_input_attempt, record.input_attempt].into_iter().flatten().find(|attempt| attempt.id == request_id)))
-    }).await.map_err(Error::Store)
+    store
+        .read_async(
+            "runtime-services/provider_callbacks/runtime_dispatch",
+            move |connection| {
+                let record =
+                    studio_runtime_store::MonitorsRepository::get(connection, &monitor_id)?;
+                Ok(record.and_then(|record| {
+                    [record.last_input_attempt, record.input_attempt]
+                        .into_iter()
+                        .flatten()
+                        .find(|attempt| attempt.id == request_id)
+                }))
+            },
+        )
+        .await
+        .map_err(Error::Store)
 }
 
 pub(crate) async fn authorize_monitor_input(
@@ -1003,15 +1015,11 @@ pub(crate) fn authorize_monitor_input_in_transaction(
     caller: &Actor,
     monitor_id: &str,
 ) -> Result<(), Error> {
-    let caller_record = studio_runtime_store::system_reads::get(
-        tx,
-        "runtime_agents",
-        caller.record().id.0.as_str(),
-    )?
-    .ok_or(Error::Stale)?;
-    if caller_record.get("epoch").and_then(Value::as_i64) != Some(caller.record().epoch)
-        || caller_record.get("autoWake") != Some(&Value::Bool(true))
-        || studio_runtime_store::truthy(caller_record.get("deletedAt"))
+    let caller_record =
+        studio_runtime_store::AgentRepository::get(tx, &caller.record().id)?.ok_or(Error::Stale)?;
+    if caller_record.epoch != caller.record().epoch
+        || caller_record.auto_wake != Some(true)
+        || caller_record.is_deleted()
     {
         return Err(Error::Stale);
     }
@@ -1031,13 +1039,25 @@ pub(crate) fn authorize_monitor_input_in_transaction(
     Ok(())
 }
 
-pub(crate) fn managed_input_receipt(attempt: &studio_runtime_schema::monitor_record::MonitorInputAttempt) -> DispatchedOperation {
+pub(crate) fn managed_input_receipt(
+    attempt: &studio_runtime_schema::monitor_record::MonitorInputAttempt,
+) -> DispatchedOperation {
     use studio_runtime_schema::monitor_record::MonitorInputStatus;
     match attempt.status {
-        MonitorInputStatus::Acknowledged => DispatchedOperation::Applied(
-            attempt.response.as_ref().map_or_else(|| OperationResult::reply(&()), |response| OperationResult::raw(response.0.clone()))),
-        MonitorInputStatus::Failed => DispatchedOperation::NotSent(OperationResult::reply(&"Monitor input was rejected")),
-        MonitorInputStatus::Submitted | MonitorInputStatus::Uncertain => DispatchedOperation::Unknown(OperationResult::reply(&"Monitor input outcome unknown; do not repeat it")),
+        MonitorInputStatus::Acknowledged => {
+            DispatchedOperation::Applied(attempt.response.as_ref().map_or_else(
+                || OperationResult::reply(&()),
+                |response| OperationResult::raw(response.0.clone()),
+            ))
+        }
+        MonitorInputStatus::Failed => {
+            DispatchedOperation::NotSent(OperationResult::reply(&"Monitor input was rejected"))
+        }
+        MonitorInputStatus::Submitted | MonitorInputStatus::Uncertain => {
+            DispatchedOperation::Unknown(OperationResult::reply(
+                &"Monitor input outcome unknown; do not repeat it",
+            ))
+        }
     }
 }
 
@@ -1145,10 +1165,12 @@ mod tests {
                 .await
                 .expect("store"),
         );
-        let record = studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default",
-            "provider":"codex", "id":"lead", "rootId":"lead", "epoch":1, "status":"running",
-            "isLead":true, "autoWake":true, "cwd":root.path(), "threadId":"thread"
-        }))
+        let record = studio_runtime_store::AgentRecord::from_value(
+            json!({"compactions":0,"accountKey":"default",
+                "provider":"codex", "id":"lead", "rootId":"lead", "epoch":1, "status":"running",
+                "isLead":true, "autoWake":true, "cwd":root.path(), "threadId":"thread"
+            }),
+        )
         .expect("lead");
         let saved = record.clone();
         store
@@ -1157,6 +1179,16 @@ mod tests {
             .expect("seed");
         let actor = crate::managed_host_tools::Actor::from_record(&record.value(), "lead", 1)
             .expect("actor");
+        {
+            let db = store.test_reader().expect("reader");
+            let tx = db.unchecked_transaction().expect("transaction");
+            assert!(matches!(
+                super::authorize_monitor_input_in_transaction(&tx, &actor, "missing"),
+                Err(crate::managed_host_tools::Error::Invalid(
+                    "Unknown monitor in this caller's scope"
+                ))
+            ));
+        }
         let context = crate::provider_callbacks::CallbackContext {
             stream_id: "default".into(),
             agent: "lead".into(),
@@ -1285,7 +1317,9 @@ mod tests {
     #[test]
     fn managed_input_receipts_preserve_written_not_sent_and_unknown() {
         for status in ["acknowledged", "failed", "submitted"] {
-            let wire = format!(r#"{{"id":"stable-input","agent":"owner","epoch":1,"accountKey":"default","connectionId":"connection","created":0,"method":"command/exec/write","params":{{"processId":"watch","deltaBase64":"eA==","closeStdin":false}},"status":"{status}","response":{{"ok":true}}}}"#);
+            let wire = format!(
+                r#"{{"id":"stable-input","agent":"owner","epoch":1,"accountKey":"default","connectionId":"connection","created":0,"method":"command/exec/write","params":{{"processId":"watch","deltaBase64":"eA==","closeStdin":false}},"status":"{status}","response":{{"ok":true}}}}"#
+            );
             let attempt = serde_json::from_str(&wire).unwrap();
             let result = managed_input_receipt(&attempt);
             assert!(matches!(
