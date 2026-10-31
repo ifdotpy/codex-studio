@@ -110,7 +110,8 @@ impl RuntimeStore {
         let archive = Arc::clone(&self.terminal_output);
         let id = id.to_owned();
         blocking_pool::spawn_blocking("terminal-output/start", move || {
-            TerminalsRepository::archive_start(&locked(&archive)?, &id)
+            let connection = locked(&archive)?;
+            TerminalsRepository::archive_start(&connection, &id)
         })
         .await
         .map_err(|_| StoreError::ReadTaskFailed)?
@@ -127,7 +128,8 @@ impl RuntimeStore {
         let archive = Arc::clone(&self.terminal_output);
         let id = id.to_owned();
         blocking_pool::spawn_blocking("terminal-output/chunks", move || {
-            TerminalsRepository::archive_chunks(&locked(&archive)?, &id, start, end, limit)
+            let connection = locked(&archive)?;
+            TerminalsRepository::archive_chunks(&connection, &id, start, end, limit)
         })
         .await
         .map_err(|_| StoreError::ReadTaskFailed)?
@@ -154,7 +156,8 @@ impl RuntimeStore {
     ) -> StoreResult<()> {
         let archive = Arc::clone(&self.terminal_output);
         blocking_pool::spawn_blocking("terminal-output/checkpoint", move || {
-            sqlite_durability::checkpoint(&locked(&archive)?, mode)?;
+            let connection = locked(&archive)?;
+            sqlite_durability::checkpoint(&connection, mode)?;
             Ok(())
         })
         .await
