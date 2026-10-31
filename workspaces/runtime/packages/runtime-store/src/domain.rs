@@ -686,12 +686,10 @@ pub fn read_chat(connection: &Connection, id: &str) -> StoreResult<Option<ChatRo
         .optional()?;
     raw.map(
         |(id, state, status, auto_wake, usage_resume_enabled, mode, turn_epoch)| {
-            let status = match serde_json::from_value::<AgentStatus>(Value::String(status))? {
-                AgentStatus::Other(_) => {
-                    return Err(StoreError::RecordContract("invalid stored chat status"));
-                }
-                known => known,
-            };
+            let status = serde_json::from_value::<AgentStatus>(Value::String(status))?;
+            if matches!(status, AgentStatus::Other(_)) {
+                return Err(StoreError::RecordContract("invalid stored chat status"));
+            }
             let execution_mode = mode
                 .map(|mode| serde_json::from_value(Value::String(mode)))
                 .transpose()?;
