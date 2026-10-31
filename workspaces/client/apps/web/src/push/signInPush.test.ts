@@ -2,12 +2,19 @@ import { describe, expect, it } from "vitest";
 import {
   applicationServerKey,
   deviceName,
+  endpointFingerprint,
   enableSignInPush,
   pushSupported,
+  stopSignInPush,
   subscriptionBody,
 } from "./signInPush";
 
 describe("sign-in alerts through Web Push", () => {
+  it("fingerprints an endpoint without persisting it", async () => {
+    expect(
+      await endpointFingerprint("https://web.push.apple.com/fixture"),
+    ).toBe("88ebf617997e2dc82d3ce799e52579feb916c1c5092aa8292d04f6559b4191fe");
+  });
   it("turns the server key into the bytes that PushManager needs", () => {
     const key = applicationServerKey("BAEC_-8");
     expect([...key]).toEqual([4, 1, 2, 255, 239]);
@@ -62,6 +69,33 @@ describe("sign-in alerts through Web Push", () => {
 });
 
 describe("turning on sign-in push for this device", () => {
+  it("unsubscribes this browser before removing its server record", async () => {
+    const calls: string[] = [];
+    await stopSignInPush(
+      { unsubscribe: async () => (calls.push("unsubscribe"), true) },
+      async () => {
+        calls.push("remove");
+      },
+    );
+    expect(calls).toEqual(["unsubscribe", "remove"]);
+    await stopSignInPush(null, async () => {
+      calls.push("other");
+    });
+    expect(calls).toEqual(["unsubscribe", "remove", "other"]);
+    await expect(
+      stopSignInPush(
+        {
+          unsubscribe: async () => {
+            throw new Error("unavailable");
+          },
+        },
+        async () => {
+          calls.push("unexpected");
+        },
+      ),
+    ).rejects.toThrow("unavailable");
+    expect(calls).not.toContain("unexpected");
+  });
   function registration(old: { unsubscribe: () => Promise<boolean> } | null) {
     const calls: string[] = [];
     const created = {

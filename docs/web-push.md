@@ -37,7 +37,8 @@ The server keeps its files in `<state>/web-push`, folder mode 0700 and file mode
   first use. It never goes into the repository, a log or an API answer; the API returns only
   the public key.
 - `subscriptions.json`: the endpoint, the device keys, the device name and the creation time
-  of each subscription. The API returns only the ID, the device name and the time.
+  of each subscription. The API returns the ID, device name, time and a SHA-256 fingerprint
+  of the endpoint. The browser matches that fingerprint to its own subscription in memory.
 - `sent.json`: which alerts each open card already got, so a restart sends no second alert.
   A card that is no longer pending leaves the record.
 
@@ -53,6 +54,7 @@ on again on that device.
 - `POST /api/web-push/subscriptions`: subscribe with `endpoint`, `p256dh`, `auth` and `device`.
   The endpoint must be https, and the keys must be a P-256 point and 16 bytes.
 - `POST /api/web-push/remove`: stop the pushes of one device by its `id`.
+  When stopping the current device, the browser unsubscribes before this request.
 
 ## Tests
 

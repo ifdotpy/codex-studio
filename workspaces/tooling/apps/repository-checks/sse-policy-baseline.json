@@ -304,18 +304,6 @@
     "callee": "new NativeServerCredentials().fetch"
   },
   {
-    "file": "push/signInPush.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "push/signInPush.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "push/signInPush.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
     "file": "servers/MultiServerApp.tsx",
     "callee": "localStorage.getItem"
   },

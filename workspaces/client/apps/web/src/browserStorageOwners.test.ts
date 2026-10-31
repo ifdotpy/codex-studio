@@ -17,8 +17,6 @@ const allowed: Record<string, string> = {
     "request identity of a pending MCP action, kept for a lost reply",
   "components/shell/MonitorRestart.tsx":
     "request body of a pending monitor restart, kept for a lost reply",
-  "push/signInPush.ts":
-    "Web Push subscription id of this device for each server key",
   "servers/MultiServerApp.tsx": "selected server and Studio preferences",
   "servers/ServerManager.tsx":
     "local server alias and the pending pairing attempt",

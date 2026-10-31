@@ -4,25 +4,22 @@
  * sign-in card waits for the person. The subscription keys go only to the chat's server.
  */
 
-/** The local storage key of this device's subscription ID, per server key. */
-const PUSH_SUBSCRIPTION_KEY = "studio-sign-in-push:";
-
-/** The server's subscription ID of this device, if this device subscribed. */
-export function devicePushId(publicKey: string): string | null {
-  try {
-    return localStorage.getItem(PUSH_SUBSCRIPTION_KEY + publicKey);
-  } catch {
-    return null;
-  }
+export async function endpointFingerprint(endpoint: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(endpoint),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
-export function rememberDevicePushId(publicKey: string, id: string | null) {
-  try {
-    if (id) localStorage.setItem(PUSH_SUBSCRIPTION_KEY + publicKey, id);
-    else localStorage.removeItem(PUSH_SUBSCRIPTION_KEY + publicKey);
-  } catch {
-    // Without storage the device list still shows and stops every device.
-  }
+export async function stopSignInPush(
+  subscription: { unsubscribe(): Promise<boolean> } | null,
+  remove: () => Promise<unknown>,
+) {
+  await subscription?.unsubscribe();
+  await remove();
 }
 
 export function pushSupported(scope: typeof globalThis = globalThis) {
