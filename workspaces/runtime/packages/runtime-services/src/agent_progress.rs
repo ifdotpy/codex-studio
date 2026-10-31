@@ -564,4 +564,29 @@ mod tests {
         }
         eprintln!("1000 monitor output transactions: {:?}", start.elapsed());
     }
+
+    #[tokio::test]
+    #[ignore = "focused changing-line output measurement"]
+    async fn monitor_output_changing_line_measurement() {
+        use studio_runtime_store::{
+            AgentRecord, AgentRepository, MonitorRecord, RuntimeStore, Table,
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            let actor = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"worker","epoch":0,"status":"running","autoWake":true})).unwrap();
+            AgentRepository::put(tx, &actor)?;
+            let record: MonitorRecord = serde_json::from_str(r#"{"id":"m","agent":"worker","epoch":0,"status":"running","command":"test","created":5,"tail":"","requestId":"request","activityAt":5,"activityGeneration":0,"bytes":0,"cwd":"/tmp","interactive":false,"livenessCommand":"","log":"/tmp/m.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"timeout_ms":3600000,"wakeOn":"exit","operation":{"agent":"worker","epoch":0,"accountKey":"default","connectionId":"connection"}}"#).unwrap();
+            Table::new(tx).put(&record)?;
+            let start = std::time::Instant::now();
+            for index in 0..10_000 {
+                let (before, actor) = crate::monitor_runtime::snapshot(tx, "m")?;
+                let chunk: &[u8] = if index % 2 == 0 { b"output one\n" } else { b"output two\n" };
+                let decision = crate::monitor_policy::output(&before, before.operation().unwrap(), chunk, 20.0)?;
+                crate::monitor_runtime::apply(tx, &before, &actor, &decision, 20.0)?;
+            }
+            eprintln!("10000 changing-line output applies: {:?}", start.elapsed());
+            Ok::<(), crate::monitor_policy::MonitorError>(())
+        }).await.unwrap();
+    }
 }
