@@ -1,9 +1,10 @@
-import type { RxConflictHandler, RxReplicationWriteToMasterRow } from "rxdb";
+import type { ConflictHandler, PushRow } from "./draftReplication";
+import type { Row } from "./localCollection";
 import type { SyncDocument } from "./client";
 import { encodeDraftPayload } from "./draftPayload.ts";
 import type { DraftVersion } from "../generated/rustOwned";
 // Keep every concurrent text, including two tabs that share the same device branch.
-export const draftConflictHandler: RxConflictHandler<SyncDocument> = {
+export const draftConflictHandler: ConflictHandler = {
   isEqual: (a, b) => a._deleted === b._deleted && a.payload === b.payload,
   resolve: async ({ realMasterState, newDocumentState }) => {
     const master: DraftVersion = JSON.parse(realMasterState.payload),
@@ -37,7 +38,7 @@ export function createDraftConflictHandler() {
     { latest: Version; previous?: Version | undefined }
   >();
   const same = draftConflictHandler.isEqual;
-  const conflictHandler: RxConflictHandler<SyncDocument> = {
+  const conflictHandler: ConflictHandler = {
     ...draftConflictHandler,
     isEqual: (a, b, context) => {
       if (same(a, b, context)) return true;
@@ -50,10 +51,7 @@ export function createDraftConflictHandler() {
       );
     },
   };
-  const acknowledge = (
-    rows: readonly RxReplicationWriteToMasterRow<SyncDocument>[],
-    conflicts: readonly SyncDocument[],
-  ) => {
+  const acknowledge = (rows: readonly PushRow[], conflicts: readonly Row[]) => {
     const conflicted = new Set(conflicts.map((row) => row.id));
     for (const { newDocumentState: row } of rows) {
       if (conflicted.has(row.id)) continue;

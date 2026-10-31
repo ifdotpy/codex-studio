@@ -471,19 +471,19 @@ impl ProductionLifecyclePorts {
         let pending = self
             .store
             .read_async("runtime-services/lifecycle_effects", |tx| {
-                let mut statement = tx.prepare(
-                    "SELECT id,server,body FROM runtime_server_outbox \
-                 WHERE state IN ('queued','running') ORDER BY rowid",
-                )?;
-                let rows = statement.query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                })?;
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(studio_runtime_store::StoreError::from)
+                crate::server_outbox::all(tx)
+                    .map(|entries| {
+                        entries
+                            .into_iter()
+                            .map(|entry| (entry.request_id, entry.target, entry.record.body))
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|error| match error {
+                        crate::multi_server_auth::AccessError::Store(error) => error,
+                        other => {
+                            studio_runtime_store::StoreError::SchemaMismatch(other.to_string())
+                        }
+                    })
             })
             .await?;
         let driver = OrchestrationDriver::new(

@@ -3,6 +3,9 @@ use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
+use studio_runtime_schema::persistence::OutboxStatus;
+
+use super::remote_outbox::{RemoteEffect, RemoteOutbox};
 
 const MAX_RECORD_BYTES: usize = 512 * 1024;
 
@@ -66,9 +69,7 @@ impl FederationMessagingRepository {
                 "SELECT record FROM runtime_federation_inbox WHERE message_id=?1 AND peer_id=?2"
                     .to_owned()
             }
-            FederationTable::Outbox => {
-                "SELECT record FROM runtime_federation_outbox WHERE id=?1 AND peer_id=?2".to_owned()
-            }
+            FederationTable::Outbox => return Self::outbox_record(db, id, peer),
             FederationTable::Settings | FederationTable::Peer | FederationTable::Room => {
                 format!("SELECT record FROM {} WHERE id=?1 AND ?2=?2", table.name())
             }
@@ -83,6 +84,28 @@ impl FederationMessagingRepository {
                 id,
                 &raw.ok_or_else(|| StoreError::InvalidStoredObject {
                     table: table.name(),
+                    id: id.into(),
+                })?,
+            )
+        })
+        .transpose()
+    }
+    /// The record of a federation message in the shared outbox.
+    fn outbox_record(db: &Connection, id: &str, peer: &str) -> StoreResult<Option<Value>> {
+        let key = RemoteOutbox::id(RemoteEffect::FederationMessage, peer, id);
+        let raw: Option<Option<String>> = db
+            .query_row(
+                "SELECT CASE WHEN length(CAST(json_extract(payload,'$.record') AS BLOB))<=?2 THEN json_extract(payload,'$.record') END FROM runtime_outbox WHERE id=?1",
+                params![key, MAX_RECORD_BYTES as i64],
+                |r| r.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| {
+            Self::parse(
+                FederationTable::Outbox,
+                id,
+                &raw.ok_or_else(|| StoreError::InvalidStoredObject {
+                    table: FederationTable::Outbox.name(),
                     id: id.into(),
                 })?,
             )
@@ -122,9 +145,7 @@ impl FederationMessagingRepository {
             FederationTable::Inbox => {
                 tx.execute("INSERT INTO runtime_federation_inbox(peer_id,message_id,record) VALUES(?1,?2,?3) ON CONFLICT(peer_id,message_id) DO UPDATE SET record=excluded.record",params![peer,id,raw])?;
             }
-            FederationTable::Outbox => {
-                tx.execute("INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET record=excluded.record WHERE peer_id=excluded.peer_id",params![id,peer,raw])?;
-            }
+            FederationTable::Outbox => put_outbox(tx, id, peer, value)?,
             FederationTable::Settings | FederationTable::Peer | FederationTable::Room => {
                 tx.execute(&format!("INSERT INTO {}(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",table.name()),params![id,raw])?;
             }
@@ -139,7 +160,7 @@ impl FederationMessagingRepository {
     ) -> StoreResult<Vec<(String, Value)>> {
         let sql = match table {
             FederationTable::Outbox => {
-                "SELECT id,CASE WHEN length(CAST(record AS BLOB))<=?3 THEN record END FROM runtime_federation_outbox WHERE peer_id=?1 AND json_extract(record,'$.status')='queued' AND json_extract(record,'$.nextAt')<=?2 ORDER BY json_extract(record,'$.created'),id LIMIT 50"
+                "SELECT request_id,CASE WHEN length(CAST(json_extract(payload,'$.record') AS BLOB))<=?3 THEN json_extract(payload,'$.record') END FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='federation_message' AND target=?1 AND json_extract(payload,'$.record.status')='queued' AND json_extract(payload,'$.record.nextAt')<=?2 ORDER BY json_extract(payload,'$.record.created'),request_id LIMIT 50"
             }
             FederationTable::Inbox => {
                 "SELECT message_id,CASE WHEN length(CAST(record AS BLOB))<=?3 THEN record END FROM runtime_federation_inbox WHERE peer_id=?1 AND json_extract(record,'$.ack') IN ('pending','sent') AND ?2=?2 ORDER BY json_extract(record,'$.created'),message_id LIMIT 50"
@@ -172,9 +193,42 @@ impl FederationMessagingRepository {
     }
 }
 
+/// Store a federation message in the shared outbox. The signature is that of the saved
+/// admission, so an update of the delivery state keeps one identity.
+pub(crate) fn put_outbox(
+    tx: &Transaction<'_>,
+    id: &str,
+    peer: &str,
+    record: &Value,
+) -> StoreResult<()> {
+    let signature = record
+        .pointer("/admission/signature")
+        .and_then(Value::as_str)
+        .ok_or(StoreError::RecordContract("federation outbox admission"))?;
+    let created = record.get("created").and_then(Value::as_f64).unwrap_or(0.0);
+    let (status, next_at) = if record.get("status").and_then(Value::as_str) == Some("queued") {
+        let due = record.get("nextAt").and_then(Value::as_f64).unwrap_or(0.0);
+        (OutboxStatus::Pending, Some((due * 1000.0).round() as i64))
+    } else {
+        (OutboxStatus::Committed, None)
+    };
+    RemoteOutbox::upsert(
+        tx,
+        RemoteEffect::FederationMessage,
+        peer,
+        id,
+        signature,
+        status,
+        next_at,
+        record,
+        (created * 1000.0).round() as i64,
+    )?;
+    Ok(())
+}
+
 pub(crate) fn queued_outbox_size(db: &Connection, peer: &str) -> StoreResult<(u64, u64)> {
     let (count, bytes): (i64, i64) = db.query_row(
-        "SELECT count(*),COALESCE(sum(length(CAST(record AS BLOB))),0) FROM runtime_federation_outbox WHERE peer_id=?1 AND json_extract(record,'$.status')='queued'",
+        "SELECT count(*),COALESCE(sum(length(CAST(json_extract(payload,'$.record') AS BLOB))),0) FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='federation_message' AND target=?1 AND json_extract(payload,'$.record.status')='queued'",
         [peer],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -191,27 +245,31 @@ mod tests {
 
     #[test]
     fn queued_outbox_size_counts_utf8_bytes() {
-        let db = Connection::open_in_memory().expect("open in-memory database");
-        db.execute_batch("CREATE TABLE runtime_federation_outbox(peer_id TEXT, record TEXT);")
-            .expect("create outbox table");
-        let queued = r#"{"status":"queued","text":"é😀"}"#;
-        db.execute(
-            "INSERT INTO runtime_federation_outbox VALUES(?1,?2)",
-            rusqlite::params!["peer", queued],
-        )
-        .expect("insert queued record");
-        db.execute(
-            "INSERT INTO runtime_federation_outbox VALUES(?1,?2)",
-            rusqlite::params!["peer", r#"{"status":"delivered"}"#],
-        )
-        .expect("insert delivered record");
-
+        let mut db = Connection::open_in_memory().expect("open in-memory database");
+        crate::receipt_schema::create(&db).expect("shared outbox");
+        let queued = serde_json::json!({"status":"queued","text":"é😀","nextAt":0,"created":1,"admission":{"id":"a","signature":"s1","created":1}});
+        let delivered = serde_json::json!({"status":"delivered","admission":{"id":"b","signature":"s2","created":1}});
+        let tx = db.transaction().expect("transaction");
+        super::put_outbox(&tx, "m1", "peer", &queued).expect("insert queued record");
+        super::put_outbox(&tx, "m2", "peer", &delivered).expect("insert delivered record");
+        tx.commit().expect("commit");
+        let queued = queued_text(&db);
         assert_eq!(
             FederationMessagingRepository::queue_size(&db, "peer")
                 .expect("queued outbox size is readable"),
             (1, queued.len() as u64),
         );
         assert!(queued.len() > queued.chars().count());
+    }
+
+    /// The stored record text, as the size query measures it.
+    fn queued_text(db: &Connection) -> String {
+        db.query_row(
+            "SELECT json_extract(payload,'$.record') FROM runtime_outbox WHERE request_id='m1'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("stored record")
     }
 }
 

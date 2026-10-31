@@ -43,6 +43,7 @@ import {
 } from "./NativeNotice";
 import { ActionIcon, Button, Loader, Modal, Textarea } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
+import { usePendingCommands } from "../usePendingCommands";
 import { createPortal } from "react-dom";
 import {
   ArrowDown,
@@ -63,6 +64,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { errorText } from "../api";
+import FullOutput from "./conversation/transcript/FullOutput";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
 import { isCyberPolicyRefusal, nativeThreadError } from "../nativeErrors";
@@ -282,7 +284,7 @@ export default function Conversation(p: {
 }) {
   const { removeSendingMessage } = useSendingMessageRemoval();
   const { queueUploads } = useServerUploads();
-  const { get, post } = useServerApi();
+  const { get, post, command } = useServerApi();
   const { changeOutbox } = useServerOutbox();
 
   reportPromptComposerRender("conversation");
@@ -661,6 +663,13 @@ export default function Conversation(p: {
   const [dragging, setDragging] = useState(false);
   const [stopping, setStopping] = useState(false);
   const stopAttempt = useRef(0);
+  // A stop stays shown until the stream holds the row that the command changed.
+  const pendingCommands = usePendingCommands();
+  const stopShown =
+    stopping ||
+    pendingCommands.some(
+      (entry) => entry.kind === "stop" && entry.target === p.id,
+    );
   useEffect(() => {
     stopAttempt.current += 1;
     setStopping(false);
@@ -1396,6 +1405,7 @@ export default function Conversation(p: {
           </div>
         )}
       {m.truncated && <p className="notice">This message is clipped.</p>}
+      {m.fullTextBlob && <FullOutput blob={m.fullTextBlob} />}
       {(p.room || m.role === "user") && (
         <MessageDate at={m.at ?? m.created ?? m.timestamp} />
       )}
@@ -2241,21 +2251,19 @@ export default function Conversation(p: {
                                 : "No active turn to stop"
                             }
                             disabled={
-                              stopping ||
+                              stopShown ||
                               !["running", "starting", "approval"].includes(
                                 agent.status || "",
                               )
                             }
-                            aria-busy={stopping}
+                            aria-busy={stopShown}
                             onClick={() => {
                               const agentId = p.id;
-                              if (stopping || !agentId) return;
+                              if (stopShown || !agentId) return;
                               const attempt = ++stopAttempt.current;
                               setStopping(true);
-                              void post("/api/stop", {
-                                id: agentId,
-                                descendants: false,
-                              })
+                              void command
+                                .stop(agentId, false)
                                 .then(p.refresh)
                                 .catch((e) => p.notify(errorText(e)))
                                 .finally(() => {
@@ -2264,7 +2272,7 @@ export default function Conversation(p: {
                                 });
                             }}
                           >
-                            {stopping ? (
+                            {stopShown ? (
                               <Loader size={14} color="currentColor" />
                             ) : (
                               <Square size={14} fill="currentColor" />

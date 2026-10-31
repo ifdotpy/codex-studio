@@ -63,6 +63,10 @@ import type {
   Optional,
 } from "./usage.ts";
 
+import type {
+  CommandRequest,
+  CommandResponse,
+} from "../../../client/apps/web/src/commands.ts";
 import type { PricingArtifact } from "../../../client/apps/web/src/generated/pricing.ts";
 import type { RendererManifest } from "../../../client/apps/web/scripts/build-manifests.ts";
 
@@ -761,9 +765,27 @@ export class Smoke {
     this.cancel.signal.throwIfAborted();
   }
 
+  /** One command of this smoke. The number rises, and an exact retry sends the same object. */
+  private commandNumber = Date.now();
+  command<K extends CommandRequest["kind"]>(
+    kind: K,
+    target: string,
+    body: Extract<CommandRequest, { kind: K }>["body"],
+    id: string = randomUUID(),
+  ): Extract<CommandRequest, { kind: K }> {
+    return {
+      id,
+      client: "installed-smoke",
+      number: ++this.commandNumber,
+      kind,
+      target,
+      body,
+    } as Extract<CommandRequest, { kind: K }>;
+  }
+
   async submitModel(
-    route: "/api/messages",
-    body: Schema["ManagedMessageBody"],
+    route: "/api/commands",
+    body: Extract<CommandRequest, { kind: "send" }>,
   ): Promise<Schema["studio_api__work__models__MessageReceipt"]>;
   async submitModel(
     route: "/api/agents",
@@ -773,7 +795,7 @@ export class Smoke {
   async submitModel(
     route: string,
     body:
-      | Schema["ManagedMessageBody"]
+      | Extract<CommandRequest, { kind: "send" }>
       | (Schema["CreateAgentRequest"] &
           Pick<Schema["ManagedMessageBody"], "id">),
   ): Promise<
@@ -793,15 +815,18 @@ export class Smoke {
       this.usageEvidence.submissions.push({
         route,
         id: body.id,
-        room: (body as Partial<Schema["ManagedMessageBody"]>).room,
+        room: "target" in body ? body.target : undefined,
         at: new Date().toISOString(),
       });
       this.saveUsage();
     }
-    return this.backend.post<
-      | Schema["studio_api__work__models__MessageReceipt"]
-      | Schema["AgentResponse"]
-    >(route, body);
+    if (route === "/api/commands") {
+      const response = await this.backend.post<CommandResponse>(route, body);
+      // The send command carries the delivery receipt as a row.
+      return response.rows.find((row) => row.collection === "messageReceipt")
+        ?.payload as Schema["studio_api__work__models__MessageReceipt"];
+    }
+    return this.backend.post<Schema["AgentResponse"]>(route, body);
   }
 
   async bridgeObservation(accountKey: string) {
@@ -1245,12 +1270,13 @@ export class Smoke {
       this.usageEvidence.permissions ??= {};
       this.usageEvidence.permissions[id] = permission;
       this.saveUsage();
-      await this.submitModel("/api/messages", {
-        id: randomUUID(),
-        room: id,
-        delivery: "next_turn",
-        text: `This is an automated Studio smoke check. Do not use tools. Reply with exactly ${token}.`,
-      });
+      await this.submitModel(
+        "/api/commands",
+        this.command("send", id, {
+          delivery: "next_turn",
+          text: `This is an automated Studio smoke check. Do not use tools. Reply with exactly ${token}.`,
+        }),
+      );
     } else {
       await this.submitModel("/api/agents", {
         id,
@@ -1285,12 +1311,18 @@ export class Smoke {
             .filter((item) => item.role === "assistant")
             .at(-1)?.turnId
         : null;
-    await this.submitModel("/api/messages", {
-      id: inputId,
-      room: id,
-      delivery: "next_turn",
-      text: `This is turn 2 of a usage check. Write about 150 words explaining why small deterministic tests are useful. Then use one read-only file-read tool to read ${path.join(this.root, NOTES_FILE)} (if no file-read tool exists, run cat on that exact file). After that tool result write another 150 words about test cleanup. Do not read any other file, delegate, or create monitors. End with ${token}.`,
-    });
+    await this.submitModel(
+      "/api/commands",
+      this.command(
+        "send",
+        id,
+        {
+          delivery: "next_turn",
+          text: `This is turn 2 of a usage check. Write about 150 words explaining why small deterministic tests are useful. Then use one read-only file-read tool to read ${path.join(this.root, NOTES_FILE)} (if no file-read tool exists, run cat on that exact file). After that tool result write another 150 words about test cleanup. Do not read any other file, delegate, or create monitors. End with ${token}.`,
+        },
+        inputId,
+      ),
+    );
     let steer: Steer | null = null;
     if (provider === ProviderKind.Claude) {
       const activeTurnId = await until(
@@ -1319,21 +1351,28 @@ export class Smoke {
       this.usageEvidence.scenarios ??= {};
       this.usageEvidence.scenarios[id] = { steer, inputId };
       this.saveUsage();
-      steer.receipt = await this.submitModel("/api/messages", {
-        id: steer.id!,
-        room: id,
-        delivery: "current_turn",
-        text: "Keep going with the same requested 300-word answer and the single read-only note read; mention reproducibility. This is the usage-check steer, not a new task.",
-      });
+      steer.receipt = await this.submitModel(
+        "/api/commands",
+        this.command(
+          "send",
+          id,
+          {
+            delivery: "current_turn",
+            text: "Keep going with the same requested 300-word answer and the single read-only note read; mention reproducibility. This is the usage-check steer, not a new task.",
+          },
+          steer.id!,
+        ),
+      );
     }
     const longItems = await this.answered(id, token, TURN_MS);
     const finalToken = `SMOKE_${this.runId}_${provider}_FINAL`;
-    await this.submitModel("/api/messages", {
-      id: randomUUID(),
-      room: id,
-      delivery: "next_turn",
-      text: `Turn 3: reply with exactly ${finalToken}. Do not use tools.`,
-    });
+    await this.submitModel(
+      "/api/commands",
+      this.command("send", id, {
+        delivery: "next_turn",
+        text: `Turn 3: reply with exactly ${finalToken}. Do not use tools.`,
+      }),
+    );
     await this.answered(id, finalToken, TURN_MS);
     return this.collectUsage(chat, provider, {
       steer,
@@ -1701,15 +1740,18 @@ export class Smoke {
   async messageOnce(agent: string) {
     const id = randomUUID();
     const token = `SMOKE_${this.runId}_MESSAGE`;
-    const message = {
+    const message = this.command(
+      "send",
+      agent,
+      {
+        text: `Reply with exactly ${token}. Do not use tools.`,
+        delivery: "next_turn",
+      },
       id,
-      room: agent,
-      text: `Reply with exactly ${token}. Do not use tools.`,
-      delivery: "next_turn",
-    } satisfies Schema["ManagedMessageBody"];
-    await this.submitModel("/api/messages", message);
-    // An exact retry of the same id must not enqueue the message again.
-    await this.submitModel("/api/messages", message);
+    );
+    await this.submitModel("/api/commands", message);
+    // An exact retry of the same command must not enqueue the message again.
+    await this.submitModel("/api/commands", message);
     const items = await this.answered(agent, token, TURN_MS);
     const copies = messageItems(items!, id);
     if (copies.length !== 1) {
@@ -1786,14 +1828,15 @@ export class Smoke {
   async monitor(agent: string) {
     const after = await this.entitySeq();
     const token = `SMOKE_${this.runId}_MONITOR`;
-    await this.submitModel("/api/messages", {
-      id: randomUUID(),
-      room: agent,
-      text:
-        "Use the orchestration_monitor tool once to run the shell command `true`. " +
-        `After Studio reports that the command exited, reply with exactly ${token}.`,
-      delivery: "next_turn",
-    });
+    await this.submitModel(
+      "/api/commands",
+      this.command("send", agent, {
+        text:
+          "Use the orchestration_monitor tool once to run the shell command `true`. " +
+          `After Studio reports that the command exited, reply with exactly ${token}.`,
+        delivery: "next_turn",
+      }),
+    );
     await this.answered(agent, token, MONITOR_MS);
     const monitors = await this.changedEntities(
       after,
@@ -1964,7 +2007,7 @@ export class Smoke {
     if (!chat?.inFlight) {
       return;
     }
-    await this.backend.post("/api/stop", { id });
+    await this.backend.post("/api/commands", this.command("stop", id, {}));
     await until(`stop ${id.slice(0, 8)}`, STOP_MS, async () => {
       const now = await this.chatStatus(id);
       return { done: !now?.inFlight, value: now, note: now?.status };

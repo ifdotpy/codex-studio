@@ -65,10 +65,6 @@ const TABLES: &[TableRequirement] = &[
         columns: &["id", "record"],
     },
     TableRequirement {
-        name: "runtime_completed_turns",
-        columns: &["id"],
-    },
-    TableRequirement {
         name: "runtime_events",
         columns: &[
             "id", "agent", "kind", "text", "status", "created", "epoch", "turn_id", "error",
@@ -107,7 +103,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[TABLES[2]],
+    bootstrap_tables: &[crate::domain::TABLE_REQUIREMENTS[1]],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };
@@ -264,7 +260,7 @@ mod tests {
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                    PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER);
-                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);"),
+                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);"),
             )
             .expect("scheduler tables create");
         connection

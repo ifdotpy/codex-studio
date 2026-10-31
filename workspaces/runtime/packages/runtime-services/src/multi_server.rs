@@ -456,6 +456,21 @@ pub async fn create_invite(
             ));
         }
     };
+    // The owner picks the grant of the device that will use this invitation.
+    let grant = match body.get("grant") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(grant))
+            if grant == crate::device_trust::GRANT_FULL
+                || grant == crate::device_trust::GRANT_OBSERVE =>
+        {
+            Some(grant.as_str())
+        }
+        Some(_) => {
+            return Err(MultiServerError::Refused(
+                "Grant must be full or observe".into(),
+            ));
+        }
+    };
     let tailscale_user = tailscale_user
         .filter(|user| !user.is_empty() && user.len() <= 254)
         .ok_or_else(|| {
@@ -516,7 +531,7 @@ pub async fn create_invite(
             )
             .as_ref(),
         );
-        let invite = json!({
+        let mut invite = json!({
             "protocol": ACCESS_PROTOCOL_VERSION,
             "inviteId": invite_id,
             "serverId": identity["serverId"],
@@ -529,6 +544,9 @@ pub async fn create_invite(
             "status": "open",
             "tokenHash": studio_runtime_store::sha256_hex(token.as_bytes()),
         });
+        if let Some(grant) = grant {
+            invite["grant"] = json!(grant);
+        }
         let invite_id = invite_id.clone();
         let request_id = request_id.to_owned();
         let fingerprint = fingerprint.clone();

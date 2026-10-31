@@ -38,6 +38,7 @@
 //! Spawn/Interrupt require named `multi-server-runtime/*` adapters. The
 //! monitor Context topic remains a local monitor snapshot.
 
+use crate::principal::CommandClass;
 use rusqlite::Transaction;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -122,6 +123,13 @@ impl Actor {
             execution_move: truthy(record.extra.get("executionMove")),
             record,
         })
+    }
+
+    fn principal(&self) -> crate::principal::Principal {
+        crate::principal::Principal::Agent {
+            id: self.id.clone(),
+            epoch: u64::try_from(self.record.epoch).unwrap_or_default(),
+        }
     }
 
     pub(crate) fn record(&self) -> &studio_runtime_store::AgentRecord {
@@ -670,7 +678,7 @@ pub(crate) fn execute(
         ManagedHostTool::Interrupt => {
             let supplied = required_text(&call.args, "agent_id")?;
             let target = ports.resolve_target(tx, actor, supplied)?;
-            if !is_descendant(tx, actor, &target)? {
+            if !permits(tx, actor, CommandClass::ChatControl, &target)? {
                 return Err(Error::Invalid("You can interrupt only your descendants"));
             }
             let reason = format!(
@@ -762,7 +770,8 @@ fn remote_dependency(
             {
                 None
             } else {
-                (!is_descendant(tx, actor, target)?).then_some("multi-server-runtime/message")
+                (!permits(tx, actor, CommandClass::ChatControl, target)?)
+                    .then_some("multi-server-runtime/message")
             }
         }
         ManagedHostTool::Status => Some("multi-server-runtime/directory"),
@@ -795,7 +804,7 @@ fn spawn(
     if actor.reviewer {
         return Err(Error::Invalid("Reviewers cannot create agents"));
     }
-    if !actor.is_lead || actor.parent_id.is_some() || actor.root_id != actor.id {
+    if !permits(tx, actor, CommandClass::Spawn, "")? {
         return Err(Error::Invalid("Only the active lead can spawn workers"));
     }
     if call.args.get("server").is_some_and(|v| truthy(Some(v))) {
@@ -1028,8 +1037,34 @@ pub(crate) fn agent_ancestry(
     }
 }
 
-fn is_descendant(tx: &Transaction<'_>, actor: &Actor, target: &str) -> Result<bool, Error> {
-    match agent_ancestry(tx, &actor.id, target)? {
+/// Ask the permission table whether the agent may run a command of `class`. A scoped
+/// answer is settled here, where the rows are: the descendant check for `target`, or the
+/// root lead check for a spawn.
+fn permits(
+    tx: &Transaction<'_>,
+    actor: &Actor,
+    class: CommandClass,
+    target: &str,
+) -> Result<bool, Error> {
+    use crate::principal::{Access, Scope};
+    match crate::principal::access(&actor.principal(), class) {
+        Access::Allow => Ok(true),
+        Access::Deny => Ok(false),
+        Access::Scoped(Scope::Descendant) => is_descendant(tx, &actor.id, target),
+        Access::Scoped(Scope::RootLead) => {
+            Ok(actor.is_lead && actor.parent_id.is_none() && actor.root_id == actor.id)
+        }
+        Access::Scoped(Scope::LinkWorker | Scope::OwnLink | Scope::ApprovedRoom) => Ok(false),
+    }
+}
+
+/// The one descendant check: `target` is below `ancestor` in the same agent tree.
+pub(crate) fn is_descendant(
+    tx: &Transaction<'_>,
+    ancestor: &str,
+    target: &str,
+) -> Result<bool, Error> {
+    match agent_ancestry(tx, ancestor, target)? {
         AgentAncestry::Descendant => Ok(true),
         AgentAncestry::Unrelated => Ok(false),
         AgentAncestry::Cycle => Err(Error::Invalid("Invalid stored agent ancestry")),

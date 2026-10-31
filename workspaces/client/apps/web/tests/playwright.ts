@@ -116,7 +116,6 @@ const generatedApiSchema = readFileSync(
 export const FIXTURE_OPTIMIZE_DEPS = {
   noDiscovery: true,
   include: [
-    "dexie",
     "react",
     "react/jsx-runtime",
     "react/jsx-dev-runtime",
@@ -2813,3 +2812,88 @@ export function queryFixtureDatabase(
 export const rustUiFixture = fileURLToPath(
   new URL("./fixtures/rust-ui-fixture.ts", import.meta.url),
 );
+
+/** Host alias of the loopback fixture. Chromium resolves any `*.localhost`
+ * name to loopback and treats it as a secure context, so the fixture needs no
+ * resolver rule. The name is not a loopback host or an isolated view host
+ * (`studio-<id>.localhost`), so a page served from it is remote from its
+ * server and keeps the cache. */
+export const REMOTE_FIXTURE_HOST = "remote-fixture.localhost";
+
+export function remoteOrigin(origin: string) {
+  const url = new URL(origin);
+  url.hostname = REMOTE_FIXTURE_HOST;
+  return url.origin;
+}
+
+/** Rows of one cache record (`entities` or `transcript:<id>`) in the thin
+ * cache. A pagehide makes the page write its changed records at once. */
+export async function readCachedRows(
+  page: import("@playwright/test").Page,
+  record: string,
+  timeoutMs = 8_000,
+): Promise<Array<{ id: string; payload: string; seq: number }>> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const rows = await page.evaluate(async (record) => {
+      window.dispatchEvent(new Event("pagehide"));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open("studio-thin-cache", 1);
+        request.onupgradeneeded = () => {
+          request.result.createObjectStore("cache");
+          request.result.createObjectStore("unsent");
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      try {
+        const store = db.transaction("cache", "readonly").objectStore("cache");
+        const read = (request: IDBRequest) =>
+          new Promise<unknown[]>((resolve, reject) => {
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+          });
+        const keys = (await read(store.getAllKeys())) as string[];
+        const values = (await read(store.getAll())) as Array<{
+          rows?: never[];
+        }>;
+        return keys.flatMap((key, index) =>
+          key.endsWith(`|${record}`) ? (values[index]?.rows ?? []) : [],
+        );
+      } finally {
+        db.close();
+      }
+    }, record);
+    if (rows.length || Date.now() > deadline) return rows;
+  }
+}
+
+/** Keys of the thin cache records (`<workspace><suffix>|<schema hash>|<record>`). */
+export async function readCacheKeys(
+  page: import("@playwright/test").Page,
+): Promise<string[]> {
+  return page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("studio-thin-cache", 1);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore("cache");
+        request.result.createObjectStore("unsent");
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      const request = db
+        .transaction("cache", "readonly")
+        .objectStore("cache")
+        .getAllKeys();
+      return await new Promise<string[]>((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result as string[]);
+        request.onerror = () => reject(request.error);
+      });
+    } finally {
+      db.close();
+    }
+  });
+}

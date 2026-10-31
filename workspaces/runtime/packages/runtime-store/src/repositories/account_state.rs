@@ -798,7 +798,7 @@ mod tests {
     #[test]
     fn workspace_limits_migrate_once_without_overwriting_account_entities() {
         let mut db = Connection::open_in_memory().expect("SQLite");
-        db.execute_batch("CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id)); CREATE TABLE sync_documents(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0); CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,result TEXT);").expect("migration fixture");
+        db.execute_batch("CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id)); CREATE TABLE sync_documents(seq INTEGER); CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0); CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,result TEXT);").expect("migration fixture");
         crate::receipt_schema::create(&db).expect("account state");
         let tx = db.transaction().expect("transaction");
         let newer = json!({"accountKey":"alpha","at":2.0,"data":{"accountId":"newer"}});

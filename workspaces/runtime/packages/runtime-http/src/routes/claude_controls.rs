@@ -407,7 +407,7 @@ async fn command(
     let mut message =
         crate::generated::ManagedMessageBody::new(body.request_id, body.id, command.into());
     message.delivery = Some(studio_runtime_schema::DeliveryMoment::CurrentTurn);
-    let receipt = super::messages::post_message(State(state), ApiJson(message)).await?;
+    let receipt = super::messages::send_message(state, message).await?;
     serde_json::to_value(receipt.0)
         .map(Json)
         .map_err(|_| ApiError::internal())

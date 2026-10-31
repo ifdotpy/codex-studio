@@ -112,7 +112,7 @@ it("publishes one complete draft query batch and cancels a pending publication o
       }),
     }),
   });
-  // RxDB emits intermediate query results as the same SSE batch is written.
+  // The store emits intermediate query results as the same SSE batch is written.
   receive([row("a", "partial")]);
   receive([row("a", "complete"), row("b", "complete")]);
   expect(first).not.toHaveBeenCalled();

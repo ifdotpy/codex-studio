@@ -76,7 +76,7 @@ test("direct screens keep overlapping chat drafts and sends with their owner", a
           this: IDBObjectStore,
           ...args: Parameters<IDBObjectStore[typeof method]>
         ) {
-          if (this.transaction.db.name.endsWith("--drafts"))
+          if (this.name === "unsent")
             throw new DOMException(
               "Full fixture storage",
               "QuotaExceededError",
@@ -204,7 +204,7 @@ test("direct screens automatically include paired servers on phones", async ({
       "keep local phone draft",
     );
     await expect(
-      page.getByRole("alert").filter({ hasText: "RxDB" }),
+      page.getByRole("alert").filter({ hasText: "local workspace cache" }),
     ).toHaveCount(0);
     await page.reload();
     await openChats();

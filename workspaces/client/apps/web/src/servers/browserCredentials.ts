@@ -9,12 +9,13 @@ import {
 import {
   parseInvitation,
   pairedServer,
-  publicKeyPem,
   signedRequest,
   requestIdentity,
   type PairReceipt,
 } from "./pairing";
+import { deviceKey, replaceDeviceKey } from "./deviceKey";
 import type { StudioServer } from "./registry";
+import { retarget, routesFor, sendRouted } from "./routes";
 import { ACCESS_PROTOCOL_VERSION } from "../generated/multiServerProtocol";
 type Credential = {
   inviteId?: string;
@@ -22,7 +23,8 @@ type Credential = {
   origin: string;
   serverId: string;
   clientId: string;
-  privateKey: CryptoKey;
+  /** Only a pairing made before the device key has its own key. */
+  privateKey?: CryptoKey;
   publicKey: string;
   body?: string;
   requestId?: string;
@@ -64,6 +66,14 @@ async function record<T>(
     };
   });
 }
+/** The key that signs for this credential: the device key, or the key of an older pairing. */
+async function signingKey(credential: Credential): Promise<CryptoKey> {
+  if (credential.privateKey) return credential.privateKey;
+  const device = await deviceKey();
+  if (device.id !== credential.clientId)
+    throw new Error("The server key is unavailable. Pair this UI again.");
+  return device.privateKey;
+}
 export class BrowserServerCredentials implements ServerCredentialAdapter {
   async frameSigningCredential(server: StudioServer) {
     const credential = await record<Credential | undefined>(
@@ -74,10 +84,13 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
       !credential ||
       credential.origin !== server.origin ||
       credential.serverId !== server.id ||
-      credential.clientId !== server.credentialId
+      credential.id !== server.credentialId
     )
       throw new Error("The server key is unavailable. Pair this UI again.");
-    return { clientId: credential.clientId, privateKey: credential.privateKey };
+    return {
+      clientId: credential.clientId,
+      privateKey: await signingKey(credential),
+    };
   }
   async hasPairAttempt(attempt: PairAttemptIdentity) {
     const draft = await record<Credential | undefined>("readonly", (store) =>
@@ -109,14 +122,8 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
       throw new Error("This pairing request belongs to another server.");
     if (draft?.receipt) return draft.receipt;
     if (!draft) {
-      const keys = await crypto.subtle.generateKey({ name: "Ed25519" }, false, [
-        "sign",
-        "verify",
-      ]);
-      const publicKey = publicKeyPem(
-        await crypto.subtle.exportKey("spki", keys.publicKey),
-      );
-      const clientId = randomUUID();
+      // One key for this device. Its id is the client id on every server.
+      const { id: clientId, publicKey } = await deviceKey();
       const body = JSON.stringify({
         protocol: ACCESS_PROTOCOL_VERSION,
         inviteId: invitation.inviteId,
@@ -133,7 +140,6 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
         origin,
         serverId: invitation.serverId,
         clientId,
-        privateKey: keys.privateKey,
         publicKey,
         body,
         requestId,
@@ -151,23 +157,34 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
         request,
         draft.serverId,
         draft.clientId,
-        draft.privateKey,
+        await signingKey(draft),
         requestId,
       ),
     );
-    const receipt = (await response.json()) as PairReceipt & { error?: string };
-    if (!response.ok)
+    const receipt = (await response.json()) as PairReceipt & {
+      error?: string;
+      code?: string;
+    };
+    if (!response.ok) {
+      // A revocation is final. This device pairs again with a new key.
+      if (receipt.code === "client_revoked") {
+        await replaceDeviceKey();
+        await record("readwrite", (store) => store.delete(pendingId));
+      }
       throw new Error(
         receipt.error ||
           `Pairing failed (${response.status}). Retry the same invitation.`,
       );
-    const server = pairedServer(receipt, invitation, draft.clientId);
+    }
+    // One device key signs for every server, so the row is keyed by server and device.
+    const rowId = `${draft.serverId}:${draft.clientId}`;
+    const server = pairedServer(receipt, invitation, draft.clientId, rowId);
     const { body: _body, requestId: _requestId, ...credential } = draft;
     await record("readwrite", (store) =>
       store.put({
         ...credential,
         targetPublicKey: receipt.publicKey,
-        id: draft!.clientId,
+        id: rowId,
       }),
     );
     await record("readwrite", (store) =>
@@ -189,10 +206,30 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
       !isServerMethod(request.method)
     )
       throw new Error("The request does not belong to this server.");
-    if (isRemoteServerView && serverViewId === server.id) {
+    const routes = routesFor(server);
+    const framed = isRemoteServerView && serverViewId === server.id;
+    const credential = framed
+      ? undefined
+      : await record<Credential | undefined>("readonly", (store) =>
+          store.get(server.credentialId!),
+        );
+    if (
+      !framed &&
+      (!credential ||
+        credential.origin !== server.origin ||
+        credential.serverId !== server.id ||
+        credential.id !== server.credentialId)
+    )
+      throw new Error("The server key is unavailable. Pair this UI again.");
+    // A route proves the server key stored at pairing before any key signs for it.
+    if (credential?.targetPublicKey) routes.pin(credential.targetPublicKey);
+    const origin = await routes.resolve();
+    const route = async (signed: Request) =>
+      sendRouted(routes, await retarget(signed, origin));
+    if (framed) {
       const { clientId, privateKey } =
         await requestFrameSigningCredential(server);
-      return fetch(
+      return route(
         await signedRequest(
           request,
           server.id,
@@ -202,23 +239,12 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
         ),
       );
     }
-    const credential = await record<Credential | undefined>(
-      "readonly",
-      (store) => store.get(server.credentialId!),
-    );
-    if (
-      !credential ||
-      credential.origin !== server.origin ||
-      credential.serverId !== server.id ||
-      credential.clientId !== server.credentialId
-    )
-      throw new Error("The server key is unavailable. Pair this UI again.");
-    return fetch(
+    return route(
       await signedRequest(
         request,
         server.id,
-        credential.clientId,
-        credential.privateKey,
+        credential!.clientId,
+        await signingKey(credential!),
         await requestIdentity(request),
       ),
     );
@@ -277,7 +303,6 @@ function requestFrameSigningCredential(server: StudioServer) {
         if (
           !value ||
           value.serverId !== server.id ||
-          value.clientId !== server.credentialId ||
           !value.privateKey ||
           value.privateKey.type !== "private" ||
           value.privateKey.extractable

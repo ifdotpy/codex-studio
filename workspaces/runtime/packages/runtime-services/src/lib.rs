@@ -55,6 +55,7 @@ pub mod claude_input_recovery;
 pub mod claude_login;
 /// Receipt-scoped retained controls; worker submission uses claude_input_recovery::runtime.
 pub mod claude_runtime;
+pub mod commands;
 pub mod context_repair;
 pub mod context_repair_files;
 pub mod continuation;
@@ -63,6 +64,7 @@ pub mod continuation_runtime;
 pub mod coordination;
 pub mod coordination_reads;
 pub mod costs;
+pub mod device_trust;
 pub mod diagnostics;
 pub mod disk_space;
 pub mod entity_publication;
@@ -135,12 +137,14 @@ pub mod organization_effects;
 pub mod panels;
 pub mod payload_blobs;
 pub mod payload_store;
+pub mod peer_backup;
 pub mod peer_conversion;
 pub mod peer_projects;
 pub mod peer_update_pull;
 pub mod peer_updates;
 pub mod portable_history;
 pub mod pricing;
+pub mod principal;
 pub mod process_controls;
 pub mod project_deletion;
 pub mod project_locations;
@@ -157,6 +161,7 @@ pub mod questions_write;
 pub mod queue_write;
 pub mod radio;
 pub mod radio_runtime;
+pub(crate) mod server_outbox;
 pub use radio_runtime::{
     Interrupt, InterruptOutcome, InterruptReceipt, InterruptTransport, NativeAcceptanceReceipt,
     RadioCreation, handoff_interrupt,
@@ -201,6 +206,7 @@ pub mod task_settlement;
 pub mod terminal_driver;
 #[cfg(unix)]
 pub mod terminal_pty;
+pub mod text_blob_sweep;
 pub mod thread_fork_runtime;
 pub mod thread_prepare;
 pub mod title_generation;
@@ -208,6 +214,7 @@ pub mod token_rate;
 pub mod tool_requests;
 pub mod transcript;
 pub mod transcript_runtime;
+pub mod transcript_seq_backfill;
 pub mod turn_prepare;
 pub mod unclean_recovery;
 pub mod usage;

@@ -11,6 +11,7 @@ pub(crate) mod checkpoints;
 pub(crate) mod claude_controls;
 pub(crate) mod claude_records;
 pub(crate) mod claude_retry;
+pub mod command_watermarks;
 pub(crate) mod context_repair;
 pub(crate) mod continuation;
 pub(crate) mod coordination;
@@ -36,6 +37,7 @@ pub(crate) mod projects;
 pub(crate) mod questions_reads;
 pub(crate) mod questions_write;
 pub(crate) mod queue_write;
+pub mod remote_outbox;
 pub(crate) mod remote_transport;
 pub mod request_results;
 pub(crate) mod reviewer_archive;
@@ -263,6 +265,9 @@ mod tests {
         db.execute_batch(
             "CREATE TABLE sync_identity (id TEXT PRIMARY KEY);
              CREATE TABLE sync_generation (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);
+             CREATE TABLE durable_rows (
+                 tbl TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
+                 deleted INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(tbl,id));
              CREATE TABLE sync_documents (
                  seq INTEGER PRIMARY KEY, scope TEXT NOT NULL, id TEXT NOT NULL,
                  payload TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,

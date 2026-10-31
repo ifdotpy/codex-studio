@@ -320,12 +320,17 @@ fn refuse_pending_remote(
     paths: &BTreeSet<String>,
     agents: &BTreeSet<String>,
 ) -> Result<(), Error> {
-    let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_server_outbox')",[],|row|row.get(0))?;
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_outbox')",
+        [],
+        |row| row.get(0),
+    )?;
     if !exists {
         return Ok(());
     }
-    let mut stmt =
-        tx.prepare_cached("SELECT id FROM runtime_server_outbox WHERE state != 'complete'")?;
+    let mut stmt = tx.prepare_cached(
+        "SELECT request_id FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='server_request'",
+    )?;
     let ids = stmt
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;

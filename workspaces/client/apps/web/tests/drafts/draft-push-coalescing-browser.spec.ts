@@ -1,9 +1,10 @@
 import { required } from "../teams/helpers.ts";
 import type { AddressInfo } from "node:net";
 import type { components } from "../../src/generated/api.ts";
-import { requestBody } from "../messages/helpers.ts";
+import { sendRoute } from "../messages/send-command.ts";
+import type { SendMessageBody } from "../../src/commands.ts";
 import { readDraft } from "../drafts/draft-fixture-helpers.ts";
-import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test, expect, createFixtureViteServer } from "../playwright.ts";
@@ -15,7 +16,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
   const workspaceId = "f".repeat(32);
   const pushes: PostBody<"/api/sync/drafts">["rows"][] = [];
   const pushTimes: number[] = [];
-  const messages: PostBody<"/api/messages">[] = [];
+  const messages: SendMessageBody[] = [];
   let failNextPush = false;
   const server = await createFixtureViteServer({
     configFile: false,
@@ -67,16 +68,13 @@ test("draft pushes coalesce at the production replication boundary", async ({
         } satisfies components["schemas"]["SessionResponse"],
       }),
     );
-    await page.route("**/api/messages", async (route) => {
-      const body = requestBody<PostBody<"/api/messages">>(route);
-      messages.push(body);
-      await route.fulfill({
-        json: {
-          id: body.id,
-          status: "delivered",
-        } satisfies PostResult<"/api/messages">,
-      });
-    });
+    await page.route(
+      "**/api/commands",
+      sendRoute(async (_route, body, reply) => {
+        messages.push(body);
+        await reply({ id: body.id, status: "delivered" });
+      }),
+    );
     const origin = `http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}`;
     await page.goto(`${origin}/check`);
     await page.clock.install();
@@ -203,7 +201,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
         room: "lead",
         text,
         delivery: "current_turn",
-      } satisfies PostBody<"/api/messages">;
+      } satisfies SendMessageBody;
       const result = await durableSend(body, [], () =>
         window.draft.setDrafts((old) => ({ ...old, lead: "" })),
       );

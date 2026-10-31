@@ -114,11 +114,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         serde_with: None,
     };
     for name in [
-        "QueueCancelBody",
         "QueueEditBody",
         "QueueFirstBody",
         "QueueReorderBody",
-        "QueueCancelBodyAction",
         "QueueEditBodyAction",
         "QueueFirstBodyAction",
         "QueueReorderBodyAction",
@@ -128,6 +126,28 @@ fn main() -> Result<(), Box<dyn Error>> {
             .remove(name)
             .ok_or("missing queue payload schema")?;
     }
+    // The command envelope has one serde owner. Keep the generated name as an alias and do
+    // not emit parallel DTOs for its variants and bodies. The response is built from the
+    // owner's `CommandResponse`, so its generated copy is unused and not emitted.
+    analysis
+        .schemas
+        .get_mut("CommandRequest")
+        .ok_or("missing command request schema")?
+        .schema_type = SchemaType::Primitive {
+        rust_type: "studio_runtime_schema::command::CommandRequest".to_owned(),
+        serde_with: None,
+    };
+    analysis.schemas.retain(|name, _| {
+        !(name.starts_with("CommandRequest") && name != "CommandRequest")
+            && !matches!(
+                name.as_str(),
+                "CommandSendBody"
+                    | "CommandWithdrawBody"
+                    | "CommandStopBody"
+                    | "CommandResponse"
+                    | "CommandRow"
+            )
+    });
     // Claude mutations deserialize through their validated tagged command owner.
     for (name, owner) in [
         (

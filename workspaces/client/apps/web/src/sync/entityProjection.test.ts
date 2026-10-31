@@ -1080,7 +1080,7 @@ it("keeps the projects of paired servers apart from the local projects", () => {
   assert.deepEqual(gone.runtime.remoteProjects, []);
 });
 
-it("moves replaced entities between collections and removes rows omitted by RxDB", () => {
+it("moves replaced entities between collections and removes rows omitted by the store", () => {
   const state = emptyEntityProjection();
   const first = applyEntityRows(
     state,

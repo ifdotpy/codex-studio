@@ -8,7 +8,6 @@ import {
 } from "../generated/api";
 import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
-import type { RxDatabase } from "rxdb";
 import type { Snapshot } from "../types";
 import { SYNC_PROTOCOL_VERSION, type components } from "../generated/api";
 import type {
@@ -20,7 +19,6 @@ import { createSubscriptionStore } from "./subscriptions/store";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 
 const mocks = vi.hoisted(() => ({
-  databases: [] as RxDatabase[],
   syncGet: vi.fn(),
   changes: new Set<(version?: ResourceVersion) => void>(),
   connections: new Set<
@@ -60,26 +58,6 @@ vi.mock("../servers/eventSource", () => ({
         } as MessageEvent);
     }
   },
-}));
-vi.mock("rxdb", async (original) => {
-  const actual = await original<typeof import("rxdb")>();
-  return {
-    ...actual,
-    createRxDatabase: async (
-      options: Parameters<typeof actual.createRxDatabase>[0],
-    ) => {
-      const db = await actual.createRxDatabase({
-        ...options,
-        multiInstance: false,
-      });
-      mocks.databases.push(db);
-      return db;
-    },
-  };
-});
-vi.mock("rxdb/plugins/storage-dexie", async () => ({
-  getRxStorageDexie: (await import("rxdb/plugins/storage-memory"))
-    .getRxStorageMemory,
 }));
 vi.mock("../api", () => ({
   ApiError: class extends Error {},
@@ -148,7 +126,6 @@ vi.mock("./entityCacheStorage", async (original) => ({
 const stops: (() => void)[] = [];
 afterEach(async () => {
   for (const stop of stops.splice(0)) stop();
-  await Promise.all(mocks.databases.splice(0).map((db) => db.close()));
   mocks.syncGet.mockReset();
   mocks.watch.mockReset();
   mocks.watchConnection.mockReset();
@@ -734,7 +711,7 @@ it.each([
   { follower: false, staged: true, cancelled: false },
   { follower: false, staged: true, cancelled: true },
 ])(
-  "transport follower=$follower staged=$staged cancelled=$cancelled publishes readiness only after the actual RxDB receipt",
+  "transport follower=$follower staged=$staged cancelled=$cancelled publishes readiness only after the actual projection receipt",
   async ({ follower, staged, cancelled }) => {
     const f = await setup();
     vi.stubGlobal("location", { origin: "http://studio.test" });

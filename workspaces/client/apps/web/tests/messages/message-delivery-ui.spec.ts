@@ -1,6 +1,7 @@
 import { required } from "./helpers.ts";
 import { responseJson } from "./helpers.ts";
-import { requestBody } from "./helpers.ts";
+import { sendReply, sendRoute, sentMessage } from "./send-command.ts";
+import type { MessageDelivery } from "../../src/commands.ts";
 import type { Page, Route } from "@playwright/test";
 import type { Message } from "../../src/types.ts";
 import type { components } from "../../src/generated/api.ts";
@@ -53,17 +54,16 @@ async function setupUncertainRemovePointer(page: Page) {
     state.threads.find((agent) => agent.name === "Release lead"),
   );
   await page.setViewportSize({ width: 1440, height: 960 });
-  await page.route("**/api/messages", (route) => {
-    if (route.request().method() !== "POST") return route.continue();
-    const body = requestBody<import("./helpers.ts").MessageRequest>(route);
-    return route.fulfill({
-      json: {
+  await page.route(
+    "**/api/commands",
+    sendRoute((_route, body, reply) =>
+      reply({
         id: body.id,
         status: "uncertain",
         error: "Fixture cannot confirm delivery",
-      } satisfies import("../../src/api.ts").PostResult<"/api/messages">,
-    });
-  });
+      }),
+    ),
+  );
   await page.goto(origin);
   await page.locator(`[data-chat="${lead.id}"]`).click();
   await page.locator("#message").fill("Uncertain message for hit testing");
@@ -370,12 +370,10 @@ test("message delivery ui", async ({ browser: _browser }) => {
         });
       });
       const posts: Array<{ route: Route; body: MessageRequest }> = [];
-      await page.route("**/api/messages", (route) => {
-        assert.equal(route.request().method(), "POST");
-        posts.push({
-          route,
-          body: requestBody<import("./helpers.ts").MessageRequest>(route),
-        });
+      await page.route("**/api/commands", (route) => {
+        const body = sentMessage(route.request());
+        if (!body) return route.fallback();
+        posts.push({ route, body });
       });
       const publish = async (id: string, items: Message[]) => {
         const payload = {
@@ -434,14 +432,14 @@ test("message delivery ui", async ({ browser: _browser }) => {
       };
       const accept = async (
         sent: (typeof posts)[number],
-        status: import("../../src/api.ts").PostResult<"/api/messages">["status"] = "accepted",
+        status: MessageDelivery["status"] = "accepted",
         expectedDraft = "",
       ) => {
         await sent.route.fulfill({
-          json: {
+          json: sendReply({
             id: sent.body.id,
             status,
-          } satisfies import("../../src/api.ts").PostResult<"/api/messages">,
+          } satisfies MessageDelivery),
         });
         await until(
           async () => !(await page.locator("#send-state").textContent()),
@@ -716,11 +714,11 @@ test("message delivery ui", async ({ browser: _browser }) => {
       const uncertainText = `${mode} uncertain request retains its identity after reload`;
       const uncertain = await start(uncertainText);
       await uncertain.route.fulfill({
-        json: {
+        json: sendReply({
           id: uncertain.body.id,
           status: "uncertain",
           error: "Fixture cannot confirm delivery",
-        } satisfies import("../../src/api.ts").PostResult<"/api/messages">,
+        } satisfies MessageDelivery),
       });
       await row(uncertainText).locator(".message-delivery-error").waitFor();
       assert.equal(await input.inputValue(), uncertainText);
@@ -749,10 +747,10 @@ test("message delivery ui", async ({ browser: _browser }) => {
         );
         assert.deepEqual(attempt.body, uncertain.body);
         await attempt.route.fulfill({
-          json: {
+          json: sendReply({
             id: attempt.body.id,
             status: "accepted",
-          } satisfies import("../../src/api.ts").PostResult<"/api/messages">,
+          } satisfies MessageDelivery),
         });
       }
       await until(
@@ -770,10 +768,10 @@ test("message delivery ui", async ({ browser: _browser }) => {
       const otherDraft = `${mode} draft in second chat`;
       await input.fill(otherDraft);
       await switched.route.fulfill({
-        json: {
+        json: sendReply({
           id: switched.body.id,
           status: "accepted",
-        } satisfies import("../../src/api.ts").PostResult<"/api/messages">,
+        } satisfies MessageDelivery),
       });
       await page.waitForTimeout(250);
       assert.equal(
@@ -891,11 +889,11 @@ test("message delivery ui", async ({ browser: _browser }) => {
       const dismissedText = `${mode} uncertain message removed from this device`;
       const dismissed = await start(dismissedText);
       await dismissed.route.fulfill({
-        json: {
+        json: sendReply({
           id: dismissed.body.id,
           status: "uncertain",
           error: "Fixture cannot confirm delivery",
-        } satisfies import("../../src/api.ts").PostResult<"/api/messages">,
+        } satisfies MessageDelivery),
       });
       await row(dismissedText).locator(".message-delivery-error").waitFor();
       await until(

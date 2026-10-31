@@ -354,7 +354,7 @@ fn post_managed_message(
             || !matches_requested_delivery(&metadata, input.delivery)?
         {
             return Err(CoordinationError::Conflict(
-                "This message id has different content",
+                crate::commands::MESSAGE_ID_CONFLICT,
             ));
         }
     }
@@ -598,7 +598,7 @@ fn send_followup_inner(
             || !matches_requested_delivery(&metadata, delivery)?
         {
             return Err(CoordinationError::Conflict(
-                "This message id has different content",
+                crate::commands::MESSAGE_ID_CONFLICT,
             ));
         }
         studio_runtime_store::system_reads::validate(
@@ -854,7 +854,7 @@ pub fn post_message(
         let message = validated_message(message)?;
         if message.room != input.room || message.author != "user" || message.text != text {
             return Err(CoordinationError::Conflict(
-                "This message id has different content",
+                crate::commands::MESSAGE_ID_CONFLICT,
             ));
         }
         return Ok(message_receipt(message, true));
@@ -1168,7 +1168,7 @@ mod tests {
              CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);")
+             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);")
         ).expect("coordination schema creates");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
@@ -1197,7 +1197,7 @@ mod tests {
              CREATE TABLE IF NOT EXISTS runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
              CREATE TABLE IF NOT EXISTS sync_documents(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE IF NOT EXISTS sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT OR IGNORE INTO sync_generation VALUES(1,0);")
+             CREATE TABLE IF NOT EXISTS durable_rows(seq INTEGER); CREATE TABLE IF NOT EXISTS sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT OR IGNORE INTO sync_generation VALUES(1,0);")
         ).expect("durable test schema creates");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())

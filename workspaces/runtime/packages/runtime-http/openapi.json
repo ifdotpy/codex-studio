@@ -21169,9 +21169,265 @@
         "title": "CodexLoginReceipt",
         "type": "object"
       },
+<<<<<<< head
       "CommandId": {
         "description": "Identity of the outbox command that delivers an answer.",
         "type": "string"
+||||||| base
+=======
+      "CommandRequest": {
+        "description": "One write action. The owner is runtime-schema/src/command.rs.",
+        "discriminator": {
+          "mapping": {
+            "send": "#/components/schemas/CommandRequestSend",
+            "stop": "#/components/schemas/CommandRequestStop",
+            "withdraw": "#/components/schemas/CommandRequestWithdraw"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/CommandRequestSend"
+          },
+          {
+            "$ref": "#/components/schemas/CommandRequestWithdraw"
+          },
+          {
+            "$ref": "#/components/schemas/CommandRequestStop"
+          }
+        ],
+        "title": "CommandRequest"
+      },
+      "CommandRequestSend": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "$ref": "#/components/schemas/CommandSendBody"
+          },
+          "client": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[a-f0-9-]{36}$",
+            "type": "string"
+          },
+          "kind": {
+            "const": "send",
+            "type": "string"
+          },
+          "number": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "target": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "client",
+          "number",
+          "kind",
+          "target",
+          "body"
+        ],
+        "type": "object"
+      },
+      "CommandRequestStop": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "$ref": "#/components/schemas/CommandStopBody"
+          },
+          "client": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[a-f0-9-]{36}$",
+            "type": "string"
+          },
+          "kind": {
+            "const": "stop",
+            "type": "string"
+          },
+          "number": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "target": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "client",
+          "number",
+          "kind",
+          "target",
+          "body"
+        ],
+        "type": "object"
+      },
+      "CommandRequestWithdraw": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "$ref": "#/components/schemas/CommandWithdrawBody"
+          },
+          "client": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[a-f0-9-]{36}$",
+            "type": "string"
+          },
+          "kind": {
+            "const": "withdraw",
+            "type": "string"
+          },
+          "number": {
+            "maximum": 9007199254740991,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "target": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "client",
+          "number",
+          "kind",
+          "target",
+          "body"
+        ],
+        "type": "object"
+      },
+      "CommandResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "ref_id": {
+            "type": "string"
+          },
+          "ref_kind": {
+            "type": "string"
+          },
+          "rev": {
+            "type": "integer"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/CommandRow"
+            },
+            "type": "array"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "applied"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "ref_kind",
+          "ref_id",
+          "rev",
+          "seq",
+          "rows"
+        ],
+        "type": "object"
+      },
+      "CommandRow": {
+        "additionalProperties": false,
+        "properties": {
+          "collection": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "seq": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "collection",
+          "id",
+          "seq",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "CommandSendBody": {
+        "additionalProperties": false,
+        "properties": {
+          "assets": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 8,
+            "type": "array"
+          },
+          "delivery": {
+            "$ref": "#/components/schemas/DeliveryMomentInput"
+          },
+          "text": {
+            "maxLength": 32000,
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "CommandStopBody": {
+        "additionalProperties": false,
+        "properties": {
+          "descendants": {
+            "default": true,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "CommandWithdrawBody": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+>>>>>>> origin/main
       },
       "ComplaintBody": {
         "additionalProperties": false,
@@ -23250,6 +23506,22 @@
             "title": "Action",
             "type": "string"
           },
+          "grant": {
+            "anyOf": [
+              {
+                "enum": [
+                  "full",
+                  "observe"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Grant"
+          },
           "label": {
             "anyOf": [
               {
@@ -23298,6 +23570,22 @@
             ],
             "default": null,
             "title": "Expected User"
+          },
+          "grant": {
+            "anyOf": [
+              {
+                "enum": [
+                  "full",
+                  "observe"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Grant"
           },
           "label": {
             "anyOf": [
@@ -24862,6 +25150,11 @@
               }
             ],
             "title": "Origin"
+          },
+          "proof": {
+            "description": "Signature over the requested nonce with the server identity key; present only when a nonce was sent.",
+            "title": "Proof",
+            "type": "string"
           },
           "protocol": {
             "const": 1,
@@ -29974,6 +30267,22 @@
             ],
             "default": null
           },
+          "online": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/OnlineMigration"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Progress of each online migration by name (docs/online-migrations.md).",
+            "title": "Online"
+          },
           "payloads": {
             "anyOf": [
               {
@@ -33627,6 +33936,65 @@
           }
         },
         "title": "NativeTurnErrorRecordResponse",
+        "type": "object"
+      },
+      "OnlineMigration": {
+        "additionalProperties": false,
+        "description": "Progress of one online migration: batch copy with a high-water mark.",
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "cursor": {
+            "description": "High-water mark: the highest source key copied.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "dirty": {
+            "description": "Changed source keys waiting for a re-copy.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "title": "Dirty",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Error"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PayloadMigrationState"
+          },
+          "updated": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Updated"
+          }
+        },
+        "required": [
+          "cursor",
+          "complete",
+          "status",
+          "updated",
+          "error",
+          "dirty"
+        ],
+        "title": "OnlineMigration",
         "type": "object"
       },
       "OrchestrationSettings": {
@@ -39683,6 +40051,96 @@
         "title": "QueueCapabilities",
         "type": "object"
       },
+<<<<<<< head
+||||||| base
+      "QueueCancelBody": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "cancel",
+            "type": "string"
+          },
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expectedText": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expected_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "request_id": {
+            "maxLength": 200,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "action",
+          "id"
+        ],
+        "type": "object"
+      },
+      "QueueCapabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "receipts": {
+            "title": "Receipts",
+            "type": "boolean"
+          },
+          "reorder": {
+            "title": "Reorder",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reorder",
+          "receipts"
+        ],
+        "title": "QueueCapabilities",
+        "type": "object"
+      },
+      "QueueEditBody": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "const": "edit",
+=======
+      "QueueCapabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "receipts": {
+            "title": "Receipts",
+            "type": "boolean"
+          },
+          "reorder": {
+            "title": "Reorder",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reorder",
+          "receipts"
+        ],
+        "title": "QueueCapabilities",
+        "type": "object"
+      },
+>>>>>>> origin/main
       "QueueEditBody": {
         "additionalProperties": false,
         "properties": {
@@ -46448,6 +46906,7 @@
               "update.export",
               "update.chunk",
               "update.release",
+              "backup.put",
               "task",
               "complaint",
               "context",
@@ -46462,7 +46921,8 @@
               "add_location",
               "remove_location",
               "move_validate",
-              "move_begin"
+              "move_begin",
+              "device_trust"
             ],
             "type": "string"
           },
@@ -52528,6 +52988,13 @@
       "SyncSessionEvent": {
         "additionalProperties": false,
         "properties": {
+          "routes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Routes",
+            "type": "array"
+          },
           "sessionId": {
             "maxLength": 36,
             "minLength": 36,
@@ -52535,7 +53002,8 @@
           }
         },
         "required": [
-          "sessionId"
+          "sessionId",
+          "routes"
         ],
         "title": "SyncSessionEvent",
         "type": "object"
@@ -54361,10 +54829,56 @@
           ]
         }
       },
+<<<<<<< head
       "Timestamp": {
         "description": "Unix seconds.",
         "format": "double",
         "type": "number"
+||||||| base
+=======
+      "TextBlobRef": {
+        "additionalProperties": false,
+        "properties": {
+          "hash": {
+            "title": "Hash",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "hash",
+          "size"
+        ],
+        "title": "TextBlobRef",
+        "type": "object"
+      },
+      "TextBlobResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "hash": {
+            "title": "Hash",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "hash",
+          "size",
+          "text"
+        ],
+        "title": "TextBlobResponse",
+        "type": "object"
+>>>>>>> origin/main
       },
       "TokenRateRecord": {
         "additionalProperties": false,
@@ -55840,6 +56354,18 @@
               }
             ],
             "default": null
+          },
+          "fullTextBlob": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TextBlobRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Fulltextblob"
           },
           "id": {
             "title": "Id",
@@ -69107,6 +69633,131 @@
         "summary": "Claude Session"
       }
     },
+    "/api/commands": {
+      "post": {
+        "operationId": "command_api_commands_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommandResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "$ref": "#/components/headers/AccessControlAllowOrigin"
+              },
+              "Access-Control-Expose-Headers": {
+                "$ref": "#/components/headers/AccessControlExposeHeaders"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "Content-Encoding": {
+                "$ref": "#/components/headers/ContentEncoding"
+              },
+              "Content-Length": {
+                "$ref": "#/components/headers/ContentLength"
+              },
+              "Content-Security-Policy": {
+                "$ref": "#/components/headers/ContentSecurityPolicy"
+              },
+              "Content-Type": {
+                "$ref": "#/components/headers/ContentType"
+              },
+              "Referrer-Policy": {
+                "$ref": "#/components/headers/ReferrerPolicy"
+              },
+              "Server-Timing": {
+                "$ref": "#/components/headers/ServerTiming"
+              },
+              "Vary": {
+                "$ref": "#/components/headers/Vary"
+              },
+              "X-Content-Type-Options": {
+                "$ref": "#/components/headers/XContentTypeOptions"
+              },
+              "X-Studio-API-Schema": {
+                "$ref": "#/components/headers/StudioApiSchema"
+              },
+              "X-Studio-Server": {
+                "$ref": "#/components/headers/StudioServer"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ApiError400",
+            "description": "Bad Request"
+          },
+          "401": {
+            "$ref": "#/components/responses/ApiError401",
+            "description": "Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403",
+            "description": "Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ApiError404",
+            "description": "Not Found"
+          },
+          "408": {
+            "$ref": "#/components/responses/ApiError408",
+            "description": "Request Timeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/ApiError409",
+            "description": "Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/ApiError410",
+            "description": "Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/ApiError413",
+            "description": "Content Too Large"
+          },
+          "415": {
+            "$ref": "#/components/responses/ApiError415",
+            "description": "Unsupported Media Type"
+          },
+          "426": {
+            "$ref": "#/components/responses/ApiError426",
+            "description": "Upgrade Required"
+          },
+          "429": {
+            "$ref": "#/components/responses/ApiError429",
+            "description": "Too Many Requests"
+          },
+          "500": {
+            "$ref": "#/components/responses/ApiError500",
+            "description": "Internal Server Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/ApiError502",
+            "description": "Bad Gateway"
+          },
+          "503": {
+            "$ref": "#/components/responses/ApiError503",
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Command"
+      }
+    },
     "/api/complaint": {
       "get": {
         "operationId": "complaint_detail_api_complaint_get",
@@ -72306,125 +72957,6 @@
           }
         },
         "summary": "Messages"
-      },
-      "post": {
-        "operationId": "post_message_api_messages_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ManagedMessageBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/studio_api__work__models__MessageReceipt"
-                }
-              }
-            },
-            "description": "Successful Response",
-            "headers": {
-              "Access-Control-Allow-Origin": {
-                "$ref": "#/components/headers/AccessControlAllowOrigin"
-              },
-              "Access-Control-Expose-Headers": {
-                "$ref": "#/components/headers/AccessControlExposeHeaders"
-              },
-              "Cache-Control": {
-                "$ref": "#/components/headers/CacheControl"
-              },
-              "Content-Encoding": {
-                "$ref": "#/components/headers/ContentEncoding"
-              },
-              "Content-Length": {
-                "$ref": "#/components/headers/ContentLength"
-              },
-              "Content-Security-Policy": {
-                "$ref": "#/components/headers/ContentSecurityPolicy"
-              },
-              "Content-Type": {
-                "$ref": "#/components/headers/ContentType"
-              },
-              "Referrer-Policy": {
-                "$ref": "#/components/headers/ReferrerPolicy"
-              },
-              "Server-Timing": {
-                "$ref": "#/components/headers/ServerTiming"
-              },
-              "Vary": {
-                "$ref": "#/components/headers/Vary"
-              },
-              "X-Content-Type-Options": {
-                "$ref": "#/components/headers/XContentTypeOptions"
-              },
-              "X-Studio-API-Schema": {
-                "$ref": "#/components/headers/StudioApiSchema"
-              },
-              "X-Studio-Server": {
-                "$ref": "#/components/headers/StudioServer"
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ApiError400",
-            "description": "Bad Request"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "408": {
-            "$ref": "#/components/responses/ApiError408",
-            "description": "Request Timeout"
-          },
-          "409": {
-            "$ref": "#/components/responses/ApiError409",
-            "description": "Conflict"
-          },
-          "410": {
-            "$ref": "#/components/responses/ApiError410",
-            "description": "Gone"
-          },
-          "413": {
-            "$ref": "#/components/responses/ApiError413",
-            "description": "Content Too Large"
-          },
-          "415": {
-            "$ref": "#/components/responses/ApiError415",
-            "description": "Unsupported Media Type"
-          },
-          "426": {
-            "$ref": "#/components/responses/ApiError426",
-            "description": "Upgrade Required"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "502": {
-            "$ref": "#/components/responses/ApiError502",
-            "description": "Bad Gateway"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "Post Message"
       }
     },
     "/api/messages/receipts": {
@@ -73601,6 +74133,16 @@
     "/api/multi-server/v1/identity": {
       "get": {
         "operationId": "discovery_identity_api_multi_server_v1_identity_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "nonce",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -76581,7 +77123,6 @@
               "schema": {
                 "discriminator": {
                   "mapping": {
-                    "cancel": "#/components/schemas/QueueCancelBody",
                     "edit": "#/components/schemas/QueueEditBody",
                     "first": "#/components/schemas/QueueFirstBody",
                     "reorder": "#/components/schemas/QueueReorderBody",
@@ -76590,9 +77131,6 @@
                   "propertyName": "action"
                 },
                 "oneOf": [
-                  {
-                    "$ref": "#/components/schemas/QueueCancelBody"
-                  },
                   {
                     "$ref": "#/components/schemas/QueueEditBody"
                   },
@@ -77873,131 +78411,6 @@
           }
         },
         "summary": "Skills"
-      }
-    },
-    "/api/stop": {
-      "post": {
-        "operationId": "stop_api_stop_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/StopRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StopResponse"
-                }
-              }
-            },
-            "description": "Successful Response",
-            "headers": {
-              "Access-Control-Allow-Origin": {
-                "$ref": "#/components/headers/AccessControlAllowOrigin"
-              },
-              "Access-Control-Expose-Headers": {
-                "$ref": "#/components/headers/AccessControlExposeHeaders"
-              },
-              "Cache-Control": {
-                "$ref": "#/components/headers/CacheControl"
-              },
-              "Content-Encoding": {
-                "$ref": "#/components/headers/ContentEncoding"
-              },
-              "Content-Length": {
-                "$ref": "#/components/headers/ContentLength"
-              },
-              "Content-Security-Policy": {
-                "$ref": "#/components/headers/ContentSecurityPolicy"
-              },
-              "Content-Type": {
-                "$ref": "#/components/headers/ContentType"
-              },
-              "Referrer-Policy": {
-                "$ref": "#/components/headers/ReferrerPolicy"
-              },
-              "Server-Timing": {
-                "$ref": "#/components/headers/ServerTiming"
-              },
-              "Vary": {
-                "$ref": "#/components/headers/Vary"
-              },
-              "X-Content-Type-Options": {
-                "$ref": "#/components/headers/XContentTypeOptions"
-              },
-              "X-Studio-API-Schema": {
-                "$ref": "#/components/headers/StudioApiSchema"
-              },
-              "X-Studio-Server": {
-                "$ref": "#/components/headers/StudioServer"
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ApiError400",
-            "description": "Bad Request"
-          },
-          "401": {
-            "$ref": "#/components/responses/ApiError401",
-            "description": "Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/ApiError403",
-            "description": "Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/ApiError404",
-            "description": "Not Found"
-          },
-          "408": {
-            "$ref": "#/components/responses/ApiError408",
-            "description": "Request Timeout"
-          },
-          "409": {
-            "$ref": "#/components/responses/ApiError409",
-            "description": "Conflict"
-          },
-          "410": {
-            "$ref": "#/components/responses/ApiError410",
-            "description": "Gone"
-          },
-          "413": {
-            "$ref": "#/components/responses/ApiError413",
-            "description": "Content Too Large"
-          },
-          "415": {
-            "$ref": "#/components/responses/ApiError415",
-            "description": "Unsupported Media Type"
-          },
-          "426": {
-            "$ref": "#/components/responses/ApiError426",
-            "description": "Upgrade Required"
-          },
-          "429": {
-            "$ref": "#/components/responses/ApiError429",
-            "description": "Too Many Requests"
-          },
-          "500": {
-            "$ref": "#/components/responses/ApiError500",
-            "description": "Internal Server Error"
-          },
-          "502": {
-            "$ref": "#/components/responses/ApiError502",
-            "description": "Bad Gateway"
-          },
-          "503": {
-            "$ref": "#/components/responses/ApiError503",
-            "description": "Service Unavailable"
-          }
-        },
-        "summary": "Stop"
       }
     },
     "/api/studio-errors": {
@@ -80275,6 +80688,47 @@
           }
         },
         "summary": "Transcript"
+      }
+    },
+    "/api/transcript/blob": {
+      "get": {
+        "operationId": "transcript_blob_api_transcript_blob_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "hash",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextBlobResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "$ref": "#/components/responses/ApiError403"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Not Found"
+          }
+        },
+        "summary": "Transcript Blob"
       }
     },
     "/api/transcript/item": {
