@@ -1,8 +1,8 @@
 //! Typed shape of Claude options stored in account registry records.
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Number, Value};
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeOptionsRecord {
     #[serde(default, deserialize_with = "optional_integer")]
@@ -15,7 +15,7 @@ pub struct ClaudeOptionsRecord {
     pub extensions: Map<String, Value>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ClaudeCustomModelRecord {
     pub id: String,
     pub label: String,
