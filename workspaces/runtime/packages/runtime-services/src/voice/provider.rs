@@ -804,6 +804,13 @@ async fn stored_speech_receipt(
         .await
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApprovalSpeechMetadata {
+    request_id: Option<String>,
+    fingerprint: Option<String>,
+}
+
 enum ApprovalDispatch {
     Replay(Value),
     MonitorUnavailable,
@@ -836,9 +843,9 @@ pub async fn is_monitor_approval(
             if speech.agent != agent_id || speech.kind != "orchestrator" {
                 return Ok(false);
             }
-            let metadata: Value =
+            let metadata: ApprovalSpeechMetadata =
                 serde_json::from_str(&speech.payload).map_err(|_| VoiceProviderError::Operation)?;
-            let Some(request_id) = metadata.get("request_id").and_then(Value::as_str) else {
+            let Some(request_id) = metadata.request_id.as_deref() else {
                 return Ok(false);
             };
             let request = connection
@@ -851,9 +858,9 @@ pub async fn is_monitor_approval(
             let Some(request) = request else {
                 return Ok(false);
             };
-            let request: Value =
+            let request: studio_runtime_schema::request_record::RequestRecord =
                 serde_json::from_str(&request).map_err(|_| VoiceProviderError::Operation)?;
-            Ok(request.get("method").and_then(Value::as_str) == Some("monitor/approve"))
+            Ok(request.method() == Some("monitor/approve"))
         })
         .await
 }
@@ -1076,11 +1083,10 @@ async fn reserve_approval(
         if speech.agent != agent_id || speech.kind != "orchestrator" {
             return Err(policy::VoiceError::UnknownSession.into());
         }
-        let metadata: Value = serde_json::from_str(&speech.payload)
+        let metadata: ApprovalSpeechMetadata = serde_json::from_str(&speech.payload)
             .map_err(|_| VoiceProviderError::Operation)?;
         let request_id = metadata
-            .get("request_id")
-            .and_then(Value::as_str)
+            .request_id.as_deref()
             .filter(|id| !id.is_empty())
             .ok_or(VoiceProviderError::Operation)?
             .to_owned();
@@ -1134,7 +1140,7 @@ async fn reserve_approval(
         if current.get("agent").and_then(Value::as_str) != Some(agent_id.as_str())
             || current.get("status").and_then(Value::as_str) != Some("pending")
             || !method.is_some_and(|method| super::APPROVAL_METHODS.contains(&method))
-            || metadata.get("fingerprint").and_then(Value::as_str) != Some(fingerprint.as_str())
+            || metadata.fingerprint.as_deref() != Some(fingerprint.as_str())
             || current.get("epoch").and_then(Value::as_i64) != Some(actor.epoch)
             || actor.auto_wake != Some(true)
         {
@@ -2075,6 +2081,51 @@ mod tests {
     use super::*;
     use crate::voice::runtime::VoiceFuture;
     use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn monitor_approval_rejects_invalid_stored_request() {
+        let (_directory, store) = voice_outbox_fixture().await;
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('speech','agent','session','orchestrator','','','',?1,1)", [r#"{"request_id":"r"}"#])?;
+            tx.execute("INSERT INTO runtime_requests(id,record) VALUES('r',?1)", [r#"{"id":"r","method":"monitor/approve","status":false}"#])?;
+            Ok(())
+        }).await.expect("seed approval");
+        assert!(
+            is_monitor_approval(&store, "agent", "speech")
+                .await
+                .is_err()
+        );
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_requests SET record=?1 WHERE id='r'",
+                    [r#"{"id":"r","method":"monitor/approve","status":"pending"}"#],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("repair request");
+        assert!(
+            is_monitor_approval(&store, "agent", "speech")
+                .await
+                .expect("valid request")
+        );
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE voice_records SET payload=?1 WHERE id='speech'",
+                    [r#"{"request_id":false}"#],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("invalidate speech metadata");
+        assert!(
+            is_monitor_approval(&store, "agent", "speech")
+                .await
+                .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn voice_outbox_captures_deleted_owner_authority() {
