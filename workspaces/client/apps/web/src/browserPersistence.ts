@@ -23,6 +23,7 @@ const outboxPrefixes = {
   projectSave: "studio-peer-convert:",
   queueChange: "studio-queue-change:",
   removeSending: "studio-remove-sending:",
+  sidebarOrder: "codex-sidebar-order:",
   serverAccess: "studio-server-access-pending",
   pairing: "studio-pairing-attempt-v1",
   serverManagement: "studio-server-management-v1:",
@@ -138,6 +139,8 @@ export async function cleanupLegacyPersistence(
     const logical = key.replace(/^:server:[^:]+:/, "");
     if (
       retiredKeys.some((prefix) => logical.startsWith(prefix)) ||
+      (logical.startsWith(outboxPrefixes.sidebarOrder) &&
+        !logical.endsWith(":pending")) ||
       (logical.startsWith(outboxPrefixes.chatCreation) &&
         /:(?:rejected|dismissed):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
           logical,

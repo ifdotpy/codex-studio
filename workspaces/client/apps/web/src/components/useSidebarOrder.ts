@@ -1,3 +1,4 @@
+import { outboxRequests } from "../browserPersistence";
 import { randomUUID } from "../uuid";
 import {
   localSidebarServices,
@@ -54,11 +55,19 @@ export function useSidebarOrder(
   services: SidebarServices = localSidebarServices,
   sessionToken?: string,
 ) {
-  const { saved, save, storage: localStorage } = services.cache;
+  const outbox = outboxRequests(services.cache.storage);
+  const prefix = outbox.key("sidebarOrder", "");
+  if (!key.startsWith(prefix)) throw new Error("Invalid sidebar order scope.");
+  const pendingSuffix = `${key.slice(prefix.length)}:pending`;
+  const readPending = (): Pending | null => {
+    try {
+      return JSON.parse(outbox.get("sidebarOrder", pendingSuffix) || "null");
+    } catch {
+      return null;
+    }
+  };
   const requestBackend = useRef<SidebarBackend | null>(null);
-  const [order, setOrder] = useState<Order>(
-    () => server?.groups || saved(key, {}),
-  );
+  const [order, setOrder] = useState<Order>(() => server?.groups || {});
   const revision = useRef(-1);
   const busy = useRef(false);
   // The newest server order. A move keeps its own order on screen until its request ends.
@@ -69,10 +78,8 @@ export function useSidebarOrder(
     revision.current = value.revision;
     if (value.groups !== null) {
       setOrder(value.groups);
-      save(key, value.groups);
     }
   };
-  const pendingKey = `${key}:pending`;
   const drag = useRef<Drag | null>(null);
   const [target, setTarget] = useState<(Drag & { after: boolean }) | null>(
     null,
@@ -81,7 +88,7 @@ export function useSidebarOrder(
   const [destination, setDestination] = useState<string | null>(null);
   useEffect(() => {
     revision.current = -1;
-    setOrder(saved(key, {}));
+    setOrder(server?.groups || {});
   }, [key]);
   useEffect(() => {
     const migrationTarget = { kind: "order" as const, group: "projects" };
@@ -92,28 +99,8 @@ export function useSidebarOrder(
       return;
     if (busy.current) return;
     adoptServerOrder(server);
-    const pending = saved<Pending | null>(pendingKey, null);
-    if (pending?.body) {
-      void send(pending);
-    } else if (
-      server.groups === null &&
-      Object.values(saved<Order>(key, {})).some((ids) => ids.length > 0)
-    ) {
-      const backend = services.owner(migrationTarget);
-      requestBackend.current = backend;
-      void send({
-        ...(backend.ownerId === services.cache.ownerId
-          ? {}
-          : { ownerId: backend.ownerId }),
-        body: {
-          action: "reorder",
-          request_id: randomUUID(),
-          expected_revision: server.revision,
-          groups: saved(key, {}),
-          migration: true,
-        },
-      });
-    }
+    const pending = readPending();
+    if (pending?.body) void send(pending);
     // The server revision controls this effect. The request keeps its exact body.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, server?.revision, server?.groups, sessionToken, services]);
@@ -122,7 +109,7 @@ export function useSidebarOrder(
     busy.current = true;
     let clearPending = false;
     try {
-      localStorage.setItem(pendingKey, JSON.stringify(request));
+      outbox.set("sidebarOrder", pendingSuffix, JSON.stringify(request));
       if (optimistic) setOrder(optimistic);
       const backend =
         requestBackend.current ||
@@ -137,7 +124,6 @@ export function useSidebarOrder(
       if (result.revision >= revision.current) {
         revision.current = result.revision;
         setOrder(result.groups || {});
-        save(key, result.groups || {});
       }
       adoptServerOrder(latestServer.current);
       try {
@@ -176,7 +162,7 @@ export function useSidebarOrder(
       return false;
     } finally {
       busy.current = false;
-      if (clearPending) localStorage.removeItem(pendingKey);
+      if (clearPending) outbox.remove("sidebarOrder", pendingSuffix);
     }
   };
   const rank = (group: string, id: string) => {
@@ -197,11 +183,10 @@ export function useSidebarOrder(
     if (
       !sidebarOrderCanWrite(sessionToken, services.available?.(target)) ||
       !server ||
-      server.groups === null ||
       busy.current
     )
       return;
-    if (saved<Pending | null>(pendingKey, null)) {
+    if (readPending()) {
       notify?.(
         "Retry the saved sidebar order request before moving another item.",
       );

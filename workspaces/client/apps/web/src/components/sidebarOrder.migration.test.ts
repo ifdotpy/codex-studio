@@ -48,20 +48,24 @@ it.each(["empty", "empty-group", "legacy", "pending"] as const)(
       cache: {
         ownerId: "local",
         saved: (key: string, fallback: unknown) =>
-          key === "order"
+          key === "codex-sidebar-order:order"
             ? groups
-            : key === "order:pending"
+            : key === "codex-sidebar-order:order:pending"
               ? pending
               : fallback,
         save: vi.fn(),
-        storage: { setItem: vi.fn(), removeItem: vi.fn() },
+        storage: {
+          getItem: () => (pending ? JSON.stringify(pending) : null),
+          setItem: vi.fn(),
+          removeItem: vi.fn(),
+        },
       },
       owner: () => backend,
       byOwner: () => backend,
       available: () => true,
     } as unknown as SidebarServices;
     useSidebarOrder(
-      "order",
+      "codex-sidebar-order:order",
       { revision: 0, groups: null },
       undefined,
       undefined,
@@ -71,8 +75,7 @@ it.each(["empty", "empty-group", "legacy", "pending"] as const)(
     for (const effect of h.effects.splice(0)) effect();
     await Promise.resolve();
     await Promise.resolve();
-    if (scenario === "empty" || scenario === "empty-group")
-      expect(post).not.toHaveBeenCalled();
+    if (scenario !== "pending") expect(post).not.toHaveBeenCalled();
     else {
       expect(post).toHaveBeenCalledTimes(1);
       expect(required(required(post.mock.calls[0])[1])).toEqual(
@@ -81,3 +84,49 @@ it.each(["empty", "empty-group", "legacy", "pending"] as const)(
     }
   },
 );
+
+it("allows an explicit reorder when the server has no previous order", async () => {
+  const post = vi.fn(async (_path: string, _body: unknown) => ({
+    revision: 1,
+    groups: { projects: ["two", "one"] },
+  }));
+  const backend = { ownerId: "local", post };
+  const services = {
+    cache: {
+      ownerId: "local",
+      storage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() },
+    },
+    owner: () => backend,
+    byOwner: () => backend,
+    available: () => true,
+  } as unknown as SidebarServices;
+  const sorting = useSidebarOrder(
+    "codex-sidebar-order:scope",
+    { revision: 1, groups: null },
+    undefined,
+    undefined,
+    services,
+    "session",
+  );
+  for (const effect of h.effects.splice(0)) effect();
+  const first = sorting.bindings("projects", "one", ["one", "two"]);
+  const second = sorting.bindings("projects", "two", ["one", "two"]);
+  first.onDragStart({
+    stopPropagation() {},
+    dataTransfer: { effectAllowed: "", setData() {} },
+  } as never);
+  second.onDrop({
+    preventDefault() {},
+    stopPropagation() {},
+    clientY: 100,
+    currentTarget: { getBoundingClientRect: () => ({ top: 0, height: 100 }) },
+  } as never);
+  await Promise.resolve();
+  expect(post).toHaveBeenCalledOnce();
+  expect(required(required(post.mock.calls[0])[1])).toEqual(
+    expect.objectContaining({
+      action: "reorder",
+      groups: { projects: ["two", "one"] },
+    }),
+  );
+});

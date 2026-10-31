@@ -196,14 +196,6 @@
     "callee": "localStorage"
   },
   {
-    "file": "components/useSidebarOrder.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/useSidebarOrder.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
     "file": "hooks.ts",
     "callee": "syncGet"
   },
