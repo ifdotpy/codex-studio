@@ -3,7 +3,7 @@ use crate::{
     AgentRecord, AgentRepository, CheckpointsRepository, StoreError, StoreResult, Table,
     WorkspaceOperationRecord,
 };
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, Transaction, params};
 use serde_json::Value;
 
 pub const MAX_CHECKPOINT_LINEAGE: usize = 16_384;
@@ -20,15 +20,7 @@ impl WorkspaceOperationsRepository {
         agent: &str,
         turn: Option<&str>,
     ) -> StoreResult<bool> {
-        let key = format!("{agent}:{}", turn.unwrap_or("None"));
-        Ok(connection
-            .query_row(
-                "SELECT 1 FROM runtime_completed_turns WHERE id=?1",
-                [key],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some())
+        crate::domain::turn_completed(connection, agent, turn.unwrap_or("None"))
     }
     pub fn operation(
         connection: &Connection,
