@@ -493,6 +493,28 @@ async fn receipt_refuses_changed_raw_params_without_reexecution() {
 }
 
 #[tokio::test]
+async fn sync_mode_uses_typed_file_entries() {
+    let fixture = Fixture::new();
+    let acquire = json!({"operationId":"mode-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});
+    fixture
+        .call("mode-acquire", "acquire", acquire)
+        .await
+        .unwrap();
+    let entry = json!({"kind":"file", "bytes":1, "mode":420, "sha256":"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"});
+    let batch = json!({"operationId":"mode-test","agentId":"agent","items":[{"path":"file","entry":entry,"data":"eA=="}]});
+    fixture
+        .call("mode-batch", "sync.batch", batch)
+        .await
+        .unwrap();
+    let mode = json!({"operationId":"mode-test","agentId":"agent","items":[{"path":"file","entry":{"kind":"file", "bytes":1, "mode":493, "sha256":"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"}}]});
+    let result = fixture
+        .call("mode-change", "sync.mode", mode)
+        .await
+        .unwrap();
+    assert_eq!(result["entries"], 1);
+}
+
+#[tokio::test]
 async fn prime_checks_typed_cache_paths_at_the_request_boundary() {
     let fixture = Fixture::new();
     let acquire = json!({"operationId":"prime-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});

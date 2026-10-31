@@ -160,6 +160,20 @@ struct PrimeParams {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct SyncModeParams {
+    operation_id: String,
+    agent_id: String,
+    items: Vec<SyncModeItem>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub(crate) struct SyncModeItem {
+    path: String,
+    entry: protocol::ManifestEntry,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ResultManifestParams {
     operation_id: String,
     agent_id: String,
@@ -190,6 +204,7 @@ enum FrameParams {
     Run(RunParams),
     Manifest(ManifestParams),
     Prime(PrimeParams),
+    SyncMode(SyncModeParams),
     ResultManifest(ResultManifestParams),
     // Existing dispatch until each remaining method has its own typed variant.
     Legacy(Map<String, Value>),
@@ -686,7 +701,6 @@ impl HostService {
         let mac_only = string_list(&op, "macOnly");
         match method {
             "sync.clone" => self.sync_clone(&op, &slot, params).await,
-            "sync.mode" => self.sync_mode(&op, &slot, mac_only, params).await,
             "sync.batch" => self.sync_batch(&op, &slot, params),
             method if method.starts_with("sync.") => {
                 self.sync_entry(method, &identity, &op, &slot, &mac_only, params)
@@ -744,6 +758,17 @@ impl HostService {
                 )?;
                 let slot = self.slot(&op)?;
                 self.prime_request(&params.operation_id, &op, &slot, &params.caches)
+                    .await
+            }
+            FrameParams::SyncMode(params) => {
+                let op = self.load(&params.operation_id)?;
+                require(
+                    text(&op, "agentId") == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                self.sync_mode(&op, &slot, string_list(&op, "macOnly"), &params.items)
                     .await
             }
             FrameParams::ResultManifest(params) => {
@@ -894,6 +919,10 @@ impl HostService {
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
             "prime" => FrameParams::Prime(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "sync.mode" => FrameParams::SyncMode(
                 serde_json::from_str(raw)
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),

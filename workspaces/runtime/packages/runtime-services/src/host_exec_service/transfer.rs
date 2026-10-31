@@ -11,7 +11,7 @@ use base64::Engine;
 use serde_json::{Map, Value, json};
 
 use super::protocol::{self, Failure, HostExecError, INVALID, Manifest, Outcome, require};
-use super::{HostService, Op, clone_ffi, integer, slots, text};
+use super::{HostService, Op, SyncModeItem, clone_ffi, integer, slots, text};
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 /// Largest hash cache of a project folder before it starts again.
@@ -444,18 +444,20 @@ impl HostService {
 
     /// Change only the mode of slot files whose content the guest's entry already
     /// has. The hash cache keeps each known hash with the new change time.
-    fn set_modes(slot: &Path, mac_only: &[String], items: &[Value]) -> Outcome<()> {
+    fn set_modes(slot: &Path, mac_only: &[String], items: &[SyncModeItem]) -> Outcome<()> {
         let cache = slot.join("hash-cache.json");
         let mut hashes = protocol::load_hashes(&cache);
         for item in items {
-            let entry = item
-                .get("entry")
-                .filter(|entry| entry.is_object())
-                .ok_or_else(|| HostExecError::new(INVALID, "Invalid mode change"))?;
-            let mode = file_mode(entry)
-                .filter(|_| entry.get("kind").and_then(Value::as_str) == Some("file"))
-                .ok_or_else(|| HostExecError::new(INVALID, "Invalid mode change"))?;
-            let name = protocol::relative(item.get("path"))?;
+            let protocol::ManifestEntry::File {
+                bytes,
+                mode,
+                sha256,
+            } = &item.entry
+            else {
+                return Err(HostExecError::new(INVALID, "Invalid mode change").into());
+            };
+            require(*mode <= 0o777, "Invalid mode change", INVALID)?;
+            let name = protocol::relative(Some(&protocol::text_value(&item.path)))?;
             require(
                 !protocol::under(&name, mac_only),
                 "The path stays on the host (macOnly)",
@@ -477,9 +479,8 @@ impl HostService {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let bytes = integer(entry.get("bytes")).and_then(|bytes| u64::try_from(bytes).ok());
             require(
-                info.is_file() && Some(info.size()) == bytes,
+                info.is_file() && info.size() == *bytes,
                 "The slot file differs",
                 "sync_conflict",
             )?;
@@ -493,11 +494,11 @@ impl HostService {
                 None => protocol::digest_file(&path)?.0,
             };
             require(
-                entry.get("sha256").and_then(Value::as_str) == Some(checksum.as_str()),
+                *sha256 == checksum,
                 "The slot file differs",
                 "sync_conflict",
             )?;
-            set_mode(&path, mode)?;
+            set_mode(&path, *mode)?;
             let after = fs::symlink_metadata(&path)?;
             let after_stamp = protocol::stamp(&after);
             if known.is_some()
@@ -517,19 +518,19 @@ impl HostService {
         op: &Op,
         slot: &Path,
         mac_only: Vec<String>,
-        params: &Map<String, Value>,
+        items: &[SyncModeItem],
     ) -> Outcome<Value> {
         require(
             text(op, "state") == "leased",
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
-        let items = match params.get("items") {
-            Some(Value::Array(items)) if !items.is_empty() && items.len() <= MAX_MODE_ITEMS => {
-                items.clone()
-            }
-            _ => return Err(HostExecError::new(INVALID, "Invalid mode changes").into()),
-        };
+        require(
+            !items.is_empty() && items.len() <= MAX_MODE_ITEMS,
+            "Invalid mode changes",
+            INVALID,
+        )?;
+        let items = items.to_vec();
         let count = items.len();
         let slot = slot.to_path_buf();
         studio_runtime_store::blocking_pool::spawn_blocking(
