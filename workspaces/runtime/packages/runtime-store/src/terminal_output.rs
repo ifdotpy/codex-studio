@@ -167,9 +167,9 @@ impl RuntimeStore {
     /// A new connection to the archive, for test assertions only.
     #[cfg(any(test, feature = "test-support"))]
     pub fn test_terminal_output(&self) -> StoreResult<Connection> {
-        Ok(crate::open_database(
+        crate::open_database(
             &self.root.join(TERMINAL_OUTPUT_DATABASE),
             OpenFlags::SQLITE_OPEN_READ_WRITE,
-        )?)
+        )
     }
 }
