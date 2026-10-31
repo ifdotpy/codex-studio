@@ -243,7 +243,7 @@ mod tests {
         );
         store.transaction(|tx| {
             for id in ["workspace", "other"] {
-                AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":id,"rootId":id,"epoch":0,"status":"idle","provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
+                AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":id,"rootId":id,"epoch":0,"status":"idle","provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
             }
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('a','workspace','user','A','pending',1,0),('b','workspace','user','B','pending',2,0)", [])?;
             Ok(())
@@ -462,7 +462,7 @@ mod tests {
         let (_app, store, _directory) = app_with_queue().await;
         store
             .transaction(|tx| {
-                AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"kid","rootId":"workspace","parentId":"workspace","epoch":0,"status":"idle","provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
+                AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"kid","rootId":"workspace","parentId":"workspace","epoch":0,"status":"idle","provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
                 tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('k','kid','user','K','pending',3,0)", [])?;
                 Ok(())
             })

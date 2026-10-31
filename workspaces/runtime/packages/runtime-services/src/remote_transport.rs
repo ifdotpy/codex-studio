@@ -448,6 +448,7 @@ fn multi_server_signed_headers_normalized(
 /// the sender state, server is the recipient state). It also carries the retired
 /// federation signature for one release, so a peer on the previous build still
 /// accepts it. A receiver that knows the unified headers ignores the retired ones.
+#[allow(clippy::too_many_arguments)]
 pub fn federation_signed_headers(
     identity: &RemoteIdentity,
     server_id: &str,
@@ -456,25 +457,26 @@ pub fn federation_signed_headers(
     timestamp: i64,
     nonce: &str,
     body: &[u8],
-    now: i64,
 ) -> RemoteTransportResult<Vec<(String, String)>> {
-    validate_federation_nonce(nonce, timestamp, now)?;
+    validate_federation_nonce(nonce, timestamp, timestamp)?;
     let path = canonical_request_target(url)?;
     let signature = identity.sign(&federation_signing_bytes(
         method, &path, timestamp, nonce, body,
     ));
+    // A request id must start with a letter or digit; a random nonce can start with `-` or `_`.
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let mut headers = multi_server_signed_headers(
         identity,
         &MultiServerRequest {
             server_id,
             method,
             url,
-            request_id: &new_nonce()?,
+            request_id: &request_id,
             timestamp,
             nonce,
             body,
         },
-        now,
+        timestamp,
     )?;
     headers.extend([
         ("X-Studio-Federation-State".to_owned(), identity.id.clone()),
@@ -2111,7 +2113,6 @@ pub(crate) mod tests {
                 1_700_000_000,
                 nonce,
                 body,
-                1_700_000_000,
             )
             .expect("federation headers sign exact path")
             .iter()

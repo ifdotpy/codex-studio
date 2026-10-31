@@ -22,10 +22,13 @@ async fn insert(store: &RuntimeStore, rows: i64) {
 async fn a_slow_write_transaction_raises_one_alert() {
     let state = tempfile::tempdir().expect("state");
     let store = RuntimeStore::open(Some(state.path())).await.expect("open");
-    store.set_write_alert_threshold(Duration::from_millis(50));
+    // A loaded machine can stall any commit, so the quiet case uses a threshold
+    // far above scheduling noise and the slow case one far below its sleep.
+    store.set_write_alert_threshold(Duration::from_secs(60));
     let before = store.write_alerts();
     insert(&store, 1).await;
     assert_eq!(store.write_alerts(), before, "a fast transaction is quiet");
+    store.set_write_alert_threshold(Duration::from_millis(50));
     store
         .transaction(|_| {
             // The injected slow transaction.

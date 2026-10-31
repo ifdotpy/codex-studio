@@ -134,7 +134,7 @@ impl FederationMessagingRepository {
         value: &Value,
     ) -> StoreResult<()> {
         table.validate(id, value)?;
-        let raw = crate::python_json_compact(value);
+        let raw = serde_json::to_string(value)?;
         if raw.len() > MAX_RECORD_BYTES {
             return Err(StoreError::InvalidStoredObject {
                 table: table.name(),
@@ -242,6 +242,41 @@ pub(crate) fn queued_outbox_size(db: &Connection, peer: &str) -> StoreResult<(u6
 mod tests {
     use super::FederationMessagingRepository;
     use rusqlite::Connection;
+
+    #[test]
+    fn federation_record_write_uses_native_json() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_federation_settings(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let record = serde_json::json!({"enabled":true,"number":1e-6});
+        let tx = db.transaction().unwrap();
+        FederationMessagingRepository::put(
+            &tx,
+            super::FederationTable::Settings,
+            "settings",
+            "",
+            &record,
+        )
+        .unwrap();
+        let raw: String = tx
+            .query_row("SELECT record FROM runtime_federation_settings", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(raw, record.to_string());
+        assert_eq!(
+            FederationMessagingRepository::record(
+                &tx,
+                super::FederationTable::Settings,
+                "settings",
+                ""
+            )
+            .unwrap(),
+            Some(record)
+        );
+    }
 
     #[test]
     fn queued_outbox_size_counts_utf8_bytes() {

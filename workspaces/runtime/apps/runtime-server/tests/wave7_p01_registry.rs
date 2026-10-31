@@ -5058,7 +5058,7 @@ async fn backend_restart_keeps_live_work_and_ends_the_stopped_turn_once() {
     );
     ports
         .execute(
-            &studio_runtime_services::agent_management::Action::Pause {
+            &studio_runtime_services::agent_management::Action::Stop {
                 target: b.clone(),
                 descendants: false,
                 reason: None,

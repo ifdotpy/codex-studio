@@ -909,7 +909,7 @@ fn sync_seed_rows(path: &Path) -> Vec<String> {
     db.prepare(
         "SELECT json_array('identity',id) FROM sync_identity
          UNION ALL SELECT json_array('generation',id,value) FROM sync_generation
-         UNION ALL SELECT json_array('meta',key,value) FROM sync_entity_meta
+         UNION ALL SELECT json_array('meta',key,value) FROM sync_entity_meta WHERE key != 'migration_catalog'
          UNION ALL SELECT json_array('document',seq,scope,id,payload,deleted) FROM sync_documents
          UNION ALL SELECT json_array('entity',collection,id,seq,hash,payload,deleted) FROM sync_entities
          UNION ALL SELECT json_array('event',id,agent,kind,text,status,created,epoch,turn_id,error) FROM runtime_events

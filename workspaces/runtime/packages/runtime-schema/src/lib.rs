@@ -21,6 +21,7 @@ pub mod complaint_record;
 pub mod complaints;
 pub mod continuation_snapshot;
 pub mod contracts;
+pub mod creation_intent;
 pub mod delivery;
 pub mod desktop;
 pub mod event_metadata;

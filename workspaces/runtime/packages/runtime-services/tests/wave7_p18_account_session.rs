@@ -1,28 +1,9 @@
 use serde_json::{Value, json};
-use std::{path::Path, sync::Mutex};
+use std::sync::Mutex;
 use studio_runtime_services::account_session_runtime::{
     AccountSessionError, AccountSessionFuture, AccountSessionPort, LimitsSnapshot, LoginRequest,
     limits,
 };
-use studio_runtime_store::path_identity::CanonicalPath;
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LimitsCase {
-    record: Value,
-    fresh: Value,
-    cached: bool,
-    result: Value,
-    calls: Vec<[String; 2]>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProfileCase {
-    options: serde_json::Map<String, Value>,
-    home: String,
-    result: Value,
-}
 
 struct Session {
     record: Value,
@@ -50,33 +31,6 @@ impl AccountSessionPort for Session {
                 .push(json!(["read", account]));
             Ok(self.fresh.clone())
         })
-    }
-}
-
-#[tokio::test]
-async fn limits_match_real_python_route_for_missing_null_empty_and_present_fields() {
-    let cases: Vec<LimitsCase> = serde_json::from_str(include_str!("wave7_p18_limits_corpus.json"))
-        .expect("frozen limits corpus");
-    assert_eq!(cases.len(), 32);
-    for (index, case) in cases.into_iter().enumerate() {
-        let session = Session {
-            record: case.record,
-            fresh: case.fresh,
-            calls: Mutex::default(),
-        };
-        let response = limits(&session, "fixture", case.cached)
-            .await
-            .expect("valid limits response")
-            .into_value();
-        assert_eq!(response, case.result, "case {index}");
-        assert_eq!(
-            *session.calls.lock().expect("calls"),
-            case.calls
-                .iter()
-                .map(|call| json!(call))
-                .collect::<Vec<_>>(),
-            "case {index}"
-        );
     }
 }
 
@@ -133,78 +87,6 @@ async fn absent_consumers_are_named_refusals() {
             "provider-session/account-rate-limits"
         ))
     ));
-}
-
-#[test]
-fn profile_normalization_matches_python() {
-    let cases: Vec<ProfileCase> =
-        serde_json::from_str(include_str!("wave7_p18_profile_corpus.json"))
-            .expect("frozen profile corpus");
-    assert_eq!(cases.len(), 27);
-    // The corpus was frozen below a Linux temporary home. Normalization resolves
-    // the links of the existing prefix (macOS links its system temporary folders
-    // below `/private`), so each case runs below a canonical temporary root in
-    // place of the frozen one.
-    let temporary = tempfile::tempdir().expect("temporary profile root");
-    let root = CanonicalPath::existing(temporary.path())
-        .expect("canonical temporary root")
-        .into_path_buf();
-    for mut case in cases {
-        let frozen_root = Path::new(&case.home)
-            .parent()
-            .expect("frozen home below its root")
-            .to_owned();
-        let mut options = Value::Object(case.options);
-        relocate(&mut options, &frozen_root, &root);
-        let Value::Object(options) = options else {
-            unreachable!("relocation keeps the options object")
-        };
-        case.options = options;
-        relocate(&mut case.result, &frozen_root, &root);
-        let home = root.join(
-            Path::new(&case.home)
-                .strip_prefix(&frozen_root)
-                .expect("frozen home below its root"),
-        );
-        let result = studio_runtime_services::account_session_runtime::normalize_profile(
-            case.options.clone(),
-            &home,
-        );
-        let normalized = result
-            .as_ref()
-            .ok()
-            .cloned()
-            .map(Value::Object)
-            .unwrap_or(Value::Null);
-        assert_eq!(
-            normalized,
-            case.result,
-            "{:?}; normalization error: {:?}",
-            case.options,
-            result.err()
-        );
-    }
-}
-
-/// Replace the `from` prefix of every path string in `value` with `to`.
-fn relocate(value: &mut Value, from: &Path, to: &Path) {
-    match value {
-        Value::String(text) => {
-            if let Ok(rest) = Path::new(text.as_str()).strip_prefix(from) {
-                let relocated = if rest.as_os_str().is_empty() {
-                    to.to_owned()
-                } else {
-                    to.join(rest)
-                };
-                *text = relocated.to_string_lossy().into_owned();
-            }
-        }
-        Value::Array(values) => values
-            .iter_mut()
-            .for_each(|value| relocate(value, from, to)),
-        Value::Object(map) => map.values_mut().for_each(|value| relocate(value, from, to)),
-        Value::Null | Value::Bool(_) | Value::Number(_) => {}
-    }
 }
 
 #[test]

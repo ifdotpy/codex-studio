@@ -2,11 +2,16 @@
 use crate::{StoreError, StoreResult};
 use rusqlite::{OptionalExtension, Transaction};
 
-pub(super) const RETIRED: [&str; 4] = [
+pub(super) const RETIRED: [&str; 7] = [
     "native_reset_pending",
     "capacity_retry_id",
     "capacity_retry_status",
     "capacity_retry_due_at",
+    // The start attempt lives on a turn row now (`domain`); older states still
+    // hold these columns until the agent table is rebuilt.
+    "start_attempt_submitted",
+    "start_attempt_connection_generation",
+    "start_attempt_active_at_reservation",
 ];
 
 pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {

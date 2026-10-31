@@ -113,24 +113,20 @@ fn permission_case(
     provider: &str,
     mode: Option<&str>,
     yolo: bool,
-    override_mode: Option<Value>,
+    override_mode: Option<studio_runtime_schema::claude_permissions::PermissionMode>,
     expected: &str,
 ) {
     let parent = json!({"provider":provider,"yoloMode":yolo,"claudeOptions":mode.map(|mode| json!({"permissionMode":mode,"thinking":false})).unwrap_or(json!({}))});
     let mut child = json!({"provider":"claude","role":"implementer"});
-    let mut spec = json!({});
-    if let Some(mode) = override_mode {
-        spec["permission_mode"] = mode;
-    }
-    let result =
-        crate::child_permissions::inherit_claude_permissions(&mut child, &parent, &parent, &spec);
-    if expected.is_empty() {
-        assert_eq!(result, Err("Invalid Claude permission_mode"));
-    } else {
-        result.unwrap();
-        assert_eq!(child["claudeOptions"], json!({"permissionMode":expected}));
-        assert_eq!(child["yoloMode"], expected == "bypassPermissions");
-    }
+    crate::child_permissions::inherit_claude_permissions(
+        &mut child,
+        &parent,
+        &parent,
+        override_mode,
+    )
+    .unwrap();
+    assert_eq!(child["claudeOptions"], json!({"permissionMode":expected}));
+    assert_eq!(child["yoloMode"], expected == "bypassPermissions");
 }
 
 #[test]
@@ -176,7 +172,7 @@ fn claude_child_cannot_escalate_to_bypass() {
             "claude",
             Some(mode),
             true,
-            Some(json!("bypassPermissions")),
+            Some(studio_runtime_schema::claude_permissions::PermissionMode::BypassPermissions),
             mode,
         );
     }
@@ -188,7 +184,7 @@ fn claude_child_accepts_explicit_mode_override() {
         "claude",
         Some("auto"),
         false,
-        Some(json!("acceptEdits")),
+        Some(studio_runtime_schema::claude_permissions::PermissionMode::AcceptEdits),
         "acceptEdits",
     );
 }
@@ -204,9 +200,6 @@ fn claude_child_maps_legacy_and_codex_yolo() {
 
 #[tokio::test]
 async fn claude_child_rejects_invalid_override_without_child_record() {
-    for mode in [json!("unknown"), json!(true), Value::Null] {
-        permission_case("claude", Some("auto"), false, Some(mode), "");
-    }
     spawn_permission_case("auto", "implementer", Some(json!("unknown")), "", false).await;
 }
 

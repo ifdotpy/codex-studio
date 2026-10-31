@@ -199,8 +199,8 @@ pub fn tick(
                 let context = json!({"roomId":room.id(),"selfId":id,"participants":participants});
                 let text = format!(
                     "This is a shared chat with two equal agents. It is your turn to reply. All your assistant text is visible to the user and the other participant. Reply normally here. Do not forward this conversation through messaging tools. Other independent work is not part of this room. Reply once, then yield.\nShared room (JSON):\n{}\nShared messages since your last successful reply (JSON):\n{}",
-                    python_json(&context),
-                    python_json(&json!(messages))
+                    context,
+                    json!(messages)
                 );
                 if text.chars().count() > MAX_INPUT {
                     room.blocked(

@@ -186,11 +186,22 @@ pub fn begin(
     let signature = sha256_hex(
         &serde_json::to_vec(&(&who, &request.command)).map_err(RequestResultError::from)?,
     );
-    if let Err(error) = identity.validate(now_ms, RequestResults::expired_before_ms(tx)?) {
+    // An in-process identity is issued at `now_ms`, so the retention floor of stored
+    // results does not apply to it.
+    let floor = if trusted {
+        0
+    } else {
+        RequestResults::expired_before_ms(tx)?
+    };
+    if let Err(error) = identity.validate(now_ms, floor) {
         let watermark = CommandWatermarks::applied(tx, &client)?;
         return Err(match error {
             RequestIdentityError::Expired { .. } if number <= watermark => CommandError::TooOld,
-            error => RequestResultError::from(error).into(),
+            error @ (RequestIdentityError::InvalidUuidV7(_)
+            | RequestIdentityError::Expired { .. }
+            | RequestIdentityError::FutureTimestamp { .. }) => {
+                RequestResultError::from(error).into()
+            }
         });
     }
     let records = !is_create(&request.command);
@@ -303,7 +314,9 @@ pub fn response(
                 rusqlite::types::ValueRef::Text(bytes) | rusqlite::types::ValueRef::Blob(bytes) => {
                     bytes.to_vec()
                 }
-                _ => Vec::new(),
+                rusqlite::types::ValueRef::Null
+                | rusqlite::types::ValueRef::Integer(_)
+                | rusqlite::types::ValueRef::Real(_) => Vec::new(),
             };
             Ok((
                 row.get::<_, String>(0)?,
@@ -400,7 +413,11 @@ pub fn execute_sync(
         Command::Stop { target, body } => {
             let (sender, sender_epoch) = match principal {
                 Principal::Agent { id, epoch } => (Some(id.clone()), i64::try_from(*epoch).ok()),
-                _ => (None, None),
+                Principal::Owner
+                | Principal::Device { .. }
+                | Principal::Peer { .. }
+                | Principal::Federated { .. }
+                | Principal::Policy => (None, None),
             };
             // TODO(#630): a stop pauses the chat and clears its queue (today's lifecycle).
             // The rule "stop does not pause and does not clear the queue" needs the Turn

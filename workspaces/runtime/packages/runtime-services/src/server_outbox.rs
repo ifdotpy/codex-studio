@@ -40,14 +40,19 @@ fn failed(error: OutboxError) -> AccessError {
 pub(crate) fn state(status: OutboxStatus) -> ServerDeliveryState {
     match status {
         OutboxStatus::Pending => ServerDeliveryState::Queued,
-        _ => ServerDeliveryState::Running,
+        OutboxStatus::Submitted
+        | OutboxStatus::Unknown
+        | OutboxStatus::Committed
+        | OutboxStatus::Unrecognized => ServerDeliveryState::Running,
     }
 }
 
 fn status(state: ServerDeliveryState) -> OutboxStatus {
     match state {
         ServerDeliveryState::Queued => OutboxStatus::Pending,
-        _ => OutboxStatus::Submitted,
+        ServerDeliveryState::Running
+        | ServerDeliveryState::Waiting
+        | ServerDeliveryState::Complete => OutboxStatus::Submitted,
     }
 }
 
@@ -297,13 +302,7 @@ mod tests {
         ] {
             insert(&tx, "peer", key, key, state, 1.0, &record(action), 10).unwrap();
         }
-        let due_keys = |tx: &Transaction<'_>| {
-            due(tx, 5, 10, "'event'")
-                .unwrap()
-                .into_iter()
-                .map(|(_, body, _)| body)
-                .count()
-        };
+        let due_keys = |tx: &Transaction<'_>| due(tx, 5, 10, "'event'").unwrap().len();
         // queued-event, claimed-event and queued-interrupt are due.
         assert_eq!(due_keys(&tx), 3);
         assert_eq!(hold_unclean(&tx, "'event'").unwrap(), 1);

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::event_write::{python_json, python_strip, truthy};
+use crate::event_write::{python_strip, truthy};
 
 /// Maximum automatic catch-up delay for one-shot rules, in seconds.
 pub const ONCE_RULE_GRACE_SECONDS: f64 = 60.0;
@@ -405,10 +405,9 @@ impl RuleSnapshot {
                 next.file_generation = rule_integer(r.file_generation.get() as u64 + 1)?;
                 return Ok(self.change(next));
             }
-            let text = python_json(
-                &json!({"rule":r.id,"name":r.name,"message":"file unchanged",
-                "path":match &r.kind { Kind::File { path } => Some(path.as_str()), Kind::Interval | Kind::Once | Kind::Event | Kind::LowWorkers { .. } => None },"quietSeconds":(now-r.file_activity_at.as_ref().map(seconds).unwrap_or(now)) as i64}),
-            );
+            let text = json!({"rule":r.id,"name":r.name,"message":"file unchanged",
+                "path":match &r.kind { Kind::File { path } => Some(path.as_str()), Kind::Interval | Kind::Once | Kind::Event | Kind::LowWorkers { .. } => None },"quietSeconds":(now-r.file_activity_at.as_ref().map(seconds).unwrap_or(now)) as i64})
+            .to_string();
             let id = format!("rule-stall:{}:{}", r.id, r.file_generation.get() as u64);
             if !r.liveness_command.as_str().is_empty() {
                 next.in_flight = true;
@@ -447,9 +446,7 @@ impl RuleSnapshot {
                         seconds(&r.next_at)
                     ),
                     kind: "rule_missed",
-                    text: python_json(
-                        &json!({"rule":r.id,"name":r.name,"dueAt":seconds(&r.next_at),"delaySeconds":now-seconds(&r.next_at),"message":message}),
-                    ),
+                    text: json!({"rule":r.id,"name":r.name,"dueAt":seconds(&r.next_at),"delaySeconds":now-seconds(&r.next_at),"message":message}).to_string(),
                 }),
                 check: None,
             });
@@ -567,9 +564,9 @@ impl RuleSnapshot {
                 next.alerted = Some(true);
                 next.last_at = Some(time_number(now)?);
                 next.checks = rule_integer(r.checks.get() as u64 + 1)?;
-                let output =
-                    python_json(&json!({"activeSubagents":count,"minimumSubagents":minimum,
-                    "belowThresholdSince":since,"elapsedMinutes":elapsed/60.0}));
+                let output = json!({"activeSubagents":count,"minimumSubagents":minimum,
+                    "belowThresholdSince":since,"elapsedMinutes":elapsed/60.0})
+                .to_string();
                 return self.with_record(&next)?.finish(
                     now,
                     CheckResult {
@@ -649,10 +646,10 @@ impl RuleSnapshot {
                 wake = Some(RuleWake {
                     id,
                     kind: "rule_stall",
-                    text: python_json(&json!({
+                    text: json!({
                     "rule":r.id,"name":r.name,"message":"file unchanged","path":match &r.kind { Kind::File { path } => Some(path.as_str()), Kind::Interval | Kind::Once | Kind::Event | Kind::LowWorkers { .. } => None },
                     "quietSeconds":(now-r.file_activity_at.as_ref().map(seconds).unwrap_or(now)) as i64,
-                    "livenessResult":output,"livenessExitCode":result.code,"livenessError":result.error})),
+                    "livenessResult":output,"livenessExitCode":result.code,"livenessError":result.error}).to_string(),
                 });
             }
             next.in_flight = false;
@@ -683,9 +680,8 @@ impl RuleSnapshot {
                 wake = Some(RuleWake {
                     id: format!("rule-wake:{}:{}", r.id, r.checks.get() as u64),
                     kind: "rule",
-                    text: python_json(
-                        &json!({"rule":r.id,"name":r.name,"instruction":r.text,"output":output}),
-                    ),
+                    text: json!({"rule":r.id,"name":r.name,"instruction":r.text,"output":output})
+                        .to_string(),
                 });
                 next.wakes = rule_integer(r.wakes.get() as u64 + 1)?;
             }
@@ -894,6 +890,25 @@ pub(crate) fn complete_test_rule(record: Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_check_wake_preserves_unicode_text() {
+        let seed: Value = serde_json::from_str(include_str!("../tests/rules_engine/seed.json"))
+            .expect("rule seed");
+        let decision = RuleSnapshot::from_records(&seed["rule"], seed["owner"].clone())
+            .expect("snapshot")
+            .finish(
+                1_800_000_001.0,
+                CheckResult {
+                    code: Some(0),
+                    error: None,
+                    cancelled: false,
+                    output: "done",
+                },
+            )
+            .expect("finish");
+        assert!(decision.wake.expect("wake").text.contains("東京"));
+    }
 
     #[test]
     fn launch_intent_requires_integer_on_decode() {

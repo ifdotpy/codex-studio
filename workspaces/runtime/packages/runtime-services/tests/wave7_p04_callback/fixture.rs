@@ -218,7 +218,15 @@ fn snapshot_rows(store: &RuntimeStore, logical: bool) -> Value {
                 "runtime_outbox" | "request_results" | "runtime_tool_requests"
             ) || name == studio_runtime_store::agent_volatile::AGENT_VOLATILE_TABLE
                 || (name.starts_with("sync_") && name != "sync_entities")
-                || name.starts_with("durable_"))
+                || name.starts_with("durable_")
+                // The chat, turn and session tables project the agent record, which the
+                // oracle already compares.
+                || matches!(
+                    name.as_str(),
+                    studio_runtime_store::domain::CHAT_TABLE
+                        | studio_runtime_store::domain::TURN_TABLE
+                        | studio_runtime_store::domain::SESSION_TABLE
+                ))
         {
             continue;
         }

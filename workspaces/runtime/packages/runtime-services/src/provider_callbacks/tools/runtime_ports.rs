@@ -354,7 +354,7 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
                 .map_err(monitor_error)?;
             let workspace = self
                 .environment
-                .prepare_workspace(store, actor.record(), args, &request_id)
+                .prepare_workspace(store, actor.record(), &request_id)
                 .map_err(|error| match error {
                     crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
                         message,

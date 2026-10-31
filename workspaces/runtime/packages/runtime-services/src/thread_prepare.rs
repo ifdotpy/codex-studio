@@ -26,13 +26,7 @@ use serde_json::{Map, Value, json};
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::sha256_hex;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    Orchestrator,
-    Implementer,
-    Reviewer,
-}
+pub use studio_runtime_schema::creation_intent::AgentRole as Role;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

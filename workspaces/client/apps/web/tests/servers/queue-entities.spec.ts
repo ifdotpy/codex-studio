@@ -180,7 +180,7 @@ test("bounded entities render initial and live changes with zero resource GETs",
     };
     // The record is written after render; poll until it holds the update.
     await expect
-      .poll(async () => (await readProjection()).accountCostsByAccount.default)
+      .poll(async () => (await readProjection()).accountCostsByAccount?.default)
       .toBeDefined();
     const projection = await readProjection();
     expect(projection.accountCostsByAccount).toEqual({

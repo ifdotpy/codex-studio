@@ -56,6 +56,25 @@ fn capture(db: &mut Connection, agent: &Value, method: &str, params: Value, at: 
 }
 
 #[test]
+fn command_error_uses_compact_serde_json() {
+    let (mut db, agent) = started_turn();
+    capture(
+        &mut db,
+        &agent,
+        "item/completed",
+        json!({"item":{"id":"exec", "type":"commandExecution", "error":{"code":1e-6}}}),
+        20.0,
+    );
+    let raw: String = db
+        .query_row("SELECT record FROM analytics_items LIMIT 1", [], |row| {
+            row.get(0)
+        })
+        .expect("item");
+    let item: Value = serde_json::from_str(&raw).expect("item record");
+    assert_eq!(item["error"], r#"{"code":1e-6}"#);
+}
+
+#[test]
 fn uncertain_turn_keeps_its_outcome_and_reason_in_analytics() {
     let (mut db, agent) = started_turn();
     let error = json!({"message":"The native transcript cannot confirm the outcome."});

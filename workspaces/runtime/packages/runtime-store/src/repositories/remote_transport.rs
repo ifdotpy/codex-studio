@@ -367,7 +367,7 @@ fn finish_access(
 fn outbound_error(error: OutboxError, server_id: &str, request_id: &str) -> StoreError {
     match error {
         OutboxError::Json(_) => invalid_outbound(server_id, request_id),
-        other => other.into(),
+        other @ (OutboxError::Sql(_) | OutboxError::Conflict(_)) => other.into(),
     }
 }
 

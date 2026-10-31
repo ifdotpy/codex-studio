@@ -303,7 +303,7 @@ pub(crate) fn agent_complaint_action(
                         &reporter,
                         format!("complaint-response:{request_id}"),
                         "complaint_response",
-                        crate::event_write::python_json(&event),
+                        event.to_string(),
                         at,
                     )
                     .map_err(|_| stored("runtime_events", id))?;

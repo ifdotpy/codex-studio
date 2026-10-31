@@ -20,10 +20,19 @@ pub enum WorkspaceMode {
 
 impl std::fmt::Display for WorkspaceMode {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Value::String(value) = serde_json::to_value(self).map_err(|_| std::fmt::Error)? else {
-            return Err(std::fmt::Error);
-        };
-        formatter.write_str(&value)
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl WorkspaceMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LayrNative => "layr-native",
+            Self::Layr => "layr",
+            Self::Image => "image",
+            Self::Worktree => "worktree",
+            Self::Shared => "shared",
+        }
     }
 }
 

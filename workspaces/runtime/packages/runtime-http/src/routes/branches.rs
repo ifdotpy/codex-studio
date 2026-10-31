@@ -2109,7 +2109,7 @@ mod tests {
             ..Default::default()
         });
         state.account_session = Some(port.clone());
-        let result = branch(
+        let result = Box::pin(branch(
             State(state.clone()),
             ApiJson(
                 serde_json::from_value(json!({
@@ -2117,7 +2117,7 @@ mod tests {
                 }))
                 .expect("request"),
             ),
-        )
+        ))
         .await;
         let error = result.expect_err("fixture leaves catalog unavailable or fork outcome unknown");
         if retry {
@@ -2132,7 +2132,7 @@ mod tests {
                     Ok(())
                 }).await.unwrap();
             }
-            let retried = branch(
+            let retried = Box::pin(branch(
                 State(state.clone()),
                 ApiJson(
                     serde_json::from_str(&format!(
@@ -2140,7 +2140,7 @@ mod tests {
                     ))
                     .expect("request"),
                 ),
-            )
+            ))
             .await;
             assert!(retried.is_err());
         }

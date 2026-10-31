@@ -40,6 +40,12 @@ fn present_agent_draft<'de, D: serde::Deserializer<'de>>(
     AgentDraft::deserialize(d).map(Box::new).map(Some)
 }
 
+fn present_creation_intent<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<studio_runtime_schema::creation_intent::CreationIntent>, D::Error> {
+    studio_runtime_schema::creation_intent::CreationIntent::deserialize(d).map(Some)
+}
+
 macro_rules! string_id {
     ($name:ident) => {
         #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -437,6 +443,12 @@ pub struct AgentRecord {
     pub vm_auth_bootstrap: Option<VmAuthBootstrap>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub native_release: Option<NativeRelease>,
+    #[serde(
+        default,
+        deserialize_with = "present_creation_intent",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub creation_intent: Option<studio_runtime_schema::creation_intent::CreationIntent>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -754,6 +766,7 @@ impl AgentRecord {
             credential_copy: None,
             vm_auth_bootstrap: None,
             native_release: None,
+            creation_intent: None,
             extra: BTreeMap::new(),
         }
     }
@@ -2564,6 +2577,26 @@ mod tests {
     fn agent_rejects_malformed_start_attempt_on_decode() {
         let raw = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"startAttempt":{"id":"attempt","submitted":"false"}}"#;
         assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
+    }
+
+    #[test]
+    fn agent_rejects_malformed_creation_intent_on_decode() {
+        let raw = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"creationIntent":{"prompt":"Task","effort":42}}"#;
+        assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
+        let null_mode = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"creationIntent":{"permission_mode":null}}"#;
+        assert!(serde_json::from_str::<AgentRecord>(null_mode).is_err());
+        let null_intent = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"creationIntent":null}"#;
+        assert!(serde_json::from_str::<AgentRecord>(null_intent).is_err());
+    }
+
+    #[test]
+    fn agent_retains_creation_intent_clear_and_default_fields() {
+        let raw = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"creationIntent":{"name":"Worker","prompt":"Task","parent":"root","effort":null,"worker_defaults":{"model":"model","effort":"high","fast_mode":false,"delegation_depth":1}}}"#;
+        let record: AgentRecord = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            record.value()["creationIntent"],
+            serde_json::from_str::<Value>(raw).unwrap()["creationIntent"]
+        );
     }
 
     #[test]

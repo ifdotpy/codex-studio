@@ -149,6 +149,7 @@ async fn transcript_item(
 
 /// Full text of a cut item, by the hash that the item page carries. The
 /// client calls it when the user opens the full output, and caches by hash.
+#[allow(clippy::wildcard_enum_match_arm)]
 async fn transcript_blob(
     State(state): State<HttpState>,
     query: QueryParams,

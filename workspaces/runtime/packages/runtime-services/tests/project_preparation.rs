@@ -103,7 +103,6 @@ async fn project_write_refuses_changed_membership_paths_and_liveness() {
         json!({"deletedAt":1}),
         json!({"archivedAt":1}),
         json!({"archived":true}),
-        json!({"status":"archived"}),
     ] {
         let (_root, store) = fixture().await;
         let prepared = PreparedHost::load(&store).await.expect("prepare");

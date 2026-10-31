@@ -710,7 +710,7 @@ pub fn respond_to_complaint(
             &reporter,
             format!("complaint-response:{response_id}"),
             "complaint_response",
-            event_write::python_json(&event),
+            event.to_string(),
             now,
         )?
     } else {
@@ -760,10 +760,10 @@ fn complaint_message(record: &ComplaintRecord) -> String {
         "status": record.status,
         "created": record.created
     });
-    event_write::python_json(&json!({
+    json!({
         "complaints": [complaint],
         "required": "Respond to each complaint with orchestration_complaint action=respond before finishing. The full complaint is in this message. No separate read call is required."
-    }))
+    }).to_string()
 }
 
 fn stored_agent(
@@ -798,8 +798,28 @@ fn unix_time() -> Result<f64, QuestionsWriteError> {
 
 #[cfg(test)]
 mod receipt_tests {
-    use super::ComplaintReceiptReply;
+    use super::{ComplaintReceiptReply, complaint_message};
     use serde_json::json;
+
+    #[test]
+    fn new_complaint_message_keeps_unicode() {
+        let complaint = super::ComplaintRecord {
+            id: "c".into(),
+            lead_id: None,
+            author: Some("user".into()),
+            text: Some("雪".into()),
+            recipient: super::ComplaintRecipient::Lead,
+            version: Some(1),
+            status: super::ComplaintStatus::Open,
+            created: Some(0.0),
+            updated: Some(0.0),
+            read_at: None,
+            responses: Vec::new(),
+            source_type: None,
+            title: None,
+        };
+        assert!(complaint_message(&complaint).contains("雪"));
+    }
 
     #[test]
     fn sparse_historical_complaint_reply_remains_replayable() {

@@ -63,12 +63,11 @@ import type {
   Optional,
 } from "./usage.ts";
 
-import type {
-  CommandRequest,
-  CommandResponse,
-} from "../../../client/apps/web/src/commands.ts";
 import type { PricingArtifact } from "../../../client/apps/web/src/generated/pricing.ts";
 import type { RendererManifest } from "../../../client/apps/web/scripts/build-manifests.ts";
+
+type CommandRequest = Schema["CommandRequest"];
+type CommandResponse = Schema["CommandResponse"];
 
 type Options = {
   app: string;
