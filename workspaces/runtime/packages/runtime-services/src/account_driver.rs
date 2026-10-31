@@ -1219,27 +1219,31 @@ fn abandoned_login_account(value: &Value, key: &str) -> bool {
 }
 
 fn existing_login(
-    value: &Value,
+    state: &RegistryState,
     request: &CodexLoginRequest,
 ) -> Result<Option<Value>, AccountMutationError> {
-    let Some(receipt) = value
-        .get("logins")
+    let Some(receipt) = state
+        .typed
+        .logins
+        .as_ref()
         .and_then(|logins| logins.get(&request.login_id))
     else {
         return Ok(None);
     };
-    for (field, expected) in [
-        ("reauthAccountKey", &request.account_key),
-        ("emailHint", &request.email),
-        ("requestedLabel", &request.label),
-    ] {
-        if receipt.get(field).and_then(Value::as_str) != expected.as_deref() {
-            return Err(AccountMutationError::Refused(
-                "This sign-in request belongs to a different account",
-            ));
-        }
+    let receipt = &receipt.0;
+    if receipt.reauth_account_key != request.account_key
+        || receipt.email_hint != request.email
+        || receipt.requested_label != request.label
+    {
+        return Err(AccountMutationError::Refused(
+            "This sign-in request belongs to a different account",
+        ));
     }
-    Ok(Some(receipt.clone()))
+    Ok(state
+        .value
+        .get("logins")
+        .and_then(|logins| logins.get(&request.login_id))
+        .cloned())
 }
 
 impl<R: ProviderAuthReader> AccountDriver<R> {
@@ -1253,7 +1257,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
-        existing_login(&state.value, request)
+        existing_login(&state, request)
     }
 
     /// Reconcile local Codex auth without sending a request. A still-pending
@@ -1374,7 +1378,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .state
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
-        if let Some(receipt) = existing_login(&state.value, request)? {
+        if let Some(receipt) = existing_login(&state, request)? {
             return Ok(LoginReservation::Replay(receipt));
         }
         let mut value = state.value.clone();
