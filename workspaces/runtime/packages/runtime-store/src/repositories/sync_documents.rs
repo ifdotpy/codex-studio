@@ -494,6 +494,41 @@ impl SyncDocumentsRepository {
         Ok(true)
     }
 
+    /// Device name of drafts that the server writes for a chat.
+    pub const SERVER_DRAFT_DEVICE: &'static str = "server";
+
+    /// Return `text` to the composer of chat `session` as a server draft. Text that the
+    /// server already holds for the chat stays; `text` follows it after a blank line.
+    /// `updated_ms` is the draft time in milliseconds since the Unix epoch.
+    pub fn append_server_draft(
+        transaction: &Transaction<'_>,
+        session: &str,
+        text: &str,
+        updated_ms: u64,
+    ) -> StoreResult<bool> {
+        let id = format!("{}:{session}", Self::SERVER_DRAFT_DEVICE);
+        let held = match Self::draft(transaction, &id)?.filter(|draft| !draft.deleted) {
+            Some(draft) => serde_json::from_str::<Value>(&draft.payload)?["text"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            None => String::new(),
+        };
+        let text = if held.is_empty() {
+            text.to_owned()
+        } else {
+            format!("{held}\n\n{text}")
+        };
+        let payload = serde_json::to_string(&json!({
+            "id": id,
+            "device": Self::SERVER_DRAFT_DEVICE,
+            "session": session,
+            "text": text,
+            "updated": updated_ms,
+        }))?;
+        Self::put_draft(transaction, &id, &payload, false)
+    }
+
     /// Publish the renderer-owned sync envelope for an entity inside its source write transaction.
     pub fn put_entity<T: serde::Serialize>(
         transaction: &Transaction<'_>,
@@ -954,6 +989,41 @@ mod tests {
             INSERT INTO sync_entities SELECT 'other',printf('other-%d',x),x,'{}',0 FROM n;
             INSERT INTO sync_entities VALUES('task','selected',2001,'{}',0);").expect("page fixture");
         db
+    }
+
+    #[test]
+    fn server_draft_returns_text_and_keeps_text_already_held() {
+        let mut db = Connection::open_in_memory().expect("memory SQLite");
+        db.execute_batch(
+            "CREATE TABLE sync_entities(seq INTEGER);CREATE TABLE sync_versions(seq INTEGER);
+             CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,
+               id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0,UNIQUE(scope,id));",
+        )
+        .expect("draft fixture");
+        let tx = db.transaction().expect("transaction");
+        assert!(
+            SyncDocumentsRepository::append_server_draft(&tx, "chat", "first", 10).expect("first")
+        );
+        assert!(
+            SyncDocumentsRepository::append_server_draft(&tx, "chat", "second", 11)
+                .expect("second")
+        );
+        let draft = SyncDocumentsRepository::draft(&tx, "server:chat")
+            .expect("read")
+            .expect("draft exists");
+        let version = studio_runtime_schema::drafts::DraftVersion::from_stored_value(
+            "server:chat",
+            serde_json::from_str(&draft.payload).expect("JSON"),
+        )
+        .expect("a valid draft version");
+        assert_eq!(
+            (version.text.as_str(), version.updated),
+            ("first\n\nsecond", 11)
+        );
+        assert_eq!(
+            (version.device.as_str(), version.session.as_str()),
+            ("server", "chat")
+        );
     }
 
     #[test]

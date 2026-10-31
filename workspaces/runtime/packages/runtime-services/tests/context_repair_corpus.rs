@@ -135,7 +135,7 @@ async fn stop_then_repair_preserves_historical_attempt_ownership() {
     }).await.expect("seed");
     agent_lifecycle_runtime::execute(
         Arc::clone(&store),
-        &Action::Stop {
+        &Action::Pause {
             target: "agent".into(),
             descendants: false,
             reason: None,

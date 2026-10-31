@@ -330,7 +330,7 @@ async fn stale_voice_stop_handoff(unknown: bool) {
     );
     ports
         .execute(
-            &Action::Stop {
+            &Action::Pause {
                 target: "lead".to_owned(),
                 descendants: false,
                 reason: None,
@@ -459,7 +459,7 @@ async fn production_stop_cancels_usage_and_capacity_continuations_in_store() {
 
     ports
         .execute(
-            &Action::Stop {
+            &Action::Pause {
                 target: "lead".to_owned(),
                 descendants: false,
                 reason: None,

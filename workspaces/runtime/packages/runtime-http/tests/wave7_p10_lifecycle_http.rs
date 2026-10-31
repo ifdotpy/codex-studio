@@ -51,7 +51,7 @@ impl AccountSessionPort for InterruptBroker {
             )
             .expect("stopped agent exists");
         let agent: Value = serde_json::from_str(&raw).expect("agent record");
-        assert_eq!(agent["status"], "paused");
+        assert_eq!(agent["status"], "running", "stop does not pause");
         let interrupt = &agent["startAttempt"]["interrupt"];
         if request.method == Method::TurnInterrupt {
             assert_eq!(interrupt["outcome"], "unknown");
@@ -343,7 +343,7 @@ async fn production_delete_route_interrupts_and_settles_active_turn() {
         ]
     );
     assert!(agent["deletedAt"].is_number() || agent["deletedAt"] == true);
-    assert_eq!(agent["status"], "paused");
+    assert_eq!(agent["status"], "running", "stop does not pause");
     assert_eq!(agent["inFlight"], false);
     assert!(agent["turnId"].is_null());
     assert_eq!(agent["startAttempt"]["interrupt"]["outcome"], "accepted");
