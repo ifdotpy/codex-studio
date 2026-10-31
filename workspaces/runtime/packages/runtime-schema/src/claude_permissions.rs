@@ -41,7 +41,7 @@ impl TryFrom<PermissionMode> for CodexPermissionMode {
     fn try_from(mode: PermissionMode) -> Result<Self, Self::Error> {
         match mode {
             PermissionMode::Default | PermissionMode::BypassPermissions => Ok(Self(mode)),
-            _ => Err(mode),
+            PermissionMode::AcceptEdits | PermissionMode::Auto | PermissionMode::Plan => Err(mode),
         }
     }
 }
