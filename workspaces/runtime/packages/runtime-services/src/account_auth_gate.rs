@@ -178,7 +178,7 @@ pub async fn hold_unstarted(
                     || agent.epoch != epoch
                     || agent.auto_wake != Some(true)
                     || agent.in_flight == Some(true)
-                    || agent.extra.contains_key("startAttempt")
+                    || agent.start_attempt.is_some()
                     || agent.is_deleted()
                 {
                     continue;

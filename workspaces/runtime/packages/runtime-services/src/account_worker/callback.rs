@@ -2,9 +2,7 @@
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_providers::{Frame, ResponseBody};
-use studio_runtime_store::{
-    AgentExecutionMode, AgentRecord, JsonRecord, RuntimeStore, system_reads,
-};
+use studio_runtime_store::{AgentExecutionMode, AgentRecord, JsonRecord, RuntimeStore};
 use tokio::sync::Notify;
 
 pub enum CallbackDecision {
@@ -568,12 +566,10 @@ pub(super) fn callback_context_in(
         return Ok(None);
     }
     let (agent_id, raw) = &candidates[0];
-    let invalid = || system_reads::invalid("runtime_agents", agent_id);
     let agent = AgentRecord::decode_stored(db, agent_id, raw)?;
     let (Some(connection), Some(epoch), Some(thread), Some(turn)) = (
         agent
-            .start_attempt()
-            .map_err(|_| invalid())?
+            .start_attempt
             .and_then(|attempt| attempt.connection_id),
         u64::try_from(agent.epoch).ok(),
         agent.thread_id,

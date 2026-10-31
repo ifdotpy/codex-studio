@@ -152,7 +152,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, axum::Router) {
         // The account preparation owner releases its settled live pointer. The
         // execution ledger, including its exact claim and unsent receipt, stays.
         let mut actor=AgentRepository::get(tx,&AgentId::from(ACTOR))?.unwrap();
-        actor.extra.remove("startAttempt");
+        actor.start_attempt.take();
         AgentRepository::put(tx,&actor)?;
         Ok(())
     }).await.unwrap();

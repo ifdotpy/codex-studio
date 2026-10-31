@@ -369,7 +369,7 @@ impl preparation::VmProviderLaunchResolver for AuthRecoveryCredentials {
                     Ok::<_, WorkerError>(
                         AgentRepository::get(db, &AgentId::from(actor.as_str()))?
                             .unwrap()
-                            .extra["startAttempt"]
+                            .value()["startAttempt"]
                             .clone(),
                     )
                 })
@@ -818,8 +818,8 @@ for (key, value) in [
                 ("layrReady",json!(true)),
                 ("provider",json!("claude")),("executionSettingsAccountKey",json!("default")),
 
-                ("startAttempt",json!({"id":"existing-vm-attempt","epoch":epoch,"accountKey":"default","submitted":true,"events":["annotation:input"],"threadId":"fake-thread-0","turnId":"vm-turn","connectionGeneration":1,"connectionId":"previous-backend","requestTicket":"original-native-start"})),
             ] { record.extra.insert(key.into(), value); }
+            record.start_attempt = Some(Box::new(studio_runtime_store::StartAttemptView { id: Some("existing-vm-attempt".into()), epoch: Some(epoch), account_key: Some("default".into()), submitted: Some(true), events: Some(vec!["annotation:input".into()]), thread_id: Some("fake-thread-0".into()), turn_id: Some("vm-turn".into()), connection_generation: Some(1), connection_id: Some("previous-backend".into()), request_ticket: Some("original-native-start".into()), ..Default::default() }));
             AgentRepository::put(tx,&record)?;
             studio_runtime_store::ExecutionHistoryRepository::record(tx,&record)?;
             tx.execute("UPDATE runtime_events SET status='delivered',turn_id='vm-turn' WHERE agent=?1",[&actor])?;
@@ -827,7 +827,7 @@ for (key, value) in [
                 "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND epoch=?2 \
                  AND id IN (SELECT value FROM json_each(?3)) \
                  AND status='delivered' AND turn_id='vm-turn'",
-                rusqlite::params![actor,epoch,record.extra["startAttempt"]["events"].to_string()],
+                rusqlite::params![actor,epoch,serde_json::to_string(&record.start_attempt.as_ref().unwrap().events).unwrap()],
                 |row|row.get(0),
             )?;
             assert_eq!(members,1,"the saved attempt owns its exact delivered input and turn");

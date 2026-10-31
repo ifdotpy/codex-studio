@@ -53,6 +53,7 @@ pub mod request_record;
 pub mod rule_record;
 pub mod shared_values;
 pub mod shell_policy;
+pub mod start_attempt;
 mod stored_record;
 pub use stored_record::AgentCounter;
 pub mod tool_result;

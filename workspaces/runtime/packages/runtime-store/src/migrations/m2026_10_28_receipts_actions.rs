@@ -1950,8 +1950,8 @@ mod tests {
                 .expect("agent record");
             assert_eq!(
                 agent
-                    .start_attempt()
-                    .expect("typed start attempt")
+                    .start_attempt
+                    .as_ref()
                     .expect("attempt")
                     .request_ticket
                     .as_deref(),

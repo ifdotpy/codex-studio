@@ -221,7 +221,7 @@ pub fn action(
     if recover_failed {
         agent.status = AgentStatus::Queued;
         agent.extra.insert("error".into(), Value::Null);
-        agent.extra.remove("startAttempt");
+        agent.start_attempt = None;
     }
     if updated.items != current.items || recover_failed {
         let revision = match agent.extra.get("queueMutationRevision") {

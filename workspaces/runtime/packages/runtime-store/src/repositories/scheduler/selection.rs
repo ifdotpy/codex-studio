@@ -21,6 +21,16 @@ struct ClaimResult<T> {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadPreparationScope {
+    agent: String,
+    epoch: i64,
+    account: String,
+    previous_thread: Option<String>,
+    thread: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HistoricalReplayAgent {
     id: AgentId,
@@ -379,12 +389,18 @@ impl SchedulerRepository {
             || agent.turn_id.is_some()
             || agent.native_safety_buffering.is_some()
             || agent.start_wait.is_some()
+            || agent
+                .restart_recovery
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+            || agent
+                .disconnect_recovery
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
             || [
                 "capacityRetry",
                 "usageResume",
                 "manualRecoveryDeliveryHold",
-                "restartRecovery",
-                "disconnectRecovery",
                 "remoteWorker",
                 "remoteAnchor",
             ]
@@ -437,11 +453,7 @@ impl SchedulerRepository {
         {
             return Ok(false);
         }
-        let current = match agent.start_attempt() {
-            Ok(value) => value,
-            Err(_) => return Ok(false),
-        };
-        if let Some(current) = current
+        if let Some(current) = agent.start_attempt.as_ref()
             && (current.id != attempt.id
                 || current.epoch != attempt.epoch
                 || current.account_key != attempt.account_key
@@ -1156,18 +1168,16 @@ impl SchedulerRepository {
         agent.in_flight = Some(true);
         agent.turn_id = None;
         agent.turn_epoch = Some(epoch);
-        agent.extra.insert(
-            "startAttempt".to_owned(),
-            json!({
-                "id": attempt_id,
-                "epoch": epoch,
-                "activeAtReservation": false,
-                "accountKey":Value::String(agent.account_key.clone()),
-                "events": event_ids,
-                "submitted": false,
-                "created": attempt_created
-            }),
-        );
+        agent.start_attempt = Some(Box::new(crate::StartAttemptView {
+            id: Some(attempt_id.to_owned()),
+            epoch: Some(epoch),
+            active_at_reservation: Some(false),
+            account_key: Some(agent.account_key.clone()),
+            events: Some(event_ids),
+            submitted: Some(false),
+            created: Some(attempt_created),
+            ..Default::default()
+        }));
         publish_agent(transaction, &agent)?;
         let identity = input_identity(&events, &metadata);
         crate::ExecutionHistoryRepository::save_claim(
@@ -1198,7 +1208,7 @@ impl SchedulerRepository {
         if agent.deleted_at.is_some() {
             return Err(invalid_agent(agent_id));
         }
-        let Some(attempt) = agent.start_attempt().map_err(|_| invalid_agent(agent_id))? else {
+        let Some(attempt) = agent.start_attempt.clone() else {
             return Ok(false);
         };
         if attempt.id.as_deref() != Some(attempt_id)
@@ -1334,29 +1344,18 @@ pub(super) fn replay_claim(
     };
     let claim = claim_result::<HistoricalReplayAgent>(saved)?;
     let original = claim.agent;
-    let preparation = crate::ExecutionHistoryRepository::receipt::<serde_json::Value>(
+    let preparation = crate::ExecutionHistoryRepository::receipt::<ThreadPreparationScope>(
         tx,
         saved.start.id.as_deref().ok_or_else(receipt_error)?,
         ExecutionReceiptKind::ThreadPrepared,
     )?;
     let prepared_scope = preparation.as_ref().is_some_and(|preparation| {
         preparation.result == true
-            && preparation.input["agent"] == agent.id.0
-            && preparation.input["epoch"] == epoch
-            && preparation.input["account"] == Value::String(agent.account_key.clone())
-            && preparation.input["previousThread"]
-                == original
-                    .agent
-                    .thread_id
-                    .clone()
-                    .map(Value::String)
-                    .unwrap_or(Value::Null)
-            && preparation.input["thread"]
-                == agent
-                    .thread_id
-                    .clone()
-                    .map(Value::String)
-                    .unwrap_or(Value::Null)
+            && preparation.input.agent == agent.id.0
+            && preparation.input.epoch == epoch
+            && preparation.input.account == agent.account_key
+            && preparation.input.previous_thread == original.agent.thread_id
+            && preparation.input.thread == agent.thread_id
     });
     if original.id != agent.id
         || original.epoch != epoch
@@ -1962,6 +1961,25 @@ mod account_wake_index_tests {
     use rusqlite::Connection;
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn thread_preparation_receipt_requires_typed_scope() {
+        let valid = r#"{"agent":"a","epoch":2,"account":"account","previousThread":null,"thread":"thread"}"#;
+        let scope: super::ThreadPreparationScope = serde_json::from_str(valid).unwrap();
+        assert_eq!(scope.agent, "a");
+        assert!(
+            serde_json::from_str::<super::ThreadPreparationScope>(
+                &valid.replace("\"epoch\":2", "\"epoch\":\"2\"")
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<super::ThreadPreparationScope>(
+                &valid.replace("\"agent\":\"a\"", "\"agent\":\"a\",\"unknown\":true")
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn stored_wake_boundary_mode_projection_matches_openapi_owner() {

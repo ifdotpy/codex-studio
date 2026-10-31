@@ -1094,7 +1094,7 @@ pub(crate) mod tests {
                 .as_deref(),
             Some("review-thread")
         );
-        assert_eq!(stored.extra["startAttempt"]["submitted"], true);
+        assert_eq!(stored.start_attempt.as_ref().unwrap().submitted, Some(true));
         // A second wake sends nothing: the child is no longer claimable.
         assert!(
             !candidate(&fixture.store, "review", 0, "default")

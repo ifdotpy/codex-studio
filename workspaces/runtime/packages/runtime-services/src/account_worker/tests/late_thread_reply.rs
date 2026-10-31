@@ -84,7 +84,7 @@ async fn saved_start_effect_of_a_held_attempt_does_not_end_the_restarted_worker(
                 store::persist_effect(tx, "default", &Effect::Submit(pending.intent))?;
                 let mut agent =
                     AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
-                agent.extra.remove("startAttempt");
+                agent.start_attempt.take();
                 agent.auto_wake = Some(false);
                 agent.status = studio_runtime_store::AgentStatus::Interrupted;
                 AgentRepository::put(tx, &agent)?;

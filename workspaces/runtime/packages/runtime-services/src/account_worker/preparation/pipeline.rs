@@ -937,15 +937,18 @@ async fn workspace_with_vm_action(
     let record = workspace_agent(&store, &intent.agent_id).await?;
     if record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm) {
         if record.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
-            let start_attempt = record.extra.get("startAttempt").unwrap_or(&Value::Null);
+            let start_attempt = record
+                .start_attempt
+                .as_ref()
+                .ok_or_else(|| refusal("workspace-state/vm-start-attempt".into()))?;
             let attempt_id = start_attempt
-                .get("id")
-                .and_then(Value::as_str)
+                .id
+                .as_deref()
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| refusal("workspace-state/vm-start-attempt".into()))?;
             let action_request_id = start_attempt
-                .get("actionRequestId")
-                .and_then(Value::as_str)
+                .action_request_id
+                .as_deref()
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("vm-turn-preparation:{attempt_id}"));

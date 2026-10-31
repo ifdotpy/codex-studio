@@ -435,10 +435,13 @@ fn deleted_agent_is_skipped_at_claim_and_refused_at_submission_recheck() {
     let mut agent = AgentRepository::get(&connection, &AgentId::from("agent"))
         .expect("deleted agent reads")
         .expect("agent exists");
-    agent.extra.insert(
-        "startAttempt".to_owned(),
-        json!({"id":"attempt","epoch":4,"submitted":false,"events":["first"]}),
-    );
+    agent.start_attempt = Some(Box::new(studio_runtime_store::StartAttemptView {
+        id: Some("attempt".into()),
+        epoch: Some(4),
+        submitted: Some(false),
+        events: Some(vec!["first".into()]),
+        ..Default::default()
+    }));
     AgentRepository::put(&connection, &agent).expect("submission marker writes");
     let transaction = connection.transaction().expect("submission recheck begins");
     assert!(matches!(
@@ -462,7 +465,14 @@ fn submission_recheck_retires_decided_work_review_and_keeps_reconciliation_field
         .expect("agent exists");
     agent.status = AgentStatus::Starting;
     agent.in_flight = Some(true);
-    agent.extra.insert("startAttempt".into(), json!({"id":"attempt","epoch":4,"submitted":false,"activeAtReservation":false,"events":["first"]}));
+    agent.start_attempt = Some(Box::new(studio_runtime_store::StartAttemptView {
+        id: Some("attempt".into()),
+        epoch: Some(4),
+        submitted: Some(false),
+        active_at_reservation: Some(false),
+        events: Some(vec!["first".into()]),
+        ..Default::default()
+    }));
     AgentRepository::put(&connection, &agent).expect("attempt fixture writes");
     let transaction = connection
         .transaction()
@@ -496,12 +506,22 @@ fn submission_recheck_retires_decided_work_review_and_keeps_reconciliation_field
         .expect("agent reads")
         .expect("agent exists");
     assert_eq!(
-        agent.extra["startAttempt"]["notSubmittedReason"],
-        "Notifications resolved before native submission"
+        agent
+            .start_attempt
+            .as_ref()
+            .unwrap()
+            .not_submitted_reason
+            .as_deref(),
+        Some("Notifications resolved before native submission")
     );
     assert_eq!(
-        agent.extra["startAttempt"]["retiredEvents"],
-        json!(["first"])
+        agent
+            .start_attempt
+            .as_ref()
+            .unwrap()
+            .retired_events
+            .as_deref(),
+        Some(["first".to_string()].as_slice())
     );
     assert!(agent.in_flight == Some(false));
 }
@@ -675,6 +695,36 @@ fn preparation_claims_one_thousand_small_mixed_events_and_replays_exact_batch() 
     assert_eq!(claimed.events, replay.events);
     assert_eq!(claimed.metadata, replay.metadata);
     tx.commit().expect("claim commits");
+}
+
+#[test]
+fn preparation_replay_checks_saved_thread_scope() {
+    let mut connection = database();
+    let tx = connection.transaction().unwrap();
+    let claimed = SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "scope", 1.0, 10)
+        .unwrap()
+        .unwrap();
+    let mut agent = AgentRepository::get(&tx, &AgentId::from("agent"))
+        .unwrap()
+        .unwrap();
+    let account = agent.account_key.clone();
+    agent.thread_id = Some("prepared-thread".into());
+    AgentRepository::put(&tx, &agent).unwrap();
+    crate::ExecutionHistoryRepository::save_receipt(
+        &tx,
+        "scope",
+        studio_runtime_schema::persistence::ExecutionReceiptKind::ThreadPrepared,
+        json!({"agent":"agent", "epoch":4, "account":account, "previousThread":null, "thread":"prepared-thread"}),
+        json!(true),
+    )
+    .unwrap();
+    let replay = SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "scope", 2.0, 10)
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay.events, claimed.events);
+    agent.thread_id = Some("other-thread".into());
+    AgentRepository::put(&tx, &agent).unwrap();
+    assert!(SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "scope", 3.0, 10).is_err());
 }
 
 #[test]

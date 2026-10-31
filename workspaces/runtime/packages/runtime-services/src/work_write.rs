@@ -2427,17 +2427,21 @@ fn continuation_work_pending(agent: &AgentRecord) -> bool {
 
     let capacity = agent.extra.get("capacityRetry").unwrap_or(&Value::Null);
     let usage = agent.extra.get("usageResume").unwrap_or(&Value::Null);
-    let restart = agent.extra.get("restartRecovery").unwrap_or(&Value::Null);
+    let restart = agent.restart_recovery.as_deref();
     matches(capacity, &["scheduled", "starting", "unknown"], "turnId")
         || matches(usage, &["scheduled", "started", "unknown"], "turnId")
-        || (restart.get("stage").and_then(Value::as_str) == Some("pending")
+        || (restart.and_then(|v| v.stage.as_deref()) == Some("pending")
+            && restart.and_then(|v| v.auto_wake) == Some(true)
             && restart
-                .get("autoWake")
-                .is_some_and(|value| event_write::truthy(Some(value)))
-            && restart.get("accountKey").unwrap_or(&default_account) == &account
-            && restart.get("threadId").and_then(Value::as_str) == thread
+                .and_then(|v| v.account_key.as_deref())
+                .unwrap_or("default")
+                == agent.account_key
+            && restart.and_then(|v| v.thread_id.as_deref()) == thread
             && thread.is_some_and(|thread| !thread.is_empty())
-            && restart.get("epoch").and_then(Value::as_i64) == Some(epoch))
+            && restart
+                .and_then(|v| v.epoch.as_ref())
+                .and_then(|v| v.number().as_i64())
+                == Some(epoch))
 }
 
 struct WorkSnapshot<'a> {
