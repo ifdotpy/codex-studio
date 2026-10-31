@@ -686,7 +686,8 @@ pub fn recovery_pending(agent: &AgentRecord) -> bool {
     let extra = &agent.extra;
     let matches = |recovery: &Value| {
         recovery.get("epoch").and_then(Value::as_i64) == Some(agent.epoch)
-            && recovery.get("accountKey").and_then(Value::as_str) == Some(agent.account_key.as_str())
+            && recovery.get("accountKey").and_then(Value::as_str)
+                == Some(agent.account_key.as_str())
             && recovery.get("threadId").and_then(Value::as_str) == agent.thread_id.as_deref()
     };
     let root = extra
@@ -804,12 +805,10 @@ mod tests {
             root_id: AgentId::from("a"),
             epoch: 3,
             status: AgentStatus::Idle,
-            extra: BTreeMap::from([
-                (
-                    "provider".to_owned(),
-                    json!(studio_runtime_schema::ProviderKind::Codex),
-                ),
-            ]),
+            extra: BTreeMap::from([(
+                "provider".to_owned(),
+                json!(studio_runtime_schema::ProviderKind::Codex),
+            )]),
             ..AgentRecord::test_defaults()
         };
         AgentRepository::put(&connection, &agent).expect("agent writes");
@@ -1228,7 +1227,7 @@ mod tests {
         .expect("paired input queues");
         assert!(result);
         let (server, body): (String, String) = connection
-            .query_row("SELECT server,body FROM runtime_server_outbox", [], |row| {
+            .query_row("SELECT target,json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery'", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .expect("stable outbox row");
@@ -1256,16 +1255,18 @@ mod tests {
         })
         .expect("lost response retry");
         let retry: String = connection
-            .query_row("SELECT body FROM runtime_server_outbox", [], |r| r.get(0))
+            .query_row("SELECT json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery'", [], |r| r.get(0))
             .expect("same outbox");
         assert_eq!(
             serde_json::from_str::<Value>(&retry).unwrap()["requestId"],
             root
         );
         let count: i64 = connection
-            .query_row("SELECT count(*) FROM runtime_server_outbox", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1);
         let public = studio_runtime_schema::persistence::RequestIdentity::issue_root();

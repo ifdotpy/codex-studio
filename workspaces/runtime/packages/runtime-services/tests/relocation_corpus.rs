@@ -116,7 +116,7 @@ impl Fixture {
                         params!["/home-project",text(outbox,"id"),identity.id(),signature,identity.issued_ms()])?;
                     ProjectsRepository::location_request(tx,"/home-project",text(outbox,"id"))?.expect("saved fixture admission");
                 }
-                tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,result) VALUES(?1,?2,?3,?4,?5)",params![text(outbox,"id"),text(outbox,"server"),outbox["body"].to_string(),text(outbox,"state"),outbox.get("result").filter(|v|!v.is_null()).map(Value::to_string)])?;
+                studio_runtime_store::remote_outbox::RemoteOutbox::put(tx,studio_runtime_store::remote_outbox::RemoteEffect::ServerRequest,text(outbox,"server"),text(outbox,"id"),"fingerprint",if text(outbox,"state")=="queued"{studio_runtime_schema::persistence::OutboxStatus::Pending}else{studio_runtime_schema::persistence::OutboxStatus::Submitted},Some(0),json!({"body":outbox["body"].to_string(),"admission":{"id":"fixture","signature":"fingerprint","created":1},"attempts":0,"error":null}),1)?;
             } else if case["family"] == "tool" {
                 let record=&case["record"];let outbox=&case["outbox"];
                 AgentRepository::put(tx,&AgentRecord::from_value(json!({
@@ -179,7 +179,7 @@ fn snapshot(store: &RuntimeStore) -> Value {
     for table in [
         "runtime_projects",
         "request_results",
-        "runtime_server_outbox",
+        "runtime_outbox",
         "runtime_agent_moves",
         "runtime_agents",
         "runtime_tool_requests",
@@ -282,7 +282,10 @@ fn complete_location_in_fixture(
         now,
     )?;
     if receipt["outcome"] != "unknown" {
-        tx.execute("DELETE FROM runtime_server_outbox WHERE id=?1", [key])?;
+        tx.execute(
+            "DELETE FROM runtime_outbox WHERE kind='remote_delivery' AND request_id=?1",
+            [key],
+        )?;
     }
     Ok(receipt.clone())
 }
@@ -537,7 +540,7 @@ async fn location_consumer_checks_shared_outbox_storage_before_decoding() {
     store
         .transaction(move |tx| {
             tx.execute(
-                "UPDATE runtime_server_outbox SET attempts=-1 WHERE id=?1",
+                "UPDATE runtime_outbox SET payload=json_set(payload,'$.record.attempts',-1) WHERE kind='remote_delivery' AND request_id=?1",
                 [key_for_write],
             )?;
             Ok(())
@@ -578,7 +581,7 @@ async fn location_commit_failpoints_reopen_and_apply_once() {
         ("request_results", "INSERT"),
         ("runtime_projects", "UPDATE"),
         ("sync_entities", "UPDATE"),
-        ("runtime_server_outbox", "DELETE"),
+        ("runtime_outbox", "DELETE"),
     ];
     for (index, (table, verb)) in boundaries.into_iter().enumerate() {
         if !full() && ![0, 3].contains(&index) {

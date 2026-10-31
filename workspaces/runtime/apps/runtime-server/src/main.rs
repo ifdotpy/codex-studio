@@ -66,7 +66,8 @@ const STARTUP_TRACE_ENV: &str = "CODEX_STUDIO_STARTUP_TRACE";
 
 /// Durable inputs that can enqueue or unblock a server-to-server delivery.
 const ORCHESTRATION_WAKE_TABLES: [ObservedTable; 3] = [
-    ObservedTable::ServerOutbox,
+    // The shared outbox holds server requests and federation messages. A write wakes both schedulers.
+    ObservedTable::RuntimeOutbox,
     ObservedTable::AccessClients,
     ObservedTable::ServerLinks,
 ];
@@ -77,7 +78,7 @@ const FEDERATION_WAKE_TABLES: [ObservedTable; 6] = [
     ObservedTable::FederationPeers,
     ObservedTable::FederationInvites,
     ObservedTable::FederationRooms,
-    ObservedTable::FederationOutbox,
+    ObservedTable::RuntimeOutbox,
 ];
 
 fn observe_table_wakes(store: &RuntimeStore, tables: &[ObservedTable], wake: Arc<Notify>) {
@@ -2127,11 +2128,16 @@ mod targeted_scheduler_wake_tests {
         tokio::task::yield_now().await;
         store
             .transaction(|tx| {
-                tx.execute(
-                    "INSERT INTO runtime_server_outbox(\
-                        id,server,body,state,created_at,next_at,fingerprint,attempts\
-                     ) VALUES('outbox-event','peer','{\"action\":\"event\"}','queued',1,1,'fingerprint',0)",
-                    [],
+                studio_runtime_store::remote_outbox::RemoteOutbox::put(
+                    tx,
+                    studio_runtime_store::remote_outbox::RemoteEffect::ServerRequest,
+                    "peer",
+                    "outbox-event",
+                    "fingerprint",
+                    studio_runtime_schema::persistence::OutboxStatus::Pending,
+                    Some(1),
+                    serde_json::json!({"body":"{\"action\":\"event\"}"}),
+                    1,
                 )?;
                 Ok(())
             })
@@ -2141,11 +2147,6 @@ mod targeted_scheduler_wake_tests {
             .await
             .expect("orchestration observes outbox input")
             .expect("orchestration waiter");
-        tokio::task::yield_now().await;
-        assert!(
-            !federation_waiter.is_finished(),
-            "orchestration outbox writes must not wake federation"
-        );
         federation_waiter.abort();
 
         let federation_waiter = tokio::spawn({

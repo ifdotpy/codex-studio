@@ -223,7 +223,7 @@ impl MultiServerToolPort for ResumeFetching {
             );
             self.store
                 .transaction(|tx| {
-                    tx.execute("UPDATE runtime_server_outbox SET next_at=0", [])?;
+                    tx.execute("UPDATE runtime_outbox SET next_at=0 WHERE kind='remote_delivery' AND status='pending'", [])?;
                     Ok(())
                 })
                 .await
@@ -1088,7 +1088,7 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
     let body: String = store
         .test_read_transaction(|tx| {
             Ok(tx.query_row(
-                "SELECT body FROM runtime_server_outbox WHERE id=?1",
+                "SELECT json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery' AND request_id=?1",
                 [&outbox],
                 |row| row.get(0),
             )?)
@@ -1664,7 +1664,7 @@ async fn a_remote_worker_keeps_its_local_tools_and_names_the_driver_for_forwarde
     let outbox: i64 = store
         .test_read_transaction(|tx| {
             Ok(tx.query_row(
-                "SELECT count(*) FROM runtime_server_outbox WHERE json_extract(body,'$.action')='task'",
+                "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(json_extract(payload,'$.record.body'),'$.action')='task'",
                 [],
                 |row| row.get(0),
             )?)
@@ -1953,7 +1953,7 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     let notice: String = store
         .test_read_transaction(|tx| {
             Ok(tx.query_row(
-                "SELECT body FROM runtime_server_outbox WHERE server=?1 AND json_extract(body,'$.action')='exec_event'",
+                "SELECT json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery' AND target=?1 AND json_extract(json_extract(payload,'$.record.body'),'$.action')='exec_event'",
                 [PEER],
                 |row| row.get(0),
             )?)

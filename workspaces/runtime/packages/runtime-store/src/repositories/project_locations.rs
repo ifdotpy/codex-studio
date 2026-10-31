@@ -43,7 +43,7 @@ pub struct ProjectLocationsRepository;
 impl ProjectLocationsRepository {
     pub fn outbox(db: &Connection, id: &str) -> StoreResult<Option<Value>> {
         let raw: Option<String> = db.query_row(
-            "SELECT json_object('id',id,'server',server,'body',body,'state',state,'result',result,'fingerprint',fingerprint,'attempts',attempts,'created_at',created_at,'completed_at',completed_at) FROM runtime_server_outbox WHERE id=?1",
+            "SELECT json_object('id',request_id,'server',target,'body',json_extract(payload,'$.record.body'),'state',CASE status WHEN 'pending' THEN 'queued' ELSE 'running' END,'result',NULL,'fingerprint',signature,'attempts',json_extract(payload,'$.record.attempts'),'created_at',created/1000.0,'completed_at',0) FROM runtime_outbox WHERE kind='remote_delivery' AND request_id=?1 AND json_extract(payload,'$.effect')='server_request'",
             [id], |row| row.get(0),
         ).optional()?;
         raw.map(|raw| {
