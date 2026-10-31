@@ -169,6 +169,7 @@ export default {
       "src/sync/entityTransfer.test.ts",
       "src/sync/resourceEvents.test.ts",
       "src/servers/eventSource.test.ts",
+      "src/servers/routes.test.ts",
       // Prevent duplicate entity pulls and preserve server storage and API ownership.
       "src/servers/useUiPreferenceSync.test.ts",
       "src/servers/useServerDiscovery.test.ts",

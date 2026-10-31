@@ -158,6 +158,7 @@ test.describe("legacy schema mismatch", () => {
         apiSchemaHandshakeSse(
           protocol3SseEvent("session", {
             sessionId: frame.sessionId,
+            routes: [],
           } satisfies components["schemas"]["SyncSessionEvent"]) + frame.body,
           { hash: frame.hash },
         ),

@@ -165,11 +165,43 @@ async fn serve_inner(state: HttpState, request: Request<Body>, next: Next) -> Re
             .iter()
             .filter_map(|v| v.to_str().ok().map(str::to_owned))
             .collect::<Vec<_>>();
+        // A client that sends a nonce gets the server's signature over it, so a route
+        // can prove it holds the server identity key before the client sends credentials.
+        let nonce = request.uri().query().and_then(|query| {
+            form_urlencoded::parse(query.as_bytes())
+                .find(|(name, _)| name == "nonce")
+                .map(|(_, value)| value.into_owned())
+        });
+        let proof_store = store.clone();
         return match boundary.discovery_identity(store, &address, &logins).await {
-            Ok(v) => match super::generated_json::<crate::generated::DiscoveryIdentity>(v) {
-                Ok(v) => Json(v).into_response(),
-                Err(e) => e.into_response(),
-            },
+            Ok(mut v) => {
+                if let Some(nonce) = nonce {
+                    let server_id = v["serverId"].as_str().unwrap_or_default();
+                    let Some(message) =
+                        studio_runtime_schema::multi_server_protocol::identity_proof_message(
+                            server_id, &nonce,
+                        )
+                    else {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            "The identity nonce is invalid",
+                        );
+                    };
+                    match credentials.sign(proof_store, message).await {
+                        Ok(proof) => v["proof"] = serde_json::Value::String(proof),
+                        Err(_) => {
+                            return error_response(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "The server identity is unavailable",
+                            );
+                        }
+                    }
+                }
+                match super::generated_json::<crate::generated::DiscoveryIdentity>(v) {
+                    Ok(v) => Json(v).into_response(),
+                    Err(e) => e.into_response(),
+                }
+            }
             Err(e) => failure(e),
         };
     }

@@ -41,11 +41,42 @@ Anything else is a defect, in particular:
 - a GET or pull issued because an event said that something changed;
 - a business write (`POST`, `PUT`) the user did not trigger.
 
+Connection checks are not data reads, and they carry no server data into the
+client. They are the route identity check, the check for a faster route, and
+the probe of an open stream (see [Routes and reconnect](#routes-and-reconnect)).
+
 Subscription interest updates are transport control messages. They carry typed
 references and never read data or repeat a business action.
 
 A quiet interface on a live stream sends no HTTP requests. A new feature that
 needs server data adds a stream resource and an event; it does not add a read.
+
+## Routes and reconnect
+
+The web client keeps an ordered route list for each paired server. The paired
+origin is first. The `session` event of every stream lists the origins the server
+answers on (`routes`). The client learns them and drops the ones that are no
+longer listed. A key paired over HTTPS never goes over plain HTTP.
+
+- **Identity first.** Before a learned route gets a signed request, the client
+  sends a fresh nonce to `/api/multi-server/v1/identity?nonce=...` without a key.
+  The server signs the nonce with its multi-server identity key. The client
+  verifies the signature with the server key stored at pairing. A route with the
+  right `serverId` that cannot sign gets nothing. The HTTPS paired origin needs no
+  proof (TLS binds it to its host name). The nonce size owner is
+  `IDENTITY_PROOF_NONCE_BYTES` in `multi_server_protocol.rs`.
+- **Faster route.** While a later route is in use, the client checks the earlier
+  routes on network change, on foreground, and every minute. A failed route waits
+  for a cooldown. A move replaces the stream.
+- **One retry owner.** The stream coordinator retries with jittered exponential
+  backoff, capped at 5 minutes. The count resets after the stream stays up for
+  one minute. Offline and refused (401, 403) connections wait for a wakeup.
+- **Probe, then replace.** On foreground or network change the client sends an
+  empty subscription change and waits for its acknowledgement on the stream.
+  Only a missing answer within 5 seconds replaces the stream.
+
+Owners: `servers/routes.ts` (route constants and list), `sync/resourceConnection.ts`
+(retry and probe constants), `sync/resourceEvents.ts` (the single retry loop).
 
 ## Subscriptions follow the screen
 

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import type { OutgoingTabMessage } from "./resourceEvents";
+import type {
+  OutgoingTabMessage,
+  ResourceConnectionDetail,
+} from "./resourceEvents";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   API_SCHEMA_HASH,
@@ -35,7 +38,7 @@ class Source {
   static instances: Source[] = [];
   static skipNextAutoHandshake = false;
   listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>();
-  onerror: (() => void) | null = null;
+  onerror: ((event?: { status?: number }) => void) | null = null;
   onopen: (() => void) | null = null;
   status = 200;
   closed = false;
@@ -2868,5 +2871,182 @@ describe("shared resource event transport", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(Source.instances).toHaveLength(1);
     expect(source.restart).toHaveBeenCalledOnce();
+  });
+});
+
+describe("connection owner: retries, wakeups and stream probes", () => {
+  afterEach(async () => {
+    for (const stop of activeStops) stop();
+    await vi.advanceTimersByTimeAsync(0);
+    const api = await import("../api");
+    api.markApiSchemaMismatch();
+    // Drain deferred coordinator shutdown without assuming a fixed timer deadline.
+    // The assertion still rejects recurring timers after cleanup.
+    await vi.runOnlyPendingTimersAsync();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.resetModules();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    Source.instances = [];
+    subscriptionPosts.length = 0;
+    Source.skipNextAutoHandshake = false;
+    Channel.instances = [];
+    syncDatabase.mockClear();
+  });
+
+  const resource = { kind: "state" } as const;
+  const baseline = (epoch: string) => ({
+    protocol: 4,
+    workspaceId,
+    epoch,
+    revision: 1,
+    reason: "initial",
+    resources: [resource],
+  });
+
+  async function open() {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const windowListeners = new Map<string, () => void>();
+    vi.stubGlobal("window", {
+      addEventListener: (name: string, listener: () => void) =>
+        windowListeners.set(name, listener),
+      removeEventListener: vi.fn(),
+    });
+    const transport = await loadTransport();
+    const details: ResourceConnectionDetail[] = [];
+    const health: string[] = [];
+    transport.watchResourceConnection((status, _activity, detail) => {
+      health.push(status);
+      details.push(detail);
+    });
+    transport.watchResourceChanges(resource, vi.fn());
+    await vi.advanceTimersByTimeAsync(20);
+    let epoch = "";
+    const goLive = async () => {
+      const source = Source.instances.at(-1)!;
+      epoch = `epoch-${Source.instances.length}`;
+      source.open();
+      source.emit("resources", baseline(epoch));
+      await vi.advanceTimersByTimeAsync(20);
+      return source;
+    };
+    /** Keeps the stream healthy with heartbeats while time passes. */
+    const stayUp = async (ms: number) => {
+      for (let passed = 0; passed < ms; passed += 20_000) {
+        Source.instances
+          .at(-1)!
+          .emit("heartbeat", { protocol: 4, workspaceId, epoch, revision: 1 });
+        await vi.advanceTimersByTimeAsync(Math.min(20_000, ms - passed));
+      }
+    };
+    return { windowListeners, health, details, goLive, stayUp };
+  }
+
+  /** The delay of the retry that the last failure scheduled. */
+  const lastDelay = (details: ResourceConnectionDetail[]) => {
+    const retryAt = details.at(-1)?.retryAt;
+    return retryAt === undefined ? undefined : retryAt - Date.now();
+  };
+
+  it("backs off with jitter up to a 5 minute cap", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.999);
+    const { details } = await open();
+    let longest = 0;
+    for (let i = 0; i < 14; i++) {
+      Source.instances.at(-1)!.onerror?.();
+      const delay = lastDelay(details)!;
+      expect(delay).toBeLessThanOrEqual(5 * 60_000);
+      longest = Math.max(longest, delay);
+      await vi.advanceTimersByTimeAsync(delay + 20);
+    }
+    expect(longest).toBe(5 * 60_000);
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    Source.instances.at(-1)!.onerror?.();
+    expect(lastDelay(details)).toBeLessThan(5 * 60_000);
+  });
+
+  it("resets the retry count only after the stream stays up", async () => {
+    const { details, goLive, stayUp } = await open();
+    const failAndRecover = async (liveFor: number) => {
+      Source.instances.at(-1)!.onerror?.();
+      const attempt = details.at(-1)!.attempt;
+      await vi.advanceTimersByTimeAsync(lastDelay(details)! + 20);
+      await goLive();
+      await stayUp(liveFor);
+      return attempt;
+    };
+    await goLive();
+    expect(await failAndRecover(10_000)).toBe(1);
+    // It was live for 10 s only, so the next failure continues the count.
+    expect(await failAndRecover(10_000)).toBe(2);
+    expect(await failAndRecover(120_000)).toBe(3);
+    // After 2 minutes live the count starts again.
+    expect(await failAndRecover(10_000)).toBe(1);
+  });
+
+  it("waits for a wakeup after the server refuses the device", async () => {
+    const { windowListeners, details, goLive } = await open();
+    await goLive();
+    const refused = Source.instances.at(-1)!;
+    refused.onerror?.({ status: 403 });
+    expect(details.at(-1)).toEqual(
+      expect.objectContaining({ failure: "auth-rejected" }),
+    );
+    expect(details.at(-1)!.retryAt).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    expect(Source.instances).toHaveLength(1);
+    windowListeners.get("pageshow")?.();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(Source.instances).toHaveLength(2);
+  });
+
+  it("probes an open stream on foreground and keeps it when the server answers", async () => {
+    const { windowListeners, goLive, stayUp } = await open();
+    const stream = await goLive();
+    subscriptionPosts.length = 0;
+    windowListeners.get("pageshow")?.();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(subscriptionPosts).toHaveLength(1);
+    expect(subscriptionPosts[0]).toEqual(
+      expect.objectContaining({ add: [], remove: [] }),
+    );
+    await stayUp(60_000);
+    expect(stream.closed).toBe(false);
+    expect(Source.instances).toHaveLength(1);
+  });
+
+  it("replaces the stream when the probe gets no answer in time", async () => {
+    const api = await import("../api");
+    const { windowListeners, goLive } = await open();
+    const stream = await goLive();
+    vi.spyOn(api, "post").mockImplementation(async () => new Promise(() => {}));
+    windowListeners.get("pageshow")?.();
+    await vi.advanceTimersByTimeAsync(4_900);
+    expect(stream.closed).toBe(false);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(stream.closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(Source.instances).toHaveLength(2);
+  });
+
+  it("probes instead of replacing the stream when the network comes back", async () => {
+    const { windowListeners, goLive } = await open();
+    const stream = await goLive();
+    subscriptionPosts.length = 0;
+    windowListeners.get("online")?.();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(stream.closed).toBe(false);
+    expect(subscriptionPosts).toHaveLength(1);
+  });
+
+  it("replaces the stream when the route changes", async () => {
+    const { goLive } = await open();
+    const stream = await goLive();
+    const transport = await import("./resourceEvents");
+    transport.replaceStream();
+    expect(stream.closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(Source.instances).toHaveLength(2);
   });
 });
