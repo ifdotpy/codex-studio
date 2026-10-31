@@ -25,6 +25,11 @@ const MAX_BATCH_ITEMS: usize = 1024;
 /// Longest clone failure text in a `prime` or `sync.clone` answer, in characters.
 const CLONE_ERROR_CHARS: usize = 300;
 
+#[derive(serde::Deserialize)]
+struct ProjectSource {
+    source: String,
+}
+
 fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
 }
@@ -124,18 +129,16 @@ impl HostService {
         if !slots::project_folder_name(project_id) {
             return None;
         }
-        let value = protocol::read_json(
-            &self
-                .state
-                .join("layr-projects")
-                .join(project_id)
-                .join("project.json"),
-        )
-        .ok()?;
-        let source = value
-            .get("source")
-            .and_then(Value::as_str)
-            .filter(|source| source.starts_with('/'))?;
+        let path = self
+            .state
+            .join("layr-projects")
+            .join(project_id)
+            .join("project.json");
+        let studio_runtime_schema::json_object::JsonObject(project): studio_runtime_schema::json_object::JsonObject<ProjectSource> = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+        let source = project.source;
+        if !source.starts_with('/') {
+            return None;
+        }
         let path = PathBuf::from(source);
         (path.is_dir() && !protocol::is_symlink(&path)).then_some(path)
     }
