@@ -6,6 +6,7 @@ import {
   type CommandRequest,
   type CommandResponse,
 } from "./commands";
+import { createPendingCommands } from "./pendingCommands";
 
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
@@ -90,5 +91,37 @@ describe("command client", () => {
     await client.run(command);
     expect(sent).toHaveLength(2);
     expect(sent[1]).toBe(sent[0]);
+  });
+
+  it("shows a pending entry at once and clears it when the client holds the row", async () => {
+    const pending = createPendingCommands();
+    let answer!: (response: CommandResponse) => void;
+    const client = createCommandClient(
+      memoryStorage(),
+      () => new Promise<CommandResponse>((resolve) => (answer = resolve)),
+      pending,
+    );
+    const running = client.withdraw("chat", "m");
+    expect(pending.list()).toMatchObject([
+      { kind: "withdraw", target: "chat", message: "m" },
+    ]);
+    answer({ ...applied, seq: 7 });
+    await running;
+    expect(pending.list()).toHaveLength(1);
+    pending.observeClientSeq(7);
+    expect(pending.list()).toHaveLength(0);
+  });
+
+  it("clears the pending entry of a command that fails", async () => {
+    const pending = createPendingCommands();
+    const client = createCommandClient(
+      memoryStorage(),
+      async () => {
+        throw new Error("refused");
+      },
+      pending,
+    );
+    await expect(client.stop("chat", true)).rejects.toThrow("refused");
+    expect(pending.list()).toHaveLength(0);
   });
 });

@@ -5,6 +5,7 @@
 // applied number of each client (the watermark), so the number must never go down. Both
 // values are saved before the request, so a retry after a lost response reuses them.
 import type { components } from "./generated/api";
+import type { PendingCommands } from "./pendingCommands";
 import { randomUUID } from "./uuid";
 
 export type CommandRequest = components["schemas"]["CommandRequest"];
@@ -68,7 +69,16 @@ export type CommandPost = (
   },
 ) => Promise<CommandResponse>;
 
-export function createCommandClient(storage: Storage, post: CommandPost) {
+type CommandOptions = {
+  workspaceId?: string | undefined;
+  sessionToken?: string | undefined;
+};
+
+export function createCommandClient(
+  storage: Storage,
+  post: CommandPost,
+  pending?: PendingCommands,
+) {
   const memory: { state?: ClientState } = {};
   /** Build a command with a new id and the next number. Keep it to retry the same command. */
   function make<K extends CommandKind>(
@@ -86,26 +96,30 @@ export function createCommandClient(storage: Storage, post: CommandPost) {
       body,
     } as Variant<K>;
   }
+  /** Show the expected result at once, then send. A retry sends the same object. */
+  async function run(command: CommandRequest, options?: CommandOptions) {
+    pending?.begin({
+      id: command.id,
+      kind: command.kind,
+      target: command.target,
+      ...(command.kind === "withdraw" ? { message: command.body.message } : {}),
+    });
+    try {
+      const response = await post(command, options);
+      pending?.settle(command.id, response.seq);
+      return response;
+    } catch (error) {
+      pending?.fail(command.id);
+      throw error;
+    }
+  }
   return {
     make,
-    /** Send a command built by `make`. A retry sends the same object. */
-    run: (
-      command: CommandRequest,
-      options?: {
-        workspaceId?: string | undefined;
-        sessionToken?: string | undefined;
-      },
-    ) => post(command, options),
-    stop: (
-      chat: string,
-      descendants: boolean,
-      options?: { workspaceId?: string | undefined },
-    ) => post(make("stop", chat, { descendants }), options),
-    withdraw: (
-      chat: string,
-      message: string,
-      options?: { workspaceId?: string | undefined },
-    ) => post(make("withdraw", chat, { message }), options),
+    run,
+    stop: (chat: string, descendants: boolean, options?: CommandOptions) =>
+      run(make("stop", chat, { descendants }), options),
+    withdraw: (chat: string, message: string, options?: CommandOptions) =>
+      run(make("withdraw", chat, { message }), options),
   };
 }
 

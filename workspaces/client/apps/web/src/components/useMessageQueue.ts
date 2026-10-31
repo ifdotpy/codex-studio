@@ -12,6 +12,7 @@ import { onResume } from "../sync/resume";
 import type { paths } from "../generated/api";
 import { queueMutationMessageId } from "./queueMutationIdentity";
 import { useServerSync } from "../servers/ServerServicesContext";
+import { usePendingCommands } from "../usePendingCommands";
 
 type QueueMutation =
   paths["/api/queue"]["post"]["requestBody"]["content"]["application/json"];
@@ -84,6 +85,7 @@ export function useMessageQueue(p: {
 }) {
   const { subscribeStateProjection } = useServerSync();
   const { get, syncPost, command } = useServerApi();
+  const pendingCommands = usePendingCommands();
   const storage = useServerStorage();
   const { updateLocalDraft } = useServerLocalDrafts();
   const serverStorageEventKey = useServerStorageEventKey();
@@ -255,8 +257,20 @@ export function useMessageQueue(p: {
     setPending({ key, request });
     return execute(request);
   };
+  // A withdrawn message leaves the list at once, before the stream confirms it.
+  const withdrawn = new Set(
+    pendingCommands.flatMap((entry) =>
+      entry.kind === "withdraw" &&
+      entry.target === p.id &&
+      entry.message !== undefined
+        ? [entry.message]
+        : [],
+    ),
+  );
   return {
-    items: view.items,
+    items: withdrawn.size
+      ? view.items.filter((item) => !withdrawn.has(item.id))
+      : view.items,
     loading: state.key !== key || !state.loaded,
     error: failure.key === key ? failure.text : "",
     canReorder: !!view.capabilities?.reorder,
