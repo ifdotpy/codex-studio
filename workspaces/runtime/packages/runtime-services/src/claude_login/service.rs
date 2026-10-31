@@ -190,7 +190,7 @@ pub struct LoginService {
     jobs: JobRegistry,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     failed: AtomicBool,
-    on_change: Arc<dyn Fn() + Send + Sync>,
+    on_change: Arc<dyn Fn(&str) + Send + Sync>,
 }
 impl LoginService {
     pub async fn open(
@@ -199,7 +199,7 @@ impl LoginService {
         launcher: Arc<dyn LoginLauncher>,
         receipts: Arc<dyn LoginReceipts>,
         chats: Arc<dyn LoginChats>,
-        on_change: Arc<dyn Fn() + Send + Sync>,
+        on_change: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Result<Arc<Self>, LoginError> {
         let reader = receipts.clone();
         let loaded = blocking(move || reader.load()).await?;
@@ -276,6 +276,10 @@ impl LoginService {
         self.refresh_chats(id).await?;
         let entry = self.jobs.entry(id)?;
         Ok(public(&*entry.lock().await))
+    }
+    /// Request IDs retained for a reconnect baseline.
+    pub fn retained_request_ids(&self) -> Vec<String> {
+        self.jobs.snapshot().into_iter().map(|(id, _)| id).collect()
     }
     /// Current transient progress for a subscribed stream. This read performs
     /// no recovery, account writes, or receipt persistence.
@@ -409,13 +413,14 @@ impl LoginService {
             profile,
             lease: Some(lease),
         };
+        let task_id = id.clone();
         let task = tokio::spawn(async move {
-            service.run(id, launch, receiver).await;
+            service.run(task_id, launch, receiver).await;
         });
         let mut tasks = self.tasks.lock().await;
         tasks.retain(|t| !t.is_finished());
         tasks.push(task);
-        (self.on_change)();
+        (self.on_change)(&id);
         Ok(result)
     }
     pub async fn code(&self, id: &str, code: String) -> Result<Value, LoginError> {
@@ -436,6 +441,7 @@ impl LoginService {
         self.save(&next).await?;
         job.snapshot = next;
         self.jobs.refresh(id, &job);
+        (self.on_change)(id);
         let sender = job.commands.clone().ok_or(LoginError::WaitForLink)?;
         let (reply, receipt) = oneshot::channel();
         let bytes = (code + "\n").into_bytes();
@@ -447,6 +453,7 @@ impl LoginService {
             job.snapshot = next;
             job.url = None;
             self.jobs.refresh(id, &job);
+            (self.on_change)(id);
             return Ok(public(&job));
         }
         drop(job);
@@ -485,7 +492,7 @@ impl LoginService {
             self.save(&next).await?;
             job.snapshot = next;
             self.jobs.refresh(id, &job);
-            (self.on_change)();
+            (self.on_change)(id);
         }
         if job.snapshot.active() {
             let next = job.snapshot.finish(LoginStatus::Cancelled, None)?;
@@ -499,7 +506,7 @@ impl LoginService {
                 return Err(LoginError::Unavailable);
             }
             self.jobs.refresh(id, &job);
-            (self.on_change)();
+            (self.on_change)(id);
         }
         Ok(public(&job))
     }
@@ -517,7 +524,7 @@ impl LoginService {
             job.snapshot = next;
             job.url = None;
             self.jobs.refresh(id, &job);
-            (self.on_change)();
+            (self.on_change)(id);
         }
         Ok(())
     }
@@ -592,7 +599,7 @@ impl LoginService {
         drop(launch.lease.take());
         // A final receipt write may fail after Ready was installed in memory.
         // Wake readers even when finish() correctly leaves that terminal state intact.
-        (self.on_change)();
+        (self.on_change)(&id);
     }
     async fn run_inner(
         &self,
@@ -643,7 +650,7 @@ impl LoginService {
                                 job.snapshot=job.snapshot.finish(LoginStatus::Pending,None)?;
                                 job.url=Some(url);
                                 self.jobs.refresh(id, &job);
-                                (self.on_change)();
+                                (self.on_change)(id);
                             }
                         }
                     },
@@ -690,7 +697,7 @@ impl LoginService {
             job.snapshot = next;
             job.url = None;
             self.jobs.refresh(id, &job);
-            (self.on_change)();
+            (self.on_change)(id);
             return Ok(());
         }
         let accounts = self.accounts.clone();
@@ -730,7 +737,7 @@ impl LoginService {
         self.jobs.refresh(id, &job);
         drop(job);
         self.refresh_chats(id).await?;
-        (self.on_change)();
+        (self.on_change)(id);
         Ok(())
     }
     async fn refresh_chats(&self, id: &str) -> Result<(), LoginError> {
@@ -770,6 +777,7 @@ impl LoginService {
         self.save(&next).await?;
         job.snapshot = next;
         self.jobs.refresh(id, &job);
+        (self.on_change)(id);
         Ok(())
     }
     async fn probe(
@@ -908,6 +916,7 @@ impl LoginService {
             self.save(&next).await?;
             job.snapshot = self.cleanup(&next).await?;
             self.jobs.refresh(&id, &job);
+            (self.on_change)(&id);
         }
         Ok(())
     }

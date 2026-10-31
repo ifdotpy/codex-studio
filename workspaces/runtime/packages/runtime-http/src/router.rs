@@ -447,6 +447,9 @@ impl HttpState {
         mut self,
         driver: Arc<studio_runtime_services::account_driver::AccountDriver>,
     ) -> Self {
+        driver
+            .change_signal()
+            .attach_progress(Arc::clone(&self.resource_notifications));
         self.account_driver = Some(driver);
         self
     }
@@ -689,11 +692,16 @@ impl HttpState {
     }
 
     /// Publish progress of a Claude login whose transient URL is not in the account list.
-    pub fn claude_login_change_callback(&self) -> Arc<dyn Fn() + Send + Sync> {
+    pub fn claude_login_change_callback(&self) -> Arc<dyn Fn(&str) + Send + Sync> {
         let notifications = Arc::clone(&self.resource_notifications);
         let changes = Arc::clone(&self.sync_changes);
         let wake = Arc::clone(&self.event_wake);
-        Arc::new(move || {
+        Arc::new(move |request_id| {
+            notifications.publish_progress(
+                studio_runtime_schema::progress_selector::ProgressSelector::Auth {
+                    request_id: request_id.to_owned(),
+                },
+            );
             if let Err(error) = notifications.publish_once(&serde_json::json!({
                 "requestId": format!("claude-login:{}", uuid::Uuid::new_v4()),
                 "resources": [{"kind":"accounts"}],

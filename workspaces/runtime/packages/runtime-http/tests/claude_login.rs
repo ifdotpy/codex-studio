@@ -94,7 +94,7 @@ async fn five_login_routes_drive_retained_actor_and_reauth_cancel() {
     let callback_gate = Arc::clone(&ready_gate);
     let changes = Arc::clone(&f.changes);
     let service = f
-        .open_with_change(Arc::new(move || {
+        .open_with_change(Arc::new(move |_| {
             callback_gate.pause_if_held();
             changes.notify_one();
         }))

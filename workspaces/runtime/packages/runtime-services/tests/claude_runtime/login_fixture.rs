@@ -204,12 +204,12 @@ impl Fixture {
     }
     pub async fn open(&self) -> Arc<LoginService> {
         let changes = self.changes.clone();
-        self.open_with_change(Arc::new(move || changes.notify_one()))
+        self.open_with_change(Arc::new(move |_| changes.notify_one()))
             .await
     }
     pub async fn open_with_change(
         &self,
-        on_change: Arc<dyn Fn() + Send + Sync>,
+        on_change: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Arc<LoginService> {
         LoginService::open(
             LoginConfig {

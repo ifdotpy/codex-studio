@@ -45,7 +45,7 @@ pub fn account_server_root(state_root: &Path, account_key: &str) -> PathBuf {
 }
 use std::process::Command;
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use studio_runtime_process::child_priority::ChildPriority;
 use thiserror::Error;
@@ -1059,13 +1059,43 @@ impl RegistryState {
 pub struct AccountChangeSignal {
     sender: tokio::sync::watch::Sender<u64>,
     registry: tokio::sync::watch::Sender<u64>,
+    progress: Arc<Mutex<Option<Arc<crate::resource_notify::ResourceNotifications>>>>,
 }
 
 impl AccountChangeSignal {
     pub fn new() -> Self {
         let (sender, _) = tokio::sync::watch::channel(0);
         let (registry, _) = tokio::sync::watch::channel(0);
-        Self { sender, registry }
+        Self {
+            sender,
+            registry,
+            progress: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn attach_progress(
+        &self,
+        notifications: Arc<crate::resource_notify::ResourceNotifications>,
+    ) {
+        *self
+            .progress
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(notifications);
+    }
+
+    fn publish_login(&self, request: &str) {
+        if let Some(notifications) = self
+            .progress
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            notifications.publish_progress(
+                studio_runtime_schema::progress_selector::ProgressSelector::Auth {
+                    request_id: request.to_owned(),
+                },
+            );
+        }
     }
 
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
@@ -1264,6 +1294,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         }
         if value != state.value {
             self.persist(&mut state, value)?;
+            self.change_signal.publish_login(request);
         }
         Ok(Some(result))
     }
@@ -1397,6 +1428,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         value["logins"][&request.login_id] = receipt.clone();
         order.logins.push(request.login_id.clone());
         self.persist_registry(&mut state, value, &order)?;
+        self.change_signal.publish_login(&request.login_id);
         Ok(LoginReservation::Dispatch(receipt))
     }
 
@@ -1480,6 +1512,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             value["accounts"][account]["error"] = result["error"].clone();
         }
         self.persist(&mut state, value)?;
+        self.change_signal.publish_login(request);
         Ok(result)
     }
 
@@ -1513,6 +1546,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         );
         let result = receipt.clone();
         self.persist(&mut state, value)?;
+        self.change_signal.publish_login(request);
         Ok(LoginReservation::Dispatch(result))
     }
 
@@ -1550,6 +1584,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             value["accounts"][account]["status"] = serde_json::json!("signedOut");
         }
         self.persist(&mut state, value)?;
+        self.change_signal.publish_login(request);
         Ok(result)
     }
 
@@ -1587,6 +1622,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         let result = receipt.clone();
         if value != state.value {
             self.persist(&mut state, value)?;
+            self.change_signal.publish_login(request);
         }
         Ok(result)
     }
@@ -1609,7 +1645,17 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             }
         }
         if value != state.value {
+            let changed: Vec<String> = value["logins"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(id, receipt)| state.value["logins"].get(*id) != Some(*receipt))
+                .map(|(id, _)| id.clone())
+                .collect();
             self.persist(&mut state, value)?;
+            for id in changed {
+                self.change_signal.publish_login(&id);
+            }
         }
         Ok(())
     }
@@ -1680,6 +1726,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         let result = value["logins"][request].clone();
         if value != state.value {
             self.persist(&mut state, value)?;
+            self.change_signal.publish_login(request);
         }
         Ok(result)
     }
@@ -1854,7 +1901,14 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         if value.get("logins") == state.value.get("logins") {
             return Ok(false);
         }
+        let changed: Vec<String> = requests
+            .into_iter()
+            .filter(|id| value["logins"][id] != state.value["logins"][id])
+            .collect();
         self.persist(&mut state, value)?;
+        for id in changed {
+            self.change_signal.publish_login(&id);
+        }
         Ok(true)
     }
 
@@ -2018,6 +2072,14 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         state.public_snapshot()
+    }
+
+    /// IDs of all retained Codex login receipts, including completed ones.
+    pub fn retained_login_ids(&self) -> Result<Vec<String>, AccountDriverError> {
+        self.state
+            .lock()
+            .map(|state| state.order.logins.clone())
+            .map_err(|_| AccountDriverError::Poisoned)
     }
 
     /// Internal selected-account record, including the non-secret identity pin.

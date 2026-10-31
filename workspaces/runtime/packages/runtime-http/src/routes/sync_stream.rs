@@ -599,12 +599,37 @@ async fn sync_stream(
     if matches!(
         principal,
         studio_runtime_services::principal::Principal::Owner
-    ) && let Some(client) = &state.vault_job_client
-    {
-        let selectors = match super::host_secrets::retained_progress(client).await {
-            Ok(selectors) => selectors,
-            Err(error) => return error.into_response(),
-        };
+    ) {
+        use studio_runtime_schema::progress_selector::ProgressSelector;
+        let mut selectors = Vec::new();
+        if let Some(client) = &state.vault_job_client {
+            match super::host_secrets::retained_progress(client).await {
+                Ok(retained) => selectors.extend(retained),
+                Err(error) => return error.into_response(),
+            }
+        }
+        if let Some(login) = &state.claude_login {
+            selectors.extend(
+                login
+                    .retained_request_ids()
+                    .into_iter()
+                    .map(|request_id| ProgressSelector::Auth { request_id }),
+            );
+        }
+        if let Some(driver) = state.account_driver.clone() {
+            let retained = studio_runtime_process::blocking_pool::spawn_blocking(
+                "runtime-http/retained-auth-progress",
+                move || driver.retained_login_ids(),
+            )
+            .await;
+            match retained {
+                Ok(Ok(ids)) => selectors.extend(
+                    ids.into_iter()
+                        .map(|request_id| ProgressSelector::Auth { request_id }),
+                ),
+                _ => return ApiError::internal().into_response(),
+            }
+        }
         let resources = match selectors
             .into_iter()
             .map(|selector| SubscribedResource::new(progress_resource(selector)))
@@ -2738,7 +2763,7 @@ mod tests {
         .expect("blocking task")
         .expect("receipts");
         let (output, input) = tokio::sync::mpsc::channel(2);
-        let changes = state.sync_changes.clone();
+        let on_change = state.claude_login_change_callback();
         let login = LoginService::open(
             LoginConfig {
                 directory: directory.clone(),
@@ -2750,7 +2775,7 @@ mod tests {
             Arc::new(Launcher(tokio::sync::Mutex::new(Some(input)))),
             Arc::new(receipts),
             Arc::new(Chats),
-            Arc::new(move || changes.notify_one()),
+            on_change,
         )
         .await
         .expect("login service");
@@ -2764,6 +2789,7 @@ mod tests {
         let id = "e0166868-592a-4dca-8994-04d34a730af5";
         let url = "https://claude.com/cai/oauth/authorize?secret=transient-fixture";
         let mut changed = state.sync_changes.subscribe();
+        let mut live = state.resource_notifications.subscribe_live();
         let entity_sequence_before = store
             .read_async("test/before-progress", |connection| {
                 SyncDocumentsRepository::entity_sequence(connection)
@@ -2774,6 +2800,13 @@ mod tests {
             .start(id.into(), None, None, None)
             .await
             .expect("start once");
+        assert!(matches!(
+            live.try_recv(),
+            Ok(studio_runtime_services::resource_notify::LiveEvent::Progress(
+                studio_runtime_schema::progress_selector::ProgressSelector::Auth { request_id }
+            )) if request_id == id
+        ));
+        assert_eq!(login.retained_request_ids(), vec![id]);
         output
             .send(LoginEvent::Output(format!("{url}\n").into_bytes()))
             .await
@@ -3417,6 +3450,142 @@ mod tests {
         .expect("progress without subscription");
         assert!(String::from_utf8_lossy(&frame).contains("rename-progress"));
         assert!(String::from_utf8_lossy(&frame).contains(&request_id));
+    }
+
+    #[tokio::test]
+    async fn auth_progress_streams_to_owner_and_recovers_completed_login() {
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use studio_runtime_services::account_driver::{AccountDriver, CodexLoginRequest};
+        use studio_runtime_services::principal::{Grant, Principal};
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let registry = root.path().join("accounts.json");
+        tokio::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":"codex","home":"/fixture","label":"Codex","source":"fixture","status":"ready"}},"logins":{}}).to_string()).await.expect("registry");
+        let driver = Arc::new(AccountDriver::open(registry).expect("driver"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        )
+        .with_account_driver(driver.clone());
+        let app = crate::router(state).expect("router");
+        let open = |principal| {
+            let app = app.clone();
+            async move {
+                app.oneshot(Request::builder()
+                    .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%5D&tokenRates=false"))
+                    .header("host", "127.0.0.1:4321")
+                    .extension(ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 12345))))
+                    .extension(principal)
+                    .body(Body::empty()).expect("request")).await.expect("stream").into_body().into_data_stream()
+            }
+        };
+        let mut owner = open(Principal::Owner).await;
+        let mut device = open(Principal::Device {
+            id: "device".into(),
+            grant: Grant::Full,
+        })
+        .await;
+        let mut peer = open(Principal::Peer {
+            server: "peer".into(),
+        })
+        .await;
+        for stream in [&mut owner, &mut device, &mut peer] {
+            stream.next().await.expect("session").expect("bytes");
+            stream
+                .next()
+                .await
+                .expect("initial resources")
+                .expect("bytes");
+        }
+        let id = "e0166868-592a-4dca-8994-04d34a730af5";
+        let request = CodexLoginRequest {
+            login_id: id.into(),
+            account_key: None,
+            email: None,
+            label: None,
+        };
+        driver
+            .reserve_codex_login(&request, root.path(), 1.0)
+            .expect("reserve login");
+        let frame = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = owner.next().await.expect("owner stream").expect("bytes");
+                if String::from_utf8_lossy(&frame).contains("auth-progress") {
+                    break frame;
+                }
+            }
+        })
+        .await
+        .expect("owner receives progress without subscription");
+        assert!(String::from_utf8_lossy(&frame).contains(id));
+        for stream in [&mut device, &mut peer] {
+            let received = tokio::time::timeout(Duration::from_millis(200), async {
+                while let Some(Ok(frame)) = stream.next().await {
+                    if String::from_utf8_lossy(&frame).contains("auth-progress") {
+                        return true;
+                    }
+                }
+                false
+            })
+            .await;
+            assert!(
+                received.is_err(),
+                "non-owner must not receive auth progress"
+            );
+        }
+        drop(owner);
+        driver
+            .finish_codex_login(id, &format!("login-{id}"), None, false, None, 2.0)
+            .expect("complete during disconnect");
+        let mut reconnected = open(Principal::Owner).await;
+        let frame = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = reconnected
+                    .next()
+                    .await
+                    .expect("reconnected stream")
+                    .expect("bytes");
+                if String::from_utf8_lossy(&frame).contains("auth-progress") {
+                    break frame;
+                }
+            }
+        })
+        .await
+        .expect("completed login in baseline");
+        let text = String::from_utf8_lossy(&frame);
+        assert!(text.contains(id) && text.contains("error"));
+        for principal in [
+            Principal::Device {
+                id: "device".into(),
+                grant: Grant::Full,
+            },
+            Principal::Peer {
+                server: "peer".into(),
+            },
+        ] {
+            let mut stream = open(principal).await;
+            let received = tokio::time::timeout(Duration::from_millis(200), async {
+                while let Some(Ok(frame)) = stream.next().await {
+                    if String::from_utf8_lossy(&frame).contains("auth-progress") {
+                        return true;
+                    }
+                }
+                false
+            })
+            .await;
+            assert!(
+                received.is_err(),
+                "non-owner baseline excludes auth progress"
+            );
+        }
     }
 
     #[tokio::test]
@@ -5591,10 +5760,18 @@ mod tests {
             .await
             .expect("baseline");
         let changed = state.claude_login_change_callback();
+        let mut live = notifications.subscribe_live();
+        changed("00000000-0000-4000-8000-000000000001");
+        assert!(matches!(
+            live.try_recv(),
+            Ok(studio_runtime_services::resource_notify::LiveEvent::Progress(
+                studio_runtime_schema::progress_selector::ProgressSelector::Auth { request_id }
+            )) if request_id == "00000000-0000-4000-8000-000000000001"
+        ));
         let mut after = initial.cursor.revision;
         for _ in 0..2 {
             // The actor publishes starting, then a provider URL, before adding an account.
-            changed();
+            changed("00000000-0000-4000-8000-000000000001");
             let progress = notifications
                 .changes_since_with_content(&resources, Some(after), |resource| {
                     fixture_resource_content(state.clone(), resource)
