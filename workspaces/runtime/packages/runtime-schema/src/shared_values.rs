@@ -118,6 +118,36 @@ pub const SQLITE_WAL_FLUSH_INTERVAL_SECONDS: u64 = 15;
 /// (`PRAGMA journal_size_limit`), in bytes. Without a limit a WAL file keeps
 /// its largest size forever.
 pub const SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES: i64 = 16777216;
+/// Longest time one Canvas write transaction may hold the single writer before the
+/// server logs a warning with the caller and lists it in the slow transaction
+/// diagnostics, in milliseconds.
+pub const SQLITE_WRITE_TRANSACTION_ALERT_MS: u64 = 1000;
+
+// WAL backup to a paired server (docs/backup.md).
+/// Most WAL bytes that one checkpoint pause copies into the backup outbox, in bytes.
+/// The checkpoint waits for the next pause when the WAL is longer.
+pub const BACKUP_WAL_READ_MAX_BYTES: u64 = 33554432;
+/// Outbox size at which the backup generation is dropped and a new base snapshot
+/// starts, in bytes. It bounds the disk use while the paired server is away.
+pub const BACKUP_OUTBOX_MAX_BYTES: u64 = 4294967296;
+/// Raw bytes in one `backup.put` request, in bytes. Base64 and the signed envelope must
+/// stay under the paired-server request limit of 262144 bytes.
+pub const BACKUP_CHUNK_BYTES: usize = 131072;
+/// Raw bytes of the database file in one block of the compressed snapshot, in bytes.
+pub const BACKUP_SNAPSHOT_BLOCK_BYTES: usize = 4194304;
+/// zstd compression level of the snapshot blocks.
+pub const BACKUP_SNAPSHOT_ZSTD_LEVEL: i32 = 3;
+/// Tries of one `backup.put` request after a transport failure, in tries.
+pub const BACKUP_PUT_ATTEMPTS: u32 = 5;
+/// Wait between two tries of one `backup.put` request, in seconds.
+pub const BACKUP_PUT_RETRY_SECONDS: u64 = 5;
+/// Generations that the paired server keeps by default, in generations.
+pub const BACKUP_DEFAULT_RETAIN_GENERATIONS: u64 = 2;
+/// Most generations that the owner may ask the paired server to keep, in generations.
+pub const BACKUP_MAX_RETAIN_GENERATIONS: u64 = 10;
+/// Wait before the next backup try after a failure, and between two reads of the backup
+/// settings file while the backup is off, in seconds.
+pub const BACKUP_RETRY_SECONDS: u64 = 30;
 
 // Codex model/list catalog response contract; byte values count encoded UTF-8.
 /// Largest model catalog frame, in bytes.

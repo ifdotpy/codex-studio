@@ -21376,6 +21376,7 @@ export interface components {
         | "update.export"
         | "update.chunk"
         | "update.release"
+        | "backup.put"
         | "task"
         | "complaint"
         | "context"

@@ -97,6 +97,7 @@ export const ServerOperationKindValues = [
   "update.export",
   "update.chunk",
   "update.release",
+  "backup.put",
   "task",
   "complaint",
   "context",
