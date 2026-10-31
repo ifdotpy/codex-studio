@@ -8,14 +8,23 @@ const mocks = vi.hoisted(() => ({
   access: vi.fn(),
   snapshots: [] as unknown[],
   setLocalServerDetails: vi.fn(),
+  stateCalls: 0,
+  snapshotOverride: undefined as unknown,
+  fields: {} as Record<string, unknown>,
 }));
 vi.mock("react", () => ({
   useEffect: (effect: () => void | (() => void)) => mocks.effects.push(effect),
   useRef: (current: unknown) => ({ current }),
   useState: (current: unknown) => [
-    current,
+    mocks.stateCalls++ === 0 && mocks.snapshotOverride !== undefined
+      ? mocks.snapshotOverride
+      : current,
     (value: unknown) => mocks.snapshots.push(value),
   ],
+}));
+vi.mock("../sync/uiPreferenceStore", () => ({
+  readPreferenceFields: () => mocks.fields,
+  capturePreferenceWrite: vi.fn(),
 }));
 vi.mock("./ServerServicesContext", () => ({
   useServerApi: () => ({ serverAccess: mocks.access }),
@@ -63,6 +72,9 @@ afterEach(() => {
   mocks.snapshots.length = 0;
   mocks.access.mockReset();
   mocks.setLocalServerDetails.mockReset();
+  mocks.stateCalls = 0;
+  mocks.snapshotOverride = undefined;
+  mocks.fields = {};
   mocks.read = undefined;
   vi.unstubAllGlobals();
 });
@@ -122,4 +134,14 @@ it("uses stream snapshots without a fallback HTTP read", async () => {
       !!value && typeof value === "object" && "localLabel" in value,
   );
   expect(snapshots.at(-1)?.localLabel).toBe("New name");
+  mocks.snapshotOverride = snapshots.at(-1);
+  mocks.fields = { '["server-alias:workspace"]': { value: "NEW" } };
+  mocks.stateCalls = 0;
+  const effectsBefore = mocks.effects.length;
+  useServerDiscovery(true, vi.fn(), true, { local: "workspace" });
+  for (const effect of mocks.effects.slice(effectsBefore)) {
+    const cleanup = effect();
+    if (cleanup) cleanups.push(cleanup);
+  }
+  expect(mocks.setLocalServerDetails).toHaveBeenCalledWith({ alias: "NEW" });
 });
