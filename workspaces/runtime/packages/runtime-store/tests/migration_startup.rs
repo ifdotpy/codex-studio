@@ -34,7 +34,7 @@ async fn migration_startup_analytics_failure_rolls_back_the_entire_target() {
     let store = RuntimeStore::open(Some(state.path())).await.expect("fresh");
     drop(store);
     let db = Connection::open(state.path().join("analytics.sqlite3")).expect("analytics");
-    db.execute_batch("DELETE FROM analytics_meta WHERE key='providerIdentityFormat'; DROP TABLE analytics_cost_rows; CREATE VIEW analytics_cost_rows AS SELECT 'blocked' AS id;").expect("failure fixture");
+    db.execute_batch("DELETE FROM analytics_meta WHERE key IN ('providerIdentityFormat','migration_catalog'); DROP TABLE analytics_cost_rows; CREATE VIEW analytics_cost_rows AS SELECT 'blocked' AS id;").expect("failure fixture");
     assert!(RuntimeStore::open(Some(state.path())).await.is_err());
     let marker: Option<String> = db
         .query_row(
@@ -76,7 +76,7 @@ async fn migration_startup_preserves_completed_analytics_and_restarts_failed_can
         .expect("old workspace source with its matching hash");
     drop(store);
     let canvas = Connection::open(state.path().join("canvas.sqlite3")).expect("canvas");
-    canvas.execute_batch("CREATE TRIGGER fail_migration BEFORE UPDATE ON sync_entities WHEN NEW.collection='workspace' BEGIN SELECT RAISE(ABORT,'injected migration failure'); END;").expect("Canvas fault");
+    canvas.execute_batch("DELETE FROM sync_entity_meta WHERE key='migration_catalog'; CREATE TRIGGER fail_migration BEFORE UPDATE ON sync_entities WHEN NEW.collection='workspace' BEGIN SELECT RAISE(ABORT,'injected migration failure'); END;").expect("Canvas fault");
     let before: String = canvas
         .query_row(
             "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'",
@@ -87,7 +87,7 @@ async fn migration_startup_preserves_completed_analytics_and_restarts_failed_can
     let analytics = Connection::open(state.path().join("analytics.sqlite3")).expect("analytics");
     analytics
         .execute(
-            "DELETE FROM analytics_meta WHERE key='providerIdentityFormat'",
+            "DELETE FROM analytics_meta WHERE key IN ('providerIdentityFormat','migration_catalog')",
             [],
         )
         .expect("old analytics");
@@ -410,7 +410,7 @@ async fn migration_terminal_errors_convert_only_exact_persisted_evidence_before_
         store
             .analytics_transaction::<_, StoreError>(move |tx, _| {
                 tx.execute(
-                    "DELETE FROM analytics_meta WHERE key='terminalErrorRepairV1'",
+                    "DELETE FROM analytics_meta WHERE key IN ('terminalErrorRepairV1','migration_catalog')",
                     [],
                 )?;
                 Repo::write(tx, CaptureTable::Turns, &turn("thread"))?;

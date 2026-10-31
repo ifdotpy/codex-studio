@@ -74,7 +74,7 @@ pub use m2026_10_30_radio_room::apply as migrate_radio_room;
 
 use std::path::Path;
 
-use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior};
 use studio_runtime_schema::studio_errors::{
     MigrationPhase, MigrationRollbackOutcome, MigrationTarget,
 };
@@ -979,7 +979,45 @@ fn apply_target(
     accounts: &Accounts,
     source_database: SourceDatabase<'_>,
 ) -> StoreResult<()> {
-    let first = CATALOG
+    apply_target_catalog(db, target, accounts, source_database, CATALOG)
+}
+
+fn apply_target_catalog(
+    db: &mut Connection,
+    target: MigrationTarget,
+    accounts: &Accounts,
+    source_database: SourceDatabase<'_>,
+    catalog: &[&dyn Migration],
+) -> StoreResult<()> {
+    let marker_table = match target {
+        MigrationTarget::Canvas => Some("sync_entity_meta"),
+        MigrationTarget::Analytics => Some("analytics_meta"),
+        MigrationTarget::Supervisor | MigrationTarget::AccountRegistry => None,
+    };
+    let fingerprint = crate::sha256_hex(
+        catalog
+            .iter()
+            .filter(|step| step.definition().target == target && step.receipt_family().is_none())
+            .map(|step| step.definition().id)
+            .collect::<Vec<_>>()
+            .join("\0")
+            .as_bytes(),
+    );
+    if let Some(table) = marker_table
+        && crate::schema::table_exists(db, table)?
+        && db
+            .query_row(
+                &format!("SELECT value FROM {table} WHERE key='migration_catalog'"),
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .as_deref()
+            == Some(fingerprint.as_str())
+    {
+        return Ok(());
+    }
+    let first = catalog
         .iter()
         .find(|step| step.definition().target == target)
         .ok_or(StoreError::RecordContract(
@@ -997,7 +1035,7 @@ fn apply_target(
             )
         })?;
     let mut last = first.definition().id;
-    for step in CATALOG
+    for step in catalog
         .iter()
         .filter(|step| step.definition().target == target && step.receipt_family().is_none())
     {
@@ -1030,6 +1068,14 @@ fn apply_target(
             MigrationPhase::Validate,
             source,
         ));
+    }
+    if let Some(table) = marker_table
+        && let Err(error) = tx.execute(
+            &format!("INSERT INTO {table}(key,value) VALUES('migration_catalog',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value"),
+            [&fingerprint],
+        )
+    {
+        return Err(rolled_back(tx, last, target, MigrationPhase::Apply, error.into()));
     }
     // Keep ownership after COMMIT failure: consuming Transaction::commit would
     // discard a failed rollback from Drop and lose its diagnostic evidence.
@@ -1364,6 +1410,115 @@ pub(crate) fn prepare_canvas_fixture(transaction: &Transaction<'_>) -> StoreResu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn completed_target_records_catalog_on_first_open() {
+        let root = tempfile::tempdir().expect("state");
+        let store = crate::RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("first open");
+        let db = store.test_reader().expect("reader");
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM sync_entity_meta WHERE key='migration_catalog'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("catalog marker");
+        assert_eq!(count, 1);
+        drop(db);
+        drop(store);
+        drop(
+            crate::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("reopen"),
+        );
+    }
+
+    #[test]
+    fn catalog_change_runs_new_body_and_failure_rolls_back_marker() {
+        fn first(c: &SqlContext<'_, '_>) -> StoreResult<()> {
+            c.transaction
+                .execute("UPDATE counts SET first=first+1", [])?;
+            Ok(())
+        }
+        fn second(c: &SqlContext<'_, '_>) -> StoreResult<()> {
+            c.transaction
+                .execute("UPDATE counts SET second=second+1", [])?;
+            Ok(())
+        }
+        fn fail(c: &SqlContext<'_, '_>) -> StoreResult<()> {
+            c.transaction
+                .execute("UPDATE counts SET second=second+1", [])?;
+            Err(StoreError::RecordContract("injected failure"))
+        }
+        let definition = |id| MigrationDefinition {
+            id,
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Analytics,
+            supported_source: "test",
+            remove_when: "test",
+        };
+        let one = SqlMigration {
+            definition: definition("one"),
+            apply: first,
+        };
+        let two = SqlMigration {
+            definition: definition("two"),
+            apply: second,
+        };
+        let bad = SqlMigration {
+            definition: definition("bad"),
+            apply: fail,
+        };
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE analytics_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE counts(first INTEGER,second INTEGER); INSERT INTO counts VALUES(0,0)").expect("fixture");
+        let accounts = Accounts::new();
+        let run = |db: &mut Connection, steps: &[&dyn Migration]| {
+            apply_target_catalog(
+                db,
+                MigrationTarget::Analytics,
+                &accounts,
+                SourceDatabase::Independent,
+                steps,
+            )
+        };
+        run(&mut db, &[&one]).expect("first run");
+        run(&mut db, &[&one]).expect("reopen skips bodies");
+        assert_eq!(
+            db.query_row("SELECT first FROM counts", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        run(&mut db, &[&one, &two]).expect("appended migration");
+        run(&mut db, &[&one, &two]).expect("appended migration skips on reopen");
+        assert_eq!(
+            db.query_row("SELECT first,second FROM counts", [], |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?
+            )))
+            .unwrap(),
+            (2, 1)
+        );
+        assert!(run(&mut db, &[&one, &two, &bad]).is_err());
+        assert_eq!(
+            db.query_row("SELECT first,second FROM counts", [], |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?
+            )))
+            .unwrap(),
+            (2, 1)
+        );
+        run(&mut db, &[&one, &two]).expect("old marker survived rollback");
+        assert_eq!(
+            db.query_row("SELECT first,second FROM counts", [], |row| Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?
+            )))
+            .unwrap(),
+            (2, 1)
+        );
+    }
 
     #[test]
     fn vm_stream_owner_scan_uses_partial_index() {
@@ -1802,6 +1957,16 @@ mod tests {
         ] {
             let mut db = Connection::open(root.path().join(file)).expect("database");
             db.execute_batch(setup).expect("old objects");
+            let marker_table = if target == MigrationTarget::Canvas {
+                "sync_entity_meta"
+            } else {
+                "analytics_meta"
+            };
+            db.execute(
+                &format!("DELETE FROM {marker_table} WHERE key='migration_catalog'"),
+                [],
+            )
+            .expect("old catalog");
             db.authorizer(Some(move |context: AuthContext<'_>| {
                 if matches!(context.action, AuthAction::DropTable { table_name } if table_name == denied) {
                     Authorization::Deny
@@ -1892,7 +2057,7 @@ mod tests {
                 .expect("fresh"),
         );
         let mut db = Connection::open(root.path().join("analytics.sqlite3")).expect("analytics");
-        db.execute_batch("DELETE FROM analytics_meta WHERE key='providerIdentityFormat'; DROP TABLE analytics_cost_rows; DROP TABLE analytics_cost_groups;").expect("source");
+        db.execute_batch("DELETE FROM analytics_meta WHERE key IN ('providerIdentityFormat','migration_catalog'); DROP TABLE analytics_cost_rows; DROP TABLE analytics_cost_groups;").expect("source");
         db.authorizer(Some(|action: AuthContext<'_>| {
             if matches!(
                 action.action,
@@ -1958,6 +2123,11 @@ mod tests {
                 .expect("fresh"),
         );
         let mut db = Connection::open(root.path().join("analytics.sqlite3")).expect("analytics");
+        db.execute(
+            "DELETE FROM analytics_meta WHERE key='migration_catalog'",
+            [],
+        )
+        .expect("old catalog");
         // rusqlite 0.40.2 exposes COMMIT as Unknown; allow only BEGIN here.
         db.authorizer(Some(|context: AuthContext<'_>| {
             if matches!(context.action, AuthAction::Transaction { operation } if !matches!(operation, TransactionOperation::Begin)) {
