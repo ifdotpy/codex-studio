@@ -177,18 +177,12 @@ impl PreparationResources {
             thread_config: Map<String, Value>,
             tools: Vec<thread::ToolDefinition>,
         }
-        let mut data: Bundled = decode(
-            serde_json::from_str(include_str!("../preparation-resources.json"))
-                .map_err(|_| invalid("preparation resources"))?,
-            "preparation resources",
-        )?;
-        let mut legacy_tools: Vec<thread::ToolDefinition> = decode(
-            serde_json::from_str(include_str!(
-                "../../../../../../../.agents/skills/codex-workspace/references/native-tools.json"
-            ))
-            .map_err(|_| invalid("legacy tools"))?,
-            "legacy tools",
-        )?;
+        let mut data: Bundled = serde_json::from_str(include_str!("../preparation-resources.json"))
+            .map_err(|_| invalid("preparation resources"))?;
+        let mut legacy_tools: Vec<thread::ToolDefinition> = serde_json::from_str(include_str!(
+            "../../../../../../../.agents/skills/codex-workspace/references/native-tools.json"
+        ))
+        .map_err(|_| invalid("legacy tools"))?;
         for tool in data.tools.iter_mut().chain(legacy_tools.iter_mut()) {
             studio_runtime_schema::task_results::apply_tool_contract(
                 &tool.name,
