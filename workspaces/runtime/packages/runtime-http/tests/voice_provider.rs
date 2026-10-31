@@ -406,7 +406,10 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
         .get(&request_id)
         .expect("get monitor approval")
         .expect("monitor approval");
-    assert_eq!(request.value()["answerDecision"], "accept");
+    assert_eq!(
+        request.answer_decision.map(|value| value.as_str()),
+        Some("accept")
+    );
 
     // A saved accepted voice receipt must replay without the optional runtime.
     let replayed = approve(false).await.expect("approval replay");

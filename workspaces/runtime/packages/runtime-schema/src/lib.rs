@@ -1403,14 +1403,14 @@ mod tests {
         assert!(
             validate(
                 "PersistedRequestRecord",
-                &json!({"id":"q","connectionId":null,"agent":null,"status":"pending"})
+                &json!({"id":"q","connectionId":null,"agent":"a","method":"agent/asyncQuestion","status":"pending","createdAt":1,"params":{}})
             )
             .expect("persisted request schema accepts nullable connection identity")
         );
         assert!(
             !validate(
                 "PersistedRequestRecord",
-                &json!({"id":"q","connectionId":7})
+                &json!({"id":"q","connectionId":7,"agent":"a","method":"agent/asyncQuestion","status":"pending","createdAt":1,"params":{}})
             )
             .expect("persisted request schema exists")
         );

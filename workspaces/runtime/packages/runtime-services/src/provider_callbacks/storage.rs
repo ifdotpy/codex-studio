@@ -387,10 +387,12 @@ pub async fn submission_ready(store: &RuntimeStore, reply: &Reply) -> Result<boo
                 snapshot(tx, &reply.identity.context)?.active()?;
                 if let Some(id) = saved.payload.card {
                     let card =
-                        records::get(tx, "runtime_requests", &id)?.ok_or(CallbackError::Stale)?;
-                    if super::cards::status(&card)?
+                        studio_runtime_store::Table::<studio_runtime_store::RequestRecord>::new(tx)
+                            .get(&id)?
+                            .ok_or(CallbackError::Stale)?;
+                    if card.status
                         != studio_runtime_schema::persistence::RequestCardStatus::Answering
-                        || studio_runtime_store::truthy(card.get("deletedAt"))
+                        || card.deleted_at.is_some_and(|at| at != 0.0)
                     {
                         return Ok(false);
                     }
@@ -467,7 +469,7 @@ fn delivery_in(
     if saved.status == OutboxStatus::Pending {
         saved.payload.frame_fingerprint = None;
         if let Some(unanswered) = &saved.payload.unanswered {
-            super::cards::save(tx, unanswered)?;
+            super::cards::save_historical(tx, unanswered)?;
             owner.status = ToolRequestStatus::Queued;
             owner.payload.reply_identity = None;
             put_owner(tx, &owner)?;
@@ -509,27 +511,26 @@ fn delivery_in(
         }
     }
     if let Some(card_id) = &saved.payload.card {
-        let mut card =
-            records::get(tx, "runtime_requests", card_id)?.ok_or(CallbackError::Stale)?;
+        let mut card = studio_runtime_store::Table::<studio_runtime_store::RequestRecord>::new(tx)
+            .get(card_id)?
+            .ok_or(CallbackError::Stale)?;
         use studio_runtime_schema::persistence::RequestCardStatus;
-        card["status"] = json!(if saved.status == OutboxStatus::Committed {
+        card.status = if saved.status == OutboxStatus::Committed {
             RequestCardStatus::Answered
         } else if saved.status == OutboxStatus::Unknown {
             RequestCardStatus::Uncertain
         } else {
             RequestCardStatus::Answering
-        });
+        };
         if saved.status == OutboxStatus::Unknown {
-            card["answerError"] = json!(
-                "Answer delivery could not be confirmed. Inspect the agent conversation before taking further action."
-            );
+            card.answer_error = Some("Answer delivery could not be confirmed. Inspect the agent conversation before taking further action.".into());
         }
         if saved.status == OutboxStatus::Committed {
             if let Some(at) = saved.payload.delete_requested_at {
-                card["status"] = json!(RequestCardStatus::Deleted);
-                card["deletedAt"] = json!(at);
-                card["deletedBy"] = json!("user");
-                card["deferred"] = json!(false);
+                card.status = RequestCardStatus::Deleted;
+                card.deleted_at = Some(at);
+                card.deleted_by = Some("user".into());
+                card.deferred = Some(false);
             }
             let mut actor = records::get(tx, "runtime_agents", &identity.context.agent)?
                 .ok_or(CallbackError::Stale)?;

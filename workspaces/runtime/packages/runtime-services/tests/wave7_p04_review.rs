@@ -617,7 +617,7 @@ async fn deferring_a_question_publishes_the_request_entity() {
     let request = id.clone();
     store
         .transaction_with_error(move |tx| {
-            studio_runtime_services::questions_write::defer_question(tx, &request, true, |_| true)
+            studio_runtime_services::questions_write::defer_question(tx, &request, true)
         })
         .await
         .expect("defer the question");
@@ -682,7 +682,7 @@ async fn non_radio_async_answer_is_steered_and_acknowledged() {
         })
         .await
         .unwrap();
-    card(&store, &json!({"id":"question","agent":agent,"epoch":3,"turnId":"turn-0","method":"agent/asyncQuestion","status":"pending","params":{"questions":[{"id":"q","question":"Choose"},{"id":"secret","question":"Token","isSecret":true},{"id":"legacy","question":"Optional"}]}})).await;
+    card(&store, &json!({"id":"question","agent":agent,"epoch":3,"turnId":"turn-0","method":"agent/asyncQuestion","status":"pending","createdAt":1.0,"params":{"questions":[{"id":"q","question":"Choose"},{"id":"secret","question":"Token","isSecret":true},{"id":"legacy","question":"Optional"}]}})).await;
     let prepared = PreparedHost::load(&store).await.unwrap();
     let agent_for_write = agent.clone();
     store
@@ -690,26 +690,24 @@ async fn non_radio_async_answer_is_steered_and_acknowledged() {
             let data = json!({"answers":{"q":{"answers":["yes"]},"secret":{"answers":["private"]},"legacy":{"answers":null}},"decision":null});
             let input = |data, now| AsyncQuestionAnswerInput {
                 id: "question", data, admission: &Allow, prepared: &prepared, now,
-                validate: |_: &serde_json::Value| true,
             };
             let mut malformed = data.clone();
             malformed["answers"]["q"]["answers"] = json!(["yes", 7]);
-            assert!(answer_async_question(tx, input(&malformed, 29.0)).is_err());
+            assert!(answer_async_question(tx, &input(&malformed, 29.0)).is_err());
             answer_async_question(
                 tx,
-                AsyncQuestionAnswerInput {
+                &AsyncQuestionAnswerInput {
                     id: "question",
                     data: &data,
                     admission: &Allow,
                     prepared: &prepared,
                     now: 30.0,
-                    validate: |_: &serde_json::Value| true,
-                },
+                    },
             )?;
-            assert!(!answer_async_question(tx, input(&data, 30.5))?.event_inserted);
+            assert!(!answer_async_question(tx, &input(&data, 30.5))?.event_inserted);
             let mut changed = data.clone();
             changed.as_object_mut().unwrap().remove("decision");
-            assert!(answer_async_question(tx, input(&changed, 30.6)).is_err(), "null and omission keep distinct raw signatures");
+            assert!(answer_async_question(tx, &input(&changed, 30.6)).is_err(), "null and omission keep distinct raw signatures");
             let record: String = tx.query_row("SELECT record FROM runtime_requests WHERE id='question'", [], |row| row.get(0)).map_err(studio_runtime_store::StoreError::from)?;
             let record: serde_json::Value = serde_json::from_str(&record)?;
             assert_eq!(record["answerHistory"][0]["answer"], json!(["yes"]));

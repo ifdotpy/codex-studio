@@ -1526,9 +1526,9 @@ mod lifecycle_scope_parity_tests {
                 (
                     "runtime_requests".to_owned(),
                     vec![
-                        json!({"id":"worker-request","agent":"worker","status":"pending","method":"user/input"}),
-                        json!({"id":"approval-request","agent":"nested","status":"pending","method":"monitor/approve"}),
-                        json!({"id":"unrelated-request","agent":"other-lead","status":"pending","method":"user/input"}),
+                        json!({"id":"worker-request","agent":"worker","status":"pending","method":"item/tool/requestUserInput","createdAt":1,"params":{}}),
+                        json!({"id":"approval-request","agent":"nested","status":"pending","method":"monitor/approve","createdAt":1,"params":{}}),
+                        json!({"id":"unrelated-request","agent":"other-lead","status":"pending","method":"item/tool/requestUserInput","createdAt":1,"params":{}}),
                     ],
                 ),
                 (

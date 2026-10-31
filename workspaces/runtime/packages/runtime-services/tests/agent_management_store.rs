@@ -108,7 +108,7 @@ fn case(name: &str) -> Value {
         }
         "stop-True" => {
             records["tables"]["runtime_events"] = json!([{"id":"pending","agent":"lead","epoch":3,"status":"pending"},{"id":"uncertain","agent":"lead","epoch":3,"status":"uncertain"}]);
-            records["tables"]["runtime_requests"] = json!([{"id":"question","agent":"lead","status":"pending","method":"agent/asyncQuestion"},{"id":"approval","agent":"lead","status":"pending","method":"monitor/approve"}]);
+            records["tables"]["runtime_requests"] = json!([{"id":"question","agent":"lead","status":"pending","method":"agent/asyncQuestion","createdAt":1.0,"params":{}},{"id":"approval","agent":"lead","status":"pending","method":"monitor/approve","createdAt":1.0,"params":{}}]);
             records["tables"]["runtime_agents"][0]
                 .as_object_mut()
                 .expect("lead")
