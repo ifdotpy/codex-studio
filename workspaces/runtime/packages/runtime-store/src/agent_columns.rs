@@ -100,16 +100,8 @@ const PROVIDER_COLUMN: AgentColumn =
     column("provider", "TEXT", "record->>'$.provider'", "NOT NULL");
 
 /// The indexed agent fields; see the module documentation. Changing this list
-<<<<<<< head
 /// changes the table and needs a new dated migration.
-pub const AGENT_COLUMNS: [AgentColumn; 40] = [
-||||||| base
-/// changes the table: it needs a new dated migration that rebuilds the table.
-pub const AGENT_COLUMNS: [AgentColumn; 45] = [
-=======
-/// changes the table: it needs a new dated migration that rebuilds the table.
-pub const AGENT_COLUMNS: [AgentColumn; 41] = [
->>>>>>> a22c708fd4bfc760ffc803d18459b9656edcde39
+pub const AGENT_COLUMNS: [AgentColumn; 37] = [
     column("root_id", "TEXT", "record->>'$.rootId'", ""),
     column("parent_id", "TEXT", "record->>'$.parentId'", ""),
     column("status", "TEXT", "record->>'$.status'", ""),
@@ -152,97 +144,6 @@ pub const AGENT_COLUMNS: [AgentColumn; 41] = [
         "native_tool_refresh_id",
         "TEXT",
         "record->>'$.nativeToolRefreshId'",
-        "",
-    ),
-    column(
-<<<<<<< head
-        "start_attempt_submitted",
-        "",
-        "record->>'$.startAttempt.submitted'",
-        "",
-    ),
-    column(
-        "start_attempt_connection_generation",
-        "",
-        "record->>'$.startAttempt.connectionGeneration'",
-        "",
-    ),
-    column(
-        "start_attempt_active_at_reservation",
-        "",
-        "record->>'$.startAttempt.activeAtReservation'",
-||||||| base
-        "native_reset_pending",
-        "",
-        "record->>'$.nativeRelease.resetPending'",
-        "",
-    ),
-    column(
-        "start_attempt_action",
-        "TEXT",
-        "record->>'$.startAttempt.action'",
-        "",
-    ),
-    column(
-        "start_attempt_submitted",
-        "",
-        "record->>'$.startAttempt.submitted'",
-        "",
-    ),
-    column(
-        "start_attempt_connection_generation",
-        "",
-        "record->>'$.startAttempt.connectionGeneration'",
-        "",
-    ),
-    column(
-        "start_attempt_active_at_reservation",
-        "",
-        "record->>'$.startAttempt.activeAtReservation'",
-        "",
-    ),
-    column(
-        "capacity_retry_id",
-        "TEXT",
-        "record->>'$.capacityRetry.id'",
-        "",
-    ),
-    column(
-        "capacity_retry_status",
-        "TEXT",
-        "record->>'$.capacityRetry.status'",
-        "",
-    ),
-    column(
-        "capacity_retry_due_at",
-        "",
-        "record->>'$.capacityRetry.dueAt'",
-        "",
-    ),
-    column(
-=======
-        "native_reset_pending",
-        "",
-        "record->>'$.nativeRelease.resetPending'",
-        "",
-    ),
-    column(
-        "capacity_retry_id",
-        "TEXT",
-        "record->>'$.capacityRetry.id'",
-        "",
-    ),
-    column(
-        "capacity_retry_status",
-        "TEXT",
-        "record->>'$.capacityRetry.status'",
-        "",
-    ),
-    column(
-        "capacity_retry_due_at",
-        "",
-        "record->>'$.capacityRetry.dueAt'",
->>>>>>> a22c708fd4bfc760ffc803d18459b9656edcde39
         "",
     ),
     column(
@@ -698,23 +599,14 @@ mod tests {
                 // dependent partial index that must be dropped before its column.
                 let old_table = table_sql("runtime_agents_capacity_fixture").replace(
                     "record TEXT NOT NULL",
-<<<<<<< head
                     "start_attempt_action TEXT GENERATED ALWAYS AS \
                  (record->>'$.startAttempt.action') STORED,\
+                 start_attempt_submitted GENERATED ALWAYS AS \
+                 (record->>'$.startAttempt.submitted') STORED,\
                  capacity_retry_id TEXT GENERATED ALWAYS AS \
                  (record->>'$.capacityRetry.id') STORED,\
                  start_attempt_capacity_retry_id TEXT GENERATED ALWAYS AS \
                  (record->>'$.startAttempt.capacityRetryId') STORED,record TEXT NOT NULL",
-||||||| base
-                    "start_attempt_capacity_retry_id TEXT GENERATED ALWAYS AS \
-                 (record->>'$.startAttempt.capacityRetryId') STORED,record TEXT NOT NULL",
-=======
-                    "start_attempt_capacity_retry_id TEXT GENERATED ALWAYS AS \
-                 (record->>'$.startAttempt.capacityRetryId') STORED,\
-                 start_attempt_action TEXT GENERATED ALWAYS AS (record->>'$.startAttempt.action') STORED,\
-                 start_attempt_submitted GENERATED ALWAYS AS (record->>'$.startAttempt.submitted') STORED,\
-                 record TEXT NOT NULL",
->>>>>>> a22c708fd4bfc760ffc803d18459b9656edcde39
                 );
                 tx.execute_batch(&old_table)?;
                 tx.execute_batch(
