@@ -463,11 +463,61 @@ async fn an_exact_retry_returns_the_saved_answer_and_changed_content_is_refused(
 }
 
 #[tokio::test]
+async fn receipt_refuses_changed_raw_params_without_reexecution() {
+    let fixture = Fixture::new();
+    let params = json!({"operationId": "raw", "agentId": "agent", "projectId": "project", "linePath": fixture.line.display().to_string()});
+    let frame =
+        format!(r#"{{"id":"raw-id","method":"acquire","token":"{TOKEN}","params":{params}}}"#);
+    let changed = format!(
+        r#"{{"id":"raw-id","method":"acquire","token":"{TOKEN}","params": {{ {}}}}}"#,
+        &params.to_string()[1..params.to_string().len() - 1]
+    );
+    let first = fixture
+        .service
+        .request_frame(frame.as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .service
+            .request_frame(frame.as_bytes())
+            .await
+            .unwrap(),
+        first
+    );
+    let refused = fixture
+        .service
+        .request_frame(changed.as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(refused["error"]["code"], "id_conflict");
+}
+
+#[tokio::test]
+async fn legacy_receipt_digest_is_refused_without_executing() {
+    let fixture = Fixture::new();
+    let params = json!({"operationId": "legacy", "agentId": "agent", "projectId": "project",
+                        "linePath": fixture.line.display().to_string()});
+    let legacy = protocol::key(&protocol::sorted_json(&json!(["acquire", params])));
+    fixture
+        .service
+        .db()
+        .execute(
+            "INSERT INTO receipts VALUES ('legacy-id', ?1, NULL)",
+            [&legacy],
+        )
+        .unwrap();
+    let response = fixture.request("legacy-id", "acquire", params).await;
+    assert_eq!(response["error"]["code"], "id_conflict");
+    assert!(!fixture.service.opdir("legacy").exists());
+}
+
+#[tokio::test]
 async fn an_unknown_receipt_never_replays() {
     let fixture = Fixture::new();
     let params = json!({"operationId": "unknown", "agentId": "agent", "projectId": "project",
                         "linePath": fixture.line.display().to_string()});
-    let digest = protocol::key(&protocol::sorted_json(&json!(["acquire", params])));
+    let digest = receipt_digest("acquire", &params.to_string());
     fixture
         .service
         .db()

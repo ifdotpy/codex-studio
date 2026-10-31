@@ -103,6 +103,35 @@ const READ_METHODS: [&str; 6] = [
 /// One operation record (`host-operations/<key>/status.json`).
 pub(crate) type Op = Map<String, Value>;
 
+#[derive(serde::Deserialize)]
+struct IncomingFrame {
+    id: Option<Value>,
+    token: Option<Value>,
+    method: Option<Value>,
+    params: Option<Box<serde_json::value::RawValue>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetireParams {
+    build_id: String,
+    pid: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct HealthParams {}
+
+enum FrameParams {
+    Health,
+    Retire(RetireParams),
+    // Existing dispatch until each remaining method has its own typed variant.
+    Legacy(Map<String, Value>),
+}
+
+fn receipt_digest(method: &str, params: &str) -> String {
+    protocol::key(&format!("{method}\0{params}"))
+}
+
 /// A command process: its process group and its exit.
 #[derive(Clone)]
 pub(crate) struct ChildHandle {
@@ -691,9 +720,14 @@ impl HostService {
     }
 
     /// One request frame: its answer, or `None` when the frame is not an object.
+    #[cfg(test)]
     pub(crate) async fn request(self: &Arc<Self>, request: &Value) -> Option<Value> {
-        let request = request.as_object()?;
-        let identity = request.get("id").cloned().unwrap_or(Value::Null);
+        self.request_frame(&serde_json::to_vec(request).ok()?).await
+    }
+
+    async fn request_frame(self: &Arc<Self>, bytes: &[u8]) -> Option<Value> {
+        let request: IncomingFrame = serde_json::from_slice(bytes).ok()?;
+        let identity = request.id.clone().unwrap_or(Value::Null);
         Some(match self.answer(&identity, request).await {
             Ok(value) => value,
             Err(Failure::Refused(error)) => json!({"id": identity, "error": error.object()}),
@@ -703,39 +737,46 @@ impl HostService {
         })
     }
 
-    async fn answer(
-        self: &Arc<Self>,
-        identity: &Value,
-        request: &Map<String, Value>,
-    ) -> Outcome<Value> {
+    async fn answer(self: &Arc<Self>, identity: &Value, request: IncomingFrame) -> Outcome<Value> {
         let id = identity
             .as_str()
             .filter(|id| !id.is_empty() && id.chars().count() <= 128)
             .ok_or_else(|| HostExecError::new(INVALID, "Invalid request ID"))?
             .to_owned();
-        let token = request
-            .get("token")
-            .cloned()
-            .unwrap_or(Value::String(String::new()));
+        let token = request.token.unwrap_or(Value::String(String::new()));
         let matches = token.as_str().is_some_and(|token| {
             use subtle::ConstantTimeEq;
             bool::from(token.as_bytes().ct_eq(self.token.as_bytes()))
         });
         require(matches, "The guest host token differs", "forbidden")?;
         let method = request
-            .get("method")
+            .method
+            .as_ref()
             .ok_or_else(|| Failure::Unexpected("'method'".into()))?;
-        let params = request
-            .get("params")
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Map::new()));
-        let (Some(method), Value::Object(params)) = (method.as_str(), params) else {
-            return Err(HostExecError::new(INVALID, "Invalid request").into());
+        let method = method
+            .as_str()
+            .ok_or_else(|| HostExecError::new(INVALID, "Invalid request"))?
+            .to_owned();
+        let raw = request
+            .params
+            .as_deref()
+            .map_or("{}", serde_json::value::RawValue::get);
+        let digest = receipt_digest(&method, raw);
+        let params = match method.as_str() {
+            "health" => {
+                let _: HealthParams = serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?;
+                FrameParams::Health
+            }
+            "service.retire" => FrameParams::Retire(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            _ => FrameParams::Legacy(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
         };
-        let method = method.to_owned();
-        // Request-identity debt: params remain Value until every dispatch method
-        // decodes a closed request type while preserving legacy signature bytes.
-        let digest = protocol::key(&protocol::sorted_json(&json!([method, params])));
         if method == "health" {
             let (commands, active) = {
                 let inner = self.inner();
@@ -750,11 +791,9 @@ impl HostService {
             "The host_exec service is retiring",
             "busy",
         )?;
-        if method == "service.retire" {
+        if let FrameParams::Retire(params) = &params {
             require(
-                params.get("buildId").and_then(Value::as_str) == Some(self.build_id.as_str())
-                    && params.get("pid").and_then(Value::as_u64)
-                        == Some(u64::from(std::process::id())),
+                params.build_id == self.build_id && params.pid == u64::from(std::process::id()),
                 "The service build or process differs",
                 "id_conflict",
             )?;
@@ -767,6 +806,9 @@ impl HostService {
             return Ok(json!({"id": id, "result": {
                 "state": "retiring", "buildId": self.build_id, "pid": std::process::id()}}));
         }
+        let FrameParams::Legacy(params) = params else {
+            return Err(HostExecError::new(INVALID, "Invalid request").into());
+        };
         if READ_METHODS.contains(&method.as_str()) {
             self.inner().reading += 1;
             let result = self.dispatch(&method, &params).await;
@@ -882,8 +924,7 @@ impl HostService {
             if line.len() > protocol::FRAME_LIMIT {
                 return None;
             }
-            let request: Value = serde_json::from_slice(&line).ok()?;
-            let response = self.request(&request).await?;
+            let response = self.request_frame(&line).await?;
             let mut data = response.to_string().into_bytes();
             data.push(b'\n');
             if data.len() > protocol::FRAME_LIMIT {
