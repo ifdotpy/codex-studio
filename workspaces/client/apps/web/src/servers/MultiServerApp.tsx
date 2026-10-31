@@ -856,11 +856,10 @@ function MultiServerShell({
                 ...status,
               }}
               startAccount={(id, command) => {
+                if (!servers.some((server) => server.id === id)) return;
                 restoreManagerAfterAccountDialog.current = manager;
                 rememberAccountFocus(id, command);
-                if (servers.some((server) => server.id === id))
-                  setManager(false);
-                else discovery.addAgain(id);
+                setManager(false);
                 send(id, command);
               }}
               accountAction={(id, command) => {
