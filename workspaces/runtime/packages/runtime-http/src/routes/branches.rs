@@ -62,10 +62,25 @@ struct BranchOperation {
     legacy_record: Field<Box<serde_json::value::RawValue>>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     provider: Field<Value>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    result: Field<Value>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "decode_result"
+    )]
+    result: Option<Box<serde_json::value::RawValue>>,
     #[serde(flatten)]
     other: serde_json::Map<String, Value>,
+}
+
+fn decode_result<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Box<serde_json::value::RawValue>>, D::Error> {
+    let result = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+    // The inspected 2026-10-31 snapshot contained zero null branch results.
+    if result.get() == "null" {
+        return Err(serde::de::Error::custom("null branch result"));
+    }
+    Ok(Some(result))
 }
 
 fn decode_branch_operation(raw: &str) -> Result<BranchOperation, serde_json::Error> {
@@ -232,7 +247,7 @@ async fn branch(
                         OperationPhase::Failed => {
                             prior.set_phase(OperationPhase::ProviderPending);
                             prior.provider = Field::Missing;
-                            prior.result = Field::Missing;
+                            prior.result = None;
                             prior.other.remove("error");
                             tx.execute(
                                 "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
@@ -349,7 +364,7 @@ async fn branch(
                         legacy_phase_collision: Field::Missing,
                         legacy_record: Field::Missing,
                         provider: Field::Missing,
-                        result: Field::Missing,
+                        result: None,
                         other,
                     };
                     tx.execute(
@@ -381,18 +396,14 @@ async fn branch(
     if needs_catalog {
         ensure_branch_model_catalog(&state, &account).await?;
     }
-    if let Some(result) = operation
+    if let Some(op) = operation
         .as_ref()
-        .and_then(|op| BranchOperation::value(&op.result))
-        .filter(|_| {
-            operation
-                .as_ref()
-                .is_some_and(|op| op.phase == OperationPhase::Completed)
-        })
+        .filter(|op| op.phase == OperationPhase::Completed)
     {
-        return Ok(Json(super::generated_json::<
-            crate::generated::BranchResponse,
-        >(result.clone())?));
+        let result = op.result.as_ref().ok_or_else(ApiError::internal)?;
+        return serde_json::from_str::<crate::generated::BranchResponse>(result.get())
+            .map(Json)
+            .map_err(ApiError::json);
     }
     let prior_provider = operation
         .as_ref()
@@ -1111,7 +1122,7 @@ async fn copy_branch_history(
         studio_runtime_services::agents_create::publish_agent(tx,&value)?;
         let result=value.clone();
         operation.set_phase(OperationPhase::Completed);
-        operation.result = Field::Value(result.clone());
+        operation.result = Some(serde_json::value::to_raw_value(&result)?);
         operation.other.insert("updated".into(), json!(unix_time()));
         tx.execute("UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",params![operation_id.as_str(),serde_json::to_string(&operation)?])?;
         if let Some(mut actor)=AgentRepository::get(tx,&AgentId::from(source))? {
@@ -1335,6 +1346,18 @@ mod tests {
                 .is_err()
         );
         assert!(decode_branch_operation(r#"{"phase":"local_mutation","signature":"abc"}"#).is_ok());
+    }
+
+    #[test]
+    fn branch_operation_preserves_opaque_result_bytes() {
+        let raw = r#"{"signature":"s","phase":"completed","result":{"vendor":  {"x":  1}}}"#;
+        let operation = decode_branch_operation(raw).unwrap();
+        let encoded = serde_json::to_string(&operation).unwrap();
+        assert!(encoded.contains(r#""result":{"vendor":  {"x":  1}}"#));
+        assert!(
+            decode_branch_operation(r#"{"signature":"s","phase":"completed","result":null}"#)
+                .is_err()
+        );
     }
 
     #[test]
