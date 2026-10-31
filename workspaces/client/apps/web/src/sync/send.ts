@@ -13,7 +13,7 @@ import {
   refreshSession,
 } from "../api";
 
-import type { RxDocument } from "rxdb";
+import type { Doc } from "./localCollection";
 import { messageReceipt } from "../commands";
 import type { MessageDelivery, SendMessageBody } from "../commands";
 import { DeliveryStatusValues } from "../generated/persistence";
@@ -220,7 +220,7 @@ function readIntention(payload: string, id: string): Intention {
   return decoded.intention;
 }
 
-const snapshots = (docs: RxDocument<SyncDocument>[]) =>
+const snapshots = (docs: Doc[]) =>
   docs.map((doc) => ({
     doc,
     decoded: decodeIntention(doc.getLatest().payload, doc.id),
@@ -239,10 +239,7 @@ const queuedDocuments = (entries: ReturnType<typeof snapshots>) =>
         a.doc.id.localeCompare(b.doc.id),
     );
 
-const updateIntention = (
-  doc: RxDocument<SyncDocument>,
-  change: Partial<Intention>,
-) =>
+const updateIntention = (doc: Doc, change: Partial<Intention>) =>
   doc.incrementalModify((record) => ({
     ...record,
     payload: JSON.stringify({
@@ -313,10 +310,7 @@ export function createOutbox(options: {
   const sendingRooms = new Set<string>();
 
   async function deliver(
-    doc: Pick<
-      RxDocument<SyncDocument>,
-      "id" | "getLatest" | "incrementalModify"
-    >,
+    doc: Pick<Doc, "id" | "getLatest" | "incrementalModify">,
   ): Promise<SendResult> {
     let value: Intention = readIntention(doc.getLatest().payload, doc.id);
     if (value.status !== "queued" || !navigator.onLine)
@@ -450,7 +444,7 @@ export function createOutbox(options: {
     }
   }
 
-  function once(doc: RxDocument<SyncDocument>): Promise<SendResult> {
+  function once(doc: Doc): Promise<SendResult> {
     let task = active.get(doc.id);
     if (!task) {
       task = (async () => {
@@ -843,7 +837,7 @@ export function createOutbox(options: {
             recoveringReceipts = false;
           });
       };
-      const handleOutboxDocuments = (docs: RxDocument<SyncDocument>[]) => {
+      const handleOutboxDocuments = (docs: Doc[]) => {
         const entries = snapshots(docs);
         const invalid = entries.flatMap(({ decoded }) =>
           decoded.kind === "invalid" ? [decoded.id] : [],
@@ -880,9 +874,9 @@ export function createOutbox(options: {
           const { db, workspaceId } = await syncDatabase();
           if (stop) return;
           let subscriptionReady = false;
-          let bufferedDocs: RxDocument<SyncDocument>[] | undefined;
+          let bufferedDocs: Doc[] | undefined;
           const sub = db.outbox.find().$.subscribe(
-            (docs: RxDocument<SyncDocument>[]) => {
+            (docs: Doc[]) => {
               if (!subscriptionReady) bufferedDocs = docs;
               else handleOutboxDocuments(docs);
             },

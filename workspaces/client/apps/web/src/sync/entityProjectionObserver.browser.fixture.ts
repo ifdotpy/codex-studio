@@ -1,6 +1,5 @@
 import type { Snapshot } from "../types";
 import type { EntityRow } from "./entityProjection";
-import type { RxDocumentData } from "rxdb";
 type Projections = Awaited<
   ReturnType<typeof import("./client").syncDatabase>
 >["db"]["projections"];
@@ -18,8 +17,6 @@ declare global {
     beforeBurstReads: number;
     burstStartedAt: number;
     beforeReset: number;
-    staleDocuments: RxDocumentData<EntityRow>[];
-    staleMarker: RxDocumentData<EntityRow>;
   }
 }
 export async function openProjection() {
@@ -43,9 +40,6 @@ export async function openProjection() {
           document: {
             ...row,
             _deleted: row._deleted ?? false,
-            _attachments: {},
-            _meta: { lwt: 1 },
-            _rev: "",
           },
         };
       }),

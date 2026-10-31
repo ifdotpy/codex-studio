@@ -43,10 +43,6 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         "@mantine/core",
         "@mantine/hooks",
         "lucide-react",
-        "rxdb",
-        "rxdb/plugins/storage-dexie",
-        "rxdb/plugins/leader-election",
-        "rxdb/plugins/replication",
       ],
     },
     plugins: [

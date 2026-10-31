@@ -6,6 +6,7 @@ import type {
 } from "./prefetch-storage.fixture.ts";
 import {
   readProjectionStores,
+  projectionIsStored,
   completedTranscriptAgent,
 } from "./prefetch-storage.fixture.ts";
 import { fixtureOrigin } from "./browser.ts";
@@ -45,8 +46,10 @@ import {
   apiSchemaHandshakeSse,
   readTestState,
   rustUiFixture,
+  remoteOrigin,
+  REMOTE_FIXTURE_HOST,
 } from "../playwright.ts";
-// Production App and real RxDB. Only the isolated fixture receives requests.
+// Production App and the real thin cache. Only the isolated fixture receives requests.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -189,7 +192,11 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     server = await createFixtureViteServer({
       configFile: false,
       root: join(repo, "workspaces/client/apps/web"),
-      server: { host: "127.0.0.1", port: 0 },
+      server: {
+        host: "127.0.0.1",
+        port: 0,
+        allowedHosts: [REMOTE_FIXTURE_HOST],
+      },
       plugins: [
         {
           name: "chat-prefetch-persistent-sync-stream",
@@ -230,7 +237,8 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       ],
     });
     await server.listen();
-    const streamOrigin = fixtureOrigin(server);
+    // A remote host name: only a remote frontend keeps the thin cache.
+    const streamOrigin = remoteOrigin(fixtureOrigin(server));
     heartbeatTimer = setInterval(() => {
       const heartbeat = `event: heartbeat\ndata: ${JSON.stringify({
         protocol: SYNC_PROTOCOL_VERSION,
@@ -538,10 +546,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         return pulledRename && rowUpdated;
       }, "The state invalidation must update the renamed chat in the sidebar").catch(
         async (error) => {
-          const projection = await page.evaluate(
-            readProjectionStores,
-            `rxdb-dexie-studio${workspaceId}--0--projections`,
-          );
+          const projection = await page.evaluate(readProjectionStores);
           const diagnostic = await page.evaluate(
             async ({ id, workspaceId, projection, storedAgentName }) => {
               const { stored, names, dbName } = projection;
@@ -933,49 +938,12 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     assert.equal(await selected(), a.name);
     await until(
       () =>
-        page.evaluate(
-          async ({
-            databaseName,
-            documentId,
-            sequence,
-          }: {
-            databaseName: string;
-            documentId: string;
-            sequence: number;
-          }) => {
-            const request = indexedDB.open(databaseName);
-            const db = await new Promise<IDBDatabase>((resolve, reject) => {
-              request.onsuccess = () => resolve(request.result);
-              request.onerror = () => reject(request.error);
-            });
-            const tx = db.transaction([...db.objectStoreNames], "readonly");
-            const matches = await Promise.all(
-              [...db.objectStoreNames].map(
-                (store) =>
-                  new Promise<boolean>((resolve) => {
-                    const query = tx.objectStore(store).getAll();
-                    query.onsuccess = () =>
-                      resolve(
-                        query.result.some(
-                          (row: components["schemas"]["SyncDocument"]) =>
-                            row.id === documentId && row.seq === sequence,
-                        ),
-                      );
-                    query.onerror = () => resolve(false);
-                  }),
-              ),
-            );
-            db.close();
-            return matches.some(Boolean);
-          },
-          {
-            databaseName: `rxdb-dexie-studio${workspaceId}--0--projections`,
-            documentId: `transcript:${b.id}`,
-            sequence: 305,
-          },
-        ),
+        page.evaluate(projectionIsStored, {
+          documentId: `transcript:${b.id}`,
+          sequence: 305,
+        }),
 
-      "RxDB must persist B's refreshed projection before network interruption",
+      "The cache must persist B's refreshed projection before network interruption",
     );
     await page.locator("#messages").evaluate((element) => {
       element.scrollTop = 900;
@@ -1129,7 +1097,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     assert.equal(
       await marker("B-obsolete").count(),
       0,
-      "A late lower-sequence RxDB reply cannot roll history back",
+      "A late lower-sequence cached reply cannot roll history back",
     );
     assert.equal(await marker("B-during-recovery").count(), 1);
 
@@ -1260,7 +1228,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           "paged and focused first-frame scroll",
           "no wrong or empty frame",
           "scroll restore",
-          "late HTTP and RxDB guards",
+          "late HTTP and cache guards",
           "workspace isolation",
         ],
       }),

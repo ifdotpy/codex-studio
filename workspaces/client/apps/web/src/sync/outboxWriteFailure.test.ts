@@ -1,25 +1,12 @@
 import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
-import { createRxDatabase, type RxDatabase } from "rxdb";
-import { getRxStorageMemory } from "rxdb/plugins/storage-memory";
+import { LocalCollection } from "./localCollection";
 import { createOutbox } from "./send";
 
 // A full disk rejects one IndexedDB write. Later sends, removals and
 // cancellations on the same page must still settle with their exact request.
 const WORKSPACE_ID = "0123456789abcdef0123456789abcdef";
 const SETTLE_DEADLINE_MS = 2_000;
-
-const schema = {
-  version: 0,
-  primaryKey: "id",
-  type: "object",
-  properties: {
-    id: { type: "string", maxLength: 300 },
-    payload: { type: "string" },
-    seq: { type: "integer", minimum: 0, maximum: 1e15, multipleOf: 1 },
-  },
-  required: ["id", "payload", "seq"],
-} as const;
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
@@ -43,28 +30,19 @@ class MemoryStorage implements Storage {
   }
 }
 
-// The memory storage with one rejected incremental write, as from a full disk.
-function storageWithOneFailedWrite() {
-  const memory = getRxStorageMemory();
+// An outbox whose durable write is rejected once, as from a full disk.
+function outboxWithOneFailedWrite() {
   const state = { failNextIncrementalWrite: false };
-  const storage: typeof memory = {
-    ...memory,
-    async createStorageInstance(params) {
-      const instance = await memory.createStorageInstance(params);
-      const bulkWrite = instance.bulkWrite.bind(instance);
-      instance.bulkWrite = (rows, context) => {
-        if (context === "incremental-write" && state.failNextIncrementalWrite) {
-          state.failNextIncrementalWrite = false;
-          return Promise.reject(
-            new DOMException("The disk is full.", "QuotaExceededError"),
-          );
-        }
-        return bulkWrite(rows, context);
-      };
-      return instance;
+  const outbox = new LocalCollection("outbox-write-failure", {
+    durable: {
+      async put() {
+        if (!state.failNextIncrementalWrite) return;
+        state.failNextIncrementalWrite = false;
+        throw new DOMException("The disk is full.", "QuotaExceededError");
+      },
     },
-  };
-  return { storage, state };
+  });
+  return { outbox, state };
 }
 
 function settles<T>(work: Promise<T>, label: string): Promise<T> {
@@ -88,24 +66,14 @@ const message = (id: string) => ({
   delivery: "current_turn" as const,
 });
 
-let database: RxDatabase | undefined;
-
-afterEach(async () => {
+afterEach(() => {
   vi.unstubAllGlobals();
-  await database?.close();
-  database = undefined;
 });
 
 it("sends, removes and cancels after one outbox write failed", async () => {
   vi.stubGlobal("navigator", { onLine: true });
-  const { storage, state } = storageWithOneFailedWrite();
-  database = await createRxDatabase({
-    name: `outbox-write-failure-${crypto.randomUUID()}`,
-    storage,
-    multiInstance: false,
-  });
-  await database.addCollections({ outbox: { schema } });
-  const db = database;
+  const { outbox: collection, state } = outboxWithOneFailedWrite();
+  const db = { outbox: collection };
   const syncPost = vi.fn(async (_path: string, body: { id: string }) => ({
     id: body.id,
     status: "delivered",

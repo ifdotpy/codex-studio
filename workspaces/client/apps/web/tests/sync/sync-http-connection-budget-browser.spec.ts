@@ -67,15 +67,7 @@ test("Sync http connection budget browser", async ({
     root: join(root, "workspaces/client/apps/web"),
     cacheDir: cache,
     optimizeDeps: {
-      include: [
-        "react",
-        "react-dom/client",
-        "react/jsx-dev-runtime",
-        "rxdb",
-        "rxdb/plugins/storage-dexie",
-        "rxdb/plugins/leader-election",
-        "rxdb/plugins/replication",
-      ],
+      include: ["react", "react-dom/client", "react/jsx-dev-runtime"],
     },
     plugins: [
       {

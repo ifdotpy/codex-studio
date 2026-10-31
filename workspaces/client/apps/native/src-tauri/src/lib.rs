@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn the_native_projection_store_reaches_the_core() {
-        // web/src/sync/nativeProjections.ts sends these for the local server.
+        // the desktop shell accepts these requests for the native projection store.
         for method in [
             "projection.getRows",
             "projection.rangeRows",

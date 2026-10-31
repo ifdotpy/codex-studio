@@ -12,7 +12,7 @@ import {
   test,
 } from "../../tests/playwright.ts";
 
-test("entity observer applies RxDB changes across tabs and resets before publication", async ({
+test("entity observer applies store changes and resets before publication", async ({
   browser,
 }) => {
   test.setTimeout(60_000);
@@ -117,21 +117,9 @@ test("entity observer applies RxDB changes across tabs and resets before publica
     );
     await page.evaluate(async () => {
       window.beforeReset = window.snapshots.length;
-      window.staleDocuments =
-        await window.projections.storageInstance.findDocumentsById(
-          ["entity:agent:0", "entity:agent:2"],
-          true,
-        );
       await window.putRows([
         { id: "state:entities:ready", payload: "resetting", seq: 2 },
       ]);
-      const [staleMarker] =
-        await window.projections.storageInstance.findDocumentsById(
-          ["state:entities:ready"],
-          true,
-        );
-      if (!staleMarker) throw new Error("Expected reset marker");
-      window.staleMarker = staleMarker;
       await window.putRows(
         Array.from({ length: 2000 }, (_, index) => ({
           ...window.entityRow(`${index}`, 0),
@@ -159,37 +147,6 @@ test("entity observer applies RxDB changes across tabs and resets before publica
       publications: 1,
       queries: 2,
     });
-    const afterStaleEvents = await page.evaluate(async () => {
-      const collection = window.projections;
-      const database = collection.database;
-      // The delayed-event fixture omits checkpoint id and lwt; the observer does not read them.
-      const staleEvents = {
-        id: "delayed-old-epoch-events",
-        collectionName: collection.name,
-        isLocal: false,
-        internal: false,
-        databaseToken: database.token,
-        storageToken: await database.storageToken,
-        checkpoint: {},
-        context: "observer-stale-event-check",
-        events: [...window.staleDocuments, window.staleMarker].map(
-          (documentData) => ({
-            operation: "UPDATE",
-            documentId: documentData.id,
-            documentData,
-            previousDocumentData: documentData,
-          }),
-        ),
-      } as Parameters<typeof database.$emit>[0];
-      database.$emit(staleEvents);
-      await new Promise((resolve) => setTimeout(resolve, 70));
-      return {
-        agents: window.snapshots.at(-1)!.threads,
-        publications: window.snapshots.length - window.beforeReset,
-        queries: window.queryCalls,
-      };
-    });
-    assert.deepEqual(afterStaleEvents, reset);
     await page.evaluate(() => window.stopObserver());
     assert.deepEqual(errors, []);
     console.log("ENTITY_OBSERVER_BROWSER", JSON.stringify({ burst, reset }));

@@ -18,11 +18,11 @@ import {
   readTestState,
   stubEntityState,
   readFixtureSyncContract,
-  readApiSchemaHash,
   entityPullFixture,
   test,
   spawnFixture as spawn,
   rustUiFixture,
+  remoteOrigin,
 } from "../playwright.ts";
 // Real renderer and isolated server. Delayed streams must not delay navigation.
 import assert from "node:assert/strict";
@@ -156,7 +156,8 @@ test(
             ),
           });
       });
-      await page.goto(origin);
+      // A remote host name: only a remote frontend keeps the thin cache.
+      await page.goto(remoteOrigin(origin));
       await page.waitForFunction(() =>
         (
           performance.getEntriesByType(
@@ -421,11 +422,7 @@ test(
           return url.pathname === "/api/session" && entry.responseEnd > 0;
         });
       });
-      const projectionDatabaseName =
-        `rxdb-dexie-studio-entity-projection-${syncContract.identity.workspaceId}-` +
-        `${readApiSchemaHash()}--0--projections`;
       const targetWasCold = await page.evaluate(projectionIsStored, {
-        databaseName: projectionDatabaseName,
         documentId: `transcript:${a.id}`,
         onlyIfExists: true,
       });
@@ -622,7 +619,7 @@ test(
         0,
         "Response from a previous chat cannot replace current history",
       );
-      // Exercise the real RxDB projection path, including a slow pull on revisit.
+      // Exercise the real projection path, including a slow pull on revisit.
       await page.unroute("**/api/sync/**");
       const identity = await fixtureGetResult(
         "/api/sync/identity",
@@ -631,9 +628,7 @@ test(
       let projectionDelay = 0;
       let syncPulls = 0;
       const waitForProjection = async (id: string, sequence: number) => {
-        const databaseName = `rxdb-dexie-studio-entity-projection-${identity.workspaceId}-${readApiSchemaHash()}--0--projections`;
         await page.waitForFunction(projectionIsStored, {
-          databaseName,
           documentId: `transcript:${id}`,
           sequence,
         });
@@ -734,11 +729,11 @@ test(
       const syncCached = await open(a.id, "sync-a-29");
       assert.ok(
         syncCached < 500,
-        `Revisit does not wait for RxDB pull: ${syncCached}ms`,
+        `Revisit does not wait for the pull: ${syncCached}ms`,
       );
       assert.ok(
         syncPulls >= 2,
-        "Real RxDB replication loaded both chat projections",
+        "Real projection cache loaded both chat projections",
       );
       assert.equal(
         await page.locator('[data-message="sync-b-29"]').count(),
@@ -802,7 +797,7 @@ test(
       );
       assert.deepEqual(errors, []);
       console.log(
-        `Chat switch latency: PASS (cold ${cold}ms, cached ${cached}ms, refreshed ${refreshed}ms, RxDB revisit ${syncCached}ms; scope isolation, scroll restore, late HTTP guard, real RxDB Send/Enter).`,
+        `Chat switch latency: PASS (cold ${cold}ms, cached ${cached}ms, refreshed ${refreshed}ms, cached revisit ${syncCached}ms; scope isolation, scroll restore, late HTTP guard, real RxDB Send/Enter).`,
       );
     } catch (e) {
       await page?.screenshot({ path: join(dir, "failure.png") });
