@@ -904,30 +904,6 @@
     "callee": "localStorage"
   },
   {
-    "file": "sync/entityTransfer.ts",
-    "callee": "indexedDB.databases"
-  },
-  {
-    "file": "sync/entityTransfer.ts",
-    "callee": "indexedDB.databases"
-  },
-  {
-    "file": "sync/entityTransfer.ts",
-    "callee": "indexedDB.deleteDatabase"
-  },
-  {
-    "file": "sync/entityTransfer.ts",
-    "callee": "indexedDB.open"
-  },
-  {
-    "file": "sync/entityTransfer.ts",
-    "callee": "indexedDB.deleteDatabase"
-  },
-  {
-    "file": "sync/legacyStores.ts",
-    "callee": "globalThis.indexedDB"
-  },
-  {
     "file": "sync/localDraft.ts",
     "callee": "localStorage.removeItem"
   },
@@ -1014,26 +990,6 @@
   {
     "file": "sync/uiPreferenceStore.ts",
     "callee": "globalThis.localStorage"
-  },
-  {
-    "file": "sync/uploads.ts",
-    "callee": "localStorage"
-  },
-  {
-    "file": "sync/uploads.ts",
-    "callee": "localStorage"
-  },
-  {
-    "file": "sync/uploads.ts",
-    "callee": "indexedDB.open"
-  },
-  {
-    "file": "sync/uploads.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "sync/uploads.ts",
-    "callee": "localStorage.getItem"
   },
   {
     "file": "sync/uploads.ts",
