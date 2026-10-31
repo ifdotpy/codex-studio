@@ -21,7 +21,7 @@ pub const MOVE_BATCH_ITEMS: usize = 8;
 
 const LABEL: &str = "runtime-services/text_blob_sweep";
 
-fn io_error(message: impl ToString) -> StoreError {
+fn io_error(message: &impl ToString) -> StoreError {
     StoreError::StateDirectory(std::io::Error::other(message.to_string()))
 }
 
@@ -30,7 +30,7 @@ async fn blocking<T: Send + 'static>(
 ) -> StoreResult<T> {
     studio_runtime_process::blocking_pool::spawn_blocking(LABEL, work)
         .await
-        .map_err(|_| io_error("blocking task failed"))?
+        .map_err(|_| io_error(&"blocking task failed"))?
 }
 
 /// Move final item text to blobs until none is left. Returns the number of
@@ -60,7 +60,7 @@ pub async fn move_pass(store: &RuntimeStore) -> StoreResult<usize> {
                             preview: Value::Null,
                         }],
                     )
-                    .map_err(io_error)?;
+                    .map_err(|error| io_error(&error))?;
                     Ok(MovedText {
                         id,
                         digest: text_blobs::digest(&text),

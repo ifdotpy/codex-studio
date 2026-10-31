@@ -10,6 +10,10 @@ use super::*;
 use crate::multi_server_auth::{AccessError, refused as access_refused};
 use crate::multi_server_orchestration::{OrchestrationDriver, RuntimeOrchestrationEffects};
 
+fn receive(root: &Path, principal: &str, payload: &Value) -> Result<Value, ReceiveError> {
+    super::receive(root, principal, &Put::deserialize(payload).unwrap())
+}
+
 fn chunk(file: &str, offset: u64, data: &[u8], end: bool) -> Value {
     json!({
         "generation": "000000000001-aa", "file": file, "offset": offset,

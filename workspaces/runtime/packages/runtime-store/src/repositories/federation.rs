@@ -94,12 +94,15 @@ impl FederationRepository {
             .collect::<StoreResult<Vec<_>>>()?;
         // Validate every stored outbox record, including records excluded from the queue count.
         let mut queued = 0;
-        for entry in
-            RemoteOutbox::entries::<Value>(connection, RemoteEffect::FederationMessage, None)
-                .map_err(|_| invalid("runtime_outbox", "federation_message", "record"))?
+        for entry in RemoteOutbox::entries::<Box<serde_json::value::RawValue>>(
+            connection,
+            RemoteEffect::FederationMessage,
+            None,
+        )
+        .map_err(|_| invalid("runtime_outbox", "federation_message", "record"))?
         {
             let id = entry.request_id;
-            let value: OutboxRecord = serde_json::from_value(entry.record)
+            let value: OutboxRecord = serde_json::from_str(entry.record.get())
                 .map_err(|_| invalid("runtime_outbox", &id, "record"))?;
             if value.id != id {
                 return Err(invalid("runtime_outbox", &id, "id"));

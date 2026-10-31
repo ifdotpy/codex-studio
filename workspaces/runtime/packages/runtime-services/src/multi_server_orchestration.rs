@@ -789,8 +789,14 @@ impl RuntimeOrchestrationEffects {
         principal: &str,
         envelope: &Value,
     ) -> Result<ExchangeOutcome, AccessError> {
+        let payload = match <crate::peer_backup::Put as serde::Deserialize>::deserialize(
+            &envelope["payload"],
+        ) {
+            Ok(payload) => payload,
+            Err(_) => return Ok(ExchangeOutcome::NotApplied("Invalid backup request".into())),
+        };
         let root = self.store.root().to_path_buf();
-        let (principal, payload) = (principal.to_owned(), envelope["payload"].clone());
+        let principal = principal.to_owned();
         let result = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/peer_backup",
             move || crate::peer_backup::receive(&root, &principal, &payload),

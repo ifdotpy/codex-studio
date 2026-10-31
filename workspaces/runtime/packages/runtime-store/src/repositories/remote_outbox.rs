@@ -299,7 +299,7 @@ impl RemoteOutbox {
         record: T,
         created: i64,
     ) -> Result<(), OutboxError> {
-        let record = serde_json::to_value(record)?;
+        let record = serde_json::value::to_raw_value(&record)?;
         let changed = Self::update(
             tx, effect, target, request_id, signature, status, next_at, &record,
         )?;
@@ -355,7 +355,9 @@ impl RemoteOutbox {
             let Some(effect) = effect else {
                 continue;
             };
-            let effect: RemoteEffect = serde_json::from_value(serde_json::Value::String(effect))?;
+            let effect = RemoteEffect::deserialize(serde::de::value::StrDeserializer::<
+                serde_json::Error,
+            >::new(&effect))?;
             if effect.restart_rule() == RestartRule::TargetDedupes {
                 continue;
             }
