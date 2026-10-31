@@ -824,7 +824,7 @@ for (key, value) in [
             changed["answers"]["q"]["answers"] = json!(["no"]);
             assert!(
                 matches!(
-                    answer_async_question(tx, input(&changed, 30.6)),
+                    answer_async_question(tx, &input(&changed, 30.6)),
                     Err(studio_runtime_services::questions_write::QuestionsWriteError::Conflict(_))
                 ),
                 "a different answer is a conflict"

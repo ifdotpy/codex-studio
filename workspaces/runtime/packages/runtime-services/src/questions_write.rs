@@ -12,8 +12,8 @@ use studio_runtime_schema::complaint_record::{
 };
 use studio_runtime_schema::complaints::ComplaintResponseStatus;
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RequestRecord, RuntimeStore,
-    Transaction, approvals,
+    AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore, Transaction,
+    approvals,
 };
 use thiserror::Error;
 use uuid::Uuid;
