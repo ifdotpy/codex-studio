@@ -141,14 +141,6 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/tests/retained.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/tests/retained.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:1"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/agent_management.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
@@ -209,24 +201,12 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:1"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/claude_controls.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:2"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/claude_controls/service.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/claude_controls/service.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:1"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/claude_controls/service.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:2"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/claude_controls/service.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:3"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/claude_input_recovery.rs",
@@ -566,10 +546,6 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:10"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:2"
     },
     {
@@ -594,31 +570,11 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:8"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:9"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
       "fingerprint": "f3ca7d8e06dcb9acb9684c3ad1f1ed6c98de08fc87f6c3ce690babd4baf341b3:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
       "fingerprint": "f3ca7d8e06dcb9acb9684c3ad1f1ed6c98de08fc87f6c3ce690babd4baf341b3:1"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
-      "fingerprint": "f3ca7d8e06dcb9acb9684c3ad1f1ed6c98de08fc87f6c3ce690babd4baf341b3:10"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
-      "fingerprint": "f3ca7d8e06dcb9acb9684c3ad1f1ed6c98de08fc87f6c3ce690babd4baf341b3:11"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
-      "fingerprint": "f3ca7d8e06dcb9acb9684c3ad1f1ed6c98de08fc87f6c3ce690babd4baf341b3:12"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
@@ -639,18 +595,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
       "fingerprint": "f3ca7d8e06dcb9acb9684c3ad1f1ed6c98de08fc87f6c3ce690babd4baf341b3:6"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
-      "fingerprint": "f3ca7d8e06dcb9acb9684c3ad1f1ed6c98de08fc87f6c3ce690babd4baf341b3:7"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
-      "fingerprint": "f3ca7d8e06dcb9acb9684c3ad1f1ed6c98de08fc87f6c3ce690babd4baf341b3:8"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
-      "fingerprint": "f3ca7d8e06dcb9acb9684c3ad1f1ed6c98de08fc87f6c3ce690babd4baf341b3:9"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/monitor_deadline_answer.rs",
@@ -2918,10 +2862,6 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/claude_controls/service.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:2"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/claude_controls/service.rs",
-      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:3"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/claude_controls/store.rs",
