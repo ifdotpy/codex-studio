@@ -432,6 +432,13 @@ impl HttpState {
         self
     }
 
+    /// The retained provider callback runtime, when the host attached one.
+    pub fn callback_runtime(
+        &self,
+    ) -> Option<Arc<studio_runtime_services::callback_runtime::CallbackRuntime>> {
+        self.callback_runtime.clone()
+    }
+
     /// Attach the retained account refresh driver used by account admission.
     pub fn with_account_driver(
         mut self,

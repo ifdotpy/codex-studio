@@ -10,8 +10,7 @@ use studio_runtime_schema::complaint_record::{
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::system_reads as records;
 use studio_runtime_store::{
-    AgentId, AgentRepository, ComplaintRecord, RequestRecord, SyncDocumentsRepository, Table,
-    Transaction,
+    AgentId, AgentRepository, ComplaintRecord, SyncDocumentsRepository, Table, Transaction,
 };
 use uuid::Uuid;
 
@@ -488,47 +487,55 @@ pub(super) fn resolved(
     generation: u64,
     at: f64,
 ) -> Result<(), NotificationDispatchError> {
-    use studio_runtime_store::{RecordOrder, RecordPredicate};
+    use studio_runtime_schema::approvals as typed;
     let id = agent["id"]
         .as_str()
         .ok_or(NotificationDispatchError::invalid())?
         .to_owned();
-    let records = Table::<RequestRecord>::new(tx).list_matching(
-        Some(RecordPredicate::JsonAgentEquals(&id)),
-        RecordOrder::RowId,
-    )?;
+    let rows = studio_runtime_store::approvals::for_agent(tx, &typed::AgentId(id))
+        .map_err(studio_runtime_store::StoreError::from)?;
+    let wanted = match &params["requestId"] {
+        Value::Number(number) => number.as_i64().map(|value| typed::RpcId::Number { value }),
+        Value::String(value) => Some(typed::RpcId::Text {
+            value: value.clone(),
+        }),
+        _ => None,
+    };
     let mut pending = false;
-    for mut record in records {
+    for mut row in rows {
         // A card names its provider generation: the Rust account worker stores
-        // it under `supervisor`; Python named the connection after it.
-        let same_generation = record.supervisor.as_ref().map(|scope| scope.generation)
+        // it under the supervisor of its delivery.
+        let same_generation = row
+            .delivery
+            .as_ref()
+            .and_then(|d| d.supervisor.as_ref())
+            .map(|s| s.generation)
             == Some(generation)
-            || record.connection_id.as_deref() == Some(format!("connection-{generation}").as_str());
-        #[derive(serde::Deserialize)]
-        struct Params {
-            #[serde(rename = "threadId")]
-            thread_id: Option<String>,
-        }
-        let thread = serde_json::from_str::<Params>(record.params.get())
-            .ok()
-            .and_then(|p| p.thread_id);
-        if json!(record.rpc_id) == params["requestId"]
-            && record.account_key.as_deref().unwrap_or("default") == account
+            || row.delivery.as_ref().map(|d| d.connection.as_str())
+                == Some(format!("connection-{generation}").as_str());
+        let thread = row.detail.params.0.get("threadId");
+        if wanted.is_some()
+            && row.delivery.as_ref().map(|d| &d.rpc_id) == wanted.as_ref()
+            && row.delivery.as_ref().map(|d| d.account.as_str()) == Some(account)
             && same_generation
-            && json!(thread) == params["threadId"]
+            && thread == params.get("threadId")
             && matches!(
-                record.status,
-                studio_runtime_schema::persistence::RequestCardStatus::Pending
-                    | studio_runtime_schema::persistence::RequestCardStatus::Answering
-                    | studio_runtime_schema::persistence::RequestCardStatus::Uncertain
-                    | studio_runtime_schema::persistence::RequestCardStatus::Blocked
+                row.state,
+                typed::ApprovalState::Pending
+                    | typed::ApprovalState::Answering { .. }
+                    | typed::ApprovalState::Unknown { .. }
             )
         {
-            record.status = studio_runtime_schema::persistence::RequestCardStatus::Resolved;
-            record.resolved_at = Some(at);
-            put_request(tx, &record)?;
+            row.state = typed::ApprovalState::Closed {
+                reason: typed::CloseReason::ProviderResolved,
+                at: typed::Timestamp(at),
+            };
+            row.fire_at = None;
+            studio_runtime_store::approvals::put(tx, &row)
+                .map_err(studio_runtime_store::StoreError::from)?;
+            crate::approval_sync::publish(tx, &row)?;
         }
-        pending |= record.status == studio_runtime_schema::persistence::RequestCardStatus::Pending;
+        pending |= matches!(row.state, typed::ApprovalState::Pending);
     }
     if agent["status"] == "approval"
         && !pending
@@ -537,22 +544,5 @@ pub(super) fn resolved(
     {
         agent["status"] = json!("running");
     }
-    Ok(())
-}
-fn put_request(
-    tx: &Transaction<'_>,
-    record: &RequestRecord,
-) -> Result<(), NotificationDispatchError> {
-    Table::new(tx).put(record)?;
-    let id = record.id.as_str();
-    let view = crate::sync_views::project_persisted_record("request", &json!(record))
-        .ok_or_else(|| stored("runtime_requests", id))?;
-    SyncDocumentsRepository::put_entity(
-        tx,
-        "request",
-        id,
-        view,
-        record.status != studio_runtime_schema::persistence::RequestCardStatus::Pending,
-    )?;
     Ok(())
 }
