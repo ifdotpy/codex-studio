@@ -678,6 +678,36 @@ fn preparation_claims_one_thousand_small_mixed_events_and_replays_exact_batch() 
 }
 
 #[test]
+fn preparation_replay_checks_saved_thread_scope() {
+    let mut connection = database();
+    let tx = connection.transaction().unwrap();
+    let claimed = SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "scope", 1.0, 10)
+        .unwrap()
+        .unwrap();
+    let mut agent = AgentRepository::get(&tx, &AgentId::from("agent"))
+        .unwrap()
+        .unwrap();
+    let account = agent.account_key.clone();
+    agent.thread_id = Some("prepared-thread".into());
+    AgentRepository::put(&tx, &agent).unwrap();
+    crate::ExecutionHistoryRepository::save_receipt(
+        &tx,
+        "scope",
+        studio_runtime_schema::persistence::ExecutionReceiptKind::ThreadPrepared,
+        json!({"agent":"agent", "epoch":4, "account":account, "previousThread":null, "thread":"prepared-thread"}),
+        json!(true),
+    )
+    .unwrap();
+    let replay = SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "scope", 2.0, 10)
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay.events, claimed.events);
+    agent.thread_id = Some("other-thread".into());
+    AgentRepository::put(&tx, &agent).unwrap();
+    assert!(SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "scope", 3.0, 10).is_err());
+}
+
+#[test]
 fn mixed_batch_splits_only_at_the_owned_attachment_admission_budget() {
     let events = vec![
         selected_event("text", "user", "plain"),

@@ -21,6 +21,16 @@ struct ClaimResult<T> {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadPreparationScope {
+    agent: String,
+    epoch: i64,
+    account: String,
+    previous_thread: Option<String>,
+    thread: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HistoricalReplayAgent {
     id: AgentId,
@@ -1334,29 +1344,18 @@ pub(super) fn replay_claim(
     };
     let claim = claim_result::<HistoricalReplayAgent>(saved)?;
     let original = claim.agent;
-    let preparation = crate::ExecutionHistoryRepository::receipt::<serde_json::Value>(
+    let preparation = crate::ExecutionHistoryRepository::receipt::<ThreadPreparationScope>(
         tx,
         saved.start.id.as_deref().ok_or_else(receipt_error)?,
         ExecutionReceiptKind::ThreadPrepared,
     )?;
     let prepared_scope = preparation.as_ref().is_some_and(|preparation| {
         preparation.result == true
-            && preparation.input["agent"] == agent.id.0
-            && preparation.input["epoch"] == epoch
-            && preparation.input["account"] == Value::String(agent.account_key.clone())
-            && preparation.input["previousThread"]
-                == original
-                    .agent
-                    .thread_id
-                    .clone()
-                    .map(Value::String)
-                    .unwrap_or(Value::Null)
-            && preparation.input["thread"]
-                == agent
-                    .thread_id
-                    .clone()
-                    .map(Value::String)
-                    .unwrap_or(Value::Null)
+            && preparation.input.agent == agent.id.0
+            && preparation.input.epoch == epoch
+            && preparation.input.account == agent.account_key
+            && preparation.input.previous_thread == original.agent.thread_id
+            && preparation.input.thread == agent.thread_id
     });
     if original.id != agent.id
         || original.epoch != epoch
@@ -1962,6 +1961,25 @@ mod account_wake_index_tests {
     use rusqlite::Connection;
     use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn thread_preparation_receipt_requires_typed_scope() {
+        let valid = r#"{"agent":"a","epoch":2,"account":"account","previousThread":null,"thread":"thread"}"#;
+        let scope: super::ThreadPreparationScope = serde_json::from_str(valid).unwrap();
+        assert_eq!(scope.agent, "a");
+        assert!(
+            serde_json::from_str::<super::ThreadPreparationScope>(
+                &valid.replace("\"epoch\":2", "\"epoch\":\"2\"")
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<super::ThreadPreparationScope>(
+                &valid.replace("\"agent\":\"a\"", "\"agent\":\"a\",\"unknown\":true")
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn stored_wake_boundary_mode_projection_matches_openapi_owner() {
