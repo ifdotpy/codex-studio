@@ -1263,9 +1263,6 @@ fn transcript_store_error(
                 "invalid stored object {table}/{id}"
             ))
         }
-        TranscriptStoreError::ActiveTurn => studio_runtime_store::StoreError::SchemaMismatch(
-            "transcript unexpectedly belongs to an active turn".into(),
-        ),
     }
 }
 

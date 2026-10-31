@@ -493,7 +493,6 @@ fn transcript_error(error: TranscriptStoreError) -> CallbackError {
         TranscriptStoreError::InvalidStoredObject { table, id } => {
             CallbackError::Stored(format!("{table}/{id}"))
         }
-        TranscriptStoreError::ActiveTurn => CallbackError::Stored("runtime_items".into()),
     }
 }
 

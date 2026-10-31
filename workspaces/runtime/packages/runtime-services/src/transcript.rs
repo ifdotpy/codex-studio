@@ -56,7 +56,6 @@ impl From<TranscriptStoreError> for TranscriptError {
             TranscriptStoreError::InvalidStoredObject { table, id } => {
                 Self::InvalidStoredObject { table, id }
             }
-            TranscriptStoreError::ActiveTurn => Self::RequiresDependency("transcript/event-driver"),
             TranscriptStoreError::Store(StoreError::Sqlite(rusqlite::Error::SqliteFailure(
                 error,
                 _,

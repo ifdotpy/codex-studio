@@ -532,7 +532,7 @@ fn map_transcript_error(error: studio_runtime_store::TranscriptStoreError) -> Ap
     match error {
         TranscriptStoreError::InvalidStoredObject { table, id } => invalid_stored(table, &id),
         TranscriptStoreError::Store(error) => ApiError::stored(error),
-        TranscriptStoreError::Sqlite(_) | TranscriptStoreError::ActiveTurn => ApiError::internal(),
+        TranscriptStoreError::Sqlite(_) => ApiError::internal(),
     }
 }
 
