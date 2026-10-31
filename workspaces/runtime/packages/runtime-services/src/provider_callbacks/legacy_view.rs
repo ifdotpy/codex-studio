@@ -20,9 +20,17 @@ pub fn insert(tx: &Connection, card: &Value) -> Result<(), studio_runtime_store:
         card["params"]["turnId"] = json!("turn-0");
     }
     // A frozen deleted record may lack who deleted it and when.
-    if card["status"] == "deleted" && card.get("deletedAt").is_none() {
-        card["deletedAt"] = card.get("createdAt").cloned().unwrap_or(json!(0.0));
-        card["deletedBy"] = json!("user");
+    if card["status"] == "deleted" {
+        if card.get("deletedAt").is_none() {
+            card["deletedAt"] = card.get("createdAt").cloned().unwrap_or(json!(0.0));
+        }
+        if card.get("deletedBy").is_none() {
+            card["deletedBy"] = json!("user");
+        }
+    }
+    // The retired "blocked" state waited like a pending card.
+    if card["status"] == "blocked" {
+        card["status"] = json!("pending");
     }
     let id = card["id"].as_str().unwrap_or_default().to_owned();
     approvals::put(tx, &approvals::from_legacy_record(&id, &card)?)?;
