@@ -332,16 +332,16 @@ impl HostService {
         identity: &str,
         slot: &Path,
         mac_only: Vec<String>,
-        params: &Map<String, Value>,
+        after: &str,
     ) -> Outcome<Value> {
         let path = self.opdir(identity).join("held-manifest.json");
         let name = format!("{identity}\0held");
-        if studio_runtime_store::truthy(params.get("after")) {
-            return self.listing(&name, &path, params.get("after"), None);
+        if !after.is_empty() {
+            return self.listing(&name, &path, after, None);
         }
         let held = self.scan_slot_blocking(slot, mac_only).await?;
         protocol::atomic(&path, &held)?;
-        self.listing(&name, &path, Some(&protocol::text_value("")), Some(&held))
+        self.listing(&name, &path, "", Some(&held))
     }
 
     /// Clone one file from the same path in the project folder on this Mac when

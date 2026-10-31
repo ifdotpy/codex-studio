@@ -140,10 +140,47 @@ pub(crate) struct RunParams {
     cwd: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManifestParams {
+    operation_id: String,
+    agent_id: String,
+    #[serde(default)]
+    after: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResultManifestParams {
+    operation_id: String,
+    agent_id: String,
+    area: ResultArea,
+    #[serde(default)]
+    after: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ResultArea {
+    Changes,
+    Artifacts,
+}
+
+impl ResultArea {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Changes => "changes",
+            Self::Artifacts => "artifacts",
+        }
+    }
+}
+
 enum FrameParams {
     Health,
     Retire(RetireParams),
     Run(RunParams),
+    Manifest(ManifestParams),
+    ResultManifest(ResultManifestParams),
     // Existing dispatch until each remaining method has its own typed variant.
     Legacy(Map<String, Value>),
 }
@@ -569,7 +606,7 @@ impl HostService {
         &self,
         name: &str,
         path: &Path,
-        after: Option<&Value>,
+        after: &str,
         entries: Option<&protocol::Manifest>,
     ) -> Outcome<Value> {
         let saved = self.inner().pages.get(name).cloned();
@@ -632,36 +669,12 @@ impl HostService {
         match method {
             "status" => return Ok(Value::Object(op)),
             "attach" => return self.attach(&identity, params).await,
-            "result.manifest" => {
-                let area = params
-                    .get("area")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                require(
-                    ["changes", "artifacts"].contains(&area),
-                    "Invalid result file area",
-                    INVALID,
-                )?;
-                require(
-                    ["exited", "released"].contains(&text(&op, "state")),
-                    "The command has no final files",
-                    "outcome_unknown",
-                )?;
-                let empty = Value::String(String::new());
-                return self.listing(
-                    &format!("{identity}\0{area}"),
-                    &self.opdir(&identity).join(format!("{area}.json")),
-                    Some(params.get("after").unwrap_or(&empty)),
-                    None,
-                );
-            }
             "read" => return self.read_result(&identity, &op, params),
             _ => {}
         }
         let slot = self.slot(&op)?;
         let mac_only = string_list(&op, "macOnly");
         match method {
-            "manifest" => self.held_manifest(&identity, &slot, mac_only, params).await,
             "prime" => self.prime_request(&identity, &op, &slot, params).await,
             "sync.clone" => self.sync_clone(&op, &slot, params).await,
             "sync.mode" => self.sync_mode(&op, &slot, mac_only, params).await,
@@ -696,6 +709,44 @@ impl HostService {
                 self.run(&params.operation_id, op, slot, mac_only, params)
                     .await
                     .map(Value::Object)
+            }
+            FrameParams::Manifest(params) => {
+                let op = self.load(&params.operation_id)?;
+                require(
+                    text(&op, "agentId") == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                self.held_manifest(
+                    &params.operation_id,
+                    &slot,
+                    string_list(&op, "macOnly"),
+                    &params.after,
+                )
+                .await
+            }
+            FrameParams::ResultManifest(params) => {
+                let op = self.load(&params.operation_id)?;
+                require(
+                    text(&op, "agentId") == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let area = params.area.as_str();
+                require(
+                    ["exited", "released"].contains(&text(&op, "state")),
+                    "The command has no final files",
+                    "outcome_unknown",
+                )?;
+                self.listing(
+                    &format!("{}\0{area}", params.operation_id),
+                    &self
+                        .opdir(&params.operation_id)
+                        .join(format!("{area}.json")),
+                    &params.after,
+                    None,
+                )
             }
             FrameParams::Health | FrameParams::Retire(_) => {
                 Err(HostExecError::new(INVALID, "Invalid request").into())
@@ -815,6 +866,14 @@ impl HostService {
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
             "run" => FrameParams::Run(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "manifest" => FrameParams::Manifest(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "result.manifest" => FrameParams::ResultManifest(
                 serde_json::from_str(raw)
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),

@@ -383,15 +383,14 @@ fn name_alias_and_page_rules() {
             )
         })
         .collect();
-    let first = protocol::page(&items, Some(&json!(""))).unwrap();
+    let first = protocol::page(&items, "").unwrap();
     assert_eq!(
         first["entries"].as_object().unwrap().len(),
         protocol::PAGE_ENTRIES
     );
-    let second = protocol::page(&items, Some(&first["next"])).unwrap();
+    let second = protocol::page(&items, first["next"].as_str().unwrap()).unwrap();
     assert_eq!(second["entries"].as_object().unwrap().len(), 10);
     assert!(second["next"].is_null());
-    assert!(protocol::page(&items, Some(&json!(5))).is_err());
 }
 
 #[test]

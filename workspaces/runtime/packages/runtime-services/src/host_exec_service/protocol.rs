@@ -410,12 +410,8 @@ pub(crate) fn manifest_digest(manifest: &Manifest) -> Result<String, serde_json:
 /// the cursor of the next page (`null` after the last page).
 pub(crate) fn page(
     items: &[(String, Option<ManifestEntry>)],
-    after: Option<&Value>,
+    after: &str,
 ) -> Result<Value, HostExecError> {
-    let after = match after {
-        Some(Value::String(after)) => after.as_str(),
-        _ => return Err(HostExecError::new(INVALID, "Invalid manifest cursor")),
-    };
     let start = items.partition_point(|(path, _)| path.as_str() <= after);
     let mut entries = BTreeMap::new();
     let mut size = 0_usize;
