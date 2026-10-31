@@ -40,11 +40,8 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
             }],
         },
         ConditionalTableRequirement {
-            table_exists: "runtime_completed_turns",
-            tables: &[TableRequirement {
-                name: "runtime_completed_turns",
-                columns: &["id"],
-            }],
+            table_exists: "turns",
+            tables: &[crate::domain::TABLE_REQUIREMENTS[1]],
         },
     ],
     triggers: &[],
@@ -176,14 +173,7 @@ impl ContextRepairRepository {
         Ok(Some(result))
     }
     pub fn completed(db: &Connection, agent: &str, turn: &str) -> StoreResult<bool> {
-        Ok(db
-            .query_row(
-                "SELECT 1 FROM runtime_completed_turns WHERE id=?1",
-                [format!("{agent}:{turn}")],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some())
+        crate::domain::turn_completed(db, agent, turn)
     }
     pub fn put_agent(db: &Connection, value: &Value) -> StoreResult<()> {
         let agent = AgentRecord::from_value(value.clone())?;
