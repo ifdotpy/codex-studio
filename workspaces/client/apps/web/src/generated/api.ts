@@ -11908,6 +11908,11 @@ export interface components {
        */
       action: "create_invite";
       /**
+       * Grant
+       * @default null
+       */
+      grant?: ("full" | "observe") | null | undefined;
+      /**
        * Label
        * @default null
        */
@@ -11927,6 +11932,11 @@ export interface components {
        * @default null
        */
       expected_user?: string | null | undefined;
+      /**
+       * Grant
+       * @default null
+       */
+      grant?: ("full" | "observe") | null | undefined;
       /**
        * Label
        * @default null
@@ -21391,7 +21401,8 @@ export interface components {
         | "add_location"
         | "remove_location"
         | "move_validate"
-        | "move_begin";
+        | "move_begin"
+        | "device_trust";
       /** @description Scoped suboperation tuple; empty for a single-step request. */
       operation: string[];
       /**

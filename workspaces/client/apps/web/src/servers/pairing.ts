@@ -65,6 +65,7 @@ export function pairedServer(
   receipt: PairReceipt,
   invitation: PairInvitation,
   clientId: string,
+  credentialId: string = clientId,
 ): StudioServer {
   if (
     receipt.protocol !== ACCESS_PROTOCOL_VERSION ||
@@ -85,7 +86,7 @@ export function pairedServer(
         ? receipt.label.slice(0, 128)
         : invitation.label || new URL(receipt.origin).hostname,
     origin: serveOrigin(receipt.origin),
-    credentialId: clientId,
+    credentialId,
   };
 }
 export function signatureInput(

@@ -63,6 +63,7 @@ pub mod continuation_runtime;
 pub mod coordination;
 pub mod coordination_reads;
 pub mod costs;
+pub mod device_trust;
 pub mod diagnostics;
 pub mod disk_space;
 pub mod entity_publication;

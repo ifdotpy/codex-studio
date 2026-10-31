@@ -342,3 +342,30 @@ the server does not offer an identity replacement action.
 Historical replacement records remain readable, including `replacedBy` and
 `replacement`. The saved previous identity of this server has no Tailscale owner:
 its `tailscaleUser` is `null`.
+
+## Device identity and the shared trust list
+
+Owner: `runtime-services/src/device_trust.rs`. Decision:
+`docs/decisions/2026-10-28-target-client-server-architecture.md`, "Device identity".
+
+- A browser profile has one non-extractable Ed25519 key in IndexedDB
+  (`web/src/servers/deviceKey.ts`). Its id is `dev-` and the SHA-256 of the public key in
+  hex. The device uses that id as its client id on every server.
+- The list of trusted device keys and paired servers is the `runtime_access_clients`
+  table. A paired `ui` row is a trusted key with a `grant` (`full` by default, `observe`
+  when the owner chose it in the invitation). A `revoked` `ui` row is the tombstone.
+- A server sends its list to each paired server with the `device_trust` action and merges
+  the list that it gets back. `peer_projects` runs this exchange when the list changed
+  since the last exchange, when a pairing is new, and when a paired server reaches this
+  server again. An offline server catches up at its next contact.
+- Merge rules: a device that one server trusts is trusted on the others; a revoked row never
+  changes back; a revocation turns a paired row into a revoked row; a merge never changes
+  the key or the grant of a paired row. Only paired servers are shared. A server revocation
+  stays local.
+- The server reads the grant from its own row, never from the request. A row without a
+  `grant` field is `full`, so every pairing made before the list keeps working. Each old
+  pairing is one device entry; two pairs of one device cannot be proven, so they stay two
+  devices.
+- A device that gets `client_revoked` when it pairs replaces its key and pairs again.
+
+Not done yet: the Tauri and Electron native credential stores keep one key for each pair.

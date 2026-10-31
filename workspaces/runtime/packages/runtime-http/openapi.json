@@ -23451,6 +23451,22 @@
             "title": "Action",
             "type": "string"
           },
+          "grant": {
+            "anyOf": [
+              {
+                "enum": [
+                  "full",
+                  "observe"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Grant"
+          },
           "label": {
             "anyOf": [
               {
@@ -23499,6 +23515,22 @@
             ],
             "default": null,
             "title": "Expected User"
+          },
+          "grant": {
+            "anyOf": [
+              {
+                "enum": [
+                  "full",
+                  "observe"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Grant"
           },
           "label": {
             "anyOf": [
@@ -47052,7 +47084,8 @@
               "add_location",
               "remove_location",
               "move_validate",
-              "move_begin"
+              "move_begin",
+              "device_trust"
             ],
             "type": "string"
           },

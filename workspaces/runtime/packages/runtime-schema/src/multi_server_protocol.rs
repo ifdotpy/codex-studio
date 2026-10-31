@@ -98,6 +98,10 @@ impl PersistedAccessInvite {
     pub fn tailscale_user(&self) -> &str {
         &self.tailscale_user
     }
+    /// A text field beyond the typed ones, such as the `grant` of the device that pairs.
+    pub fn extra_str(&self, key: &str) -> Option<&str> {
+        self.extra.get(key).and_then(serde_json::Value::as_str)
+    }
     pub fn mark_used(&mut self) {
         self.status = InviteStatus::Used;
     }
