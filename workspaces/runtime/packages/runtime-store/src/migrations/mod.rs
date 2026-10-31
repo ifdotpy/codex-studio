@@ -37,6 +37,7 @@ mod m2026_10_28_usage_revision;
 mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
+mod m2026_10_30_approvals;
 mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
 mod m2026_10_30_branch_phase;
@@ -63,6 +64,7 @@ pub use m2026_10_20_agents::migrate_2026_10_20;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::prepare_columns;
 pub use m2026_10_26_provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
+pub(crate) use m2026_10_30_approvals::approval_from_record;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_26_provider_identity::migrate_canvas_2026_10_26;
 #[cfg(any(test, feature = "test-support"))]
@@ -865,6 +867,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| crate::StartupRecoveryRepository::prepare_monitor_index(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-approvals",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Approvals and provider questions in runtime_requests with string states",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_approvals::apply(c.transaction),
     },
 ];
 
