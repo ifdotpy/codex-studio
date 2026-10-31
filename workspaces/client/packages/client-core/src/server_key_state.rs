@@ -259,6 +259,13 @@ pub struct VaultObject {
         skip_serializing_if = "Option::is_none"
     )]
     pub imports: Option<Value>,
+    /// The one key of this device: `{"id", "publicKey", "privateKey"}`.
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub device: Option<Value>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -297,6 +304,7 @@ impl VaultState {
             drafts,
             servers,
             imports,
+            device,
             mut extra,
         } = object;
         if let Some(value) = drafts {
@@ -307,6 +315,9 @@ impl VaultState {
         }
         if let Some(value) = imports {
             extra.insert("imports".into(), value);
+        }
+        if let Some(value) = device {
+            extra.insert("device".into(), value);
         }
         Value::Object(extra)
     }
@@ -328,6 +339,13 @@ impl VaultState {
                 _ => None,
             },
             Self::Other(_) => None,
+        }
+    }
+    pub fn object(&self) -> Option<&VaultObject> {
+        if let Self::Object(object) = self {
+            Some(object)
+        } else {
+            None
         }
     }
     pub fn object_mut(&mut self) -> Option<&mut VaultObject> {
