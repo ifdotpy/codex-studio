@@ -44,7 +44,8 @@ pub use state_check::{StateCheckFailure, StateCheckReport, StateCheckTable, chec
 
 pub use repositories::account_state;
 pub use repositories::account_transfer::{
-    AccountTransferRecord, AccountTransferRepository, MAX_TRANSFER_RECORD_BYTES,
+    AccountTransferRecord, AccountTransferRepository, MAX_INLINE_READ_REPLY_BYTES,
+    MAX_TRANSFER_RECORD_BYTES,
 };
 pub use repositories::agent_management;
 pub use repositories::analytics::{

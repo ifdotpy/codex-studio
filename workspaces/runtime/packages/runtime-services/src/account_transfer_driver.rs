@@ -1194,13 +1194,14 @@ pub(crate) async fn provider_read_intent(
     let operation = intent.operation.to_owned();
     let account = intent.account.to_owned();
     let method = intent.method.to_owned();
+    let root = store.root().to_path_buf();
     store
         .transaction_with_error(move |tx| {
             let snapshot = load(tx, &transfer)?;
             let next = json!({"operation":operation,"account":account,"scope":intent.scope,
                 "method":method,"params":intent.params});
             if let Some(reply) = snapshot.written_read_replay(&agent, &next)? {
-                return Ok(Some(reply));
+                return Ok(Some(inline_reply(&root, reply)?));
             }
             if let Some(correction) =
                 snapshot.correct_unsubmitted_legacy_read(&agent, &operation, &next)?
@@ -1241,8 +1242,18 @@ pub(crate) async fn provider_read_intent(
             .as_object()
             .filter(|receipt| receipt.get("certainty") == Some(&Value::String("written".into())))
             .cloned()
+<<<<<<< head
             .map(Value::Object);
             let decision = snapshot.provider_read_intent(
+||||||| base
+            .map(Value::Object);
+            let mut decision = snapshot.provider_read_intent(
+=======
+            .map(Value::Object)
+            .map(|saved| inline_reply(&root, saved))
+            .transpose()?;
+            let mut decision = snapshot.provider_read_intent(
+>>>>>>> c6d168f
                 &agent,
                 &operation,
                 &account,
@@ -1254,6 +1265,25 @@ pub(crate) async fn provider_read_intent(
             Ok(prior)
         })
         .await
+}
+
+/// Put back a reply body that the record keeps as a payload blob.
+fn inline_reply(root: &std::path::Path, mut saved: Value) -> Result<Value, TransferError> {
+    let Some(reference) = saved["result"].get("valueBlob").cloned() else {
+        return Ok(saved);
+    };
+    let lost = |_| TransferError::Refused("The saved provider reply is unavailable");
+    let value =
+        serde_json::from_slice(&crate::payload_blobs::load_blob(root, &reference).map_err(lost)?)
+            .map_err(|_| TransferError::Refused("The saved provider reply is unavailable"))?;
+    let result = saved["result"]
+        .as_object_mut()
+        .ok_or(TransferError::Refused(
+            "The saved provider reply is unavailable",
+        ))?;
+    result.remove("valueBlob");
+    result.insert("value".into(), value);
+    Ok(saved)
 }
 
 pub(crate) struct ProviderReadReceipt<'a> {
@@ -1271,6 +1301,18 @@ pub(crate) async fn provider_read_receipt(
     let transfer = receipt.transfer.to_owned();
     let agent = receipt.agent.to_owned();
     let operation = receipt.operation.to_owned();
+    // The blob is content addressed: a failed transaction leaves a harmless file.
+    if let Some((sha256, bytes)) = crate::account_transfer::spilled_reply(&receipt.receipt) {
+        crate::payload_blobs::write_blobs(
+            store.root(),
+            &[crate::payload_blobs::BlobWrite {
+                sha256,
+                bytes,
+                preview: Value::Null,
+            }],
+        )
+        .map_err(|_| TransferError::Refused("The provider reply could not be saved"))?;
+    }
     store
         .transaction_with_error(move |tx| {
             let snapshot = load(tx, &transfer)?;
@@ -1698,6 +1740,32 @@ mod request_tests {
         assert_eq!(adopted["members"].as_object().expect("members").len(), 2);
         assert_eq!(adopted["members"]["late"]["phase"], "lazy");
         assert_eq!(stored(&store, "lead")["accountKey"], "source");
+    }
+
+    #[test]
+    fn inline_reply_restores_a_spilled_body() {
+        let root = tempfile::tempdir().expect("directory");
+        let body = json!({"data":["page"]});
+        let bytes = serde_json::to_vec(&body).expect("bytes");
+        let sha256 = studio_runtime_store::sha256_hex(&bytes);
+        crate::payload_blobs::write_blobs(
+            root.path(),
+            &[crate::payload_blobs::BlobWrite {
+                sha256: sha256.clone(),
+                bytes: bytes.clone(),
+                preview: Value::Null,
+            }],
+        )
+        .expect("blob");
+        let saved =
+            json!({"result":{"kind":"reply","valueBlob":{"sha256":sha256,"size":bytes.len()}}});
+        assert_eq!(
+            inline_reply(root.path(), saved).expect("restored"),
+            json!({"result":{"kind":"reply","value":body}})
+        );
+        let lost =
+            json!({"result":{"kind":"reply","valueBlob":{"sha256":"0".repeat(64),"size":1}}});
+        assert!(inline_reply(root.path(), lost).is_err());
     }
 
     #[test]

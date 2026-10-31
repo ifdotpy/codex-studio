@@ -25,6 +25,10 @@ impl JsonRecord for AccountTransferRecord {
     }
 }
 pub const MAX_TRANSFER_RECORD_BYTES: usize = 8 * 1024 * 1024;
+/// Largest provider read reply kept inline in a transfer record. A larger reply
+/// (a history page) lives in the payload blob store and the record keeps its
+/// digest. Unit: bytes of the reply's JSON text.
+pub const MAX_INLINE_READ_REPLY_BYTES: usize = 64 * 1024;
 pub struct AccountTransferRepository;
 
 #[cfg(test)]

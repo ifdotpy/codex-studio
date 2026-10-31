@@ -14,6 +14,57 @@ mod m2026_10_27_retired_sqlite;
 mod m2026_10_27_scheduler_indexes;
 mod m2026_10_28_group_revision;
 mod m2026_10_28_usage_revision;
+<<<<<<< head
+||||||| base
+mod m2026_10_29_agent_authorizations;
+mod m2026_10_29_model_choices;
+mod m2026_10_29_request_results_v2;
+mod m2026_10_30_agent_compactions;
+mod m2026_10_30_agent_volatile;
+mod m2026_10_30_branch_phase;
+mod m2026_10_30_capture_errors;
+mod m2026_10_30_complaint_record;
+pub(crate) mod m2026_10_30_monitor_errors;
+mod m2026_10_30_monitor_generated;
+pub(crate) mod m2026_10_30_monitor_queue;
+pub(crate) mod m2026_10_30_monitor_status;
+mod m2026_10_30_project_teams;
+mod m2026_10_30_radio_room;
+mod m2026_10_30_request_record;
+mod m2026_10_30_retire_graph_agents;
+mod m2026_10_30_rule_monitor_records;
+mod m2026_10_30_start_wait;
+mod m2026_10_30_task_records;
+mod m2026_10_30_unused_agent_columns;
+mod m2026_10_30_unused_start_action;
+mod m2026_10_30_vm_stream_owners;
+mod m2026_10_31_native_status_error;
+=======
+mod m2026_10_29_agent_authorizations;
+mod m2026_10_29_model_choices;
+mod m2026_10_29_request_results_v2;
+mod m2026_10_30_agent_compactions;
+mod m2026_10_30_agent_volatile;
+mod m2026_10_30_branch_phase;
+mod m2026_10_30_capture_errors;
+mod m2026_10_30_complaint_record;
+pub(crate) mod m2026_10_30_monitor_errors;
+mod m2026_10_30_monitor_generated;
+pub(crate) mod m2026_10_30_monitor_queue;
+pub(crate) mod m2026_10_30_monitor_status;
+mod m2026_10_30_project_teams;
+mod m2026_10_30_radio_room;
+mod m2026_10_30_request_record;
+mod m2026_10_30_retire_graph_agents;
+mod m2026_10_30_rule_monitor_records;
+mod m2026_10_30_start_wait;
+mod m2026_10_30_task_records;
+mod m2026_10_30_unused_agent_columns;
+mod m2026_10_30_unused_start_action;
+mod m2026_10_30_vm_stream_owners;
+mod m2026_10_31_native_status_error;
+mod m2026_10_31_transfer_history_pages;
+>>>>>>> c6d168f
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -357,6 +408,140 @@ static CATALOG: &[&dyn Migration] = &[
         apply: |c| m2026_10_28_group_revision::apply(c.transaction),
     },
     &RegistryMigration,
+<<<<<<< head
+||||||| base
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-task-records",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Task records before strict typed validation",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_task_records::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-radio-room",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Radio rooms with missing or null direct and missing active fields",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_radio_room::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-project-teams",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Project records without peerTeams",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_project_teams::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-branch-phase",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Branch operations with missing or unclassifiable phases",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_branch_phase::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-native-status-error",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent native status errors stored as objects",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_31_native_status_error::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-restore-monitor-active-index",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor status migration without the active monitor index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::StartupRecoveryRepository::prepare_monitor_index(c.transaction),
+    },
+=======
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-task-records",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Task records before strict typed validation",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_task_records::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-radio-room",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Radio rooms with missing or null direct and missing active fields",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_radio_room::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-project-teams",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Project records without peerTeams",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_project_teams::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-branch-phase",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Branch operations with missing or unclassifiable phases",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_branch_phase::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-native-status-error",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent native status errors stored as objects",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_31_native_status_error::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-transfer-history-pages",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Account transfers with provider read replies stored inline",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_31_transfer_history_pages::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-restore-monitor-active-index",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor status migration without the active monitor index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::StartupRecoveryRepository::prepare_monitor_index(c.transaction),
+    },
+>>>>>>> c6d168f
 ];
 
 /// Operator-facing catalog; implementation and metadata have one owner.
