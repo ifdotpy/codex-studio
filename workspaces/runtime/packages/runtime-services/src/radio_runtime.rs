@@ -4,7 +4,7 @@
 //! body; an exact replay returns the committed result, changed content fails.
 //! Event/floor, binding, answer and sync rows commit together. Provider effects
 //! run only after commit; an interrupt marked requested is never sent again.
-use crate::event_write::{self, python_json, truthy};
+use crate::event_write::{self, truthy};
 use crate::host_project_runtime::PreparedHost;
 use crate::projects::operations::{live_teams, project_agents};
 use crate::projects::{ProjectsError, project_key};

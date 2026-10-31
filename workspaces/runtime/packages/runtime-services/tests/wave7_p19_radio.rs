@@ -638,6 +638,7 @@ async fn provider_identity_radio_rejects_unknown_participant_before_enqueue() {
 #[tokio::test]
 async fn python_written_radio_corpus_and_restart_replay() {
     let corpus = corpus().await;
+    let mut checked_room_context = false;
     for original_case in &corpus.cases {
         let root = tempfile::tempdir().expect("radio state directory");
         copy_template(&corpus, root.path());
@@ -682,6 +683,30 @@ async fn python_written_radio_corpus_and_restart_replay() {
             continue;
         }
         let mut actual = state(&store, &original_case["before"]);
+        if original_case["mode"] == "tick" {
+            for event in actual["events"].as_array().into_iter().flatten() {
+                if original_case["before"]["events"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|old| old["id"] == event["id"])
+                {
+                    continue;
+                }
+                if let Some((_, tail)) = event["text"]
+                    .as_str()
+                    .and_then(|text| text.split_once("Shared room (JSON):\n"))
+                {
+                    let context = tail
+                        .split_once("\nShared messages since your last successful reply (JSON):\n")
+                        .expect("messages")
+                        .0;
+                    let parsed: Value = serde_json::from_str(context).expect("context");
+                    assert_eq!(context, parsed.to_string());
+                    checked_room_context = true;
+                }
+            }
+        }
         let mut expected = original_case["after"].clone();
         expected["operation_receipts"] = json!([]);
         normalize(&mut actual);
@@ -747,6 +772,7 @@ async fn python_written_radio_corpus_and_restart_replay() {
             );
         }
     }
+    assert!(checked_room_context);
 }
 
 // AFTER failures include the attempted write. BEFORE failures exercise the same
