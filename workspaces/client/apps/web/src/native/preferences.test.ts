@@ -1,16 +1,37 @@
 import { expect, it } from "vitest";
 import { moveLegacyPreferences } from "./preferences";
 
-function storage(initial: Record<string, string> = {}) {
-  const values = new Map(Object.entries(initial));
-  return {
-    getItem: (key: string) => values.get(key) ?? null,
-    setItem: (key: string, value: string) => void values.set(key, value),
-  } as unknown as Storage;
+class MemoryStorage implements Storage {
+  private values = new Map<string, string>();
+  constructor(
+    initial: Record<string, string> = {},
+    private readonly lossy = false,
+  ) {
+    for (const [key, value] of Object.entries(initial))
+      this.values.set(key, value);
+  }
+  get length() {
+    return this.values.size;
+  }
+  clear() {
+    this.values.clear();
+  }
+  getItem(key: string) {
+    return this.lossy ? "other" : (this.values.get(key) ?? null);
+  }
+  key(index: number) {
+    return [...this.values.keys()][index] ?? null;
+  }
+  removeItem(key: string) {
+    this.values.delete(key);
+  }
+  setItem(key: string, value: string) {
+    this.values.set(key, value);
+  }
 }
 
 it("clears only the rows that the page storage returns unchanged", async () => {
-  const target = storage({ theme: "light" });
+  const target = new MemoryStorage({ theme: "light" });
   const calls: [string, unknown][] = [];
   await moveLegacyPreferences(
     (async (method: string, params: unknown) => {
@@ -33,23 +54,19 @@ it("clears only the rows that the page storage returns unchanged", async () => {
 
 it("keeps every row when the read-back differs or the read fails", async () => {
   const calls: string[] = [];
-  const lossy = {
-    getItem: () => "other",
-    setItem: () => {},
-  } as unknown as Storage;
   await moveLegacyPreferences(
     (async (method: string) => {
       calls.push(method);
       return { size: "12" };
     }) as never,
-    lossy,
+    new MemoryStorage({}, true),
     false,
   );
   await moveLegacyPreferences(
     (async () => {
       throw new Error("locked");
     }) as never,
-    storage(),
+    new MemoryStorage(),
     false,
   );
   expect(calls).toEqual(["preferences.legacy"]);

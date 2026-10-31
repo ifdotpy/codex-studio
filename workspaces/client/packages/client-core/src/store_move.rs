@@ -521,8 +521,17 @@ async fn move_file(
     }
 }
 
+/// One row of `client_uploads`.
+struct UploadRow {
+    id: String,
+    workspace: String,
+    agent: String,
+    document: String,
+    bytes: Vec<u8>,
+}
+
 async fn move_uploads(db: &Connection, server: &impl Server, report: &mut Report) {
-    let rows = (|| -> rusqlite::Result<Vec<(String, String, String, String, Vec<u8>)>> {
+    let rows = (|| -> rusqlite::Result<Vec<UploadRow>> {
         let cancelled = if has_table(db, "client_upload_tombstones").unwrap_or(false) {
             let mut query =
                 db.prepare("SELECT id FROM client_upload_tombstones WHERE cancelled<>0")?;
@@ -535,18 +544,18 @@ async fn move_uploads(db: &Connection, server: &impl Server, report: &mut Report
         let mut query =
             db.prepare("SELECT id,workspace,agent,document,bytes FROM client_uploads ORDER BY id")?;
         let rows = query.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Vec<u8>>(4)?,
-            ))
+            Ok(UploadRow {
+                id: row.get(0)?,
+                workspace: row.get(1)?,
+                agent: row.get(2)?,
+                document: row.get(3)?,
+                bytes: row.get(4)?,
+            })
         })?;
         let mut found = Vec::new();
         for row in rows {
             let row = row?;
-            if !cancelled.contains(&row.0) {
+            if !cancelled.contains(&row.id) {
                 found.push(row);
             }
         }
@@ -560,7 +569,14 @@ async fn move_uploads(db: &Connection, server: &impl Server, report: &mut Report
         }
     };
     let current = server.workspace().await;
-    for (id, workspace, agent, document, bytes) in rows {
+    for UploadRow {
+        id,
+        workspace,
+        agent,
+        document,
+        bytes,
+    } in rows
+    {
         let name = serde_json::from_str::<Value>(&document)
             .ok()
             .and_then(|value| text(&value, &["name"]).map(str::to_owned))
