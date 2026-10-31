@@ -123,6 +123,9 @@ function MultiServerShell({
     }
   };
   const [paired, setPaired] = useState<StudioServer[]>(load);
+  const [navigation, setNavigation] = useState<
+    Record<string, ServerNavigation>
+  >({});
   // Discovery and preference updates reread the saved list often. Unchanged servers keep
   // their objects, so an open dialog or a server connection is not reset by a reread.
   const [registryRevision, setRegistryRevision] = useState(0);
@@ -131,9 +134,14 @@ function MultiServerShell({
     () =>
       (sharedServers.current = shareServers(
         sharedServers.current,
-        orderPreferenceServers(uiOnly ? paired : [localServer(), ...paired]),
+        orderPreferenceServers(
+          (uiOnly ? paired : [localServer(), ...paired]).map((server) => {
+            const workspaceId = navigation[server.id]?.workspaceId;
+            return workspaceId ? { ...server, workspaceId } : server;
+          }),
+        ),
       )),
-    [paired, registryRevision],
+    [paired, registryRevision, navigation],
   );
   const [selected, setSelected] = useState(
     () =>
@@ -158,14 +166,14 @@ function MultiServerShell({
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
     (server) => add(server, false),
     !uiOnly,
+    Object.fromEntries(
+      servers.map((server) => [server.id, server.workspaceId]),
+    ),
   );
   const accountsServers = useMemo(
     () => accountServers(servers, discovery.snapshot?.servers || []),
     [servers, discovery.snapshot],
   );
-  const [navigation, setNavigation] = useState<
-    Record<string, ServerNavigation>
-  >({});
   const sidebarSources = useRef(createSidebarSourceStore());
   const navigationRef = useRef(navigation);
   navigationRef.current = navigation;

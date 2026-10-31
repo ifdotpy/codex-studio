@@ -40,7 +40,9 @@ it("validates saved identities and never loads local rows as paired servers", ()
     origin: "https://computer.tailnet.ts.net",
     credentialId: "device-1",
   };
-  expect(readServers(storage([row]))).toEqual([{ ...row, alias: "COM" }]);
+  expect(readServers(storage([row]))).toEqual([
+    { ...row, label: "computer.tailnet.ts.net", alias: "COM" },
+  ]);
   for (const invalid of [
     [row, row],
     [{ ...row, id: "local" }],

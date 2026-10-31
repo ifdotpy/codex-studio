@@ -25,10 +25,11 @@ import {
   readServers,
   writeServers,
   localServer,
+  setLocalServerDetails,
   serveOrigin,
   type StudioServer,
 } from "./registry";
-import { LOCAL_ALIAS_KEY, defaultServerAlias } from "./serverAliases";
+import { defaultServerAlias } from "./serverAliases";
 import ServerDetailsEditor from "./ServerDetailsEditor";
 import { Check, Copy } from "lucide-react";
 import "./server-settings.css";
@@ -358,7 +359,7 @@ export default function ServerManager({
                         )
                           return discovery.setAlias(server.id, alias);
                         if (server.id === "local")
-                          localStorage.setItem(LOCAL_ALIAS_KEY, alias);
+                          setLocalServerDetails({ alias });
                         writeServers(
                           readServers().map((row) =>
                             row.id === server.id ? { ...row, alias } : row,

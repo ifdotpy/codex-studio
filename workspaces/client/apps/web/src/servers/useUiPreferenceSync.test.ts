@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { preferenceCacheKey } from "../sync/uiPreferenceMerge";
-import { SERVER_REGISTRY_KEY } from "./registry";
+import {
+  readServers,
+  writeServers,
+  SERVER_REGISTRY_KEY,
+  type StudioServer,
+} from "./registry";
+import { readPreferenceFields } from "../sync/uiPreferenceStore";
 
 const mocks = vi.hoisted(() => ({
   effects: [] as (() => void | (() => void))[],
@@ -34,8 +40,14 @@ const paired = {
   alias: "PAI",
 };
 let cleanups: (() => void)[];
-function mount() {
-  useUiPreferenceSync([local, { ...paired, workspaceId: "stale-workspace" }]);
+let storageValues: Map<string, string>;
+function mount(
+  servers: StudioServer[] = [
+    local,
+    { ...paired, workspaceId: "paired-workspace" },
+  ],
+) {
+  useUiPreferenceSync(servers);
   cleanups = mocks.effects.flatMap((effect) => {
     const cleanup = effect();
     return cleanup ? [cleanup] : [];
@@ -46,7 +58,7 @@ beforeEach(() => {
   mocks.streams.length = 0;
   mocks.fetch.mockClear();
   cleanups = [];
-  const values = new Map<string, string>();
+  const values = (storageValues = new Map<string, string>());
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => values.set(key, value),
@@ -56,7 +68,30 @@ beforeEach(() => {
     key: (index: number) => [...values.keys()][index] ?? null,
   });
   vi.stubGlobal("window", new EventTarget());
+  vi.stubGlobal("location", { origin: "http://local.invalid" });
   localStorage.setItem(SERVER_REGISTRY_KEY, JSON.stringify([paired]));
+});
+
+it("captures a user reorder in preferences while persisting only connection fields", () => {
+  const first = { ...paired, workspaceId: "paired-workspace" };
+  const second = {
+    ...paired,
+    id: "second",
+    credentialId: "second-credential",
+    origin: "https://second.tailnet.ts.net",
+    alias: "SEC",
+    workspaceId: "second-workspace",
+  };
+  writeServers([first, second]);
+  mount([{ ...local, workspaceId: "local-workspace" }, first, second]);
+  writeServers([second, first]);
+  expect(
+    readPreferenceFields("user")[JSON.stringify(["server-order"])]?.value,
+  ).toEqual(["local-workspace", "second-workspace", "paired-workspace"]);
+  expect(JSON.parse(storageValues.get(SERVER_REGISTRY_KEY)!)).toEqual([
+    { id: "paired", origin: paired.origin, credentialId: paired.credentialId },
+    { id: "second", origin: second.origin, credentialId: second.credentialId },
+  ]);
 });
 afterEach(() => {
   cleanups.forEach((cleanup) => cleanup());
@@ -86,9 +121,8 @@ it("leaves preference transport to mounted server projections", () => {
   expect(mocks.fetch).not.toHaveBeenCalled();
 });
 
-it("uses the projection workspace identity over a stale paired identity", () => {
+it("applies a server preference using the streamed workspace identity", () => {
   const key = JSON.stringify(["server-label:paired-workspace"]);
-  localStorage.setItem("studio-server-workspace-id:paired", "paired-workspace");
   localStorage.setItem(
     `${preferenceCacheKey}:user`,
     JSON.stringify({
@@ -96,7 +130,8 @@ it("uses the projection workspace identity over a stale paired identity", () => 
     }),
   );
   mount();
-  expect(JSON.parse(localStorage.getItem(SERVER_REGISTRY_KEY)!)[0].label).toBe(
-    "Remote name",
-  );
+  expect(readServers()[0]?.label).toBe("Remote name");
+  expect(
+    JSON.parse(localStorage.getItem(SERVER_REGISTRY_KEY)!)[0].label,
+  ).toBeUndefined();
 });

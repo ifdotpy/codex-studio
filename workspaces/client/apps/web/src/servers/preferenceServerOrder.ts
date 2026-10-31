@@ -2,11 +2,7 @@ import { readPreferenceFields } from "../sync/uiPreferenceStore";
 import type { StudioServer } from "./registry";
 
 export function preferenceServerIdentity(server: StudioServer): string {
-  return (
-    server.workspaceId ||
-    localStorage.getItem(`studio-server-workspace-id:${server.id}`) ||
-    server.id
-  );
+  return server.workspaceId || server.id;
 }
 
 export function orderPreferenceServers(

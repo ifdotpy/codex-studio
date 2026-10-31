@@ -7,7 +7,7 @@ import {
   validateServerName,
   watchServerName,
 } from "./serverNames";
-import { readServers, SERVER_REGISTRY_KEY } from "./registry";
+import { readServers, writeServers, SERVER_REGISTRY_KEY } from "./registry";
 import { setServerCredentialAdapter } from "./transport";
 
 test("server names accept visible Unicode and reject controls and outer spaces", () => {
@@ -37,6 +37,14 @@ test("server names accept visible Unicode and reject controls and outer spaces",
 });
 
 afterEach(() => {
+  writeServers([], {
+    length: 0,
+    clear() {},
+    getItem: () => null,
+    key: () => null,
+    removeItem() {},
+    setItem() {},
+  });
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -67,7 +75,9 @@ test("a signed status refresh changes only the name of its registered server", a
   await refreshServerName(server);
   assert.ok(fetch.mock.calls[0] != null);
   expect(fetch.mock.calls[0][0]).toBe(server);
-  expect(readServers()).toEqual([{ ...server, label: "Igor MBP" }]);
+  expect(readServers()).toEqual([
+    { ...server, label: "Igor MBP", alias: "REM" },
+  ]);
   fetch.mockImplementation(
     async () =>
       new Response(JSON.stringify({ serverId: "different", label: "Wrong" })),
@@ -119,7 +129,7 @@ test("saved server names use their own stream with zero idle status reads", asyn
       discoverySnapshot: { identity: { serverId: id, label } },
     } as import("../sync/resourceEvents").ResourceVersion);
   deliver("other", "Wrong");
-  expect(required(readServers()[0]).label).toBe("Old");
+  expect(required(readServers()[0]).label).toBe("remote.tailnet.ts.net");
   deliver("remote", "New");
   expect(required(readServers()[0]).label).toBe("New");
   // An old stream cannot restore a forgotten peer or overwrite a replacement.
@@ -130,7 +140,7 @@ test("saved server names use their own stream with zero idle status reads", asyn
     ]),
   );
   deliver("remote", "Stale");
-  expect(required(readServers()[0]).label).toBe("Replacement");
+  expect(required(readServers()[0]).label).toBe("remote.tailnet.ts.net");
   values.set(SERVER_REGISTRY_KEY, "[]");
   deliver("remote", "Removed");
   expect(readServers()).toEqual([]);
@@ -138,6 +148,6 @@ test("saved server names use their own stream with zero idle status reads", asyn
   expect(release).toHaveBeenCalledTimes(1);
   values.set(SERVER_REGISTRY_KEY, JSON.stringify([server]));
   deliver("remote", "Stopped");
-  expect(required(readServers()[0]).label).toBe("Old");
+  expect(required(readServers()[0]).label).toBe("remote.tailnet.ts.net");
   expect(fetch).not.toHaveBeenCalled();
 });

@@ -56,6 +56,7 @@ export function readServerAccounts(value: unknown): ServerAccount[] | null {
   return accounts;
 }
 export type ServerNavigation = {
+  workspaceId?: string | undefined;
   sidebar?: ServerSidebarSnapshot;
   projects: (Omit<LocationProject, "id"> & { id?: string })[];
   chats: {
@@ -226,6 +227,7 @@ export function navigationSnapshot(
     });
   }
   return {
+    ...(data?.entityWorkspaceId ? { workspaceId: data.entityWorkspaceId } : {}),
     ...(data ? { sidebar: sidebarSnapshot(data, unread, indicators) } : {}),
     ready: !!data,
     busy: !!data?.threads.some((agent) => agent.inFlight),

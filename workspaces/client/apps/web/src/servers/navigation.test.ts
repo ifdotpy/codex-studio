@@ -117,11 +117,13 @@ it("shows the active target chat and hides the source move record", () => {
   );
   const target = navigationSnapshot(
     partialSnapshot({
+      entityWorkspaceId: "workspace-target",
       threads: [{ ...chat, movedFrom: { server: "source" } }],
     }),
     null,
     "",
   );
+  assert.equal(target.workspaceId, "workspace-target");
   assert.deepEqual(source.chats, []);
   assert.deepEqual(
     navigationSnapshot(

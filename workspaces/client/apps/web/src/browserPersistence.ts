@@ -109,3 +109,43 @@ export async function cleanupLegacyPersistence(
     });
   }
 }
+
+export const PAIRED_SERVERS_KEY = "studio-paired-servers-v1";
+
+export type PairedServerReference = {
+  id: string;
+  origin: string;
+  credentialId: string;
+};
+
+export function readPairedServerReferences(
+  storage: Storage = globalThis.localStorage,
+): PairedServerReference[] {
+  const rows: unknown = JSON.parse(storage.getItem(PAIRED_SERVERS_KEY) || "[]");
+  if (!Array.isArray(rows))
+    throw new Error("The saved server list is invalid.");
+  return rows.map((row) => {
+    if (
+      !row ||
+      typeof row.id !== "string" ||
+      typeof row.origin !== "string" ||
+      typeof row.credentialId !== "string"
+    )
+      throw new Error("The saved server list is invalid.");
+    return { id: row.id, origin: row.origin, credentialId: row.credentialId };
+  });
+}
+
+export function writePairedServerReferences(
+  servers: readonly PairedServerReference[],
+  storage: Storage = globalThis.localStorage,
+): void {
+  storage.setItem(
+    PAIRED_SERVERS_KEY,
+    JSON.stringify(
+      servers
+        .map(({ id, origin, credentialId }) => ({ id, origin, credentialId }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    ),
+  );
+}

@@ -36,6 +36,7 @@ export function useServerDiscovery(
   enabled: boolean,
   add: (server: StudioServer) => void,
   localAvailable = true,
+  workspaceIds: Record<string, string | undefined> = {},
 ) {
   const { refreshSession, serverAccess } = useServerApi();
   const watchResourceReads = useServerResourceReads();
@@ -184,7 +185,7 @@ export function useServerDiscovery(
           Object.fromEntries(
             ["local", ...readServers().map((server) => server.id)].map((id) => [
               id,
-              localStorage.getItem(`studio-server-workspace-id:${id}`),
+              workspaceIds[id],
             ]),
           ),
           readPreferenceFields("user"),
@@ -218,7 +219,7 @@ export function useServerDiscovery(
           Object.fromEntries(
             ["local", ...readServers().map((server) => server.id)].map((id) => [
               id,
-              localStorage.getItem(`studio-server-workspace-id:${id}`),
+              workspaceIds[id],
             ]),
           ),
           readPreferenceFields("user"),
@@ -276,9 +277,7 @@ export function useServerDiscovery(
       await management.run(request);
       confirmed = true;
       if (request.action === "alias") {
-        const identity = localStorage.getItem(
-          `studio-server-workspace-id:${request.serverId}`,
-        );
+        const identity = workspaceIds[request.serverId];
         if (identity) {
           const key = `server-alias:${identity}`;
           const previous =
