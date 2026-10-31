@@ -1328,6 +1328,47 @@ impl JsonRecord for MonitorRecord {
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
+    fn encode_stored(&self, _connection: &Connection, row_id: &str) -> StoreResult<String> {
+        if self.id != row_id {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: Self::TABLE,
+                id: row_id.to_owned(),
+            });
+        }
+        Ok(serde_json::to_string(self)?)
+    }
+}
+
+#[cfg(test)]
+mod monitor_direct_write_tests {
+    use super::{JsonRecord, MonitorRecord, Table, validation_counts};
+    use rusqlite::Connection;
+
+    #[test]
+    fn typed_monitor_is_written_directly_and_round_trips() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let record: MonitorRecord = serde_json::from_str(r#"{"id":"m","agent":"a","epoch":0,"status":"running","command":"test","created":5,"tail":"first","requestId":"r","activityAt":5,"activityGeneration":0,"bytes":0,"cwd":"/tmp","interactive":false,"livenessCommand":"","log":"/tmp/m.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"timeout_ms":3600000,"wakeOn":"exit"}"#).unwrap();
+        validation_counts::CHECKS.with(|count| count.set(0));
+        Table::new(&db).put(&record).unwrap();
+        assert_eq!(validation_counts::CHECKS.with(|count| count.get()), 0);
+        let saved: String = db
+            .query_row(
+                "SELECT record FROM runtime_monitors WHERE id='m'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(saved, serde_json::to_string(&record).unwrap());
+        assert_eq!(
+            Table::<MonitorRecord>::new(&db).get(&record.id).unwrap(),
+            Some(record.clone())
+        );
+        assert!(record.encode_stored(&db, "other").is_err());
+    }
 }
 pub use studio_runtime_schema::terminal_record::TerminalRecord;
 
