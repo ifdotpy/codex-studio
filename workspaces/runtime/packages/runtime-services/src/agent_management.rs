@@ -1283,32 +1283,14 @@ fn stop(
         decision.write("runtime_agents", record);
         decision.cancel_pending.push(agent.id().to_owned());
     }
-<<<<<<< head
     for request in snapshot.rows("approvals") {
-        if request
-            .get("agent")
-            .and_then(Value::as_str)
-            .is_some_and(|id| ids.iter().any(|a| a == id))
-            && is_pending_approval(request)
-            && request["request"]["kind"] != "monitor_start"
-||||||| base
-    for request in snapshot.rows("runtime_requests") {
-        if request
-            .get("agent")
-            .and_then(Value::as_str)
-            .is_some_and(|id| ids.iter().any(|a| a == id))
-            && is_status(request, &["pending"])
-            && request.get("method").and_then(Value::as_str) != Some("monitor/approve")
-=======
-    for request in snapshot.rows("runtime_requests") {
         if (pause || delete)
             && request
                 .get("agent")
                 .and_then(Value::as_str)
                 .is_some_and(|id| ids.iter().any(|a| a == id))
-            && is_status(request, &["pending"])
-            && request.get("method").and_then(Value::as_str) != Some("monitor/approve")
->>>>>>> origin/main
+            && is_pending_approval(request)
+            && request["request"]["kind"] != "monitor_start"
         {
             let mut request = request.clone();
             request["state"] = json!({"kind":"closed","reason":"session_lost","at":now});

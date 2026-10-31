@@ -10753,11 +10753,8 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
-<<<<<<< head
     /** @description Identity of the outbox command that delivers an answer. */
     CommandId: string;
-||||||| base
-=======
     /**
      * CommandRequest
      * @description One write action. The owner is runtime-schema/src/command.rs.
@@ -10832,7 +10829,6 @@ export interface components {
     CommandWithdrawBody: {
       message: string;
     };
->>>>>>> origin/main
     /** ComplaintBody */
     ComplaintBody: {
       /**

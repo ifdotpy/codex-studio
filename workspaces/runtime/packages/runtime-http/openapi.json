@@ -21169,12 +21169,10 @@
         "title": "CodexLoginReceipt",
         "type": "object"
       },
-<<<<<<< head
       "CommandId": {
         "description": "Identity of the outbox command that delivers an answer.",
         "type": "string"
-||||||| base
-=======
+      },
       "CommandRequest": {
         "description": "One write action. The owner is runtime-schema/src/command.rs.",
         "discriminator": {
@@ -21427,7 +21425,6 @@
           "message"
         ],
         "type": "object"
->>>>>>> origin/main
       },
       "ComplaintBody": {
         "additionalProperties": false,
@@ -39989,49 +39986,6 @@
         ],
         "type": "object"
       },
-      "QueueCancelBody": {
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "const": "cancel",
-            "type": "string"
-          },
-          "agent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "expectedText": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "expected_revision": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "request_id": {
-            "maxLength": 200,
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "action",
-          "id"
-        ],
-        "type": "object"
-      },
       "QueueCapabilities": {
         "additionalProperties": false,
         "properties": {
@@ -40051,96 +40005,6 @@
         "title": "QueueCapabilities",
         "type": "object"
       },
-<<<<<<< head
-||||||| base
-      "QueueCancelBody": {
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "const": "cancel",
-            "type": "string"
-          },
-          "agent": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "expectedText": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "expected_revision": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "request_id": {
-            "maxLength": 200,
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "action",
-          "id"
-        ],
-        "type": "object"
-      },
-      "QueueCapabilities": {
-        "additionalProperties": false,
-        "properties": {
-          "receipts": {
-            "title": "Receipts",
-            "type": "boolean"
-          },
-          "reorder": {
-            "title": "Reorder",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "reorder",
-          "receipts"
-        ],
-        "title": "QueueCapabilities",
-        "type": "object"
-      },
-      "QueueEditBody": {
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "const": "edit",
-=======
-      "QueueCapabilities": {
-        "additionalProperties": false,
-        "properties": {
-          "receipts": {
-            "title": "Receipts",
-            "type": "boolean"
-          },
-          "reorder": {
-            "title": "Reorder",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "reorder",
-          "receipts"
-        ],
-        "title": "QueueCapabilities",
-        "type": "object"
-      },
->>>>>>> origin/main
       "QueueEditBody": {
         "additionalProperties": false,
         "properties": {
@@ -54829,13 +54693,6 @@
           ]
         }
       },
-<<<<<<< head
-      "Timestamp": {
-        "description": "Unix seconds.",
-        "format": "double",
-        "type": "number"
-||||||| base
-=======
       "TextBlobRef": {
         "additionalProperties": false,
         "properties": {
@@ -54878,7 +54735,11 @@
         ],
         "title": "TextBlobResponse",
         "type": "object"
->>>>>>> origin/main
+      },
+      "Timestamp": {
+        "description": "Unix seconds.",
+        "format": "double",
+        "type": "number"
       },
       "TokenRateRecord": {
         "additionalProperties": false,

@@ -39,12 +39,9 @@ mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
-<<<<<<< head
 mod m2026_10_30_approvals;
-||||||| base
-=======
+mod m2026_10_30_outbox_reopen;
 mod m2026_10_30_domain_model;
->>>>>>> origin/main
 mod m2026_10_30_branch_phase;
 mod m2026_10_30_capture_errors;
 mod m2026_10_30_command_path;
@@ -53,16 +50,11 @@ pub(crate) mod m2026_10_30_monitor_errors;
 mod m2026_10_30_monitor_generated;
 pub(crate) mod m2026_10_30_monitor_queue;
 pub(crate) mod m2026_10_30_monitor_status;
-<<<<<<< head
-mod m2026_10_30_outbox_reopen;
-||||||| base
-=======
 mod m2026_10_30_one_nonce_table;
     },
     &SqlMigration {
         definition: MigrationDefinition {
 mod m2026_10_30_one_outbox;
->>>>>>> origin/main
 mod m2026_10_30_project_teams;
 mod m2026_10_30_radio_room;
 mod m2026_10_30_request_record;
@@ -81,9 +73,9 @@ pub use m2026_10_20_agents::migrate_2026_10_20;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::prepare_columns;
 pub use m2026_10_26_provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
+pub(crate) use m2026_10_30_approvals::approval_from_record;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_26_provider_identity::migrate_canvas_2026_10_26;
-pub(crate) use m2026_10_30_approvals::approval_from_record;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_30_branch_phase::apply as migrate_branch_phase;
 #[cfg(any(test, feature = "test-support"))]
@@ -961,7 +953,16 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
-<<<<<<< head
+            id: "2026-10-30-domain-model",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records that hold chat, run and scheduling state, and the completed-turn table",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_domain_model::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-31-approvals",
             introduced: OCTOBER_31,
             target: MigrationTarget::Canvas,
@@ -979,16 +980,6 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_outbox_reopen::apply(c.transaction),
-||||||| base
-=======
-            id: "2026-10-30-domain-model",
-            introduced: OCTOBER_30,
-            target: MigrationTarget::Canvas,
-            supported_source: "Agent records that hold chat, run and scheduling state, and the completed-turn table",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_30_domain_model::apply(c.transaction),
->>>>>>> origin/main
     },
 ];
 
