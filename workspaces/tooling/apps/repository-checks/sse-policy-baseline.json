@@ -501,10 +501,6 @@
   },
   {
     "file": "servers/browserCredentials.ts",
-    "callee": "indexedDB.open"
-  },
-  {
-    "file": "servers/browserCredentials.ts",
     "callee": "fetch"
   },
   {
@@ -520,24 +516,12 @@
     "callee": "adapter.fetch"
   },
   {
-    "file": "servers/deviceKey.ts",
-    "callee": "indexedDB.open"
-  },
-  {
     "file": "servers/frameBridge.ts",
     "callee": "localStorage.getItem"
   },
   {
     "file": "servers/frameBridge.ts",
     "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/monitorInputStore.ts",
-    "callee": "indexedDB"
-  },
-  {
-    "file": "servers/monitorInputStore.ts",
-    "callee": "indexedDB.open"
   },
   {
     "file": "servers/mutationIdentity.test.ts",

@@ -1,6 +1,12 @@
+import {
+  browserDatabases,
+  browserIndexedDB,
+  browserStores,
+} from "../browserPersistence";
+
 // Monitor input metadata is authoritative here, never in cached preferences.
-export const MONITOR_INPUT_DATABASE_NAME = "studio-monitor-input-journal-v1";
-const INPUT_STORE = "inputs";
+export const MONITOR_INPUT_DATABASE_NAME = browserDatabases.monitorInput;
+const INPUT_STORE = browserStores.monitorInput;
 export type MonitorInputEntry = {
   requestId: string;
   payloadDigest: string;
@@ -42,13 +48,14 @@ export function createMonitorInputStore(
 ): MonitorInputStore {
   const owner = serverId || "local";
   async function database(): Promise<IDBDatabase> {
-    if (typeof indexedDB === "undefined") {
+    const factory = browserIndexedDB();
+    if (!factory) {
       throw new Error(
         "IndexedDB is unavailable. Monitor input cannot be saved safely.",
       );
     }
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(MONITOR_INPUT_DATABASE_NAME, 1);
+      const request = factory.open(MONITOR_INPUT_DATABASE_NAME, 1);
       let failed = false;
       request.onupgradeneeded = () =>
         request.result.createObjectStore(INPUT_STORE);

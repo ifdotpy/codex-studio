@@ -1,4 +1,9 @@
 import { randomUUID } from "../uuid";
+import {
+  browserDatabases,
+  browserIndexedDB,
+  browserStores,
+} from "../browserPersistence";
 import type { ServerCredentialAdapter, PairAttemptIdentity } from "./transport";
 import { isServerMethod } from "../../../desktop/api.ts";
 import {
@@ -33,9 +38,14 @@ type Credential = {
 };
 function database() {
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open("studio-server-credentials-v1", 1);
+    const request = browserIndexedDB()!.open(
+      browserDatabases.serverCredentials,
+      1,
+    );
     request.onupgradeneeded = () =>
-      request.result.createObjectStore("credentials", { keyPath: "id" });
+      request.result.createObjectStore(browserStores.serverCredentials, {
+        keyPath: "id",
+      });
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
@@ -47,11 +57,11 @@ async function record<T>(
   const db = await database();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(
-      "credentials",
+      browserStores.serverCredentials,
       mode,
       mode === "readwrite" ? { durability: "strict" } : undefined,
     );
-    const result = action(tx.objectStore("credentials"));
+    const result = action(tx.objectStore(browserStores.serverCredentials));
     tx.oncomplete = () => {
       db.close();
       resolve(result.result);
