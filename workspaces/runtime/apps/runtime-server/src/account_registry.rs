@@ -1352,12 +1352,19 @@ impl AccountRegistry {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs_f64();
-            let handled = studio_runtime_services::work_write::accepted_archive_tick(
+            // Archive upkeep must never block account starts; a failure is logged and retried.
+            let handled = match studio_runtime_services::work_write::accepted_archive_tick(
                 Arc::clone(&self.store),
                 archive_now,
             )
             .await
-            .map_err(|_| WorkerError::TaskFailed)?;
+            {
+                Ok(handled) => handled,
+                Err(error) => {
+                    eprintln!("accepted archive tick failed: {error}");
+                    0
+                }
+            };
             self.accepted_archive_batch_full =
                 handled >= studio_runtime_services::work_write::ACCEPTED_ARCHIVE_PAGE_SIZE;
         }
