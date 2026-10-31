@@ -171,19 +171,19 @@ async fn the_production_options_open_links_on_a_mac_only() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn launcher_request_admission_keeps_order_and_json_number_rules() {
+async fn launcher_request_admission_refuses_invalid_documents() {
     let host = host(false);
     let bridge = &host.service.bridge;
-    for (line, message) in [
-        (b"{}".as_slice(), "Send one JSON line of at most 16 KB"),
-        (b"{\n".as_slice(), "The request is not valid JSON"),
-        (b"[]\n".as_slice(), "Use protocol version 1"),
-        (b"{\"v\":1.0}\n".as_slice(), "Use protocol version 1"),
-        (b"{\"v\":null}\n".as_slice(), "Use protocol version 1"),
+    for line in [
+        b"{}".as_slice(),
+        b"{\n".as_slice(),
+        b"[]\n".as_slice(),
+        b"{\"v\":1.0}\n".as_slice(),
+        b"{\"v\":null}\n".as_slice(),
     ] {
         assert_eq!(
-            bridge.handle_line(current_uid(), line).await["message"],
-            message
+            bridge.handle_line(current_uid(), line).await["code"],
+            "invalid_request"
         );
     }
     for document in [
@@ -195,8 +195,8 @@ async fn launcher_request_admission_keeps_order_and_json_number_rules() {
         ),
     ] {
         assert_eq!(
-            bridge.handle_line(current_uid(), document.as_bytes()).await["message"],
-            "The request is not valid JSON"
+            bridge.handle_line(current_uid(), document.as_bytes()).await["code"],
+            "invalid_request"
         );
     }
     for document in [
@@ -205,13 +205,13 @@ async fn launcher_request_admission_keeps_order_and_json_number_rules() {
         "{\"v\":1,\"v\":null}\n",
     ] {
         assert_eq!(
-            bridge.handle_line(current_uid(), document.as_bytes()).await["message"],
-            "Use protocol version 1"
+            bridge.handle_line(current_uid(), document.as_bytes()).await["code"],
+            "invalid_request"
         );
     }
     assert_eq!(
         bridge.handle_line(current_uid(), b"{\"v\":1}\n").await["code"],
-        "unknown_agent"
+        "invalid_request"
     );
     let too_long = vec![b' '; LINE_LIMIT + 1];
     assert_eq!(
@@ -222,21 +222,32 @@ async fn launcher_request_admission_keeps_order_and_json_number_rules() {
     let wrong_uid = current_uid().wrapping_add(1);
     assert_eq!(
         bridge.handle_line(wrong_uid, malformed.as_bytes()).await["code"],
-        "unknown_agent"
+        "invalid_request"
     );
     let invalid_session = b"{\"v\":1,\"url\":false,\"session\":false}\n";
     assert_eq!(
         bridge.handle_line(current_uid(), invalid_session).await["code"],
-        "unknown_agent"
+        "invalid_request"
     );
-    let duplicated = format!(
-        "{{\"v\":0,\"v\":1,\"url\":false,\"session\":\"wrong\",\"session\":\"{SESSION}\"}}\n"
-    );
-    assert_ne!(
+    let duplicated =
+        format!("{{\"v\":1,\"v\":1,\"url\":\"https://example.test\",\"session\":\"{SESSION}\"}}\n");
+    assert_eq!(
         bridge
             .handle_line(current_uid(), duplicated.as_bytes())
             .await["code"],
-        "unknown_agent"
+        "invalid_request"
     );
+    host.service.stop().await;
+}
+
+#[tokio::test]
+async fn launcher_rejects_unknown_request_fields() {
+    let host = host(false);
+    let reply = host
+        .service
+        .bridge
+        .handle_line(current_uid(), b"{\"v\":1,\"extra\":true}\n")
+        .await;
+    assert_eq!(reply["code"], "invalid_request");
     host.service.stop().await;
 }

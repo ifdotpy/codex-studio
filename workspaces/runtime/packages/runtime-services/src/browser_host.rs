@@ -67,16 +67,12 @@ const LIMIT_WINDOW_SECONDS: f64 = 600.0;
 const LIMIT_COUNT: usize = 6;
 const CONNECTIONS_PER_UID: usize = 2;
 const LINE_LIMIT: usize = 16 * 1024;
-// The launcher and listener share this wire owner. URL and session remain
-// open JSON until the existing session, UID and URL checks run in order.
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct LauncherRequest {
-    #[serde(default)]
-    session: Value,
-    #[serde(default)]
-    url: Value,
-    #[serde(default)]
-    v: Option<serde_json::Number>,
+    session: Option<String>,
+    url: String,
+    v: u8,
 }
 
 const CONTROL_LINE_LIMIT: usize = 64 * 1024;
@@ -464,9 +460,8 @@ pub(crate) fn truthy(value: Option<&Value>) -> bool {
     }
 }
 
-fn canonical_session(value: &Value) -> Result<String, BridgeError> {
-    if let Some(text) = value.as_str()
-        && let Ok(parsed) = uuid::Uuid::parse_str(text)
+fn canonical_session(text: &str) -> Result<String, BridgeError> {
+    if let Ok(parsed) = uuid::Uuid::parse_str(text)
         && parsed.hyphenated().to_string() == text
     {
         return Ok(text.to_owned());
@@ -697,8 +692,8 @@ impl HostBridge {
     pub async fn open_link(
         &self,
         uid: u32,
-        url: &Value,
-        session: &Value,
+        url: &str,
+        session: &str,
     ) -> Result<Value, BridgeError> {
         let agent = canonical_session(session)?;
         let context = self.chats.chat(&agent).await.ok_or_else(|| BridgeError {
@@ -708,7 +703,7 @@ impl HostBridge {
         if context.uid != uid {
             return bridge_error("unknown_agent", "LAYR_SESSION names a chat of another user");
         }
-        self.queue_link(uid, url, agent, context).await
+        self.queue_link(uid, Some(url), agent, context).await
     }
 
     /// `browser.submit`: the server queues a link for a chat, from the agent's
@@ -716,14 +711,19 @@ impl HostBridge {
     /// own user owns the request, so the listener checks stay those of a link that its command
     /// opened itself (`BrowserBridge.submit`).
     async fn submit(&self, params: &Value) -> Result<Value, BridgeError> {
-        let agent = canonical_session(params.get("agentId").unwrap_or(&Value::Null))?;
+        let agent = canonical_session(
+            params
+                .get("agentId")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )?;
         let context = self.chats.chat(&agent).await.ok_or_else(|| BridgeError {
             code: "unknown_agent",
             message: "Studio does not know this chat".into(),
         })?;
         self.queue_link(
             context.uid,
-            params.get("url").unwrap_or(&Value::Null),
+            params.get("url").and_then(Value::as_str),
             agent,
             context,
         )
@@ -733,8 +733,8 @@ impl HostBridge {
     /// The request of this chat for the same link while it can still answer
     /// (`BrowserBridge._existing`): a link that a command opens and that the agent also gives
     /// in a message or a tool call gets one card.
-    fn existing(queue: &Queue, agent: &str, url: &Value, now: f64) -> Option<Value> {
-        let url = url.as_str()?;
+    fn existing(queue: &Queue, agent: &str, url: Option<&str>, now: f64) -> Option<Value> {
+        let url = url?;
         queue
             .items
             .values()
@@ -757,7 +757,7 @@ impl HostBridge {
     async fn queue_link(
         &self,
         uid: u32,
-        url: &Value,
+        url: Option<&str>,
         agent: String,
         context: ChatContext,
     ) -> Result<Value, BridgeError> {
@@ -767,8 +767,7 @@ impl HostBridge {
             context.agent_id.clone()
         };
         let now = (self.clock)();
-        let original = url.clone();
-        if let Some(item) = Self::existing(&self.lock(), &agent, &original, now) {
+        if let Some(item) = Self::existing(&self.lock(), &agent, url, now) {
             return Ok(item);
         }
         {
@@ -791,9 +790,8 @@ impl HostBridge {
                 );
             }
         }
-        let url = url
-            .as_str()
-            .ok_or_else(|| BridgeError::from(PolicyError("Give one link".into())))?;
+        let original = url;
+        let url = url.ok_or_else(|| BridgeError::from(PolicyError("Give one link".into())))?;
         let checked = browser_policy::classify(url, &self.http_providers)?;
         let mut start_url = Value::Null;
         let final_link = match checked {
@@ -857,7 +855,7 @@ impl HostBridge {
             connect_address(uid, redirect.port, &rows)?;
         }
         let mut queue = self.lock();
-        if let Some(item) = Self::existing(&queue, &agent, &original, now) {
+        if let Some(item) = Self::existing(&queue, &agent, original, now) {
             return Ok(item);
         }
         // One card for one sign-in: a link of another chat with the same Linux user, sign-in
@@ -1324,20 +1322,21 @@ impl HostBridge {
         if line.len() > LINE_LIMIT || !line.ends_with(b"\n") {
             return json!({"ok": false, "code": "invalid_request", "message": "Send one JSON line of at most 16 KB"});
         }
-        let Ok(value) = serde_json::from_slice::<Value>(line) else {
-            return json!({"ok": false, "code": "invalid_request", "message": "The request is not valid JSON"});
+        let Ok(request) = serde_json::from_slice::<LauncherRequest>(line) else {
+            return json!({"ok": false, "code": "invalid_request", "message": "The browser request is invalid"});
         };
-        // Parse the full document first to retain duplicate-last, number and
-        // depth admission; only then project the known launcher fields.
-        let request = value
-            .is_object()
-            .then(|| LauncherRequest::deserialize(value).ok())
-            .flatten();
-        let Some(request) = request.filter(|request| request.v == Some(1.into())) else {
+        if request.v != 1 {
             return json!({"ok": false, "code": "invalid_request", "message": "Use protocol version 1"});
-        };
+        }
         // `open`: the launcher also opens the link in the browser of this Mac (`local_open`).
-        match self.open_link(uid, &request.url, &request.session).await {
+        match self
+            .open_link(
+                uid,
+                &request.url,
+                request.session.as_deref().unwrap_or_default(),
+            )
+            .await
+        {
             Ok(item) => {
                 // A joined link waits on a card whose page is already open: no second page.
                 let joined = item["state"] == JOINED;
@@ -1701,9 +1700,9 @@ pub fn shim(
         return (2, "studio-browser: give exactly one URL".into());
     };
     let request = LauncherRequest {
-        v: Some(1.into()),
-        url: json!(link),
-        session: json!(session),
+        v: 1,
+        url: link.clone(),
+        session: session.map(str::to_owned),
     };
     let exchange = || -> std::io::Result<Value> {
         let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
@@ -1874,9 +1873,9 @@ mod tests {
     fn launcher_request_encoding_preserves_existing_wire_shape() {
         for session in [None, Some("session")] {
             let request = LauncherRequest {
-                v: Some(1.into()),
-                url: json!("https://example.test"),
-                session: json!(session),
+                v: 1,
+                url: "https://example.test".into(),
+                session: session.map(str::to_owned),
             };
             assert_eq!(
                 serde_json::to_vec(&request).expect("typed request"),
