@@ -1,4 +1,7 @@
-import { AgentSource as GeneratedApiAgentSource } from "../../generated/api.ts";
+import {
+  AgentSource as GeneratedApiAgentSource,
+  WorkspaceMode as GeneratedApiWorkspaceMode,
+} from "../../generated/api.ts";
 import { randomUUID } from "../../uuid";
 import { McpInventory } from "./McpInventory";
 import { isModelEnabled, useModelChoices } from "../models/modelChoices";
@@ -743,7 +746,13 @@ function Checkpoints(c: Context) {
     [label, setLabel] = useState(""),
     [preview, setPreview] = useState<CheckpointPreview | null>(null),
     [busy, setBusy] = useState(false),
-    canRewind = providerSupports(c.selected?.provider, "rewind");
+    // A shared folder has no snapshot to restore from, so rewind is off for that chat.
+    sharedFolder =
+      c.selected?.workspaceMode === GeneratedApiWorkspaceMode.shared ||
+      (!c.selected?.worktree &&
+        c.selected?.workspaceMode !== GeneratedApiWorkspaceMode.worktree),
+    canRewind =
+      providerSupports(c.selected?.provider, "rewind") && !sharedFolder;
   return (
     <>
       <ResourceState state={state} />
@@ -820,6 +829,12 @@ function Checkpoints(c: Context) {
           </small>
         </div>
       ))}
+      {!canRewind && (
+        <p className="workspace-muted">
+          Restore is not available for this chat. It needs an isolated project
+          folder.
+        </p>
+      )}
       {!state.data?.checkpoints?.length && state.data !== null && (
         <Empty>No checkpoints yet.</Empty>
       )}
