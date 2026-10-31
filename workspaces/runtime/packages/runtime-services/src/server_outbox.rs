@@ -302,9 +302,7 @@ mod tests {
         ] {
             insert(&tx, "peer", key, key, state, 1.0, &record(action), 10).unwrap();
         }
-        let due_keys = |tx: &Transaction<'_>| {
-            due(tx, 5, 10, "'event'").unwrap().len()
-        };
+        let due_keys = |tx: &Transaction<'_>| due(tx, 5, 10, "'event'").unwrap().len();
         // queued-event, claimed-event and queued-interrupt are due.
         assert_eq!(due_keys(&tx), 3);
         assert_eq!(hold_unclean(&tx, "'event'").unwrap(), 1);
