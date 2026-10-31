@@ -1,4 +1,3 @@
-pub mod actions;
 pub mod backend;
 pub mod client;
 pub mod delivery;
@@ -14,14 +13,12 @@ pub mod media;
 pub mod native;
 pub mod notifications;
 pub mod operator;
-pub mod outbox;
 pub mod pair_approval;
 pub mod platform;
 pub mod projections;
 pub use studio_client_domain::protocol;
 #[cfg(target_os = "macos")]
 mod quick_look;
-pub mod rich_document;
 mod server_key_state;
 pub mod server_keys;
 pub mod server_transport;

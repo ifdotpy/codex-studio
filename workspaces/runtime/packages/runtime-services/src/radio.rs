@@ -71,18 +71,6 @@ fn optional_string(
     }
 }
 
-fn required_nullable_string(
-    object: &Value,
-    field: &str,
-    location: &str,
-) -> Result<Option<String>, RadioSnapshotError> {
-    match object.get(field) {
-        Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => Ok(Some(value.clone())),
-        _ => Err(invalid(format!("{location}/{field}"))),
-    }
-}
-
 fn optional_bool(
     object: &Value,
     field: &str,
@@ -91,19 +79,6 @@ fn optional_bool(
 ) -> Result<bool, RadioSnapshotError> {
     match object.get(field) {
         None => Ok(default),
-        Some(Value::Bool(value)) => Ok(*value),
-        _ => Err(invalid(format!("{location}/{field}"))),
-    }
-}
-
-fn nullable_bool(
-    object: &Value,
-    field: &str,
-    location: &str,
-    default: bool,
-) -> Result<bool, RadioSnapshotError> {
-    match object.get(field) {
-        None | Some(Value::Null) => Ok(default),
         Some(Value::Bool(value)) => Ok(*value),
         _ => Err(invalid(format!("{location}/{field}"))),
     }
@@ -170,13 +145,18 @@ struct Agent {
     cwd: Option<LexicalPath>,
     shared_room_id: Option<String>,
     account_transfer: Option<String>,
-    native_thread_blocked: bool,
-    native_failure_held: bool,
+    native_hold: NativeHold,
     auto_wake: bool,
     thread_id: Option<String>,
     epoch: Option<u64>,
-    compactions: Option<Option<u64>>,
+    compactions: Option<u64>,
     start_attempt: Option<StartAttempt>,
+}
+
+#[derive(Clone, Debug)]
+struct NativeHold {
+    thread_blocked: bool,
+    failure_held: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -197,7 +177,8 @@ struct Room {
     active: Option<ActiveTurn>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 enum RadioStatus {
     Idle,
     Waiting,
@@ -206,12 +187,50 @@ enum RadioStatus {
     Blocked,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ActiveTurn {
     event_id: String,
     agent_id: String,
     epoch: u64,
+    #[serde(deserialize_with = "present_nullable")]
     thread_id: Option<String>,
+}
+
+fn present_nullable<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(d)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredRadioRoom {
+    id: String,
+    kind: PrivateRoom,
+    members: Vec<String>,
+    project_path: String,
+    radio: StoredRadio,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PrivateRoom {
+    Private,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredRadio {
+    direct: bool,
+    team_id: String,
+    status: RadioStatus,
+    #[serde(deserialize_with = "present_radio_active")]
+    active: Option<ActiveTurn>,
+}
+
+fn present_radio_active<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<ActiveTurn>, D::Error> {
+    Option::<ActiveTurn>::deserialize(d)
 }
 
 #[derive(Clone, Debug)]
@@ -219,6 +238,8 @@ struct PeerTeam {
     id: String,
     members: BTreeSet<String>,
 }
+
+use studio_runtime_schema::project_record::ProjectRecord;
 
 #[derive(Clone, Debug)]
 struct Project {
@@ -265,7 +286,13 @@ impl RadioAuthorizationSnapshot {
                 }
                 _ => return Err(invalid(format!("{location}/startAttempt"))),
             };
-            let deleted_at = optional_string(&row, "deletedAt", &location)?;
+            let deleted = match row.get("deletedAt") {
+                None | Some(Value::Null) => false,
+                Some(Value::Number(value)) => value.as_f64().is_some_and(|at| at != 0.0),
+                Some(Value::Bool(_) | Value::String(_) | Value::Array(_) | Value::Object(_)) => {
+                    return Err(invalid(format!("{location}/deletedAt")));
+                }
+            };
             let native_thread_blocked = match row.get("nativeThreadBlock") {
                 None | Some(Value::Null) => false,
                 Some(Value::Object(value)) => !value.is_empty(),
@@ -289,24 +316,28 @@ impl RadioAuthorizationSnapshot {
                     root_id: optional_string(&row, "rootId", &location)?,
                     parent_id: optional_string(&row, "parentId", &location)?,
                     is_lead: optional_bool(&row, "isLead", &location, false)?,
-                    deleted: deleted_at.is_some_and(|value| !value.is_empty()),
+                    deleted,
                     cwd,
                     shared_room_id: optional_string(&row, "sharedRoomId", &location)?,
                     account_transfer: optional_string(&row, "accountTransferId", &location)?,
-                    native_thread_blocked,
-                    native_failure_held,
+                    native_hold: NativeHold {
+                        thread_blocked: native_thread_blocked,
+                        failure_held: native_failure_held,
+                    },
                     auto_wake: optional_bool(&row, "autoWake", &location, false)?,
                     thread_id: optional_string(&row, "threadId", &location)?,
                     epoch: optional_u64(&row, "epoch", &location)?,
                     compactions: match row.get("compactions") {
-                        None => None,
-                        Some(Value::Null) => Some(None),
-                        Some(Value::Number(value)) => Some(Some(
+                        Some(Value::Null) => None,
+                        Some(Value::Number(value)) => Some(
                             value
                                 .as_u64()
                                 .ok_or_else(|| invalid(format!("{location}/compactions")))?,
-                        )),
-                        _ => return Err(invalid(format!("{location}/compactions"))),
+                        ),
+                        None
+                        | Some(
+                            Value::Bool(_) | Value::String(_) | Value::Array(_) | Value::Object(_),
+                        ) => return Err(invalid(format!("{location}/compactions"))),
                     },
                     start_attempt,
                 },
@@ -319,67 +350,54 @@ impl RadioAuthorizationSnapshot {
                 return Err(invalid(format!("rooms/{key}/id")));
             }
             let location = format!("rooms/{key}");
-            let row = parse_object(raw, &location)?;
-            let id = required_string(&row, "id", &location)?;
-            if id != *key || row.get("kind").and_then(Value::as_str) != Some("private") {
+            let mut decoder = serde_json::Deserializer::from_str(raw);
+            let row: StoredRadioRoom =
+                serde_path_to_error::deserialize(&mut decoder).map_err(|error| {
+                    invalid(format!(
+                        "{location}/{}",
+                        error.path().to_string().replace('.', "/")
+                    ))
+                })?;
+            decoder.end().map_err(|_| invalid(&location))?;
+            if row.id != *key
+                || row.id.is_empty()
+                || row.project_path.is_empty()
+                || row.radio.team_id.is_empty()
+                || row.members.iter().any(String::is_empty)
+                || row
+                    .radio
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.event_id.is_empty() || active.agent_id.is_empty())
+            {
                 return Err(invalid(format!("{location}/id")));
             }
-            let members = string_list(&row, "members", &location)?;
-            let project_path = required_string(&row, "projectPath", &location)?;
-            let radio = row
-                .get("radio")
-                .filter(|value| value.is_object())
-                .ok_or_else(|| invalid(format!("{location}/radio")))?;
-            let direct = nullable_bool(radio, "direct", &format!("{location}/radio"), false)?;
-            let team_id = required_string(radio, "teamId", &format!("{location}/radio"))?;
-            let status = match radio.get("status").and_then(Value::as_str) {
-                Some("idle") => RadioStatus::Idle,
-                Some("waiting") => RadioStatus::Waiting,
-                Some("speaking") => RadioStatus::Speaking,
-                Some("stopping") => RadioStatus::Stopping,
-                Some("blocked") => RadioStatus::Blocked,
-                _ => return Err(invalid(format!("{location}/radio/status"))),
-            };
-            let active = match radio.get("active") {
-                None | Some(Value::Null) => None,
-                Some(value) if value.is_object() => Some(ActiveTurn {
-                    event_id: required_string(
-                        value,
-                        "eventId",
-                        &format!("{location}/radio/active"),
-                    )?,
-                    agent_id: required_string(
-                        value,
-                        "agentId",
-                        &format!("{location}/radio/active"),
-                    )?,
-                    epoch: optional_u64(value, "epoch", &format!("{location}/radio/active"))?
-                        .ok_or_else(|| invalid(format!("{location}/radio/active/epoch")))?,
-                    thread_id: required_nullable_string(
-                        value,
-                        "threadId",
-                        &format!("{location}/radio/active"),
-                    )?,
-                }),
-                _ => return Err(invalid(format!("{location}/radio/active"))),
-            };
+            let PrivateRoom::Private = row.kind;
             rooms.push(Room {
-                id,
-                members,
-                project_path,
-                direct,
-                team_id,
-                status,
-                active,
+                id: row.id,
+                members: row.members,
+                project_path: row.project_path,
+                direct: row.radio.direct,
+                team_id: row.radio.team_id,
+                status: row.radio.status,
+                active: row.radio.active,
             });
         }
 
         let mut projects = Vec::new();
         for (key, raw) in &records.projects {
             let location = format!("projects/{key}");
-            let row = parse_object(raw, &location)?;
+            let mut decoder = serde_json::Deserializer::from_str(raw);
+            let row: ProjectRecord =
+                serde_path_to_error::deserialize(&mut decoder).map_err(|error| {
+                    invalid(format!(
+                        "{location}/{}",
+                        error.path().to_string().replace('.', "/")
+                    ))
+                })?;
+            decoder.end().map_err(|_| invalid(&location))?;
             let path = resolved_path(
-                optional_string(&row, "path", &location)?,
+                Some(row.path),
                 &records.resolved_paths,
                 &format!("{location}/path"),
             )?
@@ -388,31 +406,28 @@ impl RadioAuthorizationSnapshot {
                 continue;
             }
             let mut teams = Vec::new();
-            match row.get("peerTeams") {
-                None => {}
-                Some(Value::Array(values)) => {
-                    for (index, value) in values.iter().enumerate() {
-                        let at = format!("{location}/peerTeams/{index}");
-                        if !value.is_object() {
-                            return Err(invalid(&at));
-                        }
-                        let id = required_string(value, "id", &at)?;
-                        let _name = required_string(value, "name", &at)?;
-                        let members = string_list(value, "members", &at)?;
-                        let members = members
-                            .into_iter()
-                            .filter(|member| {
-                                agents.get(member).is_some_and(|agent| {
-                                    path.to_str().is_some_and(|path| agent.is_lead_for(path))
-                                })
-                            })
-                            .collect::<BTreeSet<_>>();
-                        if members.len() >= 2 {
-                            teams.push(PeerTeam { id, members });
-                        }
-                    }
+            for (index, team) in row.peer_teams.into_iter().enumerate() {
+                if team.id.is_empty()
+                    || team.name.is_empty()
+                    || team.members.iter().any(String::is_empty)
+                {
+                    return Err(invalid(format!("{location}/peerTeams/{index}")));
                 }
-                _ => return Err(invalid(format!("{location}/peerTeams"))),
+                let members = team
+                    .members
+                    .into_iter()
+                    .filter(|member| {
+                        agents.get(member).is_some_and(|agent| {
+                            path.to_str().is_some_and(|path| agent.is_lead_for(path))
+                        })
+                    })
+                    .collect::<BTreeSet<_>>();
+                if members.len() >= 2 {
+                    teams.push(PeerTeam {
+                        id: team.id,
+                        members,
+                    });
+                }
             }
             projects.push(Project { path, teams });
         }
@@ -506,11 +521,11 @@ impl RadioAuthorizationSnapshot {
                 .account_transfer
                 .as_ref()
                 .is_some_and(|value| !value.is_empty())
-                || agent.native_thread_blocked
+                || agent.native_hold.thread_blocked
             {
                 return Some(RadioDenial::ParticipantUnavailable);
             }
-            if ready && (!agent.auto_wake || agent.native_failure_held) {
+            if ready && (!agent.auto_wake || agent.native_hold.failure_held) {
                 return Some(RadioDenial::ParticipantStopped);
             }
         }
@@ -555,7 +570,7 @@ fn bind_thread(
         agent_id: agent.id.clone(),
         thread_id: thread_id.clone(),
         epoch: active.epoch,
-        compactions: agent.compactions.unwrap_or(Some(0)),
+        compactions: agent.compactions,
     })
 }
 
@@ -586,4 +601,29 @@ pub struct RadioThreadBinding {
 pub enum RadioTurnDecision {
     Allow { binding: Option<RadioThreadBinding> },
     Deny(RadioDenial),
+}
+
+#[cfg(test)]
+mod project_contract_tests {
+    use super::*;
+
+    #[test]
+    fn project_team_projection_matches_stored_schema() {
+        for (raw, valid) in [
+            (r#"{"id":"p","path":"/p","peerTeams":[]}"#, true),
+            (r#"{"id":"p","path":"/p"}"#, false),
+            (
+                r#"{"id":"p","path":"/p","peerTeams":[{"id":"t","name":"T","members":[1]}]}"#,
+                false,
+            ),
+        ] {
+            let value: Value = serde_json::from_str(raw).expect("fixture JSON");
+            assert_eq!(
+                studio_runtime_schema::validate("PersistedProjectRecord", &value)
+                    .expect("project schema"),
+                valid
+            );
+            assert_eq!(serde_json::from_str::<ProjectRecord>(raw).is_ok(), valid);
+        }
+    }
 }

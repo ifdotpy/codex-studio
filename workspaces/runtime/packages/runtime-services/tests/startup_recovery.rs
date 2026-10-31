@@ -23,8 +23,9 @@ fn operation(case: &Value) -> Operation {
     serde_json::from_value(case["before"]["operation"].clone()).expect("monitor operation")
 }
 
-fn add_request(tx: &rusqlite::Transaction<'_>, request: Value) {
-    let record = RequestRecord::from_value(request).expect("valid request row");
+fn add_request(tx: &rusqlite::Transaction<'_>, request: &Value) {
+    let record =
+        serde_json::from_str::<RequestRecord>(&request.to_string()).expect("valid request row");
     Table::<RequestRecord>::new(tx)
         .put(&record)
         .expect("store request");
@@ -43,39 +44,33 @@ fn complete_rows(store: &RuntimeStore, id: &str) -> Value {
     let connection = store.test_reader().expect("read startup state");
     let monitor = MonitorsRepository::get(&connection, id)
         .expect("read monitor")
-        .expect("monitor exists")
-        .value();
+        .expect("monitor exists");
     let requests = Table::<RequestRecord>::new(&connection)
         .list()
         .expect("read requests")
         .into_iter()
-        .map(RequestRecord::into_value)
+        .map(|record| json!(record))
         .collect::<Vec<_>>();
     let events = fixtures::events(store);
-    let projections = [
-        "sync_entities",
-        "sync_documents",
-        "sync_versions",
-        "sync_entity_meta",
-    ]
-    .into_iter()
-    .map(|table| {
-        let mut statement = connection
-            .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
-            .expect("projection query");
-        let columns = statement.column_count();
-        let rows = statement
-            .query_map([], |row| {
-                Ok((0..columns)
-                    .map(|i| format!("{:?}", row.get_ref(i).expect("column")))
-                    .collect::<Vec<_>>())
-            })
-            .expect("projection rows")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("projections");
-        json!({"table": table, "rows": rows})
-    })
-    .collect::<Vec<_>>();
+    let projections = ["sync_entities", "sync_documents", "sync_entity_meta"]
+        .into_iter()
+        .map(|table| {
+            let mut statement = connection
+                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                .expect("projection query");
+            let columns = statement.column_count();
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((0..columns)
+                        .map(|i| format!("{:?}", row.get_ref(i).expect("column")))
+                        .collect::<Vec<_>>())
+                })
+                .expect("projection rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("projections");
+            json!({"table": table, "rows": rows})
+        })
+        .collect::<Vec<_>>();
     json!({"monitor": monitor, "requests": requests, "events": events, "projections": projections})
 }
 
@@ -85,26 +80,26 @@ async fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() 
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let store = fixtures::store(root.path(), "startup").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     let actor = case["actor"].clone();
     let monitor_id = case["before"]["id"].clone();
     store
         .transaction(move |tx| {
             add_request(
                 tx,
-                json!({"id":"approval","agent":"agent","epoch":2,"method":"monitor/approve","status":"pending","createdAt":1000,"params":{"monitorId":monitor_id}}),
+                &json!({"id":"approval","agent":"agent","epoch":2,"method":"monitor/approve","status":"pending","createdAt":1000,"params":{"monitorId":monitor_id}}),
             );
             add_request(
                 tx,
-                json!({"id":"answering","agent":"agent","epoch":2,"method":"item/commandExecution/requestApproval","status":"answering","createdAt":1000,"params":{}}),
+                &json!({"id":"answering","agent":"agent","epoch":2,"method":"item/commandExecution/requestApproval","status":"answering","createdAt":1000,"params":{}}),
             );
             add_request(
                 tx,
-                json!({"id":"retained","agent":"agent","epoch":2,"method":"agent/asyncQuestion","status":"pending","createdAt":1000,"params":{"questions":[]}}),
+                &json!({"id":"retained","agent":"agent","epoch":2,"method":"agent/asyncQuestion","status":"pending","createdAt":1000,"params":{"questions":[]}}),
             );
             add_request(
                 tx,
-                json!({"id":"orphan","method":"mcpServer/elicitation/request","status":"pending","createdAt":1000,"params":{"mode":"form","requestedSchema":{"properties":{}}}}),
+                &json!({"id":"orphan","agent":"orphan","method":"mcpServer/elicitation/request","status":"pending","createdAt":1000,"params":{"mode":"form","requestedSchema":{"properties":{}}}}),
             );
             add_event(tx, "dispatching-without-attempt", "agent", "dispatching", 2);
             add_event(tx, "reserved-without-attempt", "orphan-agent", "reserved", 0);
@@ -124,14 +119,17 @@ async fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() 
     let monitor = MonitorsRepository::get(&connection, monitor_id)
         .expect("read lost monitor")
         .expect("monitor exists");
-    assert_eq!(monitor.value()["status"], "running");
-    assert!(monitor.value()["error"].is_null());
-    assert_eq!(monitor.value()["reattachRecovery"]["status"], "running");
+    assert_eq!(monitor.status.as_str(), "running");
+    assert!(monitor.error.is_none());
+    assert!(matches!(
+        monitor.reattach_recovery.as_ref().map(|r| &r.state),
+        Some(studio_runtime_schema::monitor_record::ReattachState::Running { .. })
+    ));
     let requests = Table::<RequestRecord>::new(&connection)
         .list()
         .expect("list recovered requests")
         .into_iter()
-        .map(|request| (request.id().to_string(), request.into_value()))
+        .map(|request| (request.id().to_string(), json!(request)))
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(requests["approval"]["status"], "expired");
     assert_eq!(requests["answering"]["status"], "uncertain");
@@ -184,7 +182,7 @@ async fn startup_recovers_a_committed_monitor_result_before_marking_active_rows_
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let store = fixtures::store(root.path(), "result-first").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     let id = case["before"]["id"].as_str().expect("monitor id");
     monitor_receipts::persist(
         store.root(),
@@ -209,7 +207,8 @@ async fn startup_recovers_a_committed_monitor_result_before_marking_active_rows_
         MonitorsRepository::get(&connection, id)
             .expect("read monitor")
             .expect("monitor")
-            .value()["status"],
+            .status
+            .as_str(),
         "completed"
     );
     assert_eq!(
@@ -226,19 +225,19 @@ async fn unreadable_receipt_is_skipped_and_other_receipts_are_recovered() {
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let store = fixtures::store(root.path(), "unreadable-receipt").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     let lost_id = "unreadable-result-monitor";
     let completed_id = case["before"]["id"]
         .as_str()
         .expect("monitor id")
         .to_owned();
-    let mut lost_monitor = case["before"].clone();
-    lost_monitor["id"] = json!(lost_id);
+    let seeded_id = completed_id.clone();
     store
         .transaction(move |tx| {
-            Table::new(tx).put(&studio_runtime_store::MonitorRecord::from_value(
-                lost_monitor,
-            )?)
+            let mut lost_monitor =
+                MonitorsRepository::get(tx, &seeded_id)?.expect("seeded monitor");
+            lost_monitor.id = lost_id.to_owned();
+            Table::new(tx).put(&lost_monitor)
         })
         .await
         .expect("seed monitor whose result file is unreadable");
@@ -271,14 +270,18 @@ async fn unreadable_receipt_is_skipped_and_other_receipts_are_recovered() {
         MonitorsRepository::get(&connection, &completed_id)
             .expect("read valid result monitor")
             .expect("valid result monitor exists")
-            .value()["status"],
+            .status
+            .as_str(),
         "completed"
     );
     let lost = MonitorsRepository::get(&connection, lost_id)
         .expect("read unreadable-result monitor")
         .expect("unreadable-result monitor exists");
-    assert_eq!(lost.value()["status"], "running");
-    assert_eq!(lost.value()["reattachRecovery"]["status"], "running");
+    assert_eq!(lost.status.as_str(), "running");
+    assert!(matches!(
+        lost.reattach_recovery.as_ref().map(|r| &r.state),
+        Some(studio_runtime_schema::monitor_record::ReattachState::Running { .. })
+    ));
     assert!(
         corrupt_path.exists(),
         "corrupt receipt is retained for diagnosis"
@@ -292,7 +295,7 @@ async fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
     let case = running(&cases);
     for table in ["runtime_requests", "runtime_events", "runtime_monitors"] {
         let store = fixtures::store(root.path(), table).await;
-        fixtures::seed(&store, &case).await;
+        fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
         let id = case["before"]["id"]
             .as_str()
             .expect("monitor id")
@@ -303,7 +306,7 @@ async fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
             .transaction(move |tx| {
                 add_request(
                     tx,
-                    json!({"id":"approval","agent":"agent","epoch":2,"method":"monitor/approve","status":"pending","createdAt":1000,"params":{"monitorId":id_for_insert}}),
+                    &json!({"id":"approval","agent":"agent","epoch":2,"method":"monitor/approve","status":"pending","createdAt":1000,"params":{"monitorId":id_for_insert}}),
                 );
                 add_event(tx, "dispatching-without-attempt", "agent", "dispatching", 2);
                 tx.execute_batch(&format!(
@@ -355,10 +358,10 @@ async fn reserved_batch_events_are_recovered_by_the_scheduler_scan() {
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
     let store = fixtures::store(root.path(), "scheduler-owned").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     store
         .transaction(move |tx| {
-            let agent = AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"starting-agent","rootId":"starting-agent","epoch":0,
                 "status":"starting","autoWake":true,"inFlight":true,
                 "startAttempt":{"id":"attempt","epoch":0,"submitted":false,"events":["reserved-batch"]}
@@ -395,7 +398,9 @@ async fn startup_rule_linked_monitor_stays_active_without_a_monitor_exit_event()
         .expect("monitor id")
         .to_owned();
     let store = fixtures::store(root.path(), "rule-monitor-startup").await;
-    fixtures::seed(&store, &case).await;
+    let mut monitor = fixtures::monitor(root.path());
+    monitor.rule_id = Some("rule-1".into());
+    fixtures::seed(&store, &case, monitor).await;
 
     monitor_runtime::recover_on_startup(&store, 2000.0)
         .await
@@ -406,7 +411,8 @@ async fn startup_rule_linked_monitor_stays_active_without_a_monitor_exit_event()
         MonitorsRepository::get(&connection, &id)
             .expect("read rule monitor")
             .expect("rule monitor exists")
-            .value()["status"],
+            .status
+            .as_str(),
         "running"
     );
     assert!(
@@ -427,7 +433,7 @@ async fn startup_remote_owned_monitor_is_recovered_without_aborting() {
         .expect("monitor id")
         .to_owned();
     let store = fixtures::store(root.path(), "remote-monitor-startup").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
 
     monitor_runtime::recover_on_startup(&store, 2000.0)
         .await
@@ -438,7 +444,8 @@ async fn startup_remote_owned_monitor_is_recovered_without_aborting() {
         MonitorsRepository::get(&connection, &id)
             .expect("read remote monitor")
             .expect("remote monitor exists")
-            .value()["status"],
+            .status
+            .as_str(),
         "running"
     );
     assert!(
@@ -453,10 +460,11 @@ async fn malformed_request_isolated_without_blocking_other_recovery() {
     let root = fixtures::tempdir();
     let case = running(&fixtures::corpus(root.path()));
     let store = fixtures::store(root.path(), "malformed-request-startup").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     store.transaction(|tx| {
         tx.execute("INSERT INTO runtime_requests(id,record) VALUES('bad',?1)", [json!({"id":"bad","status":"answering","method":false}).to_string()])?;
-        add_request(tx, json!({"id":"good","status":"answering","method":"future/approval","opaque":{"x":[1,null]}}));
+        tx.execute("INSERT INTO runtime_requests(id,record) VALUES('sparse','{\"id\":\"sparse\"}')", [])?;
+        add_request(tx, &json!({"id":"good","agent":"agent","createdAt":1,"status":"answering","method":"item/commandExecution/requestApproval","params":{"opaque":{"x":[1,null]}}}));
         Ok(())
     }).await.unwrap();
     let report = monitor_runtime::recover_on_startup(&store, 2000.0)
@@ -464,6 +472,19 @@ async fn malformed_request_isolated_without_blocking_other_recovery() {
         .unwrap();
     assert_eq!(report.requests, 1);
     let db = store.test_reader().unwrap();
+    let sparse: String = db
+        .query_row(
+            "SELECT record FROM runtime_requests WHERE id='sparse'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sparse, r#"{"id":"sparse"}"#);
+    assert!(
+        Table::<RequestRecord>::new(&db)
+            .get(&"sparse".into())
+            .is_err()
+    );
     let bad: String = db
         .query_row(
             "SELECT record FROM runtime_requests WHERE id='bad'",
@@ -475,13 +496,14 @@ async fn malformed_request_isolated_without_blocking_other_recovery() {
         serde_json::from_str::<Value>(&bad).unwrap()["status"],
         "answering"
     );
-    let good = Table::<RequestRecord>::new(&db)
-        .get(&"good".into())
-        .unwrap()
-        .unwrap()
-        .into_value();
+    let good = json!(
+        Table::<RequestRecord>::new(&db)
+            .get(&"good".into())
+            .unwrap()
+            .unwrap()
+    );
     assert_eq!(good["status"], "uncertain");
-    assert_eq!(good["opaque"], json!({"x":[1,null]}));
+    assert_eq!(good["params"]["opaque"], json!({"x":[1,null]}));
 }
 
 #[tokio::test]
@@ -494,14 +516,13 @@ async fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
         .expect("monitor id")
         .to_owned();
     let store = fixtures::store(root.path(), "malformed-monitor-startup").await;
-    fixtures::seed(&store, &case).await;
+    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     store
         .transaction(move |tx| {
             // The production expression index rejects malformed JSON on insert;
             // remove it in this isolated fixture to witness row-level isolation.
             tx.execute_batch(
                 "DROP INDEX runtime_monitor_agent_status;
-                 DROP INDEX runtime_monitor_stall_due;
                  DROP INDEX runtime_monitor_status",
             )?;
             tx.execute(
@@ -523,7 +544,8 @@ async fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
         MonitorsRepository::get(&connection, &id)
             .expect("read valid monitor")
             .expect("valid monitor exists")
-            .value()["status"],
+            .status
+            .as_str(),
         "running"
     );
     let unexpected: String = connection
@@ -546,9 +568,9 @@ async fn startup_event_ownership_uses_exact_scheduler_batch_and_submitted_attemp
         ("submitted", json!(["submitted-event"]), true),
     ] {
         let store = fixtures::store(root.path(), name).await;
-        fixtures::seed(&store, &case).await;
+        fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
         store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"claimed-agent","rootId":"claimed-agent","epoch":0,
                 "status":"starting","autoWake":true,"inFlight":true,
                 "startAttempt":{"id":"attempt","epoch":0,"submitted":submitted,"events":events}

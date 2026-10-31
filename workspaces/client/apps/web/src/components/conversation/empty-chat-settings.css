@@ -76,6 +76,9 @@
 }
 /* Queue remains available through the existing tools disclosure on phones. */
 @container composer (max-width: 25em) {
+  .execution-summary-segment:not([data-role="lead"]) {
+    display: none;
+  }
   #composer .composer-queue-primary {
     display: none;
   }

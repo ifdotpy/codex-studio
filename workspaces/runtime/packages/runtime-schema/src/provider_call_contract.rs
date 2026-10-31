@@ -3,7 +3,10 @@ use crate::provider_input::RequestId;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
 pub struct ConnectionScope {
     pub account: String,
     pub connection: String,

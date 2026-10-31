@@ -389,8 +389,10 @@ fn enqueue(
     };
     if let Some((server, link, is_anchor)) = remote_owner(agent)? {
         let request_id = match metadata.extensions.get("remoteRequestId") {
-            Some(Value::String(root)) if !root.is_empty() => root.clone(),
-            Some(_) => return Err(EventWriteError::Conflict("Remote event outcome is unknown")),
+            Some(raw) => serde_json::from_str::<String>(raw.0.get())
+                .ok()
+                .filter(|root| !root.is_empty())
+                .ok_or(EventWriteError::Conflict("Remote event outcome is unknown"))?,
             None if existing => {
                 return Err(EventWriteError::Conflict("Remote event outcome is unknown"));
             }
@@ -400,9 +402,13 @@ fn enqueue(
                     .filter(|id| id.get_version_num() == 7)
                     .map(|_| id.clone())
                     .unwrap_or_else(RequestIdentity::issue_root);
-                metadata
-                    .extensions
-                    .insert("remoteRequestId".into(), json!(root));
+                metadata.extensions.insert(
+                    "remoteRequestId".into(),
+                    studio_runtime_schema::raw_json::RawJson(
+                        serde_json::value::to_raw_value(&root)
+                            .map_err(studio_runtime_store::StoreError::from)?,
+                    ),
+                );
                 QueueWriteRepository::put_typed_metadata(transaction, &id, &metadata)?;
                 root
             }
@@ -600,7 +606,7 @@ pub fn checked_agent(
 ) -> Result<AgentRecord, EventWriteError> {
     let agent = AgentRepository::get(connection, &AgentId::from(id))?
         .ok_or(EventWriteError::InvalidRequest("Invalid request"))?;
-    if truthy(agent.extra.get("deletedAt")) {
+    if agent.is_deleted() {
         return Err(EventWriteError::InvalidRequest("This agent was deleted"));
     }
     if agent.id.0 != id {
@@ -615,7 +621,10 @@ fn queue_agent(connection: &Transaction<'_>, agent: &AgentRecord) -> Result<(), 
         AgentStatus::Running | AgentStatus::Starting => {
             agent.in_flight != Some(true)
                 && agent.turn_id.as_deref().is_none_or(str::is_empty)
-                && !truthy(agent.extra.get("startAttempt"))
+                && agent
+                    .start_attempt
+                    .as_ref()
+                    .is_none_or(|a| a == &Default::default())
         }
         AgentStatus::Approval => false,
         AgentStatus::Unknown
@@ -684,31 +693,27 @@ pub fn assert_delegation(agent: &AgentRecord) -> Result<(), EventWriteError> {
 
 pub fn recovery_pending(agent: &AgentRecord) -> bool {
     let extra = &agent.extra;
-    let matches = |recovery: &Value| {
-        ["epoch", "accountKey", "threadId"]
-            .iter()
-            .all(|key| recovery.get(*key) == extra.get(*key))
+    let matches = |recovery: &studio_runtime_schema::recovery_record::RecoveryFields| {
+        recovery
+            .epoch
+            .as_ref()
+            .and_then(|value| value.number().as_i64())
+            == Some(agent.epoch)
+            && recovery.account_key.as_deref() == Some(agent.account_key.as_str())
+            && recovery.thread_id.as_deref() == agent.thread_id.as_deref()
     };
-    let root = extra
-        .get("restartRecovery")
-        .and_then(Value::as_object)
-        .map(|recovery| {
-            recovery.get("stage").and_then(Value::as_str) == Some("pending")
-                && recovery.get("autoWake").and_then(Value::as_bool) == Some(true)
-                && matches(&Value::Object(recovery.clone()))
-        })
-        .unwrap_or(false);
-    let disconnect = extra
-        .get("disconnectRecovery")
-        .and_then(Value::as_object)
-        .map(|recovery| {
-            recovery.get("autoWake").and_then(Value::as_bool) == Some(true)
-                && matches(&Value::Object(recovery.clone()))
-        })
-        .unwrap_or(false);
+    let root = agent.restart_recovery.as_deref().is_some_and(|recovery| {
+        recovery.stage.as_deref() == Some("pending")
+            && recovery.auto_wake == Some(true)
+            && matches(recovery)
+    });
+    let disconnect = agent
+        .disconnect_recovery
+        .as_deref()
+        .is_some_and(|recovery| recovery.auto_wake == Some(true) && matches(recovery));
     let recovery = !agent_auto_wake(agent).unwrap_or(true)
         && agent.status != AgentStatus::Paused
-        && !truthy(extra.get("deletedAt"))
+        && !agent.is_deleted()
         && (root || disconnect);
     recovery || truthy(extra.get("moveImportPending"))
 }
@@ -733,6 +738,14 @@ mod tests {
         AnnotationWrite, EventWriteError, annotate, enqueue_event, enqueue_recovery_event,
     };
     use serde_json::{Value, json};
+
+    #[test]
+    fn pending_recovery_matches_typed_identity() {
+        let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,"id":"a","rootId":"a","epoch":3,"status":"interrupted","accountKey":"account","threadId":"thread","autoWake":false,"restartRecovery":{"epoch":3,"accountKey":"account","threadId":"thread","stage":"pending","autoWake":true}})).unwrap();
+        assert!(super::recovery_pending(&agent));
+        agent.account_key = "other".into();
+        assert!(!super::recovery_pending(&agent));
+    }
     use std::collections::BTreeMap;
     use studio_runtime_schema::delivery::DeliveryMoment;
     use studio_runtime_store::request_results::RequestResultError;
@@ -780,7 +793,7 @@ mod tests {
                  CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  INSERT INTO sync_entities VALUES('agent','a',1,'old','{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"status\":\"idle\"}}',0);"),
             )
             .expect("write schema creates");
@@ -790,33 +803,17 @@ mod tests {
         studio_runtime_store::receipt_schema::create(&connection).expect("request result schema");
         connection.execute_batch("DROP TABLE request_results; CREATE TABLE request_results(id TEXT PRIMARY KEY,signature TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'applied',ref_kind TEXT,ref_id TEXT,ref_rev INTEGER,result TEXT,created INTEGER NOT NULL); CREATE INDEX request_results_created ON request_results(created,id);").expect("reference receipt fixture");
         let agent = AgentRecord {
-            in_flight: None,
             account_key: "default".into(),
-            thread_id: None,
-            turn_id: None,
-            auto_wake: None,
-            usage_resume_enabled: None,
-            execution_mode: None,
-            turn_epoch: None,
-            title_job: None,
-            start_outcome_hold: None,
-            fired_events: Default::default(),
-            native_review_thread: None,
-            vm_launch: None,
-            credential_copy: None,
-            vm_auth_bootstrap: None,
-            native_release: None,
+            auto_wake: Some(true),
             id: AgentId::from("a"),
             root_id: AgentId::from("a"),
             epoch: 3,
             status: AgentStatus::Idle,
-            extra: BTreeMap::from([
-                ("autoWake".to_owned(), json!(true)),
-                (
-                    "provider".to_owned(),
-                    json!(studio_runtime_schema::ProviderKind::Codex),
-                ),
-            ]),
+            extra: BTreeMap::from([(
+                "provider".to_owned(),
+                json!(studio_runtime_schema::ProviderKind::Codex),
+            )]),
+            ..AgentRecord::test_defaults()
         };
         AgentRepository::put(&connection, &agent).expect("agent writes");
         connection

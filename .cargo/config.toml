@@ -1,0 +1,6 @@
+# Keep release-server stacks usable across Rust and bundled SQLite in perf.
+[build]
+rustflags = ["-C", "force-frame-pointers=yes"]
+
+[env]
+CFLAGS = { value = "-fno-omit-frame-pointer", force = true }

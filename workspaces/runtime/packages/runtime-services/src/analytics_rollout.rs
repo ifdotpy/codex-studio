@@ -437,7 +437,7 @@ mod tests {
         let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
             .await
             .expect("store");
-        let agent = json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","provider":"codex","accountKey":"default","threadId":"thread"});
+        let agent = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":1,"status":"idle","provider":"codex","accountKey":"default","threadId":"thread"});
         let seeded = agent.clone();
         store
             .transaction(move |tx| {

@@ -1,8 +1,95 @@
 {
+  "$defs": {
+    "ProcessId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "format": "int64",
+          "type": "integer"
+        },
+        {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      ],
+      "description": "Numeric IDs remain numeric because process-control identities depend on their original shape."
+    },
+    "ProviderKind": {
+      "description": "The provider that owns an account and every agent on it.",
+      "enum": ["codex", "claude"],
+      "type": "string"
+    },
+    "RecoveryHoldOutcome": {
+      "enum": ["unknown"],
+      "type": "string"
+    },
+    "RecoveryHoldStage": {
+      "enum": ["held"],
+      "type": "string"
+    },
+    "TaskKind": {
+      "enum": ["command", "tool"],
+      "type": "string"
+    },
+    "TaskRecoveryHold": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "format": "double",
+          "type": "number"
+        },
+        "outcome": {
+          "$ref": "#/$defs/RecoveryHoldOutcome"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "stage": {
+          "$ref": "#/$defs/RecoveryHoldStage"
+        }
+      },
+      "required": ["stage", "at", "reason", "outcome"],
+      "type": "object"
+    },
+    "TaskStatus": {
+      "enum": [
+        "starting",
+        "approval",
+        "pending",
+        "unknown",
+        "running",
+        "completed",
+        "failed",
+        "interrupted",
+        "lost"
+      ],
+      "type": "string"
+    },
+    "TaskType": {
+      "enum": [
+        "commandExecution",
+        "dynamicToolCall",
+        "mcpToolCall",
+        "webSearch",
+        "fileChange",
+        "contextCompaction"
+      ],
+      "type": "string"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "agent": {
+      "type": "string"
+    },
+    "arguments": {
+      "type": ["string", "null"]
+    },
+    "command": {
       "type": ["string", "null"]
     },
     "completedAtMs": {
@@ -11,42 +98,131 @@
     },
     "created": {
       "minimum": 0,
-      "type": ["number", "null"]
+      "type": "number"
+    },
+    "cwd": {
+      "type": ["string", "null"]
     },
     "durationMs": {
       "minimum": 0,
       "type": ["number", "null"]
     },
+    "error": {
+      "type": ["string", "null"]
+    },
+    "exitCode": {
+      "format": "int64",
+      "type": ["integer", "null"]
+    },
+    "finished": {
+      "format": "double",
+      "type": ["number", "null"]
+    },
     "id": {
       "type": "string"
     },
+    "interactive": {
+      "type": ["boolean", "null"]
+    },
     "itemId": {
-      "type": ["string", "null"]
+      "type": "string"
     },
     "kind": {
+      "$ref": "#/$defs/TaskKind"
+    },
+    "name": {
+      "type": "string"
+    },
+    "outputFile": {
       "type": ["string", "null"]
+    },
+    "outputPreviewOnly": {
+      "type": ["boolean", "null"]
     },
     "outputTruncated": {
       "type": ["boolean", "null"]
+    },
+    "ownerEpoch": {
+      "format": "int64",
+      "type": ["integer", "null"]
+    },
+    "processId": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProcessId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "query": {
+      "type": ["string", "null"]
+    },
+    "reattachRecovery": true,
+    "recoveryHold": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TaskRecoveryHold"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "server": {
+      "type": ["string", "null"]
+    },
+    "sourceAccountKey": {
+      "type": ["string", "null"]
+    },
+    "sourceConnectionId": {
+      "type": ["string", "null"]
+    },
+    "sourceProvider": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ProviderKind"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sourceThreadId": {
+      "type": ["string", "null"]
     },
     "startedAtMs": {
       "minimum": 0,
       "type": ["number", "null"]
     },
     "status": {
-      "type": ["string", "null"]
+      "$ref": "#/$defs/TaskStatus"
     },
     "tail": {
       "type": ["string", "null"]
     },
-    "turnId": {
+    "tool": {
       "type": ["string", "null"]
     },
+    "turnId": {
+      "type": "string"
+    },
     "type": {
-      "type": ["string", "null"]
+      "$ref": "#/$defs/TaskType"
     }
   },
-  "required": ["id"],
+  "required": [
+    "id",
+    "agent",
+    "created",
+    "itemId",
+    "kind",
+    "status",
+    "turnId",
+    "type",
+    "name"
+  ],
   "title": "PersistedTaskRecord",
   "type": "object"
 }

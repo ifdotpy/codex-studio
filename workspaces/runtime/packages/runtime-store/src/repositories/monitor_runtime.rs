@@ -22,8 +22,8 @@ pub fn pending_approvals(
         .collect()
 }
 
-pub fn put(transaction: &Transaction<'_>, value: serde_json::Value) -> StoreResult<()> {
-    Table::<MonitorRecord>::new(transaction).put(&MonitorRecord::from_value(value)?)
+pub fn put(transaction: &Transaction<'_>, record: &MonitorRecord) -> StoreResult<()> {
+    Table::<MonitorRecord>::new(transaction).put(record)
 }
 
 pub fn running_ids(connection: &Connection) -> StoreResult<Vec<String>> {

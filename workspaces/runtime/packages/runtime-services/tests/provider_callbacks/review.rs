@@ -56,6 +56,40 @@ pub(super) fn canonical_response(value: &Value) -> Value {
 }
 
 #[tokio::test]
+async fn work_get_and_history_keep_result_and_decision_fields() {
+    let (_dir, store, context) = fixture().await;
+    let mut work = template().value["baseWork"].clone();
+    work["results"] = json!([{"id":"r","created":1,"detail":{"nested":true}}]);
+    work["decisions"] = json!([{"id":"d","created":2,"reason":"done"}]);
+    put_record(&store, "runtime_work", &work).await;
+    let get = call(
+        &context,
+        "get-typed-work",
+        "orchestration_task",
+        json!({"action":"get","task_id":work["id"]}),
+    );
+    let result = tool_value(&reply(
+        dispatch(store.clone(), &context, &get, 20.0).await.unwrap(),
+    ));
+    assert_eq!(result["latestResult"], work["results"][0]);
+    assert_eq!(result["latestDecision"], work["decisions"][0]);
+    assert_eq!(result["history"], json!({"results":1,"decisions":1}));
+    let history = call(
+        &context,
+        "history-typed-work",
+        "orchestration_task",
+        json!({"action":"history","task_id":work["id"]}),
+    );
+    let result = tool_value(&reply(
+        dispatch(store, &context, &history, 20.0).await.unwrap(),
+    ));
+    assert_eq!(
+        result["items"],
+        json!([{"id":"r","created":1,"detail":{"nested":true},"kind":"result"},{"id":"d","created":2,"reason":"done","kind":"decision"}])
+    );
+}
+
+#[tokio::test]
 async fn work_commands_match_python_arguments_bounds_and_provenance() {
     let (template_dir, template_store, context) = fixture().await;
     template_store.flush_wal_for_shutdown().await.unwrap();
@@ -287,10 +321,11 @@ async fn resolved_answering_unknown_and_blocked_match_python() {
             record(&store, "runtime_requests", "resolve-card"),
             case["expected"]
         );
-        assert_eq!(
-            record(&store, "runtime_agents", &context.agent),
-            case["expectedActor"]
-        );
+        let mut expected_actor = case["expectedActor"].clone();
+        crate::normalize_agent_nulls(&mut expected_actor);
+        let mut actual_actor = record(&store, "runtime_agents", &context.agent);
+        crate::normalize_agent_nulls(&mut actual_actor);
+        assert_eq!(actual_actor, expected_actor);
     }
     for submitted in [false, true] {
         let (_dir, store, context) = fixture().await;

@@ -726,6 +726,53 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn command_preserves_unknown_body_fields_and_error_precedence() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut session, _) = listener.accept().await.unwrap();
+            read_http(&mut session).await;
+            reply(&mut session, r#"{"token":"native-token"}"#).await;
+            let (mut command, _) = listener.accept().await.unwrap();
+            let (headers, body) = read_http(&mut command).await;
+            assert!(
+                headers
+                    .to_ascii_lowercase()
+                    .contains("x-canvas-workspace: workspace-one")
+            );
+            assert!(
+                headers
+                    .to_ascii_lowercase()
+                    .contains("x-studio-request-id: original-operation-id")
+            );
+            assert_eq!(
+                body,
+                serde_json::json!({"known":1,"vendor":{"nested":[null,"🦀"]}})
+            );
+            let body = r#"{"error":"preferred","message":"fallback","details":{"vendor":true}}"#;
+            let response = format!(
+                "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            command.write_all(response.as_bytes()).await.unwrap();
+        });
+        let response = Backend::new(&origin).unwrap().dispatch(Request {
+            id: "transport-id".into(),
+            method: "api.request".into(),
+            params: serde_json::json!({"path":"/api/messages","body":{"known":1,"vendor":{"nested":[null,"🦀"]}},"workspaceId":"workspace-one","requestId":"original-operation-id"}),
+        }).await;
+        let failure = response.error.unwrap();
+        assert_eq!(failure.code, "http");
+        assert_eq!(failure.status, Some(409));
+        assert_eq!(failure.message, "preferred");
+        assert_eq!(
+            failure.details.unwrap(),
+            serde_json::json!({"error":"preferred","message":"fallback","details":{"vendor":true}})
+        );
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn explicit_null_post_is_not_changed_to_a_read() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());

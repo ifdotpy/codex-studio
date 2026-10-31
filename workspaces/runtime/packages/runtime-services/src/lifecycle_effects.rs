@@ -325,12 +325,11 @@ impl ProductionLifecyclePorts {
         let mut owner = AgentRepository::get(tx, &AgentId::from(agent))?
             .ok_or(ManagementError::Invalid("Missing interrupt owner"))?;
         owner
-            .extra
-            .get_mut("startAttempt")
-            .and_then(|attempt| attempt.get_mut("interrupt"))
-            .and_then(Value::as_object_mut)
+            .start_attempt
+            .as_mut()
+            .and_then(|attempt| attempt.interrupt.as_mut())
             .ok_or(ManagementError::Invalid("Missing interrupt intent"))?
-            .insert("rootRequestId".into(), json!(root_request_id));
+            .root_request_id = Some(root_request_id.clone());
         AgentRepository::put(tx, &owner)?;
         let terminals = studio_runtime_providers::ProviderKind::of_field(before.get("provider"))
             .ok()
@@ -381,19 +380,23 @@ impl ProductionLifecyclePorts {
             let agent_id = AgentId::from(request.agent.as_str());
             let ticket = request.ticket.clone();
             let epoch = request.epoch;
-            let persisted = self
-                .store
-                .read_async("runtime-services/lifecycle_effects", move |tx| {
-                    let Some(agent) = AgentRepository::get(tx, &agent_id)? else {
-                        return Ok::<_, studio_runtime_store::StoreError>(false);
-                    };
-                    let interrupt =
-                        &agent.extra.get("startAttempt").unwrap_or(&Value::Null)["interrupt"];
-                    Ok(interrupt["requestTicket"].as_str() == Some(ticket.as_str())
-                        && interrupt["outcome"].as_str() == Some("unknown")
-                        && agent.epoch == epoch.saturating_add(1))
-                })
-                .await?;
+            let persisted =
+                self.store
+                    .read_async("runtime-services/lifecycle_effects", move |tx| {
+                        let Some(agent) = AgentRepository::get(tx, &agent_id)? else {
+                            return Ok::<_, studio_runtime_store::StoreError>(false);
+                        };
+                        let interrupt = agent
+                            .start_attempt
+                            .as_ref()
+                            .and_then(|a| a.interrupt.as_ref());
+                        Ok(interrupt.and_then(|v| v.request_ticket.as_deref())
+                            == Some(ticket.as_str())
+                            && interrupt.and_then(|v| v.outcome)
+                                == Some(studio_runtime_store::InterruptOutcome::Unknown)
+                            && agent.epoch == epoch.saturating_add(1))
+                    })
+                    .await?;
             if !persisted {
                 continue;
             }
@@ -1395,7 +1398,7 @@ fn notify_parent_of_settled_turn(
     at: f64,
 ) -> studio_runtime_store::StoreResult<()> {
     let agent_id = agent.id.0.as_str();
-    if !agent.extra.get("parentId").is_some_and(Value::is_string) {
+    if !agent.parent_id.is_some() {
         return Ok(());
     }
     let stopped = matches!(
@@ -1449,7 +1452,7 @@ pub(crate) fn notify_parent_of_failed_turn(
         })
     };
     if agent.status != AgentStatus::Failed
-        || !agent.extra.get("parentId").is_some_and(Value::is_string)
+        || !agent.parent_id.is_some()
         || agent.extra.get("lastCompletedTurn") != Some(&json!(turn_id))
         || agent.auto_wake != Some(true)
         || !reports_turns(&agent)
@@ -1464,8 +1467,8 @@ pub(crate) fn notify_parent_of_failed_turn(
 /// A live child of the current turn epoch: not deleted, archived or moving.
 fn reports_turns(agent: &AgentRecord) -> bool {
     let flag = |key: &str| studio_runtime_store::truthy(agent.extra.get(key));
-    !flag("deletedAt")
-        && !flag("agentArchive")
+    !agent.is_deleted()
+        && agent.agent_archive.is_none()
         && !flag("executionMove")
         && agent.turn_epoch == Some(agent.epoch)
 }
@@ -1493,7 +1496,7 @@ fn enqueue_turn_result(
     turn_id: &str,
     at: f64,
 ) -> studio_runtime_store::StoreResult<()> {
-    let Some(parent_id) = agent.extra.get("parentId").and_then(Value::as_str) else {
+    let Some(parent_id) = agent.parent_id.as_deref() else {
         return Ok(());
     };
     let Some(parent) = AgentRepository::get(tx, &AgentId::from(parent_id))? else {
@@ -1511,11 +1514,12 @@ fn enqueue_turn_result(
                 .or(error.as_str())
                 .map_or_else(|| error.to_string(), str::to_owned)
         ),
-        None => agent
-            .extra
-            .get("lastAnswer")
-            .cloned()
-            .unwrap_or(json!("No final text returned")),
+        None => json!(
+            agent
+                .last_answer
+                .as_deref()
+                .unwrap_or("No final text returned")
+        ),
     };
     let assignments = crate::agent_progress::assignments(tx, &agent.id.0)?;
     let progress = crate::agent_progress::derive(tx, value, &assignments)?;
@@ -1574,7 +1578,7 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(id))? else {
         return Ok(());
     };
-    if !studio_runtime_store::truthy(agent.extra.get("deletedAt")) {
+    if !agent.is_deleted() {
         return Ok(());
     }
     if !needs_deleted_settlement(&agent) {
@@ -1583,30 +1587,29 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     agent.status = studio_runtime_store::AgentStatus::Paused;
     agent.in_flight = Some(false);
     agent.turn_id = None;
-    agent.extra.insert("activity".to_owned(), Value::Null);
-    agent.extra.insert("activeTools".to_owned(), json!([]));
-    if let Some(attempt) = agent.extra.get_mut("startAttempt")
-        && studio_runtime_store::truthy(attempt.get("activeAtReservation"))
+    agent.activity = None;
+    agent.active_tools = Some(Vec::new());
+    if let Some(attempt) = agent.start_attempt.as_mut()
+        && attempt.active_at_reservation == Some(true)
     {
-        attempt["activeAtReservation"] = json!(false);
+        attempt.active_at_reservation = Some(false);
     }
     AgentRepository::put(tx, &agent)?;
     Ok(())
 }
 
 fn needs_deleted_settlement(agent: &AgentRecord) -> bool {
-    studio_runtime_store::truthy(agent.extra.get("deletedAt"))
+    agent.is_deleted()
         && (agent.in_flight == Some(true)
             || agent
                 .turn_id
                 .as_deref()
                 .is_some_and(|turn| !turn.is_empty())
-            || studio_runtime_store::truthy(
-                agent
-                    .extra
-                    .get("startAttempt")
-                    .and_then(|attempt| attempt.get("activeAtReservation")),
-            )
+            || agent
+                .start_attempt
+                .as_ref()
+                .and_then(|a| a.active_at_reservation)
+                == Some(true)
             || studio_runtime_store::startup_recovery::ACTIVE_AGENT_STATUSES
                 .contains(&agent.status.as_str()))
 }
@@ -1701,7 +1704,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
         store.transaction(|tx| {
-            let parent = AgentRecord::from_value(json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"completed","provider":"codex","isLead":true,"autoWake":true,"name":"Lead","cwd":"/work"}))?;
+            let parent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"completed","provider":"codex","isLead":true,"autoWake":true,"name":"Lead","cwd":"/work"}))?;
             AgentRepository::put(tx, &parent)?;
             for (row, work) in [
                 ("first", json!({"owner":"child","rootId":"lead","status":"review","id":{"legacy":1},"updated":"bad","results":[{"agent":"child","id":7}],"decisions":[{"resultId":7,"decision":"reject"}]})),
@@ -1713,7 +1716,7 @@ mod tests {
             }
             Ok(())
         }).await.unwrap();
-        let child = json!({"id":"child","rootId":"lead","parentId":"lead","epoch":1,"status":"failed","name":"Worker","error":"failed"});
+        let child = json!({"compactions":0,"id":"child","rootId":"lead","parentId":"lead","epoch":1,"status":"failed","name":"Worker","error":"failed"});
         let before = json!({"id":"child","turnId":"turn"});
         for mode in ["stop", "start", "hold"] {
             let child = child.clone();

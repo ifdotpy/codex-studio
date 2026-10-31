@@ -2,7 +2,9 @@
 use crate::monitor_policy::MonitorError;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use studio_runtime_schema::monitor_record::{
+    MonitorRecord, MonitorStream, OutputMatchExcerpt, OutputWakeBudget, StreamValues,
+};
 use studio_runtime_schema::shared_values::{
     MONITOR_OUTPUT_MAX_MATCH_COUNT, MONITOR_OUTPUT_MAX_PATTERN_BYTES, MONITOR_OUTPUT_MAX_PATTERNS,
     MONITOR_OUTPUT_RETAINED_EVENT_IDS, MONITOR_OUTPUT_TAIL_CODEPOINTS,
@@ -22,178 +24,148 @@ pub const OUTPUT_EXCERPT_BYTES: usize = 1024;
 /// Bytes retained per stream to supply context for the next excerpt.
 pub const OUTPUT_CONTEXT_BYTES: usize = OUTPUT_EXCERPT_BYTES;
 
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WakeBudget {
-    tokens: f64,
-    updated_at: f64,
-    suppressed_matches: u64,
-    total_suppressed_matches: u64,
-    paused: bool,
-    flood_since: Option<f64>,
-    last_suppressed_at: Option<f64>,
-    notice_sent: bool,
-}
-impl WakeBudget {
-    fn new(now: f64) -> Self {
-        Self {
-            tokens: OUTPUT_WAKE_CAPACITY as f64,
-            updated_at: now,
-            suppressed_matches: 0,
-            total_suppressed_matches: 0,
-            paused: false,
-            flood_since: None,
-            last_suppressed_at: None,
-            notice_sent: false,
-        }
+fn new_budget(now: f64) -> OutputWakeBudget {
+    OutputWakeBudget {
+        tokens: OUTPUT_WAKE_CAPACITY as f64,
+        updated_at: now,
+        suppressed_matches: 0,
+        total_suppressed_matches: 0,
+        paused: false,
+        flood_since: None,
+        last_suppressed_at: None,
+        notice_sent: false,
     }
 }
 
-/// Validate Rust-owned additive state, including its retained byte bounds.
-/// Legacy records omit this state and acquire it on their next output.
-pub fn validate(record: &Value) -> Result<(), &'static str> {
-    if let Some(value) = record.get("outputWakeBudget") {
-        let budget: WakeBudget =
-            serde_json::from_value(value.clone()).map_err(|_| "outputWakeBudget")?;
-        if !(0.0..=OUTPUT_WAKE_CAPACITY as f64).contains(&budget.tokens)
+/// Validate retained cross-field output bounds.
+pub fn validate(record: &MonitorRecord) -> Result<(), &'static str> {
+    if let Some(budget) = &record.output_wake_budget
+        && (!(0.0..=OUTPUT_WAKE_CAPACITY as f64).contains(&budget.tokens)
             || !budget.updated_at.is_finite()
             || budget.updated_at < 0.0
             || [budget.flood_since, budget.last_suppressed_at]
                 .into_iter()
                 .flatten()
-                .any(|time| !time.is_finite() || time < 0.0)
-        {
-            return Err("outputWakeBudget");
-        }
+                .any(|time| !time.is_finite() || time < 0.0))
+    {
+        return Err("outputWakeBudget");
     }
-    for stream in ["stdout", "stderr"] {
+    for stream in [MonitorStream::Stdout, MonitorStream::Stderr] {
         if record
-            .get("outputLineTail")
-            .and_then(|value| value.get(stream))
+            .output_line_tail
+            .as_ref()
+            .and_then(|tail| tail.get(stream))
             .is_some()
         {
-            let context = bytes(record, "outputLineTail", stream).map_err(|_| "outputLineTail")?;
-            let offsets = record["outputLineOffsets"][stream]
-                .as_array()
+            let context = bytes(&record.output_line_tail, stream).map_err(|_| "outputLineTail")?;
+            let offsets = record
+                .output_line_offsets
+                .as_ref()
+                .and_then(|offsets| offsets.get(stream))
                 .ok_or("outputLineOffsets")?;
             if context.len() > OUTPUT_CONTEXT_BYTES || offsets.len() != context.len() {
                 return Err("outputLineOffsets");
             }
             let mut last = None;
             for value in offsets {
-                match value.as_u64() {
+                match value {
                     Some(offset)
-                        if offset < record["bytes"].as_u64().unwrap_or(0)
-                            && last.is_none_or(|previous| previous < offset) =>
+                        if *offset < record.bytes.get() as u64
+                            && last.is_none_or(|previous| previous < *offset) =>
                     {
-                        last = Some(offset);
+                        last = Some(*offset)
                     }
-                    None if value.is_null() && last.is_none() => (),
+                    None if last.is_none() => (),
                     _ => return Err("outputLineOffsets"),
                 }
             }
         }
     }
-    if let Some(excerpts) = record.get("outputMatchExcerpts") {
-        let excerpts = excerpts.as_object().ok_or("outputMatchExcerpts")?;
-        if excerpts.len() > MONITOR_OUTPUT_MAX_PATTERNS * 2 {
-            return Err("outputMatchExcerpts");
-        }
-        for excerpt in excerpts.values() {
-            if excerpt["excerpt"]
-                .as_str()
-                .is_none_or(|text| text.len() > OUTPUT_EXCERPT_BYTES)
-                || excerpt["logOffset"]
-                    .as_u64()
-                    .is_none_or(|offset| offset >= record["bytes"].as_u64().unwrap_or(0))
-            {
-                return Err("outputMatchExcerpts");
-            }
-        }
+    if let Some(excerpts) = &record.output_match_excerpts
+        && (excerpts.len() > MONITOR_OUTPUT_MAX_PATTERNS * 2
+            || excerpts.values().any(|value| {
+                value.excerpt.len() > OUTPUT_EXCERPT_BYTES
+                    || value.log_offset >= record.bytes.get() as u64
+            }))
+    {
+        return Err("outputMatchExcerpts");
     }
     Ok(())
 }
 
-pub fn patterns(value: Option<&Value>) -> Result<Vec<String>, MonitorError> {
-    let Some(value) = value.filter(|v| !v.is_null()) else {
+pub fn patterns(values: Option<&[String]>) -> Result<Vec<String>, MonitorError> {
+    let Some(values) = values else {
         return Ok(vec![]);
     };
-    let values = value
-        .as_array()
-        .filter(|v| !v.is_empty() && v.len() <= MONITOR_OUTPUT_MAX_PATTERNS)
-        .ok_or(MonitorError::Refused(
+    if values.is_empty() || values.len() > MONITOR_OUTPUT_MAX_PATTERNS {
+        return Err(MonitorError::Refused(
             "output_patterns must contain up to 16 non-empty literal strings",
-        ))?;
+        ));
+    }
     let mut result = Vec::new();
     for value in values {
-        let value = value
-            .as_str()
-            .filter(|v| !v.is_empty())
-            .ok_or(MonitorError::Refused(
+        if value.is_empty() {
+            return Err(MonitorError::Refused(
                 "output_patterns must contain up to 16 non-empty literal strings",
-            ))?;
+            ));
+        }
         if value.len() > MONITOR_OUTPUT_MAX_PATTERN_BYTES {
             return Err(MonitorError::Refused(
                 "Each output pattern must be at most 256 UTF-8 bytes",
             ));
         }
-        if result.iter().any(|v| v == value) {
+        if result.contains(value) {
             return Err(MonitorError::Refused(
                 "output_patterns must not contain duplicate strings",
             ));
         }
-        result.push(value.to_owned());
+        result.push(value.clone());
     }
     Ok(result)
 }
 
-fn bytes(record: &Value, field: &str, stream: &str) -> Result<Vec<u8>, MonitorError> {
-    match record
-        .get(field)
-        .and_then(|v| v.get(stream))
-        .and_then(Value::as_str)
-    {
-        Some(value) => STANDARD
-            .decode(value)
-            .map_err(|_| MonitorError::InvalidOutputReceipt("invalid saved matcher bytes")),
-        None => Ok(vec![]),
-    }
+fn bytes(
+    fields: &Option<StreamValues<String>>,
+    stream: MonitorStream,
+) -> Result<Vec<u8>, MonitorError> {
+    fields
+        .as_ref()
+        .and_then(|fields| fields.get(stream))
+        .map_or(Ok(vec![]), |value| {
+            STANDARD
+                .decode(value)
+                .map_err(|_| MonitorError::InvalidOutputReceipt("invalid saved matcher bytes"))
+        })
 }
-fn save_bytes(record: &mut Value, field: &str, stream: &str, bytes: &[u8]) {
-    if !record[field].is_object() {
-        record[field] = json!({});
-    }
-    if bytes.is_empty() {
-        record[field]
-            .as_object_mut()
-            .expect("object")
-            .remove(stream);
-    } else {
-        record[field][stream] = json!(STANDARD.encode(bytes));
-    }
+fn save_bytes(fields: &mut Option<StreamValues<String>>, stream: MonitorStream, bytes: &[u8]) {
+    let slot = fields
+        .get_or_insert_with(StreamValues::default)
+        .slot(stream);
+    *slot = (!bytes.is_empty()).then(|| STANDARD.encode(bytes));
 }
-fn append_tail(record: &mut Value, text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    let tail = format!("{}{text}", record["tail"].as_str().unwrap_or_default());
-    record["tail"] = json!(
-        tail.chars()
+fn append_tail(record: &mut MonitorRecord, text: &str) -> Result<(), MonitorError> {
+    if !text.is_empty() {
+        let tail = format!("{}{text}", record.tail.as_str());
+        record.tail = tail
+            .chars()
             .skip(
                 tail.chars()
                     .count()
-                    .saturating_sub(MONITOR_OUTPUT_TAIL_CODEPOINTS)
+                    .saturating_sub(MONITOR_OUTPUT_TAIL_CODEPOINTS),
             )
             .collect::<String>()
-    );
+            .try_into()
+            .map_err(|_| MonitorError::InvalidOutputReceipt("monitor tail exceeds bound"))?;
+    }
+    Ok(())
 }
 fn decode(
-    record: &mut Value,
-    stream: &str,
+    record: &mut MonitorRecord,
+    stream: MonitorStream,
     chunk: &[u8],
     final_chunk: bool,
 ) -> Result<(), MonitorError> {
-    let mut combined = bytes(record, "outputUtf8Pending", stream)?;
+    let mut combined = bytes(&record.output_utf8_pending, stream)?;
     combined.extend_from_slice(chunk);
     let mut remaining = combined.as_slice();
     let mut text = String::new();
@@ -225,49 +197,57 @@ fn decode(
             }
         }
     }
-    save_bytes(record, "outputUtf8Pending", stream, remaining);
-    append_tail(record, &text);
+    save_bytes(&mut record.output_utf8_pending, stream, remaining);
+    append_tail(record, &text)?;
     Ok(())
 }
-fn increment(record: &mut Value, field: &str, key: &str, count: usize) {
-    if !record[field].is_object() {
-        record[field] = json!({});
-    }
-    let previous = record[field][key].as_u64().unwrap_or(0);
-    record[field][key] = json!(
-        previous
-            .saturating_add(count as u64)
-            .min(MONITOR_OUTPUT_MAX_MATCH_COUNT as u64)
-    );
+fn increment(
+    values: &mut Option<std::collections::BTreeMap<String, u64>>,
+    key: &str,
+    count: usize,
+) {
+    let entry = values
+        .get_or_insert_with(Default::default)
+        .entry(key.to_owned())
+        .or_default();
+    *entry = entry
+        .saturating_add(count as u64)
+        .min(MONITOR_OUTPUT_MAX_MATCH_COUNT as u64);
 }
 pub fn append(
-    record: &mut Value,
+    record: &mut MonitorRecord,
     stream: &str,
     chunk: &[u8],
     match_output: bool,
 ) -> Result<(), MonitorError> {
-    if !matches!(stream, "stdout" | "stderr") {
-        return Err(MonitorError::InvalidOutputReceipt("invalid output stream"));
-    }
-    decode(record, stream, chunk, false)?;
-    let patterns = record["outputPatterns"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let stream_kind = match stream {
+        "stdout" => MonitorStream::Stdout,
+        "stderr" => MonitorStream::Stderr,
+        _ => return Err(MonitorError::InvalidOutputReceipt("invalid output stream")),
+    };
+    decode(record, stream_kind, chunk, false)?;
+    let patterns = record.output_patterns.clone().unwrap_or_default();
     if !match_output || patterns.is_empty() || chunk.is_empty() {
         return Ok(());
     }
-    let matcher_tail = bytes(record, "outputMatcherTail", stream)?;
-    let previous = match record.get("outputLineTail").and_then(|v| v.get(stream)) {
-        Some(_) => bytes(record, "outputLineTail", stream)?,
-        None => matcher_tail,
+    let matcher_tail = bytes(&record.output_matcher_tail, stream_kind)?;
+    let previous = if record
+        .output_line_tail
+        .as_ref()
+        .and_then(|v| v.get(stream_kind))
+        .is_some()
+    {
+        bytes(&record.output_line_tail, stream_kind)?
+    } else {
+        matcher_tail
     };
-    let offset = record["bytes"].as_u64().unwrap_or(0);
-    let mut offsets: Vec<Option<u64>> = record["outputLineOffsets"][stream]
-        .as_array()
-        .filter(|values| values.len() == previous.len())
-        .map(|values| values.iter().map(Value::as_u64).collect())
-        // Legacy matcher tails have no stream-to-log offsets. Never invent them.
+    let offset = record.bytes.get() as u64;
+    let mut offsets = record
+        .output_line_offsets
+        .as_ref()
+        .and_then(|v| v.get(stream_kind))
+        .filter(|v| v.len() == previous.len())
+        .cloned()
         .unwrap_or_else(|| vec![None; previous.len()]);
     offsets.extend((0..chunk.len()).map(|index| Some(offset + index as u64)));
     let first_known = offsets
@@ -276,17 +256,15 @@ pub fn append(
         .unwrap_or(previous.len());
     let mut combined = previous.clone();
     combined.extend_from_slice(chunk);
-    for field in ["outputMatchesPending", "outputMatchesTotal"] {
-        if !record[field].is_object() {
-            record[field] = json!({});
-        }
-    }
+    record
+        .output_matches_pending
+        .get_or_insert_with(Default::default);
+    record
+        .output_matches_total
+        .get_or_insert_with(Default::default);
     let mut longest = 0;
     for (index, pattern) in patterns.iter().enumerate() {
-        let needle = pattern
-            .as_str()
-            .ok_or(MonitorError::InvalidOutputReceipt("invalid saved pattern"))?
-            .as_bytes();
+        let needle = pattern.as_bytes();
         if needle.is_empty() || needle.len() > MONITOR_OUTPUT_MAX_PATTERN_BYTES {
             return Err(MonitorError::InvalidOutputReceipt(
                 "invalid saved pattern size",
@@ -302,12 +280,12 @@ pub fn append(
         let count = first.map_or(0, |_| 1 + hits.count());
         if count > 0 {
             let key = format!("{stream}:{index}");
-            increment(record, "outputMatchesPending", &key, count);
-            increment(record, "outputMatchesTotal", &key, count);
-            if !record["outputMatchExcerpts"].is_object() {
-                record["outputMatchExcerpts"] = json!({});
-            }
-            if record["outputMatchExcerpts"].get(&key).is_none() {
+            increment(&mut record.output_matches_pending, &key, count);
+            increment(&mut record.output_matches_total, &key, count);
+            let excerpts = record
+                .output_match_excerpts
+                .get_or_insert_with(Default::default);
+            if let std::collections::btree_map::Entry::Vacant(entry) = excerpts.entry(key) {
                 let first = first.expect("nonzero match count");
                 let line_start = combined[..first]
                     .iter()
@@ -332,82 +310,181 @@ pub fn append(
                     end -= 1;
                 }
                 excerpt.truncate(end);
-                record["outputMatchExcerpts"][&key] =
-                    json!({"excerpt":excerpt,"logOffset":offsets[excerpt_start]});
+                let log_offset = offsets[excerpt_start]
+                    .ok_or(MonitorError::InvalidOutputReceipt("missing output offset"))?;
+                entry.insert(OutputMatchExcerpt {
+                    excerpt,
+                    log_offset,
+                });
             }
         }
     }
     let context_start = combined.len().saturating_sub(OUTPUT_CONTEXT_BYTES);
-    save_bytes(record, "outputLineTail", stream, &combined[context_start..]);
-    if !record["outputLineOffsets"].is_object() {
-        record["outputLineOffsets"] = json!({});
-    }
-    record["outputLineOffsets"][stream] = json!(&offsets[context_start..]);
+    save_bytes(
+        &mut record.output_line_tail,
+        stream_kind,
+        &combined[context_start..],
+    );
+    *record
+        .output_line_offsets
+        .get_or_insert_with(StreamValues::default)
+        .slot(stream_kind) = Some(offsets[context_start..].to_vec());
     let keep = longest.saturating_sub(1);
     save_bytes(
-        record,
-        "outputMatcherTail",
-        stream,
+        &mut record.output_matcher_tail,
+        stream_kind,
         &combined[combined.len().saturating_sub(keep)..],
     );
     Ok(())
 }
-pub fn flush(record: &mut Value) -> Result<(), MonitorError> {
-    for stream in ["stdout", "stderr"] {
+pub fn flush(record: &mut MonitorRecord) -> Result<(), MonitorError> {
+    for stream in [MonitorStream::Stdout, MonitorStream::Stderr] {
         decode(record, stream, &[], true)?;
     }
-    record
-        .as_object_mut()
-        .expect("monitor object")
-        .remove("outputMatcherTail");
+    record.output_matcher_tail = None;
     Ok(())
 }
-fn counts(record: &Value, field: &str) -> Vec<Value> {
-    let Some(values) = record[field].as_object() else {
-        return vec![];
-    };
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputMatch {
+    pub stream: String,
+    pub pattern: String,
+    pub count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excerpt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_offset: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputEvent {
+    pub monitor_id: String,
+    pub epoch: i64,
+    pub sequence: u64,
+    pub matches: Vec<OutputMatch>,
+    #[serde(rename = "final")]
+    pub final_chunk: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suppressed_matches: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_wakes_paused: Option<bool>,
+}
+
+impl OutputEvent {
+    /// Persist output events using the legacy Python sorted, ASCII JSON spelling.
+    pub fn python_json(&self) -> String {
+        use studio_runtime_schema::json_compat::python_quote;
+        let quote = |text: &str| python_quote(text, true);
+        let entries = self
+            .matches
+            .iter()
+            .map(|item| {
+                let mut fields = vec![format!("\"count\": {}", item.count)];
+                if let Some(excerpt) = &item.excerpt {
+                    fields.push(format!("\"excerpt\": {}", quote(excerpt)));
+                }
+                if let Some(offset) = item.log_offset {
+                    fields.push(format!("\"logOffset\": {offset}"));
+                }
+                fields.push(format!("\"pattern\": {}", quote(&item.pattern)));
+                fields.push(format!("\"stream\": {}", quote(&item.stream)));
+                format!("{{{}}}", fields.join(", "))
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut fields = vec![
+            format!("\"epoch\": {}", self.epoch),
+            format!("\"final\": {}", self.final_chunk),
+            format!("\"matches\": [{entries}]"),
+        ];
+        if let Some(message) = &self.message {
+            fields.push(format!("\"message\": {}", quote(message)));
+        }
+        fields.push(format!("\"monitorId\": {}", quote(&self.monitor_id)));
+        if let Some(paused) = self.output_wakes_paused {
+            fields.push(format!("\"outputWakesPaused\": {paused}"));
+        }
+        fields.push(format!("\"sequence\": {}", self.sequence));
+        if let Some(count) = self.suppressed_matches {
+            fields.push(format!("\"suppressedMatches\": {count}"));
+        }
+        format!("{{{}}}", fields.join(", "))
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputMatchSummary {
+    pub events: u64,
+    pub matches: Vec<OutputMatch>,
+    pub pending: Vec<OutputMatch>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suppressed_matches: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_wakes_paused: Option<bool>,
+}
+
+fn counts(
+    record: &MonitorRecord,
+    values: &Option<std::collections::BTreeMap<String, u64>>,
+) -> Vec<OutputMatch> {
     values
         .iter()
+        .flat_map(|values| values.iter())
         .filter_map(|(key, count)| {
             let (stream, index) = key.split_once(':')?;
-            let pattern = record["outputPatterns"].get(index.parse::<usize>().ok()?)?;
-            (count.as_u64()? > 0).then(|| json!({"stream":stream,"pattern":pattern,"count":count}))
+            let pattern = record
+                .output_patterns
+                .as_ref()?
+                .get(index.parse::<usize>().ok()?)?;
+            (*count > 0).then(|| OutputMatch {
+                stream: stream.to_owned(),
+                pattern: pattern.clone(),
+                count: *count,
+                excerpt: None,
+                log_offset: None,
+            })
         })
         .collect()
 }
-pub fn pending(record: &mut Value, now: f64, final_chunk: bool) -> Option<(String, Value)> {
-    let mut matches = counts(record, "outputMatchesPending");
+pub fn pending(
+    record: &mut MonitorRecord,
+    now: f64,
+    final_chunk: bool,
+) -> Option<(String, OutputEvent)> {
+    let mut matches = counts(record, &record.output_matches_pending);
     if matches.is_empty()
         || (!final_chunk
-            && now - record["outputWakeAt"].as_f64().unwrap_or(0.0)
-                < MONITOR_OUTPUT_WAKE_COOLDOWN_SECONDS)
+            && now - record.output_wake_at.unwrap_or(0.0) < MONITOR_OUTPUT_WAKE_COOLDOWN_SECONDS)
     {
         return None;
     }
     // Excerpts retain the first matching line for each stream/pattern in this batch.
-    if let Some(excerpts) = record["outputMatchExcerpts"].as_object() {
+    if let Some(excerpts) = record.output_match_excerpts.as_ref() {
         for item in &mut matches {
-            let stream = item["stream"].as_str().unwrap_or_default();
-            let index = record["outputPatterns"]
-                .as_array()?
+            let stream = &item.stream;
+            let index = record
+                .output_patterns
+                .as_ref()?
                 .iter()
-                .position(|pattern| pattern == &item["pattern"])?;
+                .position(|pattern| pattern == &item.pattern)?;
             if let Some(excerpt) = excerpts.get(&format!("{stream}:{index}")) {
-                item["excerpt"] = excerpt["excerpt"].clone();
-                item["logOffset"] = excerpt["logOffset"].clone();
+                item.excerpt = Some(excerpt.excerpt.clone());
+                item.log_offset = Some(excerpt.log_offset);
             }
         }
     }
     let count = matches
         .iter()
-        .filter_map(|item| item["count"].as_u64())
+        .map(|item| item.count)
         .fold(0_u64, u64::saturating_add);
     let mut budget = record
-        .get("outputWakeBudget")
-        .map(|value| serde_json::from_value::<WakeBudget>(value.clone()))
-        .transpose()
-        .ok()?
-        .unwrap_or_else(|| WakeBudget::new(now));
+        .output_wake_budget
+        .clone()
+        .unwrap_or_else(|| new_budget(now));
     budget.tokens = (budget.tokens
         + (now - budget.updated_at).max(0.0) / OUTPUT_WAKE_REFILL_SECONDS)
         .min(OUTPUT_WAKE_CAPACITY as f64);
@@ -437,8 +514,8 @@ pub fn pending(record: &mut Value, now: f64, final_chunk: bool) -> Option<(Strin
     } else {
         budget.tokens -= 1.0;
     }
-    record["outputMatchesPending"] = json!({});
-    record["outputMatchExcerpts"] = json!({});
+    record.output_matches_pending = Some(Default::default());
+    record.output_match_excerpts = Some(Default::default());
     let suppressed = if newly_paused {
         budget.total_suppressed_matches
     } else {
@@ -447,67 +524,93 @@ pub fn pending(record: &mut Value, now: f64, final_chunk: bool) -> Option<(Strin
     if !suppress || notice {
         budget.suppressed_matches = 0;
     }
-    record["outputWakeBudget"] = json!(budget);
+    record.output_wake_budget = Some(budget);
     if suppress && !notice {
         return None;
     }
-    let sequence = record["outputEventSequence"]
-        .as_u64()
-        .unwrap_or(0)
-        .checked_add(1)?;
+    let sequence = record.output_event_sequence.unwrap_or(0).checked_add(1)?;
     let id = format!(
         "monitor-output:{}:{}:{sequence}",
-        record["id"].as_str()?,
-        record["epoch"].as_i64()?
+        record.id,
+        record.epoch.get()
     );
-    let mut ids = record["outputEventIds"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    ids.push(json!(id));
+    let ids = record.output_event_ids.get_or_insert_with(Vec::new);
+    ids.push(id.clone());
     let keep = ids.len().saturating_sub(MONITOR_OUTPUT_RETAINED_EVENT_IDS);
     ids.drain(..keep);
-    record["outputEventSequence"] = json!(sequence);
-    record["outputEventCount"] = json!(
-        record["outputEventCount"]
-            .as_u64()
+    record.output_event_sequence = Some(sequence);
+    record.output_event_count = Some(
+        record
+            .output_event_count
             .unwrap_or(0)
             .saturating_add(1)
-            .min(MONITOR_OUTPUT_MAX_MATCH_COUNT as u64)
+            .min(MONITOR_OUTPUT_MAX_MATCH_COUNT as u64),
     );
-    record["outputWakeAt"] = json!(now);
-    record["outputEventIds"] = json!(ids);
-    record["outputMatchesPending"] = json!({});
-    let mut payload = json!({"monitorId":record["id"],"epoch":record["epoch"],"sequence":sequence,"matches":matches,"final":final_chunk});
-    if suppressed > 0 {
-        payload["suppressedMatches"] = json!(suppressed);
-        payload["message"] = json!(if newly_paused {
-            format!(
-                "Output-match wakes paused after sustained output. {suppressed} matches suppressed. The command and exit wake remain active. To resume output wakes, cancel this monitor and start a new monitor with more selective output_patterns."
-            )
-        } else {
-            format!("{suppressed} output matches suppressed by the monitor wake budget.")
-        });
-    }
-    if newly_paused {
-        payload["outputWakesPaused"] = json!(true);
-    }
-    Some((id, payload))
+    record.output_wake_at = Some(now);
+    record.output_matches_pending = Some(Default::default());
+    let message = (suppressed > 0).then(|| if newly_paused {
+        format!("Output-match wakes paused after sustained output. {suppressed} matches suppressed. The command and exit wake remain active. To resume output wakes, cancel this monitor and start a new monitor with more selective output_patterns.")
+    } else {
+        format!("{suppressed} output matches suppressed by the monitor wake budget.")
+    });
+    Some((
+        id,
+        OutputEvent {
+            monitor_id: record.id.clone(),
+            epoch: record.epoch.get(),
+            sequence,
+            matches,
+            final_chunk,
+            suppressed_matches: (suppressed > 0).then_some(suppressed),
+            message,
+            output_wakes_paused: newly_paused.then_some(true),
+        },
+    ))
 }
-pub fn summary(record: &Value) -> Option<Value> {
-    if record["outputPatterns"]
-        .as_array()
-        .is_none_or(Vec::is_empty)
-    {
+pub fn summary(record: &MonitorRecord) -> Option<OutputMatchSummary> {
+    if record.output_patterns.as_ref().is_none_or(Vec::is_empty) {
         return None;
     }
-    let mut summary = json!({"events":record["outputEventCount"].as_u64().unwrap_or(0),"matches":counts(record,"outputMatchesTotal"),"pending":counts(record,"outputMatchesPending")});
-    if let Some(suppressed) = record["outputWakeBudget"]["totalSuppressedMatches"]
-        .as_u64()
-        .filter(|count| *count > 0)
-    {
-        summary["suppressedMatches"] = json!(suppressed);
-        summary["outputWakesPaused"] = json!(record["outputWakeBudget"]["paused"] == true);
+    let budget = record
+        .output_wake_budget
+        .as_ref()
+        .filter(|budget| budget.total_suppressed_matches > 0);
+    Some(OutputMatchSummary {
+        events: record.output_event_count.unwrap_or(0),
+        matches: counts(record, &record.output_matches_total),
+        pending: counts(record, &record.output_matches_pending),
+        suppressed_matches: budget.map(|b| b.total_suppressed_matches),
+        output_wakes_paused: budget.map(|b| b.paused),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_event_python_bytes_match_legacy_encoding() {
+        let payload = OutputEvent {
+            monitor_id: "watch-雪".into(),
+            epoch: 4,
+            sequence: 7,
+            final_chunk: true,
+            matches: vec![OutputMatch {
+                stream: "stdout".into(),
+                pattern: "ready\n雪".into(),
+                count: 2,
+                excerpt: Some("é".into()),
+                log_offset: Some(13),
+            }],
+            suppressed_matches: Some(3),
+            message: Some("paused 雪".into()),
+            output_wakes_paused: Some(true),
+        };
+        let legacy = studio_runtime_schema::json_compat::python_json(&serde_json::json!({
+            "monitorId":"watch-雪", "epoch":4, "sequence":7, "final":true,
+            "matches":[{"stream":"stdout", "pattern":"ready\n雪", "count":2, "excerpt":"é", "logOffset":13}],
+            "suppressedMatches":3, "message":"paused 雪", "outputWakesPaused":true
+        }));
+        assert_eq!(payload.python_json(), legacy);
     }
-    Some(summary)
 }

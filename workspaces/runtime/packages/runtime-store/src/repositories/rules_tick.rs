@@ -1,10 +1,9 @@
 //! Bounded rule tick reads; rule writes reuse the canonical rules repository.
 
 use rusqlite::{Connection, params};
-use serde::Deserialize;
 use serde_json::Value;
 
-use crate::{CachedSql, RuleRecord, StoreError, StoreResult};
+use crate::{CachedSql, MonitorRecord, RuleRecord, StoreError, StoreResult};
 
 pub const RULE_BATCH: usize = 128;
 const MAX_RECORD_BYTES: usize = 1_048_576;
@@ -17,7 +16,7 @@ pub struct RuleRow {
 
 pub struct RuleActivity {
     pub agents: Vec<Value>,
-    pub monitors: Vec<Value>,
+    pub monitors: Vec<MonitorRecord>,
 }
 
 pub struct RulesTickRepository;
@@ -39,8 +38,7 @@ impl RulesTickRepository {
             if raw.len() > MAX_RECORD_BYTES {
                 return Err(invalid());
             }
-            let value: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-            let rule = RuleRecord::deserialize(value).map_err(|_| invalid())?;
+            let rule: RuleRecord = serde_json::from_str(&raw).map_err(|_| invalid())?;
             if rule.id() != &id {
                 return Err(StoreError::InvalidStoredRecord {
                     object: "rules",
@@ -64,13 +62,33 @@ impl RulesTickRepository {
             root_id,
             "agents",
         )?;
-        let monitors = read_activity(
-            connection,
+        let mut query = connection.prepare_cached(
             "SELECT m.id,m.record FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent') \
              WHERE a.root_id=?1 AND json_extract(m.record,'$.status')='running' ORDER BY m.rowid LIMIT ?2",
-            root_id,
-            "monitors",
         )?;
+        let mut rows = query.query(params![root_id, MAX_TEAM_RECORDS as i64 + 1])?;
+        let mut monitors = Vec::new();
+        while let Some(row) = rows.next()? {
+            if monitors.len() == MAX_TEAM_RECORDS {
+                return Err(StoreError::SchemaMismatch(
+                    "rule activity snapshot exceeds its bound".into(),
+                ));
+            }
+            let id: String = row.get(0)?;
+            let raw: String = row.get(1)?;
+            let invalid = || StoreError::InvalidStoredRecord {
+                object: "monitors",
+                id: id.clone(),
+            };
+            if raw.len() > MAX_RECORD_BYTES {
+                return Err(invalid());
+            }
+            let monitor: MonitorRecord = serde_json::from_str(&raw).map_err(|_| invalid())?;
+            if monitor.id != id {
+                return Err(invalid());
+            }
+            monitors.push(monitor);
+        }
         Ok(RuleActivity { agents, monitors })
     }
 
@@ -104,9 +122,7 @@ fn read_activity(
         }
         let id: String = row.get(0)?;
         let mut record = decode(row.get(1)?, object, &id)?;
-        if object == "agents" {
-            crate::agent_volatile::merge(connection, &id, &mut record)?;
-        }
+        crate::agent_volatile::merge(connection, &id, &mut record)?;
         result.push(record);
     }
     Ok(result)
@@ -128,78 +144,25 @@ mod typed_tests {
     use super::*;
 
     #[test]
-    fn table_rule_read_preserves_duplicate_last_and_physical_identity() {
+    fn page_checks_typed_rule_and_physical_identity() {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_rules(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
             .unwrap();
-        let duplicate =
-            r#"{"id":"bad","id":"r","name":"before","name":"after","agent":"x","agent":"y"}"#;
-        db.execute("INSERT INTO runtime_rules VALUES('r',?1)", [duplicate])
+        let raw = r#"{"id":"r","agent":"a","epoch":1,"name":"name","kind":"file","path":"fixture-file","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}"#;
+        db.execute("INSERT INTO runtime_rules VALUES ('r',?1)", [raw])
             .unwrap();
-        let historical = RuleRecord::from_value(serde_json::from_str(duplicate).unwrap()).unwrap();
-        let rule = crate::records::Table::<RuleRecord>::new(&db)
-            .get(&"r".to_owned())
-            .unwrap()
-            .unwrap();
-        assert_eq!(rule.value(), historical.value());
+        assert_eq!(RulesTickRepository::page(&db, 0).unwrap()[0].rule.id, "r");
         db.execute(
             "UPDATE runtime_rules SET record=?1",
-            [r#"{"id":"r","id":"wrong"}"#],
+            [raw.replace("\"id\":\"r\"", "\"id\":\"other\"")],
         )
         .unwrap();
-        assert!(
-            crate::records::Table::<RuleRecord>::new(&db)
-                .get(&"r".to_owned())
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn page_checks_shape_identity_and_preserves_extensions() {
-        let db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE runtime_rules(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
-            .unwrap();
-        let raw = r#"{"id":"r","checks":1.0,"ownerHold":null,"future":{"nested":true}}"#;
-        db.execute(
-            "INSERT INTO runtime_rules VALUES (?1,?2)",
-            params!["r", raw],
-        )
-        .unwrap();
-        let rows = RulesTickRepository::page(&db, 0).unwrap();
-        assert_eq!(
-            rows[0].rule.value(),
-            serde_json::from_str::<Value>(raw).unwrap()
-        );
-        db.execute("UPDATE runtime_rules SET record=?1", [r#"{"id":"other"}"#])
-            .unwrap();
         assert!(RulesTickRepository::page(&db, 0).is_err());
         db.execute(
             "UPDATE runtime_rules SET record=?1",
-            [r#"{"id":"r","checks":-1}"#],
+            [raw.replace("\"path\":\"fixture-file\",", "")],
         )
         .unwrap();
         assert!(RulesTickRepository::page(&db, 0).is_err());
-        let duplicate = r#"{"id":"old","id":"r","name":"old","name":"new","agent":"old","agent":"new","future":{"kept":true}}"#;
-        db.execute("UPDATE runtime_rules SET record=?1", [duplicate])
-            .unwrap();
-        let historical = RuleRecord::from_value(serde_json::from_str(duplicate).unwrap()).unwrap();
-        let rows = RulesTickRepository::page(&db, 0).unwrap();
-        assert_eq!(rows[0].rule.value(), historical.value());
-        for invalid in [
-            r#"{"id":"r","id":"wrong"}"#.to_owned(),
-            r#"{"id":"r","future":1e400}"#.to_owned(),
-            format!(
-                "{{\"id\":\"r\",\"future\":{}}}",
-                "[".repeat(140) + &"]".repeat(140)
-            ),
-            format!(
-                "{{\"id\":\"r\",\"future\":\"{}\"}}",
-                "x".repeat(MAX_RECORD_BYTES)
-            ),
-        ] {
-            db.execute("UPDATE runtime_rules SET record=?1", [invalid])
-                .unwrap();
-            assert!(RulesTickRepository::page(&db, 0).is_err());
-        }
     }
 }

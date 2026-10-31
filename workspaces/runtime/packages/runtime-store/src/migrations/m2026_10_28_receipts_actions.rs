@@ -67,6 +67,55 @@ struct InputIntent<'a, T: Serialize> {
     receipt: &'a T,
 }
 
+// The published receipts migration keeps its original operation shape.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FrozenMonitorOperation {
+    agent: String,
+    epoch: i64,
+    account_key: String,
+    connection_id: String,
+    #[serde(flatten)]
+    evidence: FrozenMonitorOperationEvidence,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FrozenMonitorOperationEvidence {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    thread_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "frozen_present"
+    )]
+    root_request_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "frozen_present"
+    )]
+    provider_generation: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "frozen_present"
+    )]
+    provider_request: Option<AdmittedRequest>,
+}
+impl PartialEq for FrozenMonitorOperationEvidence {
+    fn eq(&self, other: &Self) -> bool {
+        self.root_request_id == other.root_request_id
+            && self.provider_generation == other.provider_generation
+            && self.provider_request == other.provider_request
+    }
+}
+fn frozen_present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> std::result::Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LegacyMonitorOperation {
@@ -1099,11 +1148,16 @@ fn agent_owners(
     if value["nativeRelease"].is_object() {
         let mut release = value["nativeRelease"].clone();
         let _ = row.json::<LegacyReleaseProbe>(table)?.native_release.phase;
-        let operation = format!("{}:unsubscribe", string(&release, "id", table, row)?);
-        let account = release["accountKey"].as_str().unwrap_or("default");
-        release["admittedRequest"] = match retained(tx, table, row, account, &operation, cutover)? {
-            Some((_, token)) => json!(token),
-            None => Value::Null,
+        // The retired Python backend saved releases without an id; no request can match one.
+        release["admittedRequest"] = if release.get("id").is_none() {
+            Value::Null
+        } else {
+            let operation = format!("{}:unsubscribe", string(&release, "id", table, row)?);
+            let account = release["accountKey"].as_str().unwrap_or("default");
+            match retained(tx, table, row, account, &operation, cutover)? {
+                Some((_, token)) => json!(token),
+                None => Value::Null,
+            }
         };
         if release["authorization"].is_object() {
             let mut auth = release["authorization"].clone();
@@ -1171,7 +1225,7 @@ fn monitor_operation(
     id: &str,
     operation: LegacyMonitorOperation,
     cutover: i64,
-) -> Result<crate::MonitorOperation> {
+) -> Result<FrozenMonitorOperation> {
     let table = "runtime_monitors";
     let invalid = || unclassifiable(table, &row.id, &row.signature);
     let authority = retained(
@@ -1210,7 +1264,7 @@ fn monitor_operation(
         {
             return Err(invalid());
         }
-        crate::MonitorOperationEvidence {
+        FrozenMonitorOperationEvidence {
             thread_id: None,
             root_request_id: Some(call.root_request_id),
             provider_request: Some(token),
@@ -1251,14 +1305,14 @@ fn monitor_operation(
         } else {
             RequestIdentity::issue_root()
         };
-        crate::MonitorOperationEvidence {
+        FrozenMonitorOperationEvidence {
             thread_id: None,
             root_request_id: Some(root),
             provider_request: None,
             provider_generation: operation.provider_generation,
         }
     };
-    Ok(crate::MonitorOperation {
+    Ok(FrozenMonitorOperation {
         agent: operation.agent,
         epoch: operation.epoch,
         account_key: operation.account_key,
@@ -1752,7 +1806,7 @@ mod tests {
     use rusqlite::Connection;
     #[derive(Deserialize)]
     struct MonitorOperationView {
-        operation: crate::MonitorOperation,
+        operation: FrozenMonitorOperation,
     }
     fn fixture(db: &Connection) {
         db.execute_batch("CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT); CREATE TABLE runtime_native_action_receipts(id TEXT PRIMARY KEY,signature TEXT,receipt TEXT,outcome TEXT); CREATE TABLE user_terminal_receipts(id TEXT PRIMARY KEY,signature TEXT,result TEXT); CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);").expect("source");
@@ -1798,7 +1852,7 @@ mod tests {
                 json!({"accountKey":"account","epoch":3,"status":"running","startedAt":1.0}),
             ),
         ] {
-            db.execute("INSERT INTO runtime_monitors VALUES(?1,?2)", params![id, json!({"id":id,"rootRequestId":"root","finished":null,"error":null,"reattachRecovery":recovery}).to_string()]).expect("monitor");
+            db.execute("INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)", params![id, json!({"id":id,"rootRequestId":"root","finished":null,"error":null,"reattachRecovery":recovery}).to_string()]).expect("monitor");
         }
         db.execute("UPDATE runtime_monitors SET record=json_set(record,'$.error','existing') WHERE id='one'", []).expect("existing error");
         batch(&mut db, "runtime_monitors").expect("migration");
@@ -1831,6 +1885,29 @@ mod tests {
             .expect("count query")
             .expect("count");
         assert_eq!(count.cursor, 2);
+    }
+    #[test]
+    fn receipts_actions_python_release_without_id_has_no_admitted_request() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&db);
+        let release = json!({"phase":"released","threadId":"t","accountKey":"a","connectionId":"c","at":1.0,"submittedAt":1.0,"releasedAt":1.0,"nativeStatus":"unsubscribed","error":null,"resetPending":false,"closedAt":2.0});
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('agent',?1)",
+            [json!({"id":"agent","epoch":0,"nativeRelease":release}).to_string()],
+        )
+        .expect("agent");
+        batch(&mut db, "runtime_agents").expect("migrate agents");
+        let record: Value = serde_json::from_str(
+            &db.query_row(
+                "SELECT record FROM runtime_agents WHERE id='agent'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .expect("record"),
+        )
+        .expect("json");
+        assert_eq!(record["nativeRelease"]["admittedRequest"], Value::Null);
+        assert_eq!(record["nativeRelease"]["phase"], "released");
     }
     #[test]
     fn receipts_actions_unchanged_agent_keeps_transcript_revision() {
@@ -1883,8 +1960,8 @@ mod tests {
     fn receipts_actions_legacy_numeric_ticket_remains_readable() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&db);
-        db.execute("INSERT INTO runtime_agents VALUES('agent',?1)", [json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91}}).to_string()]).expect("legacy agent");
-        db.execute("INSERT INTO runtime_agents VALUES('real',?1)", [json!({"id":"real","rootId":"real","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91.0}}).to_string()]).expect("legacy real ticket");
+        db.execute("INSERT INTO runtime_agents VALUES('agent',?1)", [json!({"compactions":0,"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91}}).to_string()]).expect("legacy agent");
+        db.execute("INSERT INTO runtime_agents VALUES('real',?1)", [json!({"compactions":0,"id":"real","rootId":"real","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91.0}}).to_string()]).expect("legacy real ticket");
         batch(&mut db, "runtime_agents").expect("migrate agent");
         let tx = db.transaction().expect("account migration transaction");
         super::super::m2026_10_28_agent_account::apply(&tx).expect("materialize accounts");
@@ -1901,8 +1978,8 @@ mod tests {
                 .expect("agent record");
             assert_eq!(
                 agent
-                    .start_attempt()
-                    .expect("typed start attempt")
+                    .start_attempt
+                    .as_ref()
                     .expect("attempt")
                     .request_ticket
                     .as_deref(),
@@ -2335,7 +2412,7 @@ mod tests {
         let operation =
             json!({"agent":"agent","epoch":1,"accountKey":"account","connectionId":"1"});
         db.execute(
-            "INSERT INTO runtime_monitors VALUES('monitor',?1)",
+            "INSERT INTO runtime_monitors(id,record) VALUES('monitor',?1)",
             [json!({"operation":operation,"streamQueue":[{"operation":operation}]}).to_string()],
         )
         .expect("monitor owner");
@@ -2511,7 +2588,7 @@ mod tests {
             let original = json!({"id":"watch","operation":operation,"untouched":{"future":[1,2]}})
                 .to_string();
             db.execute(
-                "INSERT INTO runtime_monitors VALUES('watch',?1)",
+                "INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
                 [&original],
             )
             .expect("monitor");
@@ -2561,7 +2638,7 @@ mod tests {
     fn receipts_actions_monitor_input_preserves_unresolved_and_rejects_unrecognized() {
         #[derive(Deserialize)]
         struct Saved {
-            receipt: MonitorReceipt<crate::MonitorOperation>,
+            receipt: MonitorReceipt<FrozenMonitorOperation>,
         }
         for (status, recognized) in [("Pending", true), ("Unknown", true), ("future", false)] {
             let mut db = Connection::open_in_memory().expect("database");

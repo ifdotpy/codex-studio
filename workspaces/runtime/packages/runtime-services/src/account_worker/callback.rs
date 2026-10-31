@@ -2,7 +2,7 @@
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_providers::{Frame, ResponseBody};
-use studio_runtime_store::{RuntimeStore, system_reads};
+use studio_runtime_store::{AgentExecutionMode, AgentRecord, JsonRecord, RuntimeStore};
 use tokio::sync::Notify;
 
 pub enum CallbackDecision {
@@ -566,17 +566,14 @@ pub(super) fn callback_context_in(
         return Ok(None);
     }
     let (agent_id, raw) = &candidates[0];
-    let agent = system_reads::decode("runtime_agents", agent_id, raw)?;
-    let Some(agent_id) = agent["id"].as_str() else {
-        return Ok(None);
-    };
-    let (Some(epoch), Some(thread), Some(turn), Some(connection)) = (
-        agent["epoch"].as_u64(),
-        agent["threadId"].as_str(),
-        agent["turnId"].as_str(),
+    let agent = AgentRecord::decode_stored(db, agent_id, raw)?;
+    let (Some(connection), Some(epoch), Some(thread), Some(turn)) = (
         agent
-            .pointer("/startAttempt/connectionId")
-            .and_then(Value::as_str),
+            .start_attempt
+            .and_then(|attempt| attempt.connection_id),
+        u64::try_from(agent.epoch).ok(),
+        agent.thread_id,
+        agent.turn_id,
     ) else {
         return Ok(None);
     };
@@ -586,16 +583,16 @@ pub(super) fn callback_context_in(
     Ok(Some(crate::provider_callbacks::CallbackContext {
         agent: agent_id.to_owned(),
         account: account.to_owned(),
-        stream_id: if agent["executionMode"] == "vm" {
+        stream_id: if agent.execution_mode == Some(AgentExecutionMode::Vm) {
             super::vm_journal_scope(account, agent_id)
         } else {
             account.to_owned()
         },
-        connection: connection.to_owned(),
+        connection,
         generation,
         epoch,
-        thread: thread.to_owned(),
-        turn: turn.to_owned(),
+        thread,
+        turn,
     }))
 }
 
@@ -683,7 +680,7 @@ mod tests {
         drop(connection);
 
         let agent = |id: &str| {
-            json!({
+            json!({"compactions":0,
                 "id": id, "rootId": id, "epoch": 1, "status": "running", "autoWake": true,
                 "provider": studio_runtime_schema::ProviderKind::Codex,
                 "accountKey": "account-a", "threadId": "thread-a", "turnId": "turn-a",
@@ -739,6 +736,22 @@ mod tests {
                 .expect("the waiting turn")
                 .agent,
             "agent-a"
+        );
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.model',123) WHERE id='agent-a'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("malformed agent update");
+        let error = callback_context(&store, "account-a", 7, None, "thread-a", Some("turn-a"))
+            .await
+            .expect_err("malformed agent fails at the record decoder");
+        assert!(
+            matches!(error, studio_runtime_store::StoreError::InvalidSyncObjectField { reason, .. } if reason.starts_with("record_decode"))
         );
         assert!(
             callback_context(&store, "account-b", 7, None, "thread-a", Some("turn-a"))
@@ -813,7 +826,7 @@ mod catalog_wait_tests {
                 .await
                 .expect("runtime store"),
         );
-        let agent = json!({
+        let agent = json!({"compactions":0,
             "provider": "codex", "id": "agent-a", "rootId": "agent-a", "epoch": 1, "status": "running",
             "autoWake": true, "accountKey": "account-a", "threadId": "thread-a",
             "turnId": "turn-a",

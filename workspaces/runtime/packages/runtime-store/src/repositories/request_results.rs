@@ -66,56 +66,7 @@ pub struct RequestReference {
     pub revision: i64,
 }
 
-/// Persist this with the admitted owner/outbox for asynchronous settlement.
-/// Deserialization is for trusted owner state, never unauthenticated ingress.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(test, derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
-pub struct AdmittedRequest {
-    id: String,
-    signature: String,
-    created: i64,
-}
-impl AdmittedRequest {
-    /// Restore a token from a previously validated persisted owner record.
-    pub fn from_persisted_fields(id: String, signature: String, created: i64) -> Self {
-        Self {
-            id,
-            signature,
-            created,
-        }
-    }
-    /// A result suboperation of this persisted admitted owner token. This is
-    /// completion, never ingress: preserve issuance and do not refresh its TTL.
-    pub fn derive_result(&self, namespace: &str, operation: &[&str], signature: &str) -> Self {
-        // A tuple of strings always serializes. The owner token remains the scope fence.
-        let id = serde_json::to_string(&("owner-result", namespace, &self.id, operation))
-            .expect("owner result identity serializes");
-        Self {
-            id,
-            signature: signature.into(),
-            created: self.created,
-        }
-    }
-
-    /// Used only by classified cutover migrations, never to admit a runtime caller.
-    pub(crate) fn from_migration(id: &str, signature: &str, cutover_ms: i64) -> Self {
-        Self {
-            id: id.into(),
-            signature: signature.into(),
-            created: cutover_ms,
-        }
-    }
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-    pub fn signature(&self) -> &str {
-        &self.signature
-    }
-    pub fn created(&self) -> i64 {
-        self.created
-    }
-}
+pub use studio_runtime_schema::persistence::AdmittedRequest;
 
 #[derive(Debug)]
 pub enum Admission {
@@ -339,11 +290,11 @@ impl RequestResults {
             return Ok(Admission::Replay(row));
         }
         identity.validate(now_ms, Self::expired_before_ms(tx)?)?;
-        Ok(Admission::Fresh(AdmittedRequest {
-            id: identity.id().into(),
-            signature: signature.into(),
-            created: identity.issued_ms(),
-        }))
+        Ok(Admission::Fresh(AdmittedRequest::from_persisted_fields(
+            identity.id().into(),
+            signature.into(),
+            identity.issued_ms(),
+        )))
     }
 
     /// Completion remains allowed after expiry; it never authorizes another external attempt.
@@ -355,9 +306,9 @@ impl RequestResults {
     ) -> Result<StoredResult> {
         Self::settle_exact(
             tx,
-            &admitted.id,
-            &admitted.signature,
-            admitted.created,
+            admitted.id(),
+            admitted.signature(),
+            admitted.created(),
             result,
         )
     }

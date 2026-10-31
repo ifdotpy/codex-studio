@@ -84,8 +84,10 @@ pub fn saved_result(
     let Some(task) = records::get(connection, TABLE, id)? else {
         return Ok(None);
     };
-    if !terminal(&task)? || (read_only(connection, id)? && connection.query_row("SELECT coalesce(json_type(record,'$.result')='object',0) FROM runtime_tool_requests WHERE id=?1", [id], |row| row.get::<_, bool>(0))?) {
-        return Ok(task.get("result").cloned());
+    if (!terminal(&task)? || read_only(connection, id)?)
+        && let Some(result) = task.get("result").filter(|value| !value.is_null())
+    {
+        return Ok(Some(result.clone()));
     }
     let admitted = admitted(&task)?;
     let now = crate::event_write::unix_time()
@@ -604,10 +606,38 @@ pub(crate) fn reconcile_effect(
     record: &Value,
     actor: &Value,
 ) -> Result<(), StoreError> {
+    let source = EffectSource::Legacy(record);
+    reconcile_effect_source(tx, kind, &source, actor)
+}
+
+pub(crate) fn reconcile_request_effect(
+    tx: &Transaction<'_>,
+    record: &studio_runtime_store::RequestRecord,
+    actor: &Value,
+) -> Result<(), StoreError> {
+    reconcile_effect_source(
+        tx,
+        ExecutionEffectKind::Requests,
+        &EffectSource::Request(record),
+        actor,
+    )
+}
+
+enum EffectSource<'a> {
+    Legacy(&'a Value),
+    Request(&'a studio_runtime_store::RequestRecord),
+}
+
+fn reconcile_effect_source(
+    tx: &Transaction<'_>,
+    kind: ExecutionEffectKind,
+    record: &EffectSource<'_>,
+    actor: &Value,
+) -> Result<(), StoreError> {
     if !records::exists(tx, "runtime_execution_effects")? {
         return Ok(());
     }
-    let key = format!("{}:{}", kind.as_str(), text(record, "id"));
+    let key = format!("{}:{}", kind.as_str(), record.id());
     let old = records::get(tx, "runtime_execution_effects", &key)?;
     let mut run = old
         .as_ref()
@@ -616,10 +646,7 @@ pub(crate) fn reconcile_effect(
         .transpose()?
         .flatten();
     if run.is_none() {
-        let turn = record
-            .get("turnId")
-            .filter(|v| truthy(Some(v)))
-            .or_else(|| actor.get("turnId"));
+        let (turn, has_turn) = record.turn(actor);
         let account = actor["accountKey"].as_str().unwrap_or("default");
         let mut statement = tx.prepare_cached(
             "SELECT id,record FROM runtime_execution_runs WHERE agent=?1 AND account=?2
@@ -633,16 +660,16 @@ pub(crate) fn reconcile_effect(
                     actor["id"].as_str(),
                     account,
                     actor["threadId"].as_str(),
-                    turn.and_then(Value::as_str),
+                    turn,
                     actor["epoch"].as_i64().unwrap_or(0),
-                    truthy(turn)
+                    has_turn
                 ],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )?
             .collect::<Result<Vec<_>, _>>()?;
         if rows.len() == 1 {
             let candidate = records::decode("runtime_execution_runs", &rows[0].0, &rows[0].1)?;
-            if truthy(turn)
+            if has_turn
                 || !matches!(
                     text(&candidate, "status"),
                     "completed" | "failed" | "interrupted" | "cancelled"
@@ -657,17 +684,67 @@ pub(crate) fn reconcile_effect(
     };
     let run_id = old.as_ref().map(|v| &v["runId"]).unwrap_or(&run["id"]);
     let status: ExecutionEffectStatus = record
-        .get("stage")
-        .unwrap_or(&record["status"])
-        .as_str()
-        .and_then(|value| value.parse().ok())
-        .ok_or_else(|| records::invalid("runtime_execution_effects", &key))?;
-    let value = json!({"id":key,"runId":run_id,"kind":kind,"referenceId":record["id"],"attemptId":old.as_ref().map(|v|&v["attemptId"]).unwrap_or(&run["latestAttemptId"]),"requestId":record.get("request_id").filter(|v|truthy(Some(v))).or_else(||record.get("callId")).or_else(||record.get("requestId")),"status":status,"outcome":record["outcome"],"resultReference":if truthy(record.get("finished")){record["id"].clone()}else{Value::Null}});
+        .status()
+        .parse()
+        .map_err(|_| records::invalid("runtime_execution_effects", &key))?;
+    let (request_id, outcome, finished) = record.details();
+    let value = json!({"id":key,"runId":run_id,"kind":kind,"referenceId":record.id(),"attemptId":old.as_ref().map(|v|&v["attemptId"]).unwrap_or(&run["latestAttemptId"]),"requestId":request_id,"status":status,"outcome":outcome,"resultReference":if finished { Some(record.id()) } else { None }});
     records::validate("runtime_execution_effects", &key, value.clone())?;
     if old.as_ref() != Some(&value) {
-        tx.execute("INSERT INTO runtime_execution_effects(id,run,kind,reference,record) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![key,run_id.as_str(),kind,record["id"].as_str(),value.to_string()])?;
+        tx.execute("INSERT INTO runtime_execution_effects(id,run,kind,reference,record) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![key,run_id.as_str(),kind,Some(record.id()),value.to_string()])?;
     }
     Ok(())
+}
+impl<'a> EffectSource<'a> {
+    fn id(&self) -> &str {
+        match self {
+            Self::Legacy(record) => text(record, "id"),
+            Self::Request(record) => &record.id,
+        }
+    }
+    fn status(&self) -> &str {
+        match self {
+            Self::Legacy(record) => record
+                .get("stage")
+                .unwrap_or(&record["status"])
+                .as_str()
+                .unwrap_or_default(),
+            Self::Request(record) => record.status.as_str(),
+        }
+    }
+    fn turn<'b>(&'b self, actor: &'b Value) -> (Option<&'b str>, bool) {
+        match self {
+            Self::Legacy(record) => {
+                let turn = record
+                    .get("turnId")
+                    .filter(|v| truthy(Some(v)))
+                    .or_else(|| actor.get("turnId"));
+                (turn.and_then(Value::as_str), truthy(turn))
+            }
+            Self::Request(record) => {
+                let turn = record
+                    .turn_id
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| actor.get("turnId").and_then(Value::as_str));
+                (turn, turn.is_some_and(|s| !s.is_empty()))
+            }
+        }
+    }
+    fn details(&self) -> (Option<&Value>, Option<&Value>, bool) {
+        match self {
+            Self::Legacy(record) => (
+                record
+                    .get("request_id")
+                    .filter(|v| truthy(Some(v)))
+                    .or_else(|| record.get("callId"))
+                    .or_else(|| record.get("requestId")),
+                record.get("outcome"),
+                truthy(record.get("finished")),
+            ),
+            Self::Request(_) => (None, None, false),
+        }
+    }
 }
 fn terminal_payload_needed(record: &Value) -> bool {
     matches!(
@@ -700,6 +777,32 @@ pub fn expire(result: &mut Value, now: f64) {
 #[cfg(test)]
 mod admission_lookup_tests {
     use super::*;
+
+    #[test]
+    fn unknown_finished_receipt_reads_externalized_result() {
+        let db = studio_runtime_store::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL); CREATE TABLE request_results(id TEXT PRIMARY KEY, signature TEXT NOT NULL, result TEXT NOT NULL, created INTEGER NOT NULL);").unwrap();
+        let record = json!({"id":"request", "agent":"agent", "stage":"interrupted", "outcome":"unknown", "finished":1, "admitted":{"id":"request", "signature":"sig", "created":1}});
+        db.execute(
+            "INSERT INTO runtime_tool_requests VALUES(?1,?2)",
+            params!["request", record.to_string()],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO request_results VALUES(?1,?2,?3,?4)",
+            params![
+                "request",
+                "sig",
+                r#"{"actor":null,"reply":{"outcome":"unknown"},"references":[]}"#,
+                i64::MAX
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            saved_result(&db, "request").unwrap(),
+            Some(json!({"outcome":"unknown"}))
+        );
+    }
 
     #[test]
     fn direct_and_alias_lookup_preserve_ownership_and_ambiguity() {

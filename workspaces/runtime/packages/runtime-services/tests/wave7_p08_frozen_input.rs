@@ -104,7 +104,15 @@ async fn fresh_freeze_matches_python_capture_and_legacy_retry_stays_held() {
             case["frozen"]
         );
         let agent = row(&db, "runtime_agents", "agent");
-        assert_eq!(agent["startAttempt"]["claudeInputRequest"], case["frozen"]);
+        let mut projected = case["frozen"].clone();
+        if let Some(source) = projected.get_mut("source").and_then(Value::as_object_mut) {
+            for field in ["effort", "fastMode", "nativeEffort", "parentId"] {
+                if source.get(field).is_some_and(Value::is_null) {
+                    source.remove(field);
+                }
+            }
+        }
+        assert_eq!(agent["startAttempt"]["claudeInputRequest"], projected);
         assert!(agent.get("claudePreInputRetry").is_none());
         drop(db);
         drop(store);
@@ -311,6 +319,11 @@ async fn retry_attempt_owner_preserves_nullable_identity_and_frozen_receipt() {
                 "UPDATE runtime_execution_attempts SET record=?1 WHERE id='attempt'",
                 [&raw],
             )?;
+            assert!(ClaudeRetryRepository::load(tx, "agent", "attempt").is_err());
+            tx.execute(
+                "UPDATE runtime_execution_attempts SET record=?1 WHERE id='attempt'",
+                [&serialized],
+            )?;
             let saved = ClaudeRetryRepository::load(tx, "agent", "attempt")?.unwrap();
             assert_eq!(saved.attempt.id(), "attempt");
             assert_eq!(saved.attempt.events().unwrap(), ["one", "two"]);
@@ -354,7 +367,7 @@ async fn retry_metadata_admission_and_frozen_assets_keep_legacy_evidence() {
         (
             "duplicate",
             Some(r#"{"assets":null,"assets":["last"],"future":1,"future":2}"#),
-            Some(json!({"assets":["last"],"future":2})),
+            None,
         ),
         ("malformed", Some("{"), None),
     ] {
@@ -379,9 +392,8 @@ async fn retry_metadata_admission_and_frozen_assets_keep_legacy_evidence() {
                     }
                 }
                 match (name, ClaudeRetryRepository::load(tx, "agent", "attempt")) {
-                    ("malformed", Err(StoreError::Json(_))) => {}
                     (
-                        "null" | "assets-null",
+                        "null" | "assets-null" | "duplicate" | "malformed",
                         Err(StoreError::InvalidStoredRecord { object, id }),
                     ) => {
                         assert_eq!(object, "claude retry");

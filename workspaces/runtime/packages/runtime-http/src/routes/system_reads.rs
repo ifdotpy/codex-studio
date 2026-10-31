@@ -58,7 +58,7 @@ pub(crate) fn routes() -> RouteGroup {
 async fn directories(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<crate::generated::DirectoriesResponse>, ApiError> {
+) -> Result<Json<system_reads::DirectoryListing>, ApiError> {
     let server = query
         .typed_value("server")
         .and_then(Value::as_str)
@@ -165,7 +165,7 @@ async fn directories(
                 ));
             }
         };
-        return serde_json::from_str::<crate::generated::DirectoriesResponse>(value.value.get())
+        return serde_json::from_str::<system_reads::DirectoryListing>(value.value.get())
             .map(Json)
             .map_err(ApiError::json);
     }
@@ -180,10 +180,7 @@ async fn directories(
     .await
     .map_err(|_| ApiError::internal())?
     .map_err(directory_error)?;
-    super::generated_json::<crate::generated::DirectoriesResponse>(
-        serde_json::to_value(result).map_err(|_| ApiError::internal())?,
-    )
-    .map(Json)
+    Ok(Json(result))
 }
 
 async fn diagnostics(
@@ -404,7 +401,7 @@ struct AnalyticsCaptureStatus {
 impl AnalyticsCaptureStatus {
     fn from_read(
         read: Result<
-            Result<studio_runtime_store::analytics::CaptureErrorSummary, ()>,
+            Result<studio_runtime_store::analytics::CaptureErrors, ()>,
             tokio::task::JoinError,
         >,
     ) -> Self {

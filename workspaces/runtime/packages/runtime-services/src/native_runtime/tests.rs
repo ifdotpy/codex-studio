@@ -357,6 +357,36 @@ fn approve(runtime: &NativeRuntime, binary: &Path) -> Value {
         .clone()
 }
 
+#[cfg(unix)]
+#[test]
+fn retained_bundle_reuses_verified_hashes_and_rejects_modification() {
+    let (_temp, root, binary) = fixture();
+    let runtime = runtime(&root);
+    let record = approve(&runtime, &binary);
+    drop(runtime.retain_selected().expect("verify installed bundle"));
+    let path = PathBuf::from(record["path"].as_str().expect("installed path"));
+    assert!(
+        super::HASHES
+            .lock()
+            .expect("hash cache")
+            .contains_key(&path)
+    );
+    drop(runtime.retain_selected().expect("reuse verified hashes"));
+    let modified = fs::metadata(&path)
+        .expect("metadata")
+        .modified()
+        .expect("mtime");
+    fs::write(&path, "version=9.9.9\n").expect("modify installed executable");
+    fs::File::open(&path)
+        .expect("open installed executable")
+        .set_times(fs::FileTimes::new().set_modified(modified))
+        .expect("restore mtime");
+    assert!(matches!(
+        runtime.retain_selected(),
+        Err(NativeRuntimeError::InvalidBundle)
+    ));
+}
+
 #[test]
 fn discovery_approval_switch_and_release_keep_a_live_session_bundle() {
     let (_temp, root, binary) = fixture();

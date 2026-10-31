@@ -1,7 +1,7 @@
 //! Read persisted rule and owner records for the rules list.
 
 use rusqlite::{Connection, Transaction};
-use serde_json::{Value, json};
+use serde::Serialize;
 
 use crate::StoreResult;
 use crate::records::{AgentId, AgentRecord, RuleRecord, Table};
@@ -52,15 +52,18 @@ impl RulesRepository {
         Table::<AgentRecord>::new(connection).get(&AgentId::from(id))
     }
 
-    pub fn put(transaction: &Transaction<'_>, record: &RuleRecord) -> StoreResult<()> {
-        let id = record.id().as_ref();
+    pub fn publish_entity(transaction: &Transaction<'_>, record: &RuleRecord) -> StoreResult<()> {
         put_rule_entity(
             transaction,
-            id,
-            record.agent.as_deref(),
-            record.name.as_ref().map(|name| name.as_str()),
+            record.id(),
+            Some(&record.agent),
+            Some(record.name.as_str()),
             false,
-        )?;
+        )
+    }
+
+    pub fn put(transaction: &Transaction<'_>, record: &RuleRecord) -> StoreResult<()> {
+        Self::publish_entity(transaction, record)?;
         Table::<RuleRecord>::new(transaction).put(record)
     }
 
@@ -92,21 +95,39 @@ fn put_rule_entity(
     name: Option<&str>,
     deleted: bool,
 ) -> StoreResult<()> {
-    let mut value = serde_json::Map::new();
-    if !deleted {
-        value.insert("id".to_owned(), Value::String(id.to_owned()));
-        if let Some(agent) = agent {
-            value.insert("agent".to_owned(), Value::String(agent.to_owned()));
-        }
-        if let Some(name) = name {
-            value.insert("name".to_owned(), Value::String(name.to_owned()));
-        }
+    #[derive(Serialize)]
+    struct RuleProjection<'a> {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        agent: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<&'a str>,
     }
-    let payload = serde_json::to_string(&json!({
-        "collection": "rule",
-        "id": id,
-        "value": value,
-    }))?;
+    #[derive(Serialize)]
+    struct Envelope<'a> {
+        collection: &'static str,
+        id: &'a str,
+        value: RuleProjection<'a>,
+    }
+    let value = if deleted {
+        RuleProjection {
+            id: None,
+            agent: None,
+            name: None,
+        }
+    } else {
+        RuleProjection {
+            id: Some(id),
+            agent,
+            name,
+        }
+    };
+    let payload = serde_json::to_string(&Envelope {
+        collection: "rule",
+        id,
+        value,
+    })?;
     SyncDocumentsRepository::put_entity_payload(transaction, "rule", id, &payload, deleted)?;
     Ok(())
 }
@@ -122,9 +143,9 @@ mod tests {
         db.execute_batch(
             &crate::agent_columns::fixture_sql("CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             INSERT INTO runtime_rules VALUES('r2','{\"id\":\"r2\",\"kind\":\"interval\"}');
-             INSERT INTO runtime_rules VALUES('r1','{\"id\":\"r1\",\"kind\":\"interval\"}');
-             INSERT INTO runtime_agents(id,record) VALUES('a1','{\"id\":\"a1\",\"provider\":\"codex\",\"accountKey\":\"default\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');"),
+             INSERT INTO runtime_rules VALUES('r2','{\"id\":\"r2\",\"agent\":\"a1\",\"epoch\":0,\"name\":\"Rule\",\"kind\":\"interval\",\"status\":\"active\",\"intervalSeconds\":60,\"nextAt\":1,\"created\":1,\"command\":\"\",\"text\":\"\",\"checks\":0,\"wakes\":0,\"inFlight\":false,\"fileGeneration\":0,\"stallTimeoutSeconds\":1800,\"stallWakeGeneration\":-1,\"livenessCommand\":\"\",\"event\":\"\"}');
+             INSERT INTO runtime_rules VALUES('r1','{\"id\":\"r1\",\"agent\":\"a1\",\"epoch\":0,\"name\":\"Rule\",\"kind\":\"interval\",\"status\":\"active\",\"intervalSeconds\":60,\"nextAt\":1,\"created\":1,\"command\":\"\",\"text\":\"\",\"checks\":0,\"wakes\":0,\"inFlight\":false,\"fileGeneration\":0,\"stallTimeoutSeconds\":1800,\"stallWakeGeneration\":-1,\"livenessCommand\":\"\",\"event\":\"\"}');
+             INSERT INTO runtime_agents(id,record) VALUES('a1','{\"id\":\"a1\",\"provider\":\"codex\",\"accountKey\":\"default\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\",\"compactions\":0}');"),
         )
         .expect("declared tables create");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
@@ -157,7 +178,6 @@ mod tests {
     fn rule_mutations_keep_the_renderer_entity_in_the_same_transaction() {
         use crate::records::RuleRecord;
         use rusqlite::TransactionBehavior;
-        use serde_json::json;
 
         let mut db = Connection::open_in_memory().expect("in-memory database opens");
         db.execute_batch(
@@ -165,7 +185,7 @@ mod tests {
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                  PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-             CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
+             CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);",
         )
         .expect("rule and sync tables create");
         {
@@ -174,9 +194,7 @@ mod tests {
                 .expect("writer transaction opens");
             RulesRepository::put(
                 &transaction,
-                &RuleRecord::from_value(
-                    json!({"id":"r1","agent":"a1","name":"Check","kind":"interval"}),
-                )
+                &serde_json::from_str::<RuleRecord>(r#"{"id":"r1","agent":"a1","epoch":0,"name":"Check","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}"#)
                 .expect("rule has an id"),
             )
             .expect("rule is persisted");
@@ -220,7 +238,6 @@ mod tests {
     fn failed_rule_write_rolls_back_its_sync_entity_in_the_same_transaction() {
         use crate::records::RuleRecord;
         use rusqlite::OptionalExtension;
-        use serde_json::json;
 
         let mut db = Connection::open_in_memory().expect("in-memory database opens");
         db.execute_batch(
@@ -228,7 +245,7 @@ mod tests {
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                  PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-             CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+             CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
              CREATE TRIGGER fail_rule_insert BEFORE INSERT ON runtime_rules
                  BEGIN SELECT RAISE(ABORT,'injected'); END;",
         )
@@ -237,9 +254,7 @@ mod tests {
         let transaction = db.transaction().expect("writer transaction opens");
         let error = RulesRepository::put(
             &transaction,
-            &RuleRecord::from_value(
-                json!({"id":"rollback-rule","agent":"a1","name":"Rollback","kind":"interval"}),
-            )
+            &serde_json::from_str::<RuleRecord>(r#"{"id":"rollback-rule","agent":"a1","epoch":0,"name":"Rollback","kind":"interval","status":"active","intervalSeconds":60,"nextAt":1,"created":1,"command":"","text":"","checks":0,"wakes":0,"inFlight":false,"fileGeneration":0,"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"livenessCommand":"","event":""}"#)
             .expect("rule has a valid ID"),
         )
         .expect_err("injected rule storage failure is returned");
@@ -270,8 +285,8 @@ mod tests {
     fn active_check_lookup_is_filtered_and_ignores_unrelated_invalid_rows() {
         let db = Connection::open_in_memory().expect("in-memory database opens");
         db.execute_batch(
-            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             INSERT INTO runtime_monitors VALUES
+            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
+             INSERT INTO runtime_monitors(id,record) VALUES
                  ('m1','{\"id\":\"m1\",\"agent\":\"a1\",\"ruleId\":\"r1\",\"status\":\"running\",\"created\":1}'),
                  ('unrelated','{\"id\":\"unrelated\",\"status\":false}');",
         )

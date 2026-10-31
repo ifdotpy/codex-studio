@@ -86,7 +86,7 @@ async fn store(
         .expect("runtime store opens");
     let id = "browser-paste-card".to_owned();
     let record = json!({
-        "id": id, "agent": AGENT, "method": "browser/open", "status": "pending",
+        "id": id, "agent": AGENT, "method": "browser/open", "status": "pending", "createdAt": 1.0,
         "params": {"bridgeId": BRIDGE, "url": url, "host": "id.example.com", "redirect": redirect,
                    "source": "vm", "expiresAt": 600.0}
     });
@@ -97,7 +97,7 @@ async fn store(
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 [
                     AGENT,
-                    &json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":AGENT,"rootId":AGENT,"epoch":1,"status":"running","autoWake":true})
+                    &json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":AGENT,"rootId":AGENT,"epoch":1,"status":"running","autoWake":true})
                         .to_string(),
                 ],
             )
@@ -113,16 +113,12 @@ async fn store(
     (dir, store, id)
 }
 
-fn context(
-    guest: Arc<ScriptGuest>,
-    local: bool,
-) -> BrowserAnswerContext<impl Fn(&Value) -> bool + Send + Sync + 'static> {
+fn context(guest: Arc<ScriptGuest>, local: bool) -> BrowserAnswerContext {
     BrowserAnswerContext {
         local_window: local,
         guest,
         local_forwarder: None,
         now: 100.0,
-        validate: |_: &Value| true,
         http_providers: Default::default(),
     }
 }

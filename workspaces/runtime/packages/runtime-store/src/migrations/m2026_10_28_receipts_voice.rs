@@ -823,7 +823,7 @@ mod tests {
         let tx = db.transaction().unwrap();
         prepare_schema(&tx).unwrap();
         VoiceMigration.prepare(&tx, 1000).unwrap();
-        tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","provider":"codex","isLead":true,"accountKey":"account","executionMode":"host"}).to_string()]).unwrap();
+        tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"compactions":0,"id":"agent","rootId":"agent","epoch":1,"status":"idle","provider":"codex","isLead":true,"accountKey":"account","executionMode":"host"}).to_string()]).unwrap();
         crate::AgentRepository::get(&tx, &crate::AgentId::from("agent"))
             .expect("typed agent")
             .expect("agent exists");

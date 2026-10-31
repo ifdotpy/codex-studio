@@ -13,6 +13,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     time::{SystemTime, UNIX_EPOCH},
 };
+use studio_client_domain::json_object::optional_field;
 
 pub fn initialize(db: &Connection) -> rusqlite::Result<()> {
     db.execute_batch("CREATE TABLE IF NOT EXISTS client_draft_device (singleton INTEGER PRIMARY KEY CHECK(singleton=1), device TEXT NOT NULL);
@@ -174,13 +175,6 @@ enum DraftResult {
     Pending(PendingDrafts),
 }
 
-// Invalid scalar types retain their original access-time defaults and errors.
-fn text_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    Ok(Value::deserialize(d)?.as_str().map(str::to_owned))
-}
-fn unsigned_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
-    Ok(Value::deserialize(d)?.as_u64())
-}
 fn project<T: for<'de> Deserialize<'de> + Default>(value: &Value) -> T {
     if value.is_object() {
         T::deserialize(value).unwrap_or_default()
@@ -189,32 +183,25 @@ fn project<T: for<'de> Deserialize<'de> + Default>(value: &Value) -> T {
     }
 }
 #[derive(Default, Deserialize)]
-struct DraftWorkspace {
-    #[serde(default, deserialize_with = "text_field")]
+struct DraftInput {
+    #[serde(default, deserialize_with = "optional_field")]
     workspace: Option<String>,
-}
-#[derive(Default, Deserialize)]
-struct DraftStatus {
-    #[serde(default, deserialize_with = "text_field")]
+    #[serde(default, deserialize_with = "optional_field")]
     error: Option<String>,
+    #[serde(default, deserialize_with = "optional_field")]
+    checkpoint: Option<u64>,
 }
 #[derive(Default, Deserialize)]
 struct DraftDismissal {
-    #[serde(default, deserialize_with = "text_field")]
+    #[serde(default, deserialize_with = "optional_field")]
     id: Option<String>,
-    #[serde(default, deserialize_with = "text_field")]
+    #[serde(default, deserialize_with = "optional_field")]
     text: Option<String>,
 }
-#[derive(Default, Deserialize)]
-struct DraftCheckpoint {
-    #[serde(default, deserialize_with = "unsigned_field")]
-    checkpoint: Option<u64>,
-}
-
 fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
     let p = &request.params;
-    let identity: DraftWorkspace = project(p);
-    let workspace = identity
+    let input: DraftInput = project(p);
+    let workspace = input
         .workspace
         .as_deref()
         .filter(|v| crate::projections::valid_workspace(v))
@@ -222,8 +209,7 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
     match request.method.as_str() {
         "drafts.view" => view(db, workspace).map(DraftResult::Snapshot),
         "drafts.sync_status" => {
-            let status: DraftStatus = project(p);
-            let message = status.error.as_deref().unwrap_or("");
+            let message = input.error.as_deref().unwrap_or("");
             sql(db.execute("INSERT INTO client_draft_sync VALUES(?1,?2) ON CONFLICT(workspace) DO UPDATE SET error=excluded.error",params![workspace,message]))?;
             view(db, workspace).map(DraftResult::Snapshot)
         }
@@ -262,7 +248,7 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
                 .map_err(|e| e.to_string())?
                 .as_millis() as u64;
             for (session, text) in changes {
-                let text = text_field(text)
+                let text = optional_field::<_, String>(text)
                     .map_err(|e| e.to_string())?
                     .filter(|text| text.chars().count() <= 2_000_000)
                     .ok_or("Invalid draft text.")?;
@@ -344,11 +330,7 @@ fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
                 }
             }
             revision(db, workspace)?;
-            let checkpoint: DraftCheckpoint = project(p);
-            if let Some(checkpoint) = checkpoint
-                .checkpoint
-                .filter(|v| *v <= 9_007_199_254_740_991)
-            {
+            if let Some(checkpoint) = input.checkpoint.filter(|v| *v <= 9_007_199_254_740_991) {
                 sql(db.execute("UPDATE client_draft_scopes SET checkpoint=max(checkpoint,?2) WHERE workspace=?1",params![workspace,checkpoint as i64]))?;
             }
             view(db, workspace).map(DraftResult::Snapshot)
@@ -488,6 +470,25 @@ mod tests {
                 .map_err(|e| e.to_string());
             let new = Vec::<DraftVersion>::deserialize(&value).map_err(|e| e.to_string());
             assert_eq!(old.err(), new.err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn draft_input_scalars_keep_legacy_type_handling() {
+        for value in [
+            json!(null),
+            json!(true),
+            json!(1),
+            json!(1.0),
+            json!("text"),
+            json!([]),
+            json!({}),
+        ] {
+            let params = json!({"workspace":value,"error":value,"checkpoint":value});
+            let input: DraftInput = project(&params);
+            assert_eq!(input.workspace.as_deref(), value.as_str());
+            assert_eq!(input.error.as_deref(), value.as_str());
+            assert_eq!(input.checkpoint, value.as_u64());
         }
     }
     fn command(store: &mut crate::store::Store, id: &str, method: &str, mut p: Value) -> Value {

@@ -61,31 +61,42 @@ fn binding(
     {
         return Ok(None);
     }
-    let Some(attempt) = fields.get("startAttempt").filter(|value| value.is_object()) else {
+    let Some(attempt) = record.start_attempt.as_deref() else {
         return Ok(None);
     };
-    let text = |value: &Value| {
-        value
-            .as_str()
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-    };
     let (Some(id), Some(thread), Some(turn), Some(cwd)) = (
-        text(&attempt["id"]),
-        text(&attempt["threadId"]),
-        text(&attempt["turnId"]),
-        fields.get("cwd").and_then(text),
+        attempt
+            .id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        attempt
+            .thread_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        attempt
+            .turn_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        record
+            .cwd
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
     ) else {
         return Ok(None);
     };
-    if attempt["epoch"].as_i64() != Some(record.epoch)
-        || attempt["accountKey"].as_str() != Some(account)
-        || attempt["submitted"] != true
+    if attempt.epoch != Some(record.epoch)
+        || attempt.account_key.as_deref() != Some(account)
+        || attempt.submitted != Some(true)
         || record.thread_id.as_deref() != Some(thread.as_str())
         || record.turn_id.as_deref() != Some(turn.as_str())
-        || fields
-            .get("nativeResponseTurn")
-            .is_some_and(|value| !value.is_null() && value.as_str() != Some(turn.as_str()))
+        || record
+            .native_response_turn
+            .as_deref()
+            .is_some_and(|value| value != turn)
         || !std::path::Path::new(&cwd).is_absolute()
     {
         return Ok(None);

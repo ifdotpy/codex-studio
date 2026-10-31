@@ -2,6 +2,7 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use serde_json::{Value, json};
+use studio_runtime_schema::rule_record::{RuleKind, RuleStatus};
 use studio_runtime_services::rules_engine::{CheckResult, RuleCheck};
 use studio_runtime_services::rules_tick::{
     CheckReconciliation, CheckSubmission, LocalRuleFiles, RuleEvent, RuleFiles, RuleMonitor,
@@ -44,22 +45,17 @@ async fn seeded_state() -> TempDir {
     drop(store);
     root
 }
-fn rule(store: &RuntimeStore) -> Value {
+fn rule(store: &RuntimeStore) -> RuleRecord {
     RulesRepository::get(&store.test_reader().expect("read"), "rule")
         .expect("rule read")
         .expect("rule exists")
-        .value()
 }
-async fn change(store: &RuntimeStore, fields: Value) {
+async fn change(store: &RuntimeStore, edit: impl FnOnce(&mut RuleRecord) + Send + 'static) {
     store
         .transaction(move |tx| {
-            let mut value = RulesRepository::get(tx, "rule")?
-                .expect("rule exists")
-                .value();
-            for (field, value_new) in fields.as_object().expect("changes") {
-                value[field] = value_new.clone();
-            }
-            RulesRepository::put(tx, &RuleRecord::from_value(value)?)
+            let mut record = RulesRepository::get(tx, "rule")?.expect("rule exists");
+            edit(&mut record);
+            RulesRepository::put(tx, &record)
         })
         .await
         .expect("change rule");
@@ -89,7 +85,7 @@ impl RuleMonitor for CapturingMonitor<'_> {
     ) -> futures_util::future::BoxFuture<'a, CheckSubmission> {
         Box::pin(async move {
             // Independent read sees the reservation only if its transaction committed.
-            assert_eq!(rule(self.store)["inFlight"], true);
+            assert!(rule(self.store).in_flight);
             self.calls
                 .lock()
                 .expect("monitor calls")
@@ -110,7 +106,6 @@ impl RuleMonitor for CapturingMonitor<'_> {
 }
 struct EditingFiles<'a> {
     store: &'a RuntimeStore,
-    changes: Value,
 }
 impl RuleFiles for EditingFiles<'_> {
     fn fingerprint<'a>(
@@ -118,7 +113,10 @@ impl RuleFiles for EditingFiles<'_> {
         _path: &'a str,
     ) -> futures_util::future::BoxFuture<'a, Result<Option<(i64, u64, u64)>, RulesTickError>> {
         Box::pin(async move {
-            change(self.store, self.changes.clone()).await;
+            change(self.store, |rule| {
+                rule.name = "changed during stat".to_owned().try_into().expect("name")
+            })
+            .await;
             Ok(Some((200, 2, 3)))
         })
     }
@@ -133,7 +131,7 @@ async fn a_paused_rule_reads_no_owner_and_ticks_again_once_resumed() {
     let store = RuntimeStore::open(Some(state.path()))
         .await
         .expect("rules store");
-    change(&store, json!({"status": "paused"})).await;
+    change(&store, |rule| rule.status = RuleStatus::Paused).await;
     // Without its owner, a tick that read the owner would fail the batch.
     let owner = store
         .transaction(|tx| {
@@ -156,7 +154,7 @@ async fn a_paused_rule_reads_no_owner_and_ticks_again_once_resumed() {
         .transaction(move |tx| studio_runtime_store::AgentRepository::put(tx, &owner))
         .await
         .expect("restore owner");
-    change(&store, json!({"status": "active"})).await;
+    change(&store, |rule| rule.status = RuleStatus::Active).await;
     tick_batch(&store, 0, NOW, &LocalRuleFiles, &UnavailableMonitor)
         .await
         .expect("the resumed rule ticks");
@@ -242,7 +240,10 @@ async fn tick_commit_restart_and_callback_failpoint_matrix() {
     for unknown in if full { vec![false, true] } else { vec![true] } {
         let state = seeded_state().await;
         let store = RuntimeStore::open(Some(state.path())).await.expect("open");
-        change(&store, json!({"command":"printf fixture"})).await;
+        change(&store, |rule| {
+            rule.command = "printf fixture".to_owned().try_into().expect("command")
+        })
+        .await;
         let monitor = CapturingMonitor {
             store: &store,
             calls: Mutex::new(Vec::new()),
@@ -264,8 +265,14 @@ async fn tick_commit_restart_and_callback_failpoint_matrix() {
         recover_batch(&store, 0, NOW + 120.0, &UnavailableMonitor)
             .await
             .expect("recovery holds unknown check");
-        assert_eq!(rule(&store)["status"], "paused");
-        assert_eq!(rule(&store)["restartCheck"]["monitorId"], check.monitor_id);
+        assert_eq!(rule(&store).status, RuleStatus::Paused);
+        assert_eq!(
+            rule(&store)
+                .restart_check
+                .expect("restart check")
+                .monitor_id,
+            check.monitor_id
+        );
         let monitor = CapturingMonitor {
             store: &store,
             calls: Mutex::new(Vec::new()),
@@ -315,25 +322,24 @@ async fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
     let store = RuntimeStore::open(Some(state.path()))
         .await
         .expect("open rules state");
-    change(
-        &store,
-        json!({"kind":"file","path":"/disposable/watch","fingerprint":[100,2,3]}),
-    )
+    change(&store, |rule| {
+        rule.kind = RuleKind::File {
+            path: "/disposable/watch".into(),
+        };
+        rule.fingerprint = Some((100, 2, 3));
+    })
     .await;
-    let files = EditingFiles {
-        store: &store,
-        changes: json!({"name":"changed during stat"}),
-    };
+    let files = EditingFiles { store: &store };
     let report = tick_batch(&store, 0, NOW, &files, &UnavailableMonitor)
         .await
         .expect("stale file sample discarded");
     assert_eq!(report.changed, 0);
-    assert_eq!(rule(&store)["checks"], 0);
+    assert_eq!(rule(&store).checks.get(), 0);
     assert!(events(&store).is_empty());
-    change(
-        &store,
-        json!({"kind":"interval","command":"printf fixture"}),
-    )
+    change(&store, |rule| {
+        rule.kind = RuleKind::Interval;
+        rule.command = "printf fixture".to_owned().try_into().expect("command");
+    })
     .await;
     let before = rule(&store);
     assert!(matches!(
@@ -444,10 +450,12 @@ async fn stale_file_sample_and_foreign_or_repeated_completions_write_nothing() {
         .expect("duplicate")
     );
     assert_eq!(events(&store).len(), 1);
-    change(
-        &store,
-        json!({"kind":"event","event":"worker_completed","command":"","status":"active"}),
-    )
+    change(&store, |rule| {
+        rule.kind = RuleKind::Event;
+        rule.event = "worker_completed".into();
+        rule.command = String::new().try_into().expect("command");
+        rule.status = RuleStatus::Active;
+    })
     .await;
     let event = || RuleEvent {
         agent_id: "owner",
@@ -482,18 +490,15 @@ async fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
     let store = RuntimeStore::open(Some(state.path()))
         .await
         .expect("open rules state");
-    change(
-        &store,
-        json!({
-            "kind":"interval",
-            "status":"active",
-            "inFlight":false,
-            "checks":0,
-            "intervalSeconds":60,
-            "nextAt":NOW,
-            "command":"printf fake-runner"
-        }),
-    )
+    change(&store, |rule| {
+        rule.kind = RuleKind::Interval;
+        rule.status = RuleStatus::Active;
+        rule.in_flight = false;
+        rule.checks = 0_i64.try_into().expect("checks");
+        rule.interval_seconds = 60_i64.try_into().expect("interval");
+        rule.next_at = serde_json::Number::from_f64(NOW).expect("time");
+        rule.command = "printf fake-runner".to_owned().try_into().expect("command");
+    })
     .await;
     let monitor = CapturingMonitor {
         store: &store,
@@ -508,7 +513,7 @@ async fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
     let check = monitor.calls.lock().expect("monitor calls")[0].clone();
     assert_eq!(check.command, "printf fake-runner");
     assert_eq!(check.check_number, 1);
-    assert_eq!(rule(&store)["inFlight"], true);
+    assert!(rule(&store).in_flight);
 
     assert!(
         finish(
@@ -526,10 +531,19 @@ async fn interval_check_uses_injected_clock_and_records_fake_runner_result() {
         .expect("persist fake runner result")
     );
     let completed = rule(&store);
-    assert_eq!(completed["inFlight"], false);
-    assert_eq!(completed["lastExitCode"], 0);
-    assert_eq!(completed["lastOutput"], "fake output");
-    assert_eq!(completed["lastFinished"], NOW + 2.0);
+    assert!(!completed.in_flight);
+    assert_eq!(completed.last_exit_code, Some(0));
+    assert_eq!(
+        completed.last_output.as_ref().map(|output| output.as_str()),
+        Some("fake output")
+    );
+    assert_eq!(
+        completed
+            .last_finished
+            .as_ref()
+            .and_then(|time| time.as_f64()),
+        Some(NOW + 2.0)
+    );
     assert_eq!(events(&store).len(), 1);
 }
 
@@ -539,18 +553,15 @@ async fn cancelled_paused_check_settles_its_durable_launch_intent() {
     let store = RuntimeStore::open(Some(state.path()))
         .await
         .expect("open rules state");
-    change(
-        &store,
-        json!({
-            "kind":"interval",
-            "status":"active",
-            "inFlight":false,
-            "checks":0,
-            "intervalSeconds":60,
-            "nextAt":NOW,
-            "command":"printf fixture"
-        }),
-    )
+    change(&store, |rule| {
+        rule.kind = RuleKind::Interval;
+        rule.status = RuleStatus::Active;
+        rule.in_flight = false;
+        rule.checks = 0_i64.try_into().expect("checks");
+        rule.interval_seconds = 60_i64.try_into().expect("interval");
+        rule.next_at = serde_json::Number::from_f64(NOW).expect("time");
+        rule.command = "printf fixture".to_owned().try_into().expect("command");
+    })
     .await;
     let monitor = CapturingMonitor {
         store: &store,
@@ -569,18 +580,28 @@ async fn cancelled_paused_check_settles_its_durable_launch_intent() {
     // current rule snapshot derives a different timeout from the persisted request.
     store
         .transaction(move |tx| {
-            let mut value = RulesRepository::get(tx, "rule")?
-                .expect("rule exists")
-                .value();
-            value["status"] = json!("paused");
-            value["inFlight"] = json!(false);
-            value["launchIntent"]["timeoutMs"] = json!(30_000);
-            RulesRepository::put(tx, &RuleRecord::from_value(value)?)
+            let mut record = RulesRepository::get(tx, "rule")?.expect("rule exists");
+            record.status = studio_runtime_schema::rule_record::RuleStatus::Paused;
+            record.in_flight = false;
+            record
+                .launch_intent
+                .as_mut()
+                .expect("launch intent")
+                .timeout_ms = 30_000_i64.try_into().expect("timeout");
+            RulesRepository::put(tx, &record)
         })
         .await
         .expect("pause with the pending intent retained");
-    let intent = rule(&store)["launchIntent"].clone();
-    let check: RuleCheck = serde_json::from_value(intent).expect("persisted monitor intent");
+    let intent: String = store
+        .test_reader()
+        .expect("read")
+        .query_row(
+            "SELECT json_extract(record, '$.launchIntent') FROM runtime_rules WHERE id='rule'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("persisted monitor intent");
+    let check: RuleCheck = serde_json::from_str(&intent).expect("persisted monitor intent");
     assert!(
         finish(
             &store,
@@ -597,10 +618,10 @@ async fn cancelled_paused_check_settles_its_durable_launch_intent() {
         .expect("settle the cancelled monitor")
     );
     let settled = rule(&store);
-    assert_eq!(settled["status"], "paused");
-    assert_eq!(settled["inFlight"], false);
-    assert_eq!(settled["error"], "Monitor cancelled");
-    assert!(settled.get("launchIntent").is_none());
+    assert_eq!(settled.status, RuleStatus::Paused);
+    assert!(!settled.in_flight);
+    assert_eq!(settled.error.as_deref(), Some("Monitor cancelled"));
+    assert!(settled.launch_intent.is_none());
 }
 
 #[tokio::test]
@@ -660,15 +681,27 @@ impl RuleMonitor for DurableMonitor<'_> {
             if self.unknown {
                 return CheckReconciliation::Unknown;
             }
-            let row = studio_runtime_store::MonitorsRepository::get(
-                &self.store.test_reader().expect("read monitor"),
-                &check.monitor_id,
-            )
-            .expect("monitor row");
+            let db = self.store.test_reader().expect("read monitor");
+            let mut query = db
+                .prepare("SELECT record FROM runtime_monitors WHERE id=?")
+                .expect("query");
+            let mut rows = query.query([&check.monitor_id]).expect("monitor");
+            let row = rows
+                .next()
+                .expect("row")
+                .map(|row| row.get::<_, String>(0).expect("record"));
+            #[derive(serde::Deserialize)]
+            struct MonitorCheck {
+                check: Option<RuleCheck>,
+            }
             match row {
                 None => CheckReconciliation::NotSubmitted,
                 Some(row)
-                    if row.value()["check"] == serde_json::to_value(check).expect("check JSON") =>
+                    if serde_json::from_str::<MonitorCheck>(&row)
+                        .ok()
+                        .and_then(|record| record.check)
+                        .as_ref()
+                        == Some(check) =>
                 {
                     CheckReconciliation::Submitted
                 }
@@ -682,7 +715,7 @@ impl RuleMonitor for DurableMonitor<'_> {
     ) -> futures_util::future::BoxFuture<'a, CheckSubmission> {
         Box::pin(async move {
             assert!(!self.unknown, "unknown outcome must never resend");
-            let record = json!({"id":check.monitor_id,"agent":check.agent_id,"ruleId":check.rule_id,"status":"running","check":check});
+            let record = json!({"id":check.monitor_id,"agent":check.agent_id,"epoch":check.epoch,"ruleId":check.rule_id,"status":"running","check":check,"requestId":"fixture","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
             let monitor_id = check.monitor_id.clone();
             let inserted = self
                 .store
@@ -716,7 +749,7 @@ async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
         let store = RuntimeStore::open(Some(std::path::Path::new(&path)))
             .await
             .expect("child opens state");
-        if rule(&store)["kind"] == "event" {
+        if matches!(rule(&store).kind, RuleKind::Event) {
             let (_, checks) = store
                 .transaction_with::<_, RulesTickError>(move |tx| {
                     event_in_transaction(
@@ -753,10 +786,15 @@ async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
             let state = seeded_state().await;
             {
                 let store = RuntimeStore::open(Some(state.path())).await.expect("seed");
-                change(
-                    &store,
-                    json!({"kind":kind,"event":"worker_completed","command":"printf fixture"}),
-                )
+                change(&store, move |rule| {
+                    rule.kind = if kind == "interval" {
+                        RuleKind::Interval
+                    } else {
+                        RuleKind::Event
+                    };
+                    rule.event = "worker_completed".into();
+                    rule.command = "printf fixture".to_owned().try_into().expect("command");
+                })
                 .await;
             }
             let child = Command::new(std::env::current_exe().expect("test binary"))
@@ -773,9 +811,10 @@ async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
             let store = RuntimeStore::open(Some(state.path()))
                 .await
                 .expect("reopen committed WAL");
-            assert_eq!(rule(&store)["inFlight"], true);
-            let check: RuleCheck = serde_json::from_value(rule(&store)["launchIntent"].clone())
-                .expect("exact intent committed before launch");
+            assert!(rule(&store).in_flight);
+            let intent: String = store.test_reader().expect("read").query_row("SELECT json_extract(record, '$.launchIntent') FROM runtime_rules WHERE id='rule'", [], |row| row.get(0)).expect("exact intent committed before launch");
+            let check: RuleCheck =
+                serde_json::from_str(&intent).expect("exact intent committed before launch");
             assert!(events(&store).is_empty());
             let monitor = DurableMonitor {
                 store: &store,
@@ -793,16 +832,17 @@ async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
                 usize::from(state_kind == CheckReconciliation::NotSubmitted)
             );
             if state_kind == CheckReconciliation::Unknown {
-                assert_eq!(rule(&store)["status"], "paused");
+                assert_eq!(rule(&store).status, RuleStatus::Paused);
                 assert!(
-                    rule(&store)["error"]
-                        .as_str()
+                    rule(&store)
+                        .error
+                        .as_deref()
                         .expect("visible hold")
                         .contains("Outcome unknown")
                 );
                 assert_eq!(*monitor.deliveries.lock().expect("delivery count"), 0);
             } else {
-                assert_eq!(rule(&store)["status"], "active");
+                assert_eq!(rule(&store).status, RuleStatus::Active);
                 assert_eq!(*monitor.deliveries.lock().expect("delivery count"), 1);
                 assert_eq!(
                     recover_batch(&store, 0, NOW + 2.0, &monitor)
@@ -834,7 +874,7 @@ async fn committed_launch_intent_survives_process_exit_before_monitor_launch() {
                 .await
                 .expect("exact completion")
             );
-            assert!(rule(&store).get("launchIntent").is_none());
+            assert!(rule(&store).launch_intent.is_none());
             assert_eq!(events(&store).len(), 1);
             assert_eq!(
                 recover_batch(&store, 0, NOW + 4.0, &monitor)
@@ -935,10 +975,12 @@ async fn a_rule_pauses_while_its_owner_cannot_run_and_resumes_when_it_can() {
         let store = RuntimeStore::open(Some(state.path()))
             .await
             .expect("rules store");
-        change(
-            &store,
-            json!({"kind":"interval","intervalSeconds":240,"nextAt":NOW,"command":"check.sh"}),
-        )
+        change(&store, |rule| {
+            rule.kind = RuleKind::Interval;
+            rule.interval_seconds = 240_i64.try_into().expect("interval");
+            rule.next_at = serde_json::Number::from_f64(NOW).expect("time");
+            rule.command = "check.sh".to_owned().try_into().expect("command");
+        })
         .await;
         change_owner(&store, case.hold.clone()).await;
         if case.held_input {
@@ -963,16 +1005,22 @@ async fn a_rule_pauses_while_its_owner_cannot_run_and_resumes_when_it_can() {
         let paused = rule(&store);
         assert!(
             monitor.calls.lock().expect("calls").is_empty(),
-            "{}: no command while the owner cannot run: {paused}",
+            "{}: no command while the owner cannot run: {paused:?}",
             case.name
         );
-        assert_eq!(paused["status"], "paused", "{}: {paused}", case.name);
-        assert!(paused["ownerHold"].is_string(), "{}: {paused}", case.name);
+        assert_eq!(
+            paused.status,
+            RuleStatus::Paused,
+            "{}: {paused:?}",
+            case.name
+        );
+        assert!(paused.owner_hold.is_some(), "{}: {paused:?}", case.name);
         assert!(
-            paused["error"]
-                .as_str()
+            paused
+                .error
+                .as_deref()
                 .is_some_and(|error| error.contains("resumes")),
-            "{}: the owner sees why: {paused}",
+            "{}: the owner sees why: {paused:?}",
             case.name
         );
         assert!(
@@ -989,13 +1037,14 @@ async fn a_rule_pauses_while_its_owner_cannot_run_and_resumes_when_it_can() {
             .await
             .expect("resume tick");
         let resumed = rule(&store);
-        assert_eq!(resumed["status"], "active", "{}: {resumed}", case.name);
-        assert!(
-            resumed.get("ownerHold").is_none_or(Value::is_null),
-            "{}: {resumed}",
+        assert_eq!(
+            resumed.status,
+            RuleStatus::Active,
+            "{}: {resumed:?}",
             case.name
         );
-        assert!(resumed["error"].is_null(), "{}: {resumed}", case.name);
+        assert!(resumed.owner_hold.is_none(), "{}: {resumed:?}", case.name);
+        assert!(resumed.error.is_none(), "{}: {resumed:?}", case.name);
         tick_batch(&store, 0, NOW + 1001.0, &LocalRuleFiles, &monitor)
             .await
             .expect("tick after resume");
@@ -1019,10 +1068,12 @@ async fn a_rule_pauses_while_its_owner_cannot_run_and_resumes_when_it_can() {
         let store = RuntimeStore::open(Some(state.path()))
             .await
             .expect("rules store");
-        change(
-            &store,
-            json!({"kind":"interval","intervalSeconds":240,"nextAt":NOW,"command":"check.sh"}),
-        )
+        change(&store, |rule| {
+            rule.kind = RuleKind::Interval;
+            rule.interval_seconds = 240_i64.try_into().expect("interval");
+            rule.next_at = serde_json::Number::from_f64(NOW).expect("time");
+            rule.command = "check.sh".to_owned().try_into().expect("command");
+        })
         .await;
         change_owner(&store, owner).await;
         let monitor = CapturingMonitor {
@@ -1038,6 +1089,6 @@ async fn a_rule_pauses_while_its_owner_cannot_run_and_resumes_when_it_can() {
             1,
             "{name}: the rule keeps running"
         );
-        assert_eq!(rule(&store)["status"], "active", "{name}");
+        assert_eq!(rule(&store).status, RuleStatus::Active, "{name}");
     }
 }

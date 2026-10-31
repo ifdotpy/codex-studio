@@ -593,7 +593,7 @@ mod tests {
         store.transaction(|tx| {
             legacy_table(tx)?;
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('legacy',?1)",
-                [json!({"id":"legacy","rootId":"legacy","epoch":7,"status":"idle","accountKey":"claude-account",
+                [json!({"compactions":0,"id":"legacy","rootId":"legacy","epoch":7,"status":"idle","accountKey":"claude-account",
                     "accountHistory":[{"accountKey":"claude-account","provider":null,"threadId":"thread-exact"},{"accountKey":"retired"}],
                     "lazyAccountTransfer":{"id":"transfer-exact","sourceStateExact":true,"sourceState":{"model":"m"}},
                     "receipt":{"id":"request-exact","outcome":"unknown"}}).to_string()])?;
