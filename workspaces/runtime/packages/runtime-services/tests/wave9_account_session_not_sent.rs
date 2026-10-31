@@ -199,7 +199,11 @@ impl Fixture {
         )
     }
 
-    async fn login(&self, certainty: RequestCertainty, result: Option<Value>) -> Value {
+    async fn login(
+        &self,
+        certainty: RequestCertainty,
+        result: Option<Value>,
+    ) -> studio_runtime_services::account_session_runtime::LoginReply {
         let session = Arc::new(FakeSession::new(certainty, result));
         self.service(session)
             .login(LoginRequest {
@@ -212,7 +216,10 @@ impl Fixture {
             .expect("login receipt")
     }
 
-    async fn login_with_session(&self, session: Arc<FakeSession>) -> Value {
+    async fn login_with_session(
+        &self,
+        session: Arc<FakeSession>,
+    ) -> studio_runtime_services::account_session_runtime::LoginReply {
         self.service(session)
             .login(LoginRequest {
                 login_id: "9b06d4c4-0b71-49b5-b984-927d6fdcde01".into(),
@@ -238,10 +245,15 @@ fn login_response() -> Value {
 async fn login_not_sent_returns_python_error_receipt() {
     let fixture = Fixture::new();
     let receipt = fixture.login(RequestCertainty::NotSent, None).await;
-    assert_eq!(receipt["status"], "error");
     assert_eq!(
-        receipt["error"],
-        "Could not start sign-in: the Codex app server for this account is not running. Try again."
+        receipt.status,
+        studio_runtime_schema::account_registry::LoginStatus::Error
+    );
+    assert_eq!(
+        receipt.error.as_ref().and_then(Option::as_deref),
+        Some(
+            "Could not start sign-in: the Codex app server for this account is not running. Try again."
+        )
     );
 }
 
@@ -260,10 +272,15 @@ async fn absent_live_scope_maps_login_and_cancel_to_python_not_sent_receipts() {
         })
         .await
         .expect("not-sent login receipt");
-    assert_eq!(login["status"], "error");
     assert_eq!(
-        login["error"],
-        "Could not start sign-in: the Codex app server for this account did not start. Try again."
+        login.status,
+        studio_runtime_schema::account_registry::LoginStatus::Error
+    );
+    assert_eq!(
+        login.error.as_ref().and_then(Option::as_deref),
+        Some(
+            "Could not start sign-in: the Codex app server for this account did not start. Try again."
+        )
     );
     assert_eq!(session.calls.load(Ordering::SeqCst), 0);
 
@@ -271,17 +288,23 @@ async fn absent_live_scope_maps_login_and_cancel_to_python_not_sent_receipts() {
     let started = cancel_fixture
         .login(RequestCertainty::Written, Some(login_response()))
         .await;
-    assert_eq!(started["status"], "pending");
+    assert_eq!(
+        started.status,
+        studio_runtime_schema::account_registry::LoginStatus::Pending
+    );
     let no_live_session = Arc::new(FakeSession::no_live_scope());
     let cancel_runtime = cancel_fixture.service(Arc::clone(&no_live_session));
     let cancel = cancel_runtime
         .cancel_login(login_id)
         .await
         .expect("not-sent cancellation receipt");
-    assert_eq!(cancel["status"], "pending");
     assert_eq!(
-        cancel["error"],
-        "Cancellation is unconfirmed. Check status or retry cancellation."
+        cancel.status,
+        studio_runtime_schema::account_registry::LoginStatus::Pending
+    );
+    assert_eq!(
+        cancel.error.as_ref().and_then(Option::as_deref),
+        Some("Cancellation is unconfirmed. Check status or retry cancellation.")
     );
     assert_eq!(no_live_session.calls.load(Ordering::SeqCst), 0);
 }
@@ -307,10 +330,13 @@ async fn unknown_login_remains_uncertain_and_is_never_replayed() {
     let session = Arc::new(FakeSession::new(RequestCertainty::Unknown, None));
     for _ in 0..2 {
         let receipt = fixture.login_with_session(Arc::clone(&session)).await;
-        assert_eq!(receipt["status"], "uncertain");
         assert_eq!(
-            receipt["error"],
-            "Sign-in response is unconfirmed. Check its status before starting again."
+            receipt.status,
+            studio_runtime_schema::account_registry::LoginStatus::Uncertain
+        );
+        assert_eq!(
+            receipt.error.as_ref().and_then(Option::as_deref),
+            Some("Sign-in response is unconfirmed. Check its status before starting again.")
         );
     }
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);
@@ -322,10 +348,13 @@ async fn unknown_login_error_remains_uncertain_and_is_never_replayed() {
     let session = Arc::new(FakeSession::unknown_error());
     for _ in 0..2 {
         let receipt = fixture.login_with_session(Arc::clone(&session)).await;
-        assert_eq!(receipt["status"], "uncertain");
         assert_eq!(
-            receipt["error"],
-            "Sign-in response is unconfirmed. Check its status before starting again."
+            receipt.status,
+            studio_runtime_schema::account_registry::LoginStatus::Uncertain
+        );
+        assert_eq!(
+            receipt.error.as_ref().and_then(Option::as_deref),
+            Some("Sign-in response is unconfirmed. Check its status before starting again.")
         );
     }
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);
@@ -355,7 +384,10 @@ async fn unknown_login_error_remains_uncertain_and_is_never_replayed() {
         })
         .await
         .expect("durable uncertain replay");
-    assert_eq!(after_restart["status"], "uncertain");
+    assert_eq!(
+        after_restart.status,
+        studio_runtime_schema::account_registry::LoginStatus::Uncertain
+    );
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);
 }
 
@@ -365,10 +397,13 @@ async fn foreign_login_receipt_scope_is_uncertain_and_never_replayed() {
     let session = Arc::new(FakeSession::foreign_receipt());
     for _ in 0..2 {
         let receipt = fixture.login_with_session(Arc::clone(&session)).await;
-        assert_eq!(receipt["status"], "uncertain");
         assert_eq!(
-            receipt["error"],
-            "Sign-in response is unconfirmed. Check its status before starting again."
+            receipt.status,
+            studio_runtime_schema::account_registry::LoginStatus::Uncertain
+        );
+        assert_eq!(
+            receipt.error.as_ref().and_then(Option::as_deref),
+            Some("Sign-in response is unconfirmed. Check its status before starting again.")
         );
     }
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);
@@ -416,16 +451,22 @@ async fn cancel_not_sent_restores_python_pending_receipt_and_allows_safe_retry()
         .cancel_login("9b06d4c4-0b71-49b5-b984-927d6fdcde01")
         .await
         .expect("not-sent cancellation receipt");
-    assert_eq!(first["status"], "pending");
     assert_eq!(
-        first["error"],
-        "Cancellation is unconfirmed. Check status or retry cancellation."
+        first.status,
+        studio_runtime_schema::account_registry::LoginStatus::Pending
+    );
+    assert_eq!(
+        first.error.as_ref().and_then(Option::as_deref),
+        Some("Cancellation is unconfirmed. Check status or retry cancellation.")
     );
     let second = service
         .cancel_login("9b06d4c4-0b71-49b5-b984-927d6fdcde01")
         .await
         .expect("safe retry receipt");
-    assert_eq!(second["status"], "pending");
+    assert_eq!(
+        second.status,
+        studio_runtime_schema::account_registry::LoginStatus::Pending
+    );
     assert_eq!(session.calls.load(Ordering::SeqCst), 2);
 }
 
@@ -442,7 +483,10 @@ async fn unknown_cancel_remains_uncertain_and_is_never_replayed() {
             .cancel_login("9b06d4c4-0b71-49b5-b984-927d6fdcde01")
             .await
             .expect("uncertain cancellation receipt");
-        assert_eq!(receipt["status"], "uncertain");
+        assert_eq!(
+            receipt.status,
+            studio_runtime_schema::account_registry::LoginStatus::Uncertain
+        );
     }
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);
 }
@@ -462,11 +506,17 @@ async fn rejected_cancel_response_is_not_treated_as_canceled_or_replayed() {
         .cancel_login("9b06d4c4-0b71-49b5-b984-927d6fdcde01")
         .await
         .expect("rejected cancellation receipt");
-    assert_eq!(first["status"], "uncertain");
+    assert_eq!(
+        first.status,
+        studio_runtime_schema::account_registry::LoginStatus::Uncertain
+    );
     let second = service
         .cancel_login("9b06d4c4-0b71-49b5-b984-927d6fdcde01")
         .await
         .expect("replayed uncertain receipt");
-    assert_eq!(second["status"], "uncertain");
+    assert_eq!(
+        second.status,
+        studio_runtime_schema::account_registry::LoginStatus::Uncertain
+    );
     assert_eq!(session.calls.load(Ordering::SeqCst), 1);
 }

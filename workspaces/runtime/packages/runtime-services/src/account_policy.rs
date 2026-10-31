@@ -733,9 +733,15 @@ mod tests {
         assert_eq!(snapshot.accounts[0].id.as_str(), Some("z"));
         assert_eq!(snapshot.accounts[1].id.as_str(), Some("default"));
         assert_eq!(snapshot.logins[0].request_id, "login-r");
-        let receipt = serde_json::to_value(&snapshot.logins[0]).unwrap();
-        assert!(receipt.get("email").is_none());
-        assert_eq!(receipt["createdAt"], serde_json::json!(1.0));
+        assert!(snapshot.logins[0].email.is_none());
+        assert_eq!(
+            snapshot.logins[0]
+                .created_at
+                .as_ref()
+                .and_then(Option::as_ref)
+                .and_then(serde_json::Number::as_f64),
+            Some(1.0)
+        );
         assert!(state.has_account("default"));
         assert!(!state.has_account("missing"));
     }

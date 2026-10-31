@@ -203,14 +203,14 @@ pub trait AccountSessionPort: Send + Sync {
             ))
         })
     }
-    fn login<'a>(&'a self, _request: LoginRequest) -> AccountSessionFuture<'a, Value> {
+    fn login<'a>(&'a self, _request: LoginRequest) -> AccountSessionFuture<'a, LoginReply> {
         Box::pin(async {
             Err(AccountSessionError::Requires(
                 "provider-session/codex-login",
             ))
         })
     }
-    fn cancel_login<'a>(&'a self, _request: &'a str) -> AccountSessionFuture<'a, Value> {
+    fn cancel_login<'a>(&'a self, _request: &'a str) -> AccountSessionFuture<'a, LoginReply> {
         Box::pin(async {
             Err(AccountSessionError::Requires(
                 "provider-session/codex-login",
@@ -1518,7 +1518,7 @@ impl AccountSessionPort for AccountSessionRuntime {
             Ok(())
         })
     }
-    fn login<'a>(&'a self, request: LoginRequest) -> AccountSessionFuture<'a, Value> {
+    fn login<'a>(&'a self, request: LoginRequest) -> AccountSessionFuture<'a, LoginReply> {
         let runtime = self.clone();
         Box::pin(async move {
             let task_runtime = runtime.clone();
@@ -1545,16 +1545,14 @@ impl AccountSessionPort for AccountSessionRuntime {
                     .await?
                     .map_err(mutation_error)?
                     {
-                        let receipt = serde_json::to_value(receipt)
-                            .map_err(|_| AccountSessionError::Persistence)?;
                         let driver = Arc::clone(&runtime.driver);
                         let request_id = request.login_id.clone();
                         return spawn_account_driver(move || {
                             driver.reconcile_codex_login(&request_id)
                         })
                         .await?
-                        .map(|reconciled| public_login(reconciled.unwrap_or(receipt)))
-                        .map_err(mutation_error);
+                        .map_err(mutation_error)?
+                        .map_or_else(|| Ok(public_login(receipt)), public_login_value);
                     }
                     if runtime.session.is_none() {
                         return Err(AccountSessionError::Requires(
@@ -1671,13 +1669,13 @@ impl AccountSessionPort for AccountSessionRuntime {
                         )
                     })
                     .await?
-                    .map(public_login)
                     .map_err(mutation_error)
+                    .and_then(public_login_value)
                 })
                 .await
         })
     }
-    fn cancel_login<'a>(&'a self, request: &'a str) -> AccountSessionFuture<'a, Value> {
+    fn cancel_login<'a>(&'a self, request: &'a str) -> AccountSessionFuture<'a, LoginReply> {
         let runtime = self.clone();
         let request = request.to_owned();
         Box::pin(async move {
@@ -1692,7 +1690,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                             .await?
                             .map_err(mutation_error)?
                     {
-                        return Ok(public_login(receipt));
+                        return public_login_value(receipt);
                     }
                     if runtime.session.is_none() {
                         let driver = Arc::clone(&runtime.driver);
@@ -1703,17 +1701,19 @@ impl AccountSessionPort for AccountSessionRuntime {
                             .into_iter()
                             .find(|receipt| receipt.request_id == request)
                             .ok_or(AccountSessionError::Refused("Unknown sign-in request"))?;
-                        let receipt = serde_json::to_value(receipt)
-                            .map_err(|_| AccountSessionError::Persistence)?;
+                        use studio_runtime_schema::account_registry::LoginStatus;
                         if matches!(
-                            receipt["status"].as_str(),
-                            Some("ready" | "duplicate" | "cancelled" | "error")
-                        ) || (receipt["status"] == "uncertain"
-                            && receipt.get("loginId").is_some_and(|id| !id.is_null()))
+                            receipt.status,
+                            LoginStatus::Ready
+                                | LoginStatus::Duplicate
+                                | LoginStatus::Cancelled
+                                | LoginStatus::Error
+                        ) || (receipt.status == LoginStatus::Uncertain
+                            && receipt.login_id.as_ref().and_then(Option::as_ref).is_some())
                         {
                             return Ok(public_login(receipt));
                         }
-                        if receipt.get("loginId").is_none_or(Value::is_null) {
+                        if receipt.login_id.as_ref().and_then(Option::as_ref).is_none() {
                             return Err(account_error(AccountDriverError::LoginResponseUnknown));
                         }
                         return Err(AccountSessionError::Requires(
@@ -1754,8 +1754,8 @@ impl AccountSessionPort for AccountSessionRuntime {
                             driver.finish_codex_cancel_not_sent(&request_id, &account)
                         })
                         .await?
-                        .map(public_login)
-                        .map_err(mutation_error);
+                        .map_err(mutation_error)
+                        .and_then(public_login_value);
                     }
                     let confirmed = response.ok().is_some_and(|receipt| {
                         matches!(
@@ -1773,8 +1773,8 @@ impl AccountSessionPort for AccountSessionRuntime {
                         driver.finish_codex_cancel(&request_id, &account, confirmed)
                     })
                     .await?
-                    .map(public_login)
                     .map_err(mutation_error)
+                    .and_then(public_login_value)
                 })
                 .await
         })
@@ -1964,26 +1964,21 @@ fn mutation_error(error: AccountMutationError) -> AccountSessionError {
         AccountMutationError::Refused(message) => AccountSessionError::Refused(message),
     }
 }
-fn public_login(mut receipt: Value) -> Value {
-    if let Some(object) = receipt.as_object_mut() {
-        object.retain(|key, _| {
-            matches!(
-                key.as_str(),
-                "requestId"
-                    | "accountKey"
-                    | "status"
-                    | "loginId"
-                    | "verificationUrl"
-                    | "userCode"
-                    | "error"
-                    | "resolvedAccountKey"
-                    | "email"
-                    | "createdAt"
-                    | "expiresAt"
-            )
-        });
-    }
+pub type LoginReply = studio_runtime_schema::account_registry::LoginReceipt;
+
+fn public_login(mut receipt: LoginReply) -> LoginReply {
+    receipt.email_hint = None;
+    receipt.expected_account_id = None;
+    receipt.native_completed = None;
+    receipt.reauth_account_key = None;
+    receipt.requested_label = None;
     receipt
+}
+
+fn public_login_value(receipt: Value) -> Result<LoginReply, AccountSessionError> {
+    crate::account_driver::typed_login_receipt(&receipt)
+        .map(public_login)
+        .map_err(account_error)
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -2936,7 +2931,10 @@ mod limits_runtime_tests {
         )
         .await
         .expect("a duplicate request id replays its durable receipt");
-        assert_eq!(replay["status"], "pending");
+        assert_eq!(
+            replay.status,
+            studio_runtime_schema::account_registry::LoginStatus::Pending
+        );
         AccountSessionPort::shutdown_durable_operations(fixture.runtime.as_ref())
             .await
             .expect("shutdown joins the durable login task");

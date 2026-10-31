@@ -382,32 +382,37 @@ async fn discover(
     accounts_response(snapshot)
 }
 
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum LoginResponse {
+    Typed(studio_runtime_services::account_session_runtime::LoginReply),
+    Generated(crate::generated::AccountLoginResponse),
+}
+
 async fn codex_login(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<LoginRequest>,
-) -> Result<Json<crate::generated::AccountLoginResponse>, ApiError> {
+) -> Result<Json<LoginResponse>, ApiError> {
     let port = state
         .account_session
         .clone()
         .ok_or_else(|| unavailable(CODEX_LOGIN[0]))?;
     let result = port.login(body).await.map_err(session_error)?;
     state.event_wake.notify_one();
-    super::generated_json::<crate::generated::AccountLoginResponse>(result).map(Json)
+    Ok(Json(LoginResponse::Typed(result)))
 }
 
 async fn codex_login_cancel(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<CancelLoginBody>,
-) -> Result<Json<crate::generated::AccountLoginResponse>, ApiError> {
+) -> Result<Json<LoginResponse>, ApiError> {
     if let Some(port) = state.account_session.clone() {
         let result = port
             .cancel_login(&body.login_id)
             .await
             .map_err(session_error)?;
         state.event_wake.notify_one();
-        return serde_json::from_value(result)
-            .map(Json)
-            .map_err(|_| ApiError::internal());
+        return Ok(Json(LoginResponse::Typed(result)));
     }
     let Some(driver) = state.account_driver.clone() else {
         return Err(runtime_availability("account-driver/runtime"));
@@ -417,7 +422,7 @@ async fn codex_login_cancel(
     })
     .await?;
     serde_json::from_value(receipt)
-        .map(Json)
+        .map(|receipt| Json(LoginResponse::Generated(receipt)))
         .map_err(|_| ApiError::internal())
 }
 

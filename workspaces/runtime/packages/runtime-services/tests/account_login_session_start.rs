@@ -152,7 +152,11 @@ impl Fixture {
         )
     }
 
-    async fn login(&self, session: Arc<BrokerSession>, account_key: Option<&str>) -> Value {
+    async fn login(
+        &self,
+        session: Arc<BrokerSession>,
+        account_key: Option<&str>,
+    ) -> studio_runtime_services::account_session_runtime::LoginReply {
         self.service(session)
             .login(LoginRequest {
                 login_id: LOGIN_ID.into(),
@@ -170,8 +174,15 @@ async fn new_account_sign_in_starts_its_session_and_returns_the_device_code() {
     let fixture = Fixture::new();
     let session = BrokerSession::new(true);
     let receipt = fixture.login(Arc::clone(&session), None).await;
-    assert_eq!(receipt["status"], "pending", "{receipt}");
-    assert_eq!(receipt["userCode"], "fixture-code");
+    assert_eq!(
+        receipt.status,
+        studio_runtime_schema::account_registry::LoginStatus::Pending,
+        "{receipt:?}"
+    );
+    assert_eq!(
+        receipt.user_code.as_ref().and_then(Option::as_deref),
+        Some("fixture-code")
+    );
     assert_eq!(
         *session.ensured.lock().expect("ensured"),
         vec![format!("login-{LOGIN_ID}")]
@@ -190,8 +201,12 @@ async fn signed_out_account_sign_in_starts_its_session_and_returns_the_device_co
     let receipt = fixture
         .login(Arc::clone(&session), Some("signed-out"))
         .await;
-    assert_eq!(receipt["status"], "pending", "{receipt}");
-    assert_eq!(receipt["accountKey"], "signed-out");
+    assert_eq!(
+        receipt.status,
+        studio_runtime_schema::account_registry::LoginStatus::Pending,
+        "{receipt:?}"
+    );
+    assert_eq!(receipt.account_key, "signed-out");
     assert_eq!(
         *session.ensured.lock().expect("ensured"),
         vec!["signed-out".to_owned()]
@@ -204,16 +219,21 @@ async fn session_start_failure_is_not_sent_and_names_its_cause() {
     let fixture = Fixture::new();
     let session = BrokerSession::new(false);
     let receipt = fixture.login(Arc::clone(&session), None).await;
-    assert_eq!(receipt["status"], "error");
     assert_eq!(
-        receipt["error"],
-        "Could not start sign-in: the Codex app server for this account did not start. Try again."
+        receipt.status,
+        studio_runtime_schema::account_registry::LoginStatus::Error
+    );
+    assert_eq!(
+        receipt.error.as_ref().and_then(Option::as_deref),
+        Some(
+            "Could not start sign-in: the Codex app server for this account did not start. Try again."
+        )
     );
     assert_eq!(session.written.load(Ordering::SeqCst), 0);
     let stored = fixture.driver.snapshot().expect("registry");
     assert_eq!(
         stored.logins[0].error.as_ref().and_then(Option::as_deref),
-        receipt["error"].as_str()
+        receipt.error.as_ref().and_then(Option::as_deref)
     );
 }
 
@@ -232,7 +252,11 @@ async fn re_sign_in_recreates_a_missing_sign_in_home() {
     assert!(!home.exists());
     let session = BrokerSession::new(true);
     let receipt = fixture.login(Arc::clone(&session), Some(key)).await;
-    assert_eq!(receipt["status"], "pending", "{receipt}");
+    assert_eq!(
+        receipt.status,
+        studio_runtime_schema::account_registry::LoginStatus::Pending,
+        "{receipt:?}"
+    );
     assert!(home.is_dir());
     assert_eq!(
         *session.ensured.lock().expect("ensured"),

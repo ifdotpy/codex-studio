@@ -1149,7 +1149,16 @@ pub enum AccountMutationError {
 
 pub enum LoginReservation {
     Dispatch(Value),
-    Replay(Value),
+    Replay(studio_runtime_schema::account_registry::LoginReceipt),
+}
+
+pub(crate) fn typed_login_receipt(
+    value: &Value,
+) -> Result<studio_runtime_schema::account_registry::LoginReceipt, AccountDriverError> {
+    let receipt: studio_runtime_schema::json_object::JsonObject<
+        studio_runtime_schema::account_registry::LoginReceipt,
+    > = Deserialize::deserialize(value).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    Ok(receipt.0)
 }
 
 fn login_terminal(receipt: &Value) -> bool {
@@ -1376,9 +1385,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         if let Some(receipt) = existing_login(&state, request)? {
-            return Ok(LoginReservation::Replay(
-                serde_json::to_value(receipt).map_err(|_| AccountDriverError::InvalidRegistry)?,
-            ));
+            return Ok(LoginReservation::Replay(receipt));
         }
         let mut value = state.value.clone();
         let mut order = state.order.clone();
@@ -1535,13 +1542,13 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .and_then(|logins| logins.get_mut(request))
             .ok_or(AccountDriverError::UnknownLogin)?;
         if login_terminal(receipt) {
-            return Ok(LoginReservation::Replay(receipt.clone()));
+            return Ok(LoginReservation::Replay(typed_login_receipt(receipt)?));
         }
         if !receipt.get("loginId").is_some_and(truthy_value) {
             return Err(AccountDriverError::LoginResponseUnknown.into());
         }
         if receipt["status"] == "uncertain" {
-            return Ok(LoginReservation::Replay(receipt.clone()));
+            return Ok(LoginReservation::Replay(typed_login_receipt(receipt)?));
         }
         receipt["status"] = serde_json::json!("uncertain");
         receipt["error"] = serde_json::json!(
@@ -3617,7 +3624,7 @@ mod tests {
         else {
             panic!("retry never dispatches again");
         };
-        assert_eq!(replayed, receipt);
+        assert_eq!(replayed, typed_login_receipt(&receipt).unwrap());
         assert_eq!(fs::read(path).expect("replay bytes"), persisted);
     }
 
