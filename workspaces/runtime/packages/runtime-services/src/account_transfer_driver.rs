@@ -1242,18 +1242,10 @@ pub(crate) async fn provider_read_intent(
             .as_object()
             .filter(|receipt| receipt.get("certainty") == Some(&Value::String("written".into())))
             .cloned()
-<<<<<<< head
-            .map(Value::Object);
-            let decision = snapshot.provider_read_intent(
-||||||| base
-            .map(Value::Object);
-            let mut decision = snapshot.provider_read_intent(
-=======
             .map(Value::Object)
             .map(|saved| inline_reply(&root, saved))
             .transpose()?;
-            let mut decision = snapshot.provider_read_intent(
->>>>>>> c6d168f
+            let decision = snapshot.provider_read_intent(
                 &agent,
                 &operation,
                 &account,

@@ -19,7 +19,9 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 
-use studio_runtime_schema::desktop::{PeerUpdateBuild, PeerUpdateEvent, PeerUpdatePending, PeerUpdateStatus};
+use studio_runtime_schema::desktop::{
+    PeerUpdateBuild, PeerUpdateEvent, PeerUpdatePending, PeerUpdateStatus,
+};
 use studio_runtime_store::RuntimeStore;
 
 use crate::atomic_file;
@@ -656,7 +658,10 @@ pub fn status(root: &Path, installed: Option<&Path>) -> PeerUpdateStatus {
                 server: pending["from"].as_str()?.to_owned(),
             })
         }),
-        last_install: event(&read_json(&root.join(RECEIPT_FILE)).unwrap_or_default(), "from"),
+        last_install: event(
+            &read_json(&root.join(RECEIPT_FILE)).unwrap_or_default(),
+            "from",
+        ),
     }
 }
 
@@ -1312,7 +1317,10 @@ exit 0"#;
             .to_string(),
         )
         .unwrap();
-        let value = serde_json::from_str::<Value>(&serde_json::to_string(&status(root, Some(installed.as_path()))).unwrap()).unwrap();
+        let value = serde_json::from_str::<Value>(
+            &serde_json::to_string(&status(root, Some(installed.as_path()))).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             value,
             json!({
@@ -1326,7 +1334,10 @@ exit 0"#;
             })
         );
         // Without any file, the status has no build, pass or update.
-        let empty = serde_json::from_str::<Value>(&serde_json::to_string(&status(&root.join("empty"), None)).unwrap()).unwrap();
+        let empty = serde_json::from_str::<Value>(
+            &serde_json::to_string(&status(&root.join("empty"), None)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             empty,
             json!({"build": null, "checkedAt": null, "lastPull": null,
