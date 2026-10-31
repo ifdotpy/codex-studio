@@ -19,7 +19,6 @@ import { createDraftJournal } from "../sync/draftJournal";
 import { createDraftStorage } from "../sync/draftStorage";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
-import { frontendIsLocal } from "../sync/localFrontend";
 import { indexedDbKeyValue } from "../sync/thinCache";
 import { createServerSubscriptions } from "../sync/subscriptions/server";
 import { createTranscriptCache } from "../sync/transcriptCache";
@@ -95,7 +94,6 @@ export function createServerServices(server: StudioServer) {
       sequences,
       transcripts,
       keyValue: () => indexedDbKeyValue(),
-      cacheProjections: () => !frontendIsLocal(transport.owner.id),
       databaseSuffix:
         transport.owner.id === "local"
           ? ""

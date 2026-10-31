@@ -34,7 +34,6 @@ vi.mock("../api", () => ({
   save: vi.fn(),
   setWorkspace: vi.fn(),
   isApiSchemaMismatch: () => false,
-  onMatchingApiSchemaResponse: () => () => false,
 }));
 vi.mock("./subscriptions/events", () => ({
   acknowledgeEntitySequences: vi.fn(),
@@ -242,7 +241,6 @@ it("stages a cold >512 entity SSE interval before projection deletion or cursor 
       save: vi.fn(),
       setWorkspace: vi.fn(),
       isApiSchemaMismatch: () => false,
-      onMatchingApiSchemaResponse: () => () => false,
     },
     resources: {
       watchResourceChanges: () => () => {},
@@ -399,7 +397,6 @@ it("revives moved rows after inline and staged local eviction in either scope or
           save: vi.fn(),
           setWorkspace: vi.fn(),
           isApiSchemaMismatch: () => false,
-          onMatchingApiSchemaResponse: () => () => false,
         },
         resources: {
           watchResourceChanges: () => () => {},
@@ -530,7 +527,6 @@ it("preserves an existing oversized Work result and >512 history rows, then stre
       save: vi.fn(),
       setWorkspace: vi.fn(),
       isApiSchemaMismatch: () => false,
-      onMatchingApiSchemaResponse: () => () => false,
     },
     resources: {
       watchResourceChanges: () => () => {},

@@ -1,5 +1,4 @@
 import { SubscriptionReplyKind } from "../generated/api";
-import { randomUUID } from "../uuid";
 import { subscriptionKey } from "./subscriptions/contracts";
 import { SYNC_PROTOCOL_VERSION, type components } from "../generated/api";
 import {
@@ -28,7 +27,6 @@ export interface TransferStorage {
   remove(prefix: string): Promise<void>;
   close(): Promise<void>;
 }
-const STAGING_PREFIX = "studio-entity-transfer-";
 
 /** Staging in page memory, for a page whose projections live in the native core.
  * An interval is applied only after it is complete, so a lost page loses nothing durable. */
@@ -56,140 +54,6 @@ export class MemoryTransferStorage implements TransferStorage {
   }
 }
 
-/** Each owner has an unguessable database identity. Cancellation deletes only
- * this owner's database, never another tab's active or recovering transfer. */
-export class IndexedTransferStorage implements TransferStorage {
-  private readonly name = `${STAGING_PREFIX}${randomUUID()}`;
-  private database: Promise<IDBDatabase> | undefined;
-  private stopped = false;
-  private releaseLease: (() => void) | undefined;
-  private readonly onPageHide = () => {
-    void this.close().catch((error) =>
-      console.error("Entity staging cleanup failed", error),
-    );
-  };
-  constructor() {
-    globalThis.addEventListener?.("pagehide", this.onPageHide, { once: true });
-  }
-  private async acquireLease() {
-    if (!navigator.locks?.request)
-      throw new Error("Entity staging owner lock unavailable");
-    let acquired!: () => void;
-    let reject!: (error: unknown) => void;
-    const ready = new Promise<void>((resolve, failed) => {
-      acquired = resolve;
-      reject = failed;
-    });
-    const lifetime = new Promise<void>((resolve) => {
-      this.releaseLease = resolve;
-    });
-    void navigator.locks
-      .request(this.name, async () => {
-        acquired();
-        await lifetime;
-      })
-      .catch(reject);
-    await ready;
-    if (this.stopped) {
-      this.releaseLease?.();
-      throw new Error("Entity staging closed");
-    }
-    // Once per owner, after acquiring its lease. A crash releases the old lock;
-    // live tabs keep theirs and cannot have their staging removed here.
-    await this.cleanOrphans();
-  }
-  private async cleanOrphans() {
-    if (!indexedDB.databases) return;
-    for (const { name } of await indexedDB.databases()) {
-      if (!name?.startsWith(STAGING_PREFIX) || name === this.name) continue;
-      await navigator.locks.request(
-        name,
-        { ifAvailable: true },
-        async (lock) => {
-          if (!lock) return;
-          await new Promise<void>((resolve, reject) => {
-            const request = indexedDB.deleteDatabase(name);
-            request.onsuccess = () => resolve();
-            request.onerror = () => reject(request.error);
-            request.onblocked = () =>
-              reject(new Error("Orphan entity staging cleanup blocked"));
-          });
-        },
-      );
-    }
-  }
-  private open() {
-    if (this.stopped) return Promise.reject(new Error("Entity staging closed"));
-    this.database ??= this.acquireLease().then(
-      () =>
-        new Promise<IDBDatabase>((resolve, reject) => {
-          const request = indexedDB.open(this.name, 1);
-          request.onupgradeneeded = () =>
-            request.result.createObjectStore("pages");
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => reject(request.error);
-        }),
-    );
-    return this.database;
-  }
-  private async transaction<T>(
-    mode: IDBTransactionMode,
-    run: (store: IDBObjectStore, result: (value: T) => void) => void,
-  ): Promise<T> {
-    const db = await this.open();
-    if (this.stopped) throw new Error("Entity staging closed");
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction("pages", mode);
-      let result: T;
-      tx.oncomplete = () => resolve(result);
-      tx.onerror = () => reject(tx.error);
-      tx.onabort = () =>
-        reject(tx.error ?? new Error("Entity staging aborted"));
-      run(tx.objectStore("pages"), (value) => {
-        result = value;
-      });
-    });
-  }
-  put(key: string, value: string) {
-    return this.transaction<void>("readwrite", (store) => {
-      store.put(value, key);
-    });
-  }
-  putMany(values: [string, string][]) {
-    return this.transaction<void>("readwrite", (store) => {
-      for (const [key, value] of values) store.put(value, key);
-    });
-  }
-  get(key: string) {
-    return this.transaction<string | undefined>("readonly", (store, accept) => {
-      const request = store.get(key);
-      request.onsuccess = () =>
-        accept(typeof request.result === "string" ? request.result : undefined);
-    });
-  }
-  remove(prefix: string) {
-    return this.transaction<void>("readwrite", (store) => {
-      store.delete(IDBKeyRange.bound(prefix, `${prefix}\uffff`));
-    });
-  }
-  async close() {
-    if (this.stopped) return;
-    this.stopped = true;
-    globalThis.removeEventListener?.("pagehide", this.onPageHide);
-    try {
-      (await this.database)?.close();
-      await new Promise<void>((resolve, reject) => {
-        const request = indexedDB.deleteDatabase(this.name);
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(request.error);
-        request.onblocked = () =>
-          reject(new Error("Entity staging cleanup blocked"));
-      });
-    } finally {
-      this.releaseLease?.();
-    }
-  }
-}
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -307,7 +171,7 @@ export class EntityTransferAssembler {
   private readonly pending = new Map<string, Pending>();
   private generation = 0;
   declare private readonly storage: TransferStorage;
-  constructor(storage: TransferStorage = new IndexedTransferStorage()) {
+  constructor(storage: TransferStorage = new MemoryTransferStorage()) {
     this.storage = storage;
   }
   async invalidate() {

@@ -72,6 +72,12 @@ async function pages(interval: StagedEntityInterval | undefined) {
   return result;
 }
 describe("complete bounded entity transfer", () => {
+  it("assembles the default stream transfer without browser database storage", async () => {
+    const assembler = new EntityTransferAssembler();
+    const complete = await assembler.receive(parts([batch(0, 1)])[0]);
+    expect(await pages(complete)).toEqual([batch(0, 1)]);
+    await complete?.dispose();
+  });
   it("leaves completed staging with its interval owner until disposal", async () => {
     const storage = new MemoryStaging();
     const assembler = new EntityTransferAssembler(storage);

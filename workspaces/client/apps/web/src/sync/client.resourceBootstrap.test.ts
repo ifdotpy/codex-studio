@@ -272,6 +272,48 @@ async function setup() {
   };
 }
 
+it("does not persist server projections in the local unsent store", async () => {
+  const f = await setup();
+  const { createEntitySequenceScope } = await import("./entitySequence");
+  const { createTranscriptCache } = await import("./transcriptCache");
+  const entries = vi.fn(
+    async (
+      _store: "unsent",
+      _prefix: string,
+    ): Promise<Array<[string, unknown]>> => [],
+  );
+  const put = vi.fn(
+    async (_store: "unsent", _key: string, _value: unknown) => {},
+  );
+  const client = f.client.createSyncClient({
+    api: {
+      syncGet: mocks.syncGet,
+      syncPost: vi.fn(),
+      saved: (_key, fallback) => fallback,
+      save: vi.fn(),
+      setWorkspace: vi.fn(),
+      isApiSchemaMismatch: () => false,
+    },
+    resources: {
+      watchResourceChanges: () => () => {},
+      watchResourceConnection: () => () => {},
+    },
+    sequences: createEntitySequenceScope(),
+    transcripts: createTranscriptCache(),
+    databaseSuffix: "memory-test",
+    keyValue: () => ({ entries, put, remove: vi.fn(async () => {}) }),
+  });
+  const { db } = await client.syncDatabase();
+  await client.persistProjection(db.projections, {
+    id: "entity:agentSummary:one",
+    payload: "",
+    seq: 1,
+    _deleted: false,
+  });
+  expect(entries.mock.calls.every(([store]) => store === "unsent")).toBe(true);
+  expect(put).not.toHaveBeenCalled();
+});
+
 it("keeps the newer row when command replies arrive out of order", async () => {
   const f = await setup();
   const row = (

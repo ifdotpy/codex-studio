@@ -77,14 +77,12 @@ from one SQLite read snapshot. It splits at record boundaries first; serializati
 fragments preserve a single existing oversized record. A complete marker proves
 the final interval, without constructing a batch above the canonical document limit.
 
-The fetch stream waits for temporary IndexedDB staging before reading more data.
+The fetch stream stages transfer pages in memory before reading more data.
 Only a complete, validated interval enters the existing projection write lock;
 all scope checks finish before the first write, snapshot pruning follows complete
 staging, and the durable cursor is written last. Interrupted staging leaves the
-previous cache and cursor intact. A write failure retains the old cursor so replay
-can finish idempotently. Each temporary database holds its own lifetime Web Lock;
-close and cancellation remove it, and opening a new owner removes crash orphans
-only after acquiring their unused locks. The normal small event path stays direct,
+previous projection and cursor intact. A write failure retains the old cursor so replay
+can finish idempotently. Closing the page discards incomplete staging. The normal small event path stays direct,
 and per-scope cursors send only changed records after a baseline. Internal pages
 retain the initial SQLite snapshot's recovery decision even when their checkpoints
 predate the tombstone floor. Source-owned visibility fences in the existing
@@ -127,8 +125,10 @@ deltas carry changed items, removals and optional order without an item revision
 map. The [renderer metadata format](../workspaces/client/apps/web/src/sync/client.ts)
 reads the previous persisted format and drops its unused map on the next write.
 The [API schema identity](../workspaces/runtime/packages/runtime-schema/src/api_schema.rs)
-changes with the wire contract and keys a separate projection cache; draft and
-outbox storage keep their workspace identity.
+changes with the wire contract. Draft and outbox storage keep their workspace identity.
+
+The old RxDB migration is removed. A browser that did not open Studio after the
+migration was introduced cannot recover unresolved sends left in that old store.
 
 ## Protocol 4: resource changes
 
@@ -375,7 +375,7 @@ Missing, foreign, future, or expired cursors return `replyKind: snapshot` and
 replace that ref's projection. The durable store sequence and records come from
 the same SQLite boundary; stream epochs are independent of these cursors.
 
-The client stores each cursor in its IndexedDB projection after its records are
+The client stores each cursor in its in-memory projection after its records are
 applied, under the projection write lock. A failed, cancelled, incomplete, or
 oversized delivery cannot advance the cursor. Reconnect resends active refs with
 these applied cursors through the same subscription path. A covered reconnect

@@ -273,7 +273,7 @@ export type ResourceEventsOptions = {
   storageName: typeof serverStorageName;
   /** One page owns its stream: no owner election by Web Locks, no BroadcastChannel (the native core owns the connection). */
   independent?: boolean;
-  /** Where large entity intervals wait for their last page; the default is IndexedDB. */
+  /** Where large entity intervals wait for their last page; the default is memory. */
   transferStorage?: () =>
     | import("./entityTransfer").TransferStorage
     | undefined;
