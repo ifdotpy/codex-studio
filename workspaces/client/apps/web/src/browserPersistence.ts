@@ -139,23 +139,6 @@ export async function cleanupLegacyPersistence(
   for (const key of keys) {
     if (!key) continue;
     const logical = key.replace(/^:server:[^:]+:/, "");
-    if (logical.startsWith(outboxPrefixes.agentMode)) {
-      try {
-        const record = JSON.parse(storage.getItem(key) || "null");
-        if (
-          record &&
-          typeof record === "object" &&
-          !Array.isArray(record) &&
-          Object.hasOwn(record, "confirmed")
-        ) {
-          if (Object.hasOwn(record, "pending"))
-            storage.setItem(key, JSON.stringify({ pending: record.pending }));
-          else storage.removeItem(key);
-        }
-      } catch {
-        /* Preserve unreadable request identities. */
-      }
-    }
     if (
       retiredKeys.some((prefix) => logical.startsWith(prefix)) ||
       (logical.startsWith(outboxPrefixes.sidebarOrder) &&

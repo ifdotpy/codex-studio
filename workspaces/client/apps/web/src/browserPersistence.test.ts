@@ -93,12 +93,14 @@ it("removes retired draft and upload data without touching identities", async ()
   expect([...values.keys()]).toEqual([
     "codex-sidebar-order:scope:pending",
     "studio-agent-mode:with-pending",
+    "studio-agent-mode:confirmed-only",
     "codex-pending-creation:scope:request:active",
     "studio-queue-change:scope:chat",
     "studio-paired-servers-v1",
     "unrelated-app-key",
   ]);
   expect(JSON.parse(values.get("studio-agent-mode:with-pending")!)).toEqual({
+    confirmed: { concurrency: 2, revision: 1 },
     pending: { request_id: "same" },
   });
   expect(deleted).toEqual([
