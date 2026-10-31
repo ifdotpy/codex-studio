@@ -3,7 +3,7 @@ use crate::{
     backend::Backend,
     protocol::{self, Request, Response},
 };
-use std::{io, os::unix::net::UnixStream, sync::Arc, thread};
+use std::{env, io, os::unix::net::UnixStream, sync::Arc, thread};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Only the native host supplies this configuration. It never comes from IPC.
