@@ -114,7 +114,7 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
             );
             let principal = crate::principal::Principal::Agent {
                 id: snapshot.context().agent.as_str().to_owned(),
-                epoch: u64::try_from(self.context.epoch).unwrap_or_default(),
+                epoch: self.context.epoch,
             };
             let now_ms = (now * 1000.0) as i64;
             let (_, result) = crate::commands::execute_agent_send(
