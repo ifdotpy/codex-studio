@@ -1808,10 +1808,7 @@ impl SchedulerRepository {
         if clears_unknown {
             agent.start_outcome_hold = None;
         }
-        transaction.execute_cached(
-            "INSERT INTO runtime_completed_turns(id) VALUES (?1)",
-            [format!("{agent_id}:{turn_id}")],
-        )?;
+        crate::domain::complete_turn(transaction, agent_id, turn_id)?;
         agent
             .extra
             .insert("lastCompletedTurn".into(), json!(turn_id));
@@ -2565,6 +2562,7 @@ pub(super) fn disconnect_agent(
         );
     }
     agent.in_flight = Some(false);
+    crate::domain::mark_sessions_lost(transaction, &agent.id.0)?;
     transaction.execute_cached("UPDATE runtime_events SET status='uncertain',error=?3 WHERE agent=?1 AND epoch=?2 AND status='dispatching'", params![agent.id.0,epoch,if restart {"Server restarted before delivery acknowledgement"} else {"Codex disconnected"}])?;
     if restart_input_wait {
         transaction.execute_cached("UPDATE runtime_events SET status='uncertain' WHERE agent=?1 AND epoch=?2 AND id IN (SELECT value FROM json_each(?3)) AND status IN ('reserved','dispatching','uncertain')", params![agent.id.0,epoch,serde_json::to_string(&attempt.as_ref().and_then(|a| a.events.as_ref()))?])?;
@@ -3280,11 +3278,7 @@ pub(super) fn completed_turn(
     agent: &str,
     turn: &str,
 ) -> StoreResult<bool> {
-    Ok(connection.query_row_cached(
-        "SELECT EXISTS(SELECT 1 FROM runtime_completed_turns WHERE id=?1)",
-        [format!("{agent}:{turn}")],
-        |row| row.get(0),
-    )?)
+    crate::domain::turn_completed(connection, agent, turn)
 }
 
 /// Python `codex_agent_management.parked_after_turn`: a park requested during
