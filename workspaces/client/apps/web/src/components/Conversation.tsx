@@ -282,7 +282,7 @@ export default function Conversation(p: {
 }) {
   const { removeSendingMessage } = useSendingMessageRemoval();
   const { queueUploads } = useServerUploads();
-  const { get, post } = useServerApi();
+  const { get, post, command } = useServerApi();
   const { changeOutbox } = useServerOutbox();
 
   reportPromptComposerRender("conversation");
@@ -2252,10 +2252,8 @@ export default function Conversation(p: {
                               if (stopping || !agentId) return;
                               const attempt = ++stopAttempt.current;
                               setStopping(true);
-                              void post("/api/stop", {
-                                id: agentId,
-                                descendants: false,
-                              })
+                              void command
+                                .stop(agentId, false)
                                 .then(p.refresh)
                                 .catch((e) => p.notify(errorText(e)))
                                 .finally(() => {

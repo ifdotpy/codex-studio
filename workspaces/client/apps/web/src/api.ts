@@ -3,6 +3,7 @@ import {
   MonitorInputKind,
   MonitorInputStatus,
 } from "./generated/api";
+import { createCommandClient } from "./commands";
 import { randomUUID } from "./uuid";
 import { hasNativeClient } from "./native/client";
 
@@ -848,6 +849,11 @@ export function createApiScope(options: ApiScopeOptions) {
     options?: Omit<PostOptions, "timeoutMs">,
   ) => post(path, body, { ...options, timeoutMs: 15000 });
 
+  // Every write action goes through the one command path (`POST /api/commands`).
+  const command = createCommandClient(localStorage, (body, options) =>
+    syncPost("/api/commands", body, options),
+  );
+
   async function refreshSession(): Promise<GetResult<"/api/session">> {
     const generation = ++sessionGeneration;
     pendingSessions.add(generation);
@@ -996,6 +1002,7 @@ export function createApiScope(options: ApiScopeOptions) {
     apiDownload,
     syncGet,
     syncPost,
+    command,
     refreshSession,
     saved,
     save,
@@ -1034,6 +1041,7 @@ export const {
   apiDownload,
   syncGet,
   syncPost,
+  command,
   refreshSession,
   saved,
   save,

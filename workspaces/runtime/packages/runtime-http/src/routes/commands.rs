@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use axum::http::StatusCode;
 use axum::{Extension, Json, extract::State};
-use studio_runtime_schema::command::{Command, CommandRequest, CommandResponse};
+use studio_runtime_schema::command::{Command, CommandRequest, CommandResponse, CommandRow};
 use studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts;
 use studio_runtime_services::agent_management::Action;
 use studio_runtime_services::commands::{self, CommandError, Start};
@@ -60,6 +60,7 @@ async fn command(
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let now_ms = now_ms()?;
     let chat = request.command.target().to_owned();
+    let mut extra_rows = Vec::new();
     let reference = match request.command.clone() {
         Command::Withdraw { target, body } => {
             let (principal, request) = (principal.clone(), request.clone());
@@ -132,9 +133,17 @@ async fn command(
                     }
                     let message: crate::generated::ManagedMessageBody =
                         serde_json::from_value(wire).map_err(|_| ApiError::internal())?;
-                    let _ = super::messages::send_message(state.clone(), message)
+                    let Json(receipt) = super::messages::send_message(state.clone(), message)
                         .await
                         .map_err(same_id_conflict)?;
+                    // The delivery receipt of the message, in the shape of
+                    // `GET /api/messages/receipts`. It is not an entity row, so its seq is 0.
+                    extra_rows.push(CommandRow {
+                        collection: "messageReceipt".into(),
+                        id: request.id.clone(),
+                        seq: 0,
+                        payload: serde_json::to_value(&receipt).map_err(ApiError::json)?,
+                    });
                     let id = request.id.clone();
                     store
                         .transaction_with_error(move |tx| {
@@ -147,12 +156,13 @@ async fn command(
             }
         }
     };
-    let response = store
+    let mut response = store
         .read_async("runtime-http/routes/commands", move |connection| {
             commands::response(connection, &reference, &chat)
         })
         .await
         .map_err(command_error)?;
+    response.rows.extend(extra_rows);
     Ok(Json(response))
 }
 

@@ -249,7 +249,8 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
         mutations.push(
           requestBody<PostBody<"/api/queue">>({ request: () => request }),
         );
-      if (path === "/api/messages" || path === "/api/stop") starts.push(path);
+      if (["/api/messages", "/api/stop", "/api/commands"].includes(path))
+        starts.push(path);
     }
   });
   let loseResponse = true;

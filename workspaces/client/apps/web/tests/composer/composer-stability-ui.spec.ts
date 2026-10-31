@@ -131,8 +131,10 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       await page.route("**/api/messages", (route) => {
         sendCaptured.resolve(route);
       });
-      await page.route("**/api/stop", (route) => {
-        stopCaptured.resolve(route);
+      await page.route("**/api/commands", (route) => {
+        if (route.request().postDataJSON()?.kind === "stop")
+          stopCaptured.resolve(route);
+        else void route.fallback();
       });
       await page.setViewportSize({ width, height: 960 });
       await page.goto(origin);

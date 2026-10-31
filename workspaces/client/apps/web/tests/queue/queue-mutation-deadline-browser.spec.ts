@@ -54,7 +54,9 @@ test("queue-mutation-deadline-browser @performance", async ({
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("request", (request) => {
       if (
-        ["/api/messages", "/api/stop"].includes(new URL(request.url()).pathname)
+        ["/api/messages", "/api/stop", "/api/commands"].includes(
+          new URL(request.url()).pathname,
+        )
       )
         nativeRequests.push(request.url());
     });

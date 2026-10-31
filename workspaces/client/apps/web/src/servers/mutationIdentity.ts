@@ -159,7 +159,12 @@ export function createMutationJournal(
     const explicit = [
       value.requestId,
       value.request_id,
-      ...(["/api/messages", "/api/leads", "/api/assets"].includes(path)
+      ...([
+        "/api/messages",
+        "/api/leads",
+        "/api/assets",
+        "/api/commands",
+      ].includes(path)
         ? [value.id]
         : []),
     ].find((id): id is string => typeof id === "string" && !!id);

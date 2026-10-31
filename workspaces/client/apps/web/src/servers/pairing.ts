@@ -224,9 +224,12 @@ export async function requestIdentity(request: Request): Promise<string> {
       [
         value.requestId,
         value.request_id,
-        ...(["/api/messages", "/api/leads", "/api/assets"].includes(
-          new URL(request.url).pathname,
-        )
+        ...([
+          "/api/messages",
+          "/api/leads",
+          "/api/assets",
+          "/api/commands",
+        ].includes(new URL(request.url).pathname)
           ? [value.id]
           : []),
       ].find((id) => typeof id === "string" && id) || randomUUID()
