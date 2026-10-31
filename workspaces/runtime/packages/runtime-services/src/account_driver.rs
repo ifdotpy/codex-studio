@@ -1221,7 +1221,7 @@ fn abandoned_login_account(value: &Value, key: &str) -> bool {
 fn existing_login(
     state: &RegistryState,
     request: &CodexLoginRequest,
-) -> Result<Option<Value>, AccountMutationError> {
+) -> Result<Option<studio_runtime_schema::account_registry::LoginReceipt>, AccountMutationError> {
     let Some(receipt) = state
         .typed
         .logins
@@ -1239,11 +1239,7 @@ fn existing_login(
             "This sign-in request belongs to a different account",
         ));
     }
-    Ok(state
-        .value
-        .get("logins")
-        .and_then(|logins| logins.get(&request.login_id))
-        .cloned())
+    Ok(Some(receipt.clone()))
 }
 
 impl<R: ProviderAuthReader> AccountDriver<R> {
@@ -1252,7 +1248,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     pub fn codex_login_receipt(
         &self,
         request: &CodexLoginRequest,
-    ) -> Result<Option<Value>, AccountMutationError> {
+    ) -> Result<Option<studio_runtime_schema::account_registry::LoginReceipt>, AccountMutationError>
+    {
         let state = self
             .state
             .lock()
@@ -1379,7 +1376,9 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         if let Some(receipt) = existing_login(&state, request)? {
-            return Ok(LoginReservation::Replay(receipt));
+            return Ok(LoginReservation::Replay(
+                serde_json::to_value(receipt).map_err(|_| AccountDriverError::InvalidRegistry)?,
+            ));
         }
         let mut value = state.value.clone();
         let mut order = state.order.clone();

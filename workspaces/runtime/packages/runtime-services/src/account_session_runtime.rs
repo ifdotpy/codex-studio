@@ -1545,6 +1545,8 @@ impl AccountSessionPort for AccountSessionRuntime {
                     .await?
                     .map_err(mutation_error)?
                     {
+                        let receipt = serde_json::to_value(receipt)
+                            .map_err(|_| AccountSessionError::Persistence)?;
                         let driver = Arc::clone(&runtime.driver);
                         let request_id = request.login_id.clone();
                         return spawn_account_driver(move || {
