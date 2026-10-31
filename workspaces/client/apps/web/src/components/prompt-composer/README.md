@@ -1,148 +1,48 @@
 # Prompt composer
 
-## Change Contract
+`PromptComposer.tsx` owns the form subtree and subscribes to the active chat's
+draft. `PromptInput.tsx` owns the controlled textarea, autocomplete, keyboard
+handling, and caret-sensitive skill insertion. The draft hook in
+[`../../sync/drafts.ts`](../../sync/drafts.ts) owns draft persistence and
+conflict handling. Send reads the current draft by chat ID so an immediate
+Enter or a send delayed by an upload uses current text.
 
-`PromptComposer.tsx` owns the form subtree and the live text for one chat.
-`PromptInput.tsx` owns the textarea, autocomplete menu, keyboard handling, and
-caret-sensitive skill insertion. The composer subscribes to one chat ID; the
-sidebar and conversation do not subscribe to that chat's keystrokes.
+Textarea height is measured at most once per animation frame, including after
+programmatic draft changes and width changes. CSS owns its minimum and maximum
+height; long drafts scroll inside the textarea. Live text is subscribed to by
+the transcript subtree so token deltas do not render the composer. Attachments,
+dictation, recall, skill completion, caret placement, Enter, Tab, Shift+Enter,
+and IME composition retain their input paths.
 
-Think of the screen as a room with three people: the sidebar, the conversation,
-and the person typing. Before this change, every letter called everyone into
-the room to redraw. Now only the typing person redraws for a letter. They still
-put the letter in the same saved draft record right away.
-
-## Draft and send contract
-
-`useSyncedDrafts` in [`../../sync/drafts.ts`](../../sync/drafts.ts) remains the
-only owner of draft text, the recovery journal, sync, and conflict handling. On
-each edit, it updates its current value and notifies the chat's subscriber,
-then writes the recovery journal and saved scope map in the same synchronous
-call. Both writes finish before the input handler returns. The replication
-client coalesces upstream draft pushes with a trailing quiet wait and a bounded
-maximum wait ([`client.ts`](../../sync/client.ts)); it does not delay local
-recovery or change the storage format. Remote reconciliation and workspace
-adoption still update the legacy hook state and notify changed chat subscribers.
-
-App and Conversation read the current value by chat ID when a send begins. This
-keeps an immediate Enter send and a send that waits on uploads or delivery from
-using an old render's text. The existing request ID is retained through retry;
-the draft clears only when the durable outbox owns the message and only if the
-user has not typed newer text. Changing chats changes the subscription, so each
-chat keeps its own draft.
-
-The prompt starts at two rows and grows with its content until the composer
-reaches at most about three fifths of the visible viewport. Longer drafts scroll
-inside the textarea. The same CSS limit applies on desktop and mobile, and uses
-the visual viewport while the on-screen keyboard is open. On short viewports,
-the flex layout shrinks the transcript and composer around the two-row input
-minimum to keep the send controls and usage footer visible. A draft of two rows
-or fewer keeps its input height. Keyboard and language-picker viewport changes
-do not scroll the page. The viewport hook continues to keep the composer inside
-the visible screen. Mobile model and
-account information shares one row so it does not push the send controls and
-usage footer below the keyboard. The limit ratio and approximate chrome
-allowance live in [`style.css`](../../style.css).
-For an empty managed chat, model and worker settings remain below the composer.
-When the keyboard leaves a short visible viewport, that settings panel becomes
-internally scrollable so the send controls and usage footer stay visible.
-Closing the keyboard restores the expanded settings layout.
-`workspaces/client/apps/web/tests/mobile/mobile-keyboard-ui.spec.ts` checks simulated viewport
-changes with Android and iPhone identities in the browser selected by
-`BROWSER`; it does not open a real operating-system keyboard or language
-picker.
-
-The textarea remains controlled. Attachments, dictation, prompt recall, skill
-completion, selection and caret placement, Enter, Tab, Shift+Enter, and IME
-composition keep their existing event paths.
-
-## Owned checks
+Draft edits update memory immediately and are sent by POST after the typing
+wait in [`draftSyncTiming.ts`](../../sync/draftSyncTiming.ts). Stream snapshots
+and changes restore saved drafts. Unconfirmed edits remain in memory until they
+are saved or the page closes.
 
 From `workspaces/client/apps/web/`, run:
 
 ```sh
 pnpm run test:prompt-composer
 pnpm run benchmark:prompt-composer
-pnpm run benchmark:prompt-composer:paired
 ```
 
-The first command builds and runs the geometry, autocomplete/recall/IME/caret,
-and 500-draft persistence/render-isolation browser checks. The benchmark command
-runs the draft fixture and production UI responsiveness fixture. The paired
-command makes a temporary worktree at baseline revision
-`e681bcc618d9ea4f4a0799de3fa81d01eee92687`, alternates two baseline/current
-500-draft measurements, then runs the real production UI fixture on each
-revision. The baseline is a sparse worktree containing only the web app and
-fixture support files, which avoids copying unrelated repository content. It
-removes its temporary worktree and linked dependency directory when complete.
-The command needs enough free disk quota for that baseline checkout and browser
-build. Set `CHROME_BIN` if Chromium is not at the default path.
+The input browser check exercises geometry, coalesced layout reads, input
+handling, and autocomplete. The benchmark uses an isolated server and scripted
+provider to create at least 300 completed turns containing Markdown and code.
+It opens the actual SSE transcript, checks switching between two real chats,
+and records input-to-second-animation-frame latency and render probes while
+idle and while tokens stream at 4× CPU slowdown. It also checks that a token
+without typing does not render the composer. It does not use a live model.
 
-`PromptInput.spec.ts` directly mounts the production input without App or
-Conversation. It checks controlled and programmatic value changes, disabled
-and overlength states, Enter, Shift+Enter, Tab, IME composition, and skill
-insertion. The 500-draft fixture has 20 edits and checks the real
-`PromptComposer` with the production draft hook. Its surrounding Harness,
-SidebarFixture, and TranscriptFixture are explicitly test stand-ins, not the
-production App/sidebar/transcript. It deterministically requires zero renders
-in those three functions for the isolated revision (and 20 for the historical
-baseline), 20 composer commits, one synchronous map write and one journal write
-per edit, and no writes for unchanged reconciliation. This fixture checks the
-store/composer boundary. The separate 301-message UI
-fixture runs the production App, Sidebar, and Conversation at four-times CPU
-slowdown on desktop and mobile, checks chat switching and streamed updates, and
-records function-level render probes and timings. It asserts App and Sidebar do
-not render while typing; it allows at most one incidental Conversation update
-to coincide with typing, while the focused 500-draft fixture remains strictly
-zero for parent/transcript renders. Neither browser fixture has a latency
-threshold.
+One local Chromium observation (301 completed turns) gave these timings:
 
-The mobile keyboard regression can also run independently:
+| Phase                 | Before p50/p95  | After p50/p95   |
+| --------------------- | --------------- | --------------- |
+| Idle input            | 18.5 / 28.1 ms  | 21.7 / 29.9 ms  |
+| Input while streaming | 29.9 / 158.9 ms | 28.6 / 140.3 ms |
 
-```sh
-pnpm --filter codex-agents-web run test:browser -- mobile-keyboard-ui.spec.ts
-BROWSER=webkit pnpm --filter codex-agents-web run test:browser -- mobile-keyboard-ui.spec.ts
-```
-
-## Recorded measurements
-
-The paired script uses headless Chromium and a production build. It generates
-the baseline API types from that revision's server schema before building.
-The original baseline was measured before extraction. Timing numbers are local observations,
-not service-level guarantees. Draft persistence counts and render counts are the
-more repeatable contract.
-
-| 500 drafts, 20 edits (7066718 → current)      |     Baseline |    Current |
-| --------------------------------------------- | -----------: | ---------: |
-| Parent / sidebar / transcript-fixture renders | 20 / 20 / 20 |  0 / 0 / 0 |
-| Composer commits                              |           20 |         20 |
-| Synchronous scope-map writes                  |           20 |         20 |
-| Aggregate scope-map bytes written             |   40,195,940 | 40,195,940 |
-| Synchronous journal writes                    |           20 |         20 |
-| Setter median, paired round 1                 |      24.2 ms |    21.3 ms |
-| Setter median, paired round 2                 |      22.9 ms |    27.3 ms |
-| Setter max, paired round 1                    |      28.1 ms |    31.2 ms |
-| Setter max, paired round 2                    |      30.9 ms |    42.2 ms |
-
-The paired setter timings varied and do not establish a speedup. A later focused
-run on the final draft code measured a 22.4 ms median and 29.7 ms maximum. The
-paired rounds were captured just before the independent scroll-follow control
-was moved out of Conversation; that later change does not modify draft writing.
-
-The separate production fixture uses 301 transcript records and CPU slowdown 4. One baseline/current observation was:
-
-| Viewport and phase       | Baseline App / Sidebar / Conversation renders | Current renders | Input p50/p95, baseline → current |
-| ------------------------ | --------------------------------------------: | --------------: | --------------------------------: |
-| Desktop, idle typing     |                                  27 / 27 / 17 |       0 / 0 / 0 |     91.9 / 301.6 → 39.5 / 45.6 ms |
-| Desktop, scrolled typing |                                  31 / 31 / 27 |       0 / 0 / 0 |     90.6 / 250.6 → 44.5 / 57.9 ms |
-| Mobile, idle typing      |                                  27 / 27 / 27 |       0 / 0 / 0 |     63.1 / 168.4 → 37.9 / 45.8 ms |
-| Mobile, scrolled typing  |                                  31 / 31 / 31 |       0 / 0 / 0 |     68.7 / 264.9 → 36.7 / 45.9 ms |
-
-These are local single-run timing observations, not a controlled statistical
-claim. The render counts are the stable result. The production probe uses a 20 ms input window. One run captured a single
-Conversation call in a typing phase, while the later run captured zero; its
-root cause is not isolated. The production fixture allows at most one such call
-per phase and strictly forbids App or Sidebar renders.
-The isolated 500-draft fixture strictly requires zero parent/sidebar/transcript
-renders. Neither fixture has a latency pass/fail limit. They use local test
-data and do not measure live model requests.
+These individual runs do not establish a latency improvement. In the same
+observations, Conversation renders per streaming key fell from 0.68 to 0.36;
+the token-only composer assertion changed from one render to zero. Phase-wide
+render counts include asynchronous background work, so they do not by
+themselves establish what caused each render.

@@ -9,9 +9,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::generated::{
-    DraftChangeBatch, EntityChangeBatch, ResourceChangeEvent, ResourceChangeEventReason,
-    ResourceRef, ResourceRevisionEntry, SubscriptionCursor, TranscriptChangeBatch,
-    TranscriptPageResponse, TranscriptStreamDelta, TranscriptSyncPage,
+    DraftChangeBatch, DraftSnapshot, EntityChangeBatch, ResourceChangeEvent,
+    ResourceChangeEventReason, ResourceRef, ResourceRevisionEntry, SubscriptionCursor,
+    TranscriptChangeBatch, TranscriptPageResponse, TranscriptStreamDelta, TranscriptSyncPage,
 };
 use axum::Json;
 use axum::body::{Body, Bytes};
@@ -445,11 +445,7 @@ async fn sync_stream(
             Ok(sequence) => sequence,
             Err(error) => return error.into_response(),
         };
-    let initial_draft_sequence =
-        match read_draft_changes(Some(store.clone()), &resources, None).await {
-            Ok((sequence, _)) => sequence,
-            Err(error) => return error.into_response(),
-        };
+    let mut initial_draft_sequence = 0;
     let reconnect = headers.contains_key("last-event-id")
         || query
             .typed_value("reconnect")
@@ -510,10 +506,10 @@ async fn sync_stream(
             ResourceRef::StateResource(_) if entry.cursor.is_some() => {
                 initial_entity_sequence = entry.revision
             }
+            ResourceRef::DraftsResource(_) => initial_draft_sequence = entry.revision,
             ResourceRef::AccountsResource(_)
             | ResourceRef::CostsResource(_)
             | ResourceRef::DesktopResource(_)
-            | ResourceRef::DraftsResource(_)
             | ResourceRef::LimitsResource(_)
             | ResourceRef::ModelsResource(_)
             | ResourceRef::MultiServerResource(_)
@@ -1093,12 +1089,65 @@ async fn read_entity_changes(
     read_entity_changes_typed(store, &typed_resources(resources), after).await
 }
 
+#[cfg(test)]
 async fn read_draft_changes(
     store: Option<Arc<RuntimeStore>>,
     resources: &[SubscribedResource],
     after: Option<i64>,
 ) -> Result<(i64, Option<DraftChangeBatch>), ApiError> {
     read_draft_changes_typed(store, &typed_resources(resources), after).await
+}
+
+pub(super) async fn draft_initial_snapshot(
+    state: HttpState,
+    resource: ResourceRef,
+) -> Result<ResourceRevisionEntry, ApiError> {
+    let store = state.store.ok_or_else(ApiError::internal)?;
+    let (revision, snapshot) = store
+        .read_async(
+            "runtime-http/routes/sync_stream/draft-baseline",
+            move |connection| {
+                let revision = SyncDocumentsRepository::draft_sequence(connection)
+                    .map_err(|_| ApiError::internal())?;
+                let mut rows = SyncDocumentsRepository::drafts_after(
+                    connection,
+                    0,
+                    SYNC_DRAFT_STREAM_MAX_DOCUMENTS + 1,
+                )
+                .map_err(|_| ApiError::internal())?;
+                let complete = rows.len() as i64 <= SYNC_DRAFT_STREAM_MAX_DOCUMENTS;
+                rows.truncate(SYNC_DRAFT_STREAM_MAX_DOCUMENTS as usize);
+                let documents = rows
+                    .into_iter()
+                    .map(super::sync_documents::draft_document)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, ApiError>((
+                    revision,
+                    DraftSnapshot {
+                        complete,
+                        documents,
+                    },
+                ))
+            },
+        )
+        .await?;
+    Ok(ResourceRevisionEntry {
+        resource: Some(Some(resource)),
+        revision,
+        draft_snapshot: Some(snapshot),
+        reply_kind: Some(crate::generated::SubscriptionReplyKind::Snapshot),
+        cursor: None,
+        draft_changes: None,
+        entity_changes: None,
+        entity_sequence_reset: None,
+        entity_sequences: None,
+        terminal_base_offset: None,
+        transcript_changes: None,
+        transcript_snapshot: None,
+        discovery_snapshot: None,
+        voice_records: None,
+        view_snapshot: None,
+    })
 }
 
 #[cfg(test)]
@@ -1635,16 +1684,6 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
                 .await
                 .ok()?;
         }
-        if update
-            .added
-            .iter()
-            .any(|resource| matches!(resource.resource, ResourceRef::DraftsResource(_)))
-        {
-            state.draft_sequence = read_draft_changes(state.store.clone(), &update.added, None)
-                .await
-                .ok()?
-                .0;
-        }
         let mut event = resource_changes_event(
             &state.workspace_id,
             &view,
@@ -1680,6 +1719,9 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
             .ok()?,
         );
         for (resource, entry) in event.resources.iter().zip(&event.resource_versions) {
+            if matches!(resource, ResourceRef::DraftsResource(_)) {
+                state.draft_sequence = entry.revision;
+            }
             if matches!(resource, ResourceRef::StateResource(_)) && entry.cursor.is_some() {
                 state.entity_sequence = entry.revision;
             }
@@ -2062,6 +2104,7 @@ fn resource_changes_event(
                     *revision
                 },
                 draft_changes: drafts.then(|| draft_changes.take()).flatten().map(Some),
+                draft_snapshot: None,
                 entity_changes: entity_changes.map(Some),
                 entity_sequence_reset: state.then_some(Some(view.entity_reset)),
                 entity_sequences: None,
@@ -2169,6 +2212,7 @@ fn initial_resource_sse_events(revision: i64, payload: ResourceChangeEvent) -> V
             entry.transcript_snapshot.is_some()
                 || entry.view_snapshot.is_some()
                 || entry.entity_changes.is_some()
+                || entry.draft_snapshot.is_some()
         })
     {
         return vec![resource_sse_event(revision, payload)];
@@ -2233,12 +2277,23 @@ fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event 
             .filter_map(|entry| entry.transcript_snapshot.as_mut().and_then(Option::as_mut))
             .filter(|page| page.items.len() > 1)
             .max_by_key(|page| page.items.len());
-        let Some(page) = largest else {
-            break;
-        };
-        let keep = page.items.len().div_ceil(2);
-        let replacement = super::transcript::window_snapshot(page.clone(), Some(keep as i64));
-        *page = replacement;
+        if let Some(page) = largest {
+            let keep = page.items.len().div_ceil(2);
+            let replacement = super::transcript::window_snapshot(page.clone(), Some(keep as i64));
+            *page = replacement;
+            continue;
+        }
+        if let Some(snapshot) = payload
+            .resource_versions
+            .iter_mut()
+            .filter_map(|entry| entry.draft_snapshot.as_mut())
+            .find(|snapshot| !snapshot.documents.is_empty())
+        {
+            snapshot.documents.truncate(snapshot.documents.len() / 2);
+            snapshot.complete = false;
+            continue;
+        }
+        break;
     }
     studio_runtime_services::diagnostics::record_sync_recovery(
         studio_runtime_services::diagnostics::SyncRecoveryKind::Oversize,
@@ -2251,6 +2306,7 @@ fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event 
         entry.transcript_changes = None;
         entry.transcript_snapshot = None;
         entry.draft_changes = None;
+        entry.draft_snapshot = None;
         entry.discovery_snapshot = None;
         entry.voice_records = None;
         entry.view_snapshot = None;
@@ -5153,6 +5209,87 @@ mod tests {
                     .expect("future checkpoint")
                     .1
                     .is_none()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn draft_snapshot_reports_its_limit() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            for index in 0..=SYNC_DRAFT_STREAM_MAX_DOCUMENTS {
+                let id = format!("phone:{index}");
+                let payload = json!({"id":id,"device":"phone","session":index.to_string(),"text":"saved","updated":1}).to_string();
+                SyncDocumentsRepository::put_draft(tx, &id, &payload, false)?;
+            }
+            Ok(())
+        }).await.expect("drafts");
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let resource = ResourceRef::DraftsResource(crate::generated::DraftsResource {
+            kind: crate::generated::DraftsResourceKind::Drafts,
+        });
+        let entry = draft_initial_snapshot(state, resource)
+            .await
+            .expect("snapshot");
+        let snapshot = entry.draft_snapshot.expect("baseline");
+        assert!(!snapshot.complete);
+        assert_eq!(
+            snapshot.documents.len() as i64,
+            SYNC_DRAFT_STREAM_MAX_DOCUMENTS
+        );
+        assert!(entry.revision > snapshot.documents.last().expect("draft").seq);
+    }
+
+    #[tokio::test]
+    async fn draft_stream_open_contains_stored_draft() {
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            SyncDocumentsRepository::put_draft(tx, "phone:chat", r#"{"id":"phone:chat","device":"phone","session":"chat","text":"saved","updated":1}"#, false)?;
+            Ok(())
+        }).await.expect("draft");
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router(state).expect("router");
+        for reconnect in [false, true] {
+            let request = Request::builder()
+                .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D&tokenRates=false&reconnect={reconnect}"))
+                .header("host", "127.0.0.1:4321").header("x-canvas-token", "token")
+                .extension(ConnectInfo(std::net::SocketAddr::from(([127,0,0,1],12345))))
+                .body(Body::empty()).expect("request");
+            let mut body = app
+                .clone()
+                .oneshot(request)
+                .await
+                .expect("stream")
+                .into_body()
+                .into_data_stream();
+            body.next().await.expect("session").expect("bytes");
+            let bytes = body.next().await.expect("baseline").expect("bytes");
+            let text = std::str::from_utf8(&bytes).expect("utf8");
+            assert!(
+                text.contains("phone:chat"),
+                "baseline must contain stored draft: {text}"
             );
         }
     }

@@ -75,11 +75,68 @@ test("isolated production PromptInput preserves its input behavior", async ({
     });
 
   const input = page.getByRole("combobox", { name: "Message" });
+  await page.evaluate(() => {
+    const descriptor = Object.getOwnPropertyDescriptor(
+      Element.prototype,
+      "scrollHeight",
+    );
+    if (!descriptor?.get) throw new Error("scrollHeight getter is missing");
+    let reads = 0;
+    let inputReads = 0;
+    Object.defineProperty(Element.prototype, "scrollHeight", {
+      ...descriptor,
+      get() {
+        if (this.getAttribute("aria-label") === "autosize measurement") reads++;
+        if (this.id === "message") inputReads++;
+        return descriptor.get!.call(this);
+      },
+    });
+    Object.defineProperty(window, "composerMeasurementReads", {
+      get: () => reads,
+    });
+    Object.defineProperty(window, "composerInputReads", {
+      get: () => inputReads,
+    });
+  });
   await input.fill("hello");
   await expect(input).toHaveValue("hello");
+  expect(
+    await page.evaluate(() =>
+      Object.getOwnPropertyDescriptor(
+        window,
+        "composerMeasurementReads",
+      )?.get?.(),
+    ),
+  ).toBe(0);
   await expect
     .poll(() => page.evaluate(() => window.inputEvents!.changes))
     .toBe(1);
+
+  const oneLine = await input.evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  const beforeResize = await page.evaluate(() =>
+    Object.getOwnPropertyDescriptor(window, "composerInputReads")?.get?.(),
+  );
+  await page.evaluate(() => {
+    window.setInputState!({ text: "one\ntwo\nthree\nfour" });
+    window.setInputState!({ text: "one\ntwo\nthree\nfour\nfive" });
+  });
+  await expect
+    .poll(() =>
+      input.evaluate((element) => element.getBoundingClientRect().height),
+    )
+    .toBeGreaterThan(oneLine);
+  const afterResize = await page.evaluate(() =>
+    Object.getOwnPropertyDescriptor(window, "composerInputReads")?.get?.(),
+  );
+  expect(afterResize - beforeResize).toBe(1);
+  await page.evaluate(() => window.setInputState!({ text: "hello" }));
+  await expect
+    .poll(() =>
+      input.evaluate((element) => element.getBoundingClientRect().height),
+    )
+    .toBeLessThanOrEqual(oneLine);
 
   await input.press("Enter");
   await expect
@@ -126,6 +183,19 @@ test("isolated production PromptInput preserves its input behavior", async ({
     }),
   );
   await expect(input).toHaveAttribute("aria-invalid", "true");
+  await input.evaluate((element) => {
+    element.style.maxHeight = "80px";
+    element.style.boxSizing = "border-box";
+    element.style.overflowY = "auto";
+  });
+  await expect
+    .poll(() =>
+      input.evaluate((element) => element.scrollHeight > element.clientHeight),
+    )
+    .toBe(true);
+  expect(
+    await input.evaluate((element) => element.getBoundingClientRect().height),
+  ).toBeLessThanOrEqual(80);
 
   await page.evaluate(() => {
     window.setInputState!({ text: "$eli5", tooLong: false });

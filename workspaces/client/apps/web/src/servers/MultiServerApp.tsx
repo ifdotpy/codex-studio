@@ -162,7 +162,6 @@ function MultiServerShell({
   const restoreAccountActionFocus = useRef<string | null>(null);
   const discovery = useServerDiscovery(
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
-    (server) => add(server, false),
     !uiOnly,
     Object.fromEntries(
       servers.map((server) => [server.id, server.workspaceId]),

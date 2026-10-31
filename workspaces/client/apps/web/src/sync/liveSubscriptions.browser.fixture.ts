@@ -30,7 +30,6 @@ export const initializeSubscriptions = async (workspaceId: string) => {
       typeof createResourceEvents
     >[0]["tokenRates"],
     openEvents: openServerEvents,
-    storageName: (name) => name,
   });
   transport.watchResourceChanges({ kind: "state" }, () => {});
   let stop: (() => void) | undefined;

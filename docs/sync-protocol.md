@@ -69,6 +69,12 @@ diagnostic key. A parity witness requires exactly one handler and data contract
 for every generated resource kind. Business services publish domain changes
 without tracking sessions or subscribers.
 
+Draft subscriptions include a typed snapshot on open and reopen. Its revision
+is the draft sequence read with its rows, so later stream batches continue from
+that point. The snapshot is bounded by the shared [draft row and stream byte
+limits](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs); its
+`complete` flag is false when either limit truncates it.
+
 Large entity baselines and deltas use typed `entity-transfer` frames on the same
 connection. Each page is a canonical `EntityChangeBatch` within the shared
 [document and complete-event byte limits](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs).
@@ -129,6 +135,12 @@ changes with the wire contract. Draft and outbox storage keep their workspace id
 
 The old RxDB migration is removed. A browser that did not open Studio after the
 migration was introduced cannot recover unresolved sends left in that old store.
+
+The browser saves each pending message command and workspace identity before its
+POST. A reconnect or explicit retry reuses the exact command; a failed or damaged
+entry can be discarded without blocking other messages. The retired
+`studio-thin-cache` database is deleted on startup. Its unsent messages and drafts
+are not migrated.
 
 ## Protocol 4: resource changes
 
@@ -295,9 +307,8 @@ paths is deferred work; frame reasons do not decide their validity.
 
 Persistence errors, deadlines, and exhausted queue capacity stop delivery and
 request recovery for the affected resources. Subscription removal strips only
-removed entries; source close silently drops pending frames. The stream owner
-shares its complete merged terminal view with followers as a snapshot only after
-persistence succeeds. Raw server intervals retain delta semantics.
+removed entries; source close silently drops pending frames. Raw server intervals
+retain delta semantics.
 Saved terminal history and explicit retries remain user actions.
 
 The existing native EventSource transport and the in-memory projection cache
@@ -354,14 +365,11 @@ or error state has settled. Fetching an unchanged projection must not recursivel
 invalidate that projection. Queues and pending references are
 bounded; overflow requires explicit reconciliation rather than silent loss.
 
-Where browser coordination is available, one stream owner combines the active
-subscriptions from tabs and distributes stream events. Without that
-coordination, a tab may open its own stream. Neither case enables HTTP polling.
-Unused subscriptions and their source watchers are released. A new owner requests
-peer subscriptions again. Peer heartbeats do not replay unchanged resource
-baselines. The owner retains versions for its active aggregate and at most 128
-inactive references; an evicted reference requires a fresh server baseline.
-A late follower receives a targeted baseline without waiting for a source change.
+Each tab opens its own stream for its active subscriptions. Unused subscriptions
+and their source watchers are released. Each stream retains versions for its
+active references and at most 128 inactive references; an evicted reference
+requires a fresh server baseline. Stream session identity is scoped to the
+server connection and cleared when that connection closes.
 
 ### Durable per-ref resume cursors
 
@@ -405,8 +413,7 @@ do not create a polling loop.
 
 Cursorless process, complaint, and legacy-room views become ready only after
 their current inline value is applied by the view adapter. A failed or discarded inline
-entity application asks the stream owner to reconnect from the durable per-ref
-cursor; a follower asks that owner through browser coordination. Queued deltas
+entity application reconnects the tab stream from the durable per-ref cursor. Queued deltas
 cannot confirm readiness after their base failed, and a cancelled subscription
 cannot request recovery for its replacement.
 
@@ -444,8 +451,8 @@ Connection health, subscription readiness, and message delivery are separate
 contracts. The renderer's
 [connection state module](../workspaces/client/apps/web/src/sync/connectionState.ts)
 owns transitions, activity, retry attempts, deadlines and reconnect reasons; the
-[peer-health module](../workspaces/client/apps/web/src/sync/resourceConnection.ts)
-validates peer health. The subscription store owns
+[connection module](../workspaces/client/apps/web/src/sync/resourceConnection.ts)
+owns lifecycle boundaries. The subscription store owns
 whether a resource has an applied baseline; the outbox owns whether a message has
 a server receipt. Neither stale resource data nor an unacknowledged message alone
 means that the connection is lost.
@@ -457,8 +464,8 @@ the failure. The retry deadline is Unix epoch milliseconds belonging to the
 actual retry timer and is cleared when that timer fires or is canceled. UI copy
 consumes this detail without maintaining a second recovery state machine.
 
-Only one stream-opening attempt may prepare durable cursors at a time. Peer
-heartbeats and subscription changes coalesce with that attempt rather than
+Only one stream-opening attempt may prepare durable cursors at a time.
+Subscription changes coalesce with that attempt rather than
 canceling it. Opening uses the current resource union. Late subscriptions read
 their available cursors within the same original preparation budget, once per
 selector; they never renew that budget. Resources without a prepared cursor
@@ -470,24 +477,11 @@ and does not bypass the durable application receipt. Closing the attempt cancels
 its preparation; late results cannot reopen a superseded stream.
 
 An intentionally hidden tab releases its stream with a `paused` connection state.
-Returning to the tab resumes coordination without reporting that pause as a
+Returning to the tab resumes the stream without reporting that pause as a
 network failure. A browser `offline` event immediately closes the local stream,
-cancels retry timers and invalidates peer health. An `online` event starts recovery
+and cancels retry timers. An `online` event starts recovery
 immediately, but cannot establish a live connection without fresh server evidence.
 Transport errors and expired server liveness still trigger recovery.
-
-The stream owner publishes its current server-health snapshot with peer
-heartbeats and when a follower announces its subscriptions. A snapshot is scoped
-to the workspace, schema, owner, and source generation; its ordering and server
-evidence must still be current. Peer liveness alone never proves server health.
-A fresh healthy snapshot can restore a follower after missed peer messages even
-when no resource has changed. Replaying peer health does not replay resource
-baselines or start HTTP reads.
-The browser coordination namespace includes its protocol version and API schema
-identity for both the channel and stream-owner lock. An older open renderer
-cannot hold the new protocol's ownership lock without understanding its health
-snapshots. During an update, incompatible renderer groups can each retain a
-stream until their older tabs close; they do not share unverified health.
 
 Named `heartbeat` events prove liveness and never trigger resource reads.
 Comment-only SSE heartbeats are insufficient for a browser silence timeout

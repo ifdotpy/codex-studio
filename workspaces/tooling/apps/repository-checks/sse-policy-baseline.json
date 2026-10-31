@@ -212,10 +212,6 @@
     "callee": "new NativeServerCredentials().fetch"
   },
   {
-    "file": "servers/automaticAccessStore.ts",
-    "callee": "indexedDB.open"
-  },
-  {
     "file": "servers/browserCredentials.ts",
     "callee": "fetch"
   },
@@ -328,14 +324,6 @@
     "callee": "localStorage.getItem"
   },
   {
-    "file": "sync/client.draftServer.test.ts",
-    "callee": "fetch"
-  },
-  {
-    "file": "sync/client.draftServer.test.ts",
-    "callee": "fetch"
-  },
-  {
     "file": "sync/client.entityServer.test.ts",
     "callee": "fetch"
   },
@@ -376,8 +364,8 @@
     "callee": "syncGet"
   },
   {
-    "file": "sync/client.ts",
-    "callee": "syncPost"
+    "file": "sync/drafts.ts",
+    "callee": "options.api.syncPost"
   },
   {
     "file": "sync/localDraft.ts",
@@ -392,34 +380,6 @@
     "callee": "localStorage.setItem"
   },
   {
-    "file": "sync/outboxWriteFailure.test.ts",
-    "callee": "syncPost"
-  },
-  {
-    "file": "sync/send.test.ts",
-    "callee": "syncPost"
-  },
-  {
-    "file": "sync/send.ts",
-    "callee": "localStorage"
-  },
-  {
-    "file": "sync/send.ts",
-    "callee": "syncGet"
-  },
-  {
-    "file": "sync/send.ts",
-    "callee": "syncGet"
-  },
-  {
-    "file": "sync/send.ts",
-    "callee": "localStorage"
-  },
-  {
-    "file": "sync/thinCache.ts",
-    "callee": "globalThis.indexedDB"
-  },
-  {
     "file": "sync/uiPreferenceStore.test.ts",
     "callee": "localStorage.getItem"
   },
@@ -430,10 +390,6 @@
   {
     "file": "sync/uploads.ts",
     "callee": "syncPost"
-  },
-  {
-    "file": "sync/useOutbox.test.ts",
-    "callee": "mocks.syncPost"
   },
   {
     "file": "usage/accountUsage.test.ts",

@@ -40,7 +40,6 @@ export function createServerSubscriptions(options: ServerSubscriptionOptions) {
     // The local server's requests use the native client there (serverServices.ts).
     transferStorage: () =>
       nativeCore?.() ? new MemoryTransferStorage() : undefined,
-    ...(nativeCore?.() ? { independent: true } : {}),
     // Each connection of a remote server reports the routes it answers on.
     ...(owner.id === "local"
       ? {}
@@ -55,8 +54,6 @@ export function createServerSubscriptions(options: ServerSubscriptionOptions) {
             new URL(url, owner.origin).href,
             api.fetchApiRequest,
           ),
-    storageName: (name) =>
-      owner.id === "local" ? name : `${name}:server:${owner.id}`,
   });
   // A move to a faster route replaces the stream.
   const stopRoutes =

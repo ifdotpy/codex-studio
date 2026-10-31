@@ -4,13 +4,10 @@ import type {
   ReconnectCause,
 } from "./connectionState";
 import { SubscriptionReplyKind } from "../generated/api";
-import { randomUUID } from "../uuid";
 import {
   openServerEvents,
   type ServerEventSource,
 } from "../servers/eventSource";
-
-import { serverStorageName } from "../servers/environment";
 
 import {
   SYNC_PROTOCOL_VERSION,
@@ -31,6 +28,8 @@ import {
   markApiSchemaMismatch,
   onApiSchemaMismatch,
   post,
+  receiveStreamSession,
+  clearStreamSession,
 } from "../api";
 
 import {
@@ -56,19 +55,14 @@ import {
 } from "./connectionState";
 
 import {
-  createPeerConnectionHealth,
-  isResourceConnectionState,
   onResourceConnectionLifecycle,
   pageHidden,
-  resourceCoordinationNames,
   RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS,
   RESOURCE_HEARTBEAT_TIMEOUT_MS,
-  RESOURCE_PEER_TIMEOUT_MS,
   RESOURCE_PROBE_TIMEOUT_MS,
   RESOURCE_RETRY_BASE_MS,
   RESOURCE_RETRY_MAX_MS,
   RESOURCE_STABLE_MS,
-  type ResourceConnectionHealth,
   type ResourceConnectionDetail,
 } from "./resourceConnection";
 export type { ResourceConnectionDetail } from "./resourceConnection";
@@ -139,104 +133,6 @@ type Version = ResourceVersion;
 
 type Listener = (version?: ResourceVersion) => void;
 
-type TabSubscriptions = {
-  kind: "subscriptions";
-  workspaceId: string;
-  tabId: string;
-  resources: unknown;
-  tokenRates: unknown;
-  reset: unknown;
-};
-
-type TabEvent = {
-  kind: "resource-event";
-  workspaceId: string;
-  tabId: string;
-  event: unknown;
-};
-
-type TabTokenRates = {
-  kind: "token-rates";
-  workspaceId: string;
-  tabId: string;
-  event: unknown;
-};
-
-type TabLiveDelta = {
-  kind: "live-delta";
-  workspaceId: string;
-  tabId: string;
-  event: unknown;
-};
-
-type TabHeartbeat = {
-  kind: "tab-heartbeat";
-  workspaceId: string;
-  tabId: string;
-};
-
-type LeaderHeartbeat = {
-  kind: "leader-heartbeat";
-  workspaceId: string;
-  tabId: string;
-};
-
-type TabStatus = {
-  kind: "status";
-  workspaceId: string;
-  tabId: string;
-  status: ConnectionHealth;
-};
-
-type TabSubscriptionDiscovery = {
-  kind: "discover-subscriptions";
-  workspaceId: string;
-  tabId: string;
-};
-type TabResourceRecovery = {
-  kind: "resource-recovery";
-  workspaceId: string;
-  tabId: string;
-  resources: ResourceRef[];
-};
-
-export type TabMessage = (
-  | TabSubscriptions
-  | TabEvent
-  | TabTokenRates
-  | TabLiveDelta
-  | {
-      kind: "resource-progress";
-      workspaceId: string;
-      tabId: string;
-      event: unknown;
-    }
-  | TabHeartbeat
-  | LeaderHeartbeat
-  | TabStatus
-  | TabSubscriptionDiscovery
-  | TabResourceRecovery
-) & { apiSchemaHash: string; health?: ResourceConnectionHealth };
-
-export type OutgoingMessage =
-  | {
-      kind: "subscriptions";
-      resources: ResourceRef[];
-      tokenRates: boolean;
-      reset: boolean;
-    }
-  | { kind: "resource-event"; event: ResourceChangeEvent }
-  | { kind: "token-rates"; event: ResourceTokenRatesEvent }
-  | { kind: "live-delta"; event: ResourceLiveDeltaEvent }
-  | { kind: "resource-progress"; event: ResourceProgressEvent }
-  | { kind: "tab-heartbeat" }
-  | { kind: "leader-heartbeat" }
-  | { kind: "discover-subscriptions" }
-  | { kind: "status"; status: ConnectionHealth }
-  | { kind: "resource-recovery"; resources: ResourceRef[] };
-export type OutgoingTabMessage = OutgoingMessage &
-  Pick<TabMessage, "workspaceId" | "tabId" | "apiSchemaHash" | "health">;
-
 export type ResourceEventsOptions = {
   /** Receives the origins the server answers on, once per connection. */
   onRoutes?: (routes: readonly string[]) => void;
@@ -249,7 +145,13 @@ export type ResourceEventsOptions = {
     | "matchingApiSchemaResponseGeneration"
     | "markApiSchemaMismatch"
     | "onApiSchemaMismatch"
-  >;
+  > &
+    Partial<
+      Pick<
+        import("../api").ServerApi,
+        "receiveStreamSession" | "clearStreamSession"
+      >
+    >;
   sync: Pick<
     ReturnType<typeof import("./client").createSyncClient>,
     "persistResourceEntityChanges"
@@ -270,9 +172,6 @@ export type ResourceEventsOptions = {
     | "getWorkspaceTokenRates"
   >;
   openEvents: typeof openServerEvents;
-  storageName: typeof serverStorageName;
-  /** One page owns its stream: no owner election by Web Locks, no BroadcastChannel (the native core owns the connection). */
-  independent?: boolean;
   /** Where large entity intervals wait for their last page; the default is memory. */
   transferStorage?: () =>
     | import("./entityTransfer").TransferStorage
@@ -295,13 +194,10 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     getWorkspaceTokenRates,
   } = options.tokenRates;
   const openServerEvents = options.openEvents;
-  const serverStorageName = options.storageName;
 
   const SCHEMA_HANDSHAKE_TIMEOUT_MS = 15_000;
 
   const SCHEMA_HANDSHAKE_FAILURE_LIMIT = 3;
-
-  const PEER_HEARTBEAT_MS = 3_000;
 
   const COORDINATOR_IDLE_STOP_MS = 1_000;
 
@@ -336,16 +232,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     (event: ResourceTokenRatesEvent) => void
   >();
 
-  const peerSubscriptions = new Map<
-    string,
-    { resources: ResourceRef[]; tokenRates: boolean; seenAt: number }
-  >();
-
   let workspaceId: string | undefined;
-
-  let tabId = "";
-
-  let channel: BroadcastChannel | undefined;
 
   let source: ServerEventSource | undefined;
   let openingSource: AbortController | undefined;
@@ -373,18 +260,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   let coordinatorGeneration = 0;
 
-  let owner = false;
-
-  let independent = false;
-
-  let ownerRequestPending = false;
-
-  let ownerRequestController: AbortController | undefined;
-
-  let releaseOwner: (() => void) | undefined;
-
-  let peerHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
-
   let heartbeatTimeout: ReturnType<typeof setTimeout> | undefined;
 
   let schemaHandshakeTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -411,8 +286,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   let lastTokenEvent: ResourceTokenRatesEvent | undefined;
 
-  let lastLeaderHeartbeatAt = 0;
-
   let streamUpdateGeneration = 0;
 
   let pendingResources = new Set<string>();
@@ -428,15 +301,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       : { phase: "connecting", attempt: 1, activity: "stopped" };
   let stopResume: (() => void) | undefined;
 
-  let validatedServerFrameAt: number | undefined;
   /** Retry count that survives a short live period; it resets after RESOURCE_STABLE_MS. */
   let retryAttempts = 0;
   let stableTimer: ReturnType<typeof setTimeout> | undefined;
   /** An offline or refused connection retries only on a wakeup, never on a timer. */
   let awaitingWakeup = false;
   let storageSlow = false;
-  let healthSequence = 0;
-  const peerHealth = createPeerConnectionHealth();
   const serverFrames = new WeakMap<
     ResourceChangeEvent,
     { generation: number; receivedAt: number }
@@ -483,8 +353,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (healthOf(previous) !== healthOf(next)) {
       if (next.phase === "reconnecting" || next.phase === "offline")
         requireBaselineReconciliation();
-      if (owner || independent)
-        broadcast({ kind: "status", status: healthOf(next) });
     }
     const before = connectionView(previous);
     if (
@@ -502,35 +370,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         cause,
         activity: "stopped",
       });
-  }
-
-  function setPeerStatus(status: ConnectionHealth) {
-    switch (status) {
-      case "live":
-        if (connectionState.phase !== "live")
-          setConnection({ phase: "live", since: Date.now() });
-        break;
-      case "offline":
-      case "paused":
-      case "degraded":
-        degrade("unknown");
-        break;
-      case "connecting":
-        if (connectionState.phase !== "connecting")
-          setConnection({
-            phase: "connecting",
-            attempt: 1,
-            activity: "stopped",
-          });
-        break;
-      case "schema-mismatch":
-        setConnection({ phase: "schema-mismatch" });
-        break;
-      default: {
-        const exhaustive: never = status;
-        return exhaustive;
-      }
-    }
   }
 
   function connectionDetail(state = connectionState): ResourceConnectionDetail {
@@ -589,66 +428,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
   }
 
-  function broadcast(message: OutgoingMessage) {
-    if (!channel || !workspaceId) return;
-    try {
-      channel.postMessage({
-        ...message,
-        ...(owner || independent
-          ? {
-              health: {
-                status: healthOf(connectionState),
-                generation: subscriptionGeneration,
-                sequence: ++healthSequence,
-                sentAt: Date.now(),
-                validatedAt: validatedServerFrameAt,
-              },
-            }
-          : {}),
-        apiSchemaHash: API_SCHEMA_HASH,
-        workspaceId,
-        tabId,
-      } satisfies OutgoingTabMessage);
-    } catch {
-      releaseStream();
-      stopChannel();
-      degrade("local-state-error");
-      startIndependent();
-    }
-  }
-
-  function stopChannel() {
-    if (channel) {
-      channel.onmessage = null;
-      channel.close();
-      channel = undefined;
-    }
-    if (peerHeartbeatTimer !== undefined) clearInterval(peerHeartbeatTimer);
-    peerHeartbeatTimer = undefined;
-    peerSubscriptions.clear();
-  }
-
   function localResources(): ResourceRef[] {
     return [...resourceRefs.values()];
-  }
-
-  function aggregateResources(): ResourceRef[] {
-    const all = new Map<string, ResourceRef>();
-    for (const resource of localResources())
-      all.set(resourceKey(resource), resource);
-    for (const peer of peerSubscriptions.values())
-      for (const resource of peer.resources)
-        all.set(resourceKey(resource), resource);
-    return [...all.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([, resource]) => resource);
-  }
-
-  function hasTokenRateInterest() {
-    return (
-      tokenRateListeners.size > 0 ||
-      [...peerSubscriptions.values()].some((peer) => peer.tokenRates)
-    );
   }
 
   function dispatchResource(
@@ -659,9 +440,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const key = resourceKey(resource);
     if (force) resourceValues.set(key, version);
     else if (!rememberResourceVersion(resource, version)) return;
-    // Draft data is admitted to the draft store in stream order. Hint coalescing may drop
-    // intermediate versions, which would turn a complete interval into a gap.
-    if (resource.kind === "drafts" && version.reason === "change") {
+    // Draft snapshots and changes must be delivered in stream order.
+    if (
+      resource.kind === "drafts" &&
+      (version.reason === "change" || version.draftSnapshot)
+    ) {
       for (const listener of subscribers.get(key) ?? []) listener(version);
       return;
     }
@@ -771,28 +554,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     return event;
   }
 
-  function terminalPeerSnapshot(
-    resource: ResourceRef,
-    version: Pick<ResourceVersion, "cursor" | "viewSnapshot">,
-  ) {
-    const output = version.viewSnapshot?.terminalOutput;
-    const cursor = version.cursor;
-    if (
-      resource.kind !== "terminal-output" ||
-      !output ||
-      !cursor ||
-      cursor.workspaceId !== workspaceId ||
-      cursor.seq !== output.offset
-    )
-      return undefined;
-    // Only the owner's post-persistence complete view can establish a follower base.
-    return {
-      cursor,
-      replyKind: "snapshot" as const,
-      viewSnapshot: { terminalOutput: output },
-    };
-  }
-
   function dispatchEvent(received: ResourceChangeEvent) {
     const event = currentResourceEvent(received);
     if (!workspaceId || event.workspaceId !== workspaceId) {
@@ -820,7 +581,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const isDuplicate = event.revision === lastRevision;
     if (!staleRevision && !isDuplicate) lastRevision = event.revision;
     if (source) refreshHeartbeatTimeout();
-    const active = new Set(aggregateResources().map(resourceKey));
+    const active = new Set(localResources().map(resourceKey));
     const versions = event.resourceVersions?.length
       ? new Map(
           event.resourceVersions.flatMap((entry, index) => {
@@ -872,6 +633,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       if (resource.kind === "drafts") {
         version.reason = event.reason;
         version.draftChanges = revisionEntry?.draftChanges ?? undefined;
+        version.draftSnapshot = revisionEntry?.draftSnapshot ?? undefined;
       }
       if (resource.kind === "multi-server")
         version.discoverySnapshot =
@@ -907,6 +669,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           resource,
           version,
           !versions ||
+            (resource.kind === "drafts" && !!version.draftSnapshot) ||
             !!revisionEntry?.entitySequenceReset ||
             (resource.kind === "transcript" &&
               !revisionEntry?.transcriptChanges &&
@@ -914,11 +677,16 @@ export function createResourceEvents(options: ResourceEventsOptions) {
               !isDuplicate &&
               !staleRevision),
         );
-        if (event.reason !== "change") pendingBaselines.add(key);
+        if (event.reason !== "change" && !version.draftSnapshot)
+          pendingBaselines.add(key);
       } else if (!rememberResourceVersion(resource, version) && !versions) {
         resourceValues.set(key, version);
       }
-      if (event.reason !== "change" && baselineReconciliations.delete(key))
+      if (
+        event.reason !== "change" &&
+        baselineReconciliations.delete(key) &&
+        !version.draftSnapshot
+      )
         pendingResources.add(key);
     }
     pruneResourceVersions(active);
@@ -943,31 +711,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const frame = serverFrames.get(received);
     if (!frame || frame.generation === subscriptionGeneration)
       confirmConnectionActivity(frame?.receivedAt);
-    if (owner || independent)
-      broadcast({
-        kind: "resource-event",
-        event: {
-          ...event,
-          resourceVersions: event.resourceVersions?.map((entry, index) => {
-            const resource = entry.resource ?? event.resources[index];
-            const snapshot = resource && terminalPeerSnapshot(resource, entry);
-            return snapshot ? { ...entry, ...snapshot } : entry;
-          }),
-        },
-      });
     flushResourceChanges();
   }
 
   function confirmConnectionActivity(receivedAt = Date.now()) {
-    if (source && (owner || independent)) {
-      validatedServerFrameAt = receivedAt;
+    if (source) {
       if (connectionState.phase !== "live")
         setConnection({ phase: "live", since: receivedAt });
-    } else if (!owner && !independent) {
-      // Peer data can be cached replay. Only current owner health proves its
-      // server connection, independently of whether this payload was applied.
-      const status = peerHealth.status();
-      if (status) setPeerStatus(status);
     }
   }
 
@@ -981,17 +731,14 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     };
   }
 
-  function receiveTokenRateEvent(value: unknown, fromPeer = false) {
+  function receiveTokenRateEvent(value: unknown) {
     if (!hasRevisionFrame(value))
       throw new TypeError("Invalid token-rate frame");
     const event = value as ResourceTokenRatesEvent;
     if (event.workspaceId !== workspaceId) {
-      if (fromPeer) degrade("invalid-frame");
-      else reconnectNow("invalid-frame");
+      reconnectNow("invalid-frame");
       return;
     }
-    if (fromPeer && (owner || independent)) return;
-    // A late follower can hear a delta before the owner answers its replay request.
     if (!event.snapshot && (lastTokenEpoch !== event.epoch || !lastTokenEvent))
       return;
     if (
@@ -1005,14 +752,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     lastTokenEpoch = event.epoch;
     lastTokenRevision = event.revision;
     lastTokenEvent = event;
-    if (!fromPeer) refreshHeartbeatTimeout();
+    refreshHeartbeatTimeout();
     confirmConnectionActivity();
     for (const listener of tokenRateListeners) listener(event);
-    if (owner || independent) broadcast({ kind: "token-rates", event });
   }
 
   /** Live text is not replayed or ordered by revision: a lost frame is harmless. */
-  function receiveLiveDelta(value: unknown, fromPeer = false) {
+  function receiveLiveDelta(value: unknown) {
     const event = value as ResourceLiveDeltaEvent;
     if (
       !event ||
@@ -1022,9 +768,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       !Number.isSafeInteger(event.offset)
     )
       throw new TypeError("Invalid live-delta frame");
-    if (fromPeer && (owner || independent)) return;
     for (const listener of liveDeltaListeners) listener(event);
-    if (owner || independent) broadcast({ kind: "live-delta", event });
   }
 
   function flushResourceChanges() {
@@ -1038,10 +782,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     pendingBaselines = new Set();
     try {
       if (reset) {
-        const subscribed = new Set(aggregateResources().map(resourceKey));
+        const subscribed = new Set(localResources().map(resourceKey));
         for (const [key, listeners] of subscribers) {
           if (subscribed.has(key)) {
             const version = resourceValues.get(key);
+            if (version?.draftSnapshot) continue;
             for (const listener of listeners) listener(version);
           }
         }
@@ -1070,7 +815,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     refs: ResourceRef[],
     error: unknown,
   ): boolean {
-    const active = new Set(aggregateResources().map(resourceKey));
+    const active = new Set(localResources().map(resourceKey));
     const resources = refs.filter(
       (ref) =>
         active.has(resourceKey(ref)) &&
@@ -1080,12 +825,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           (ref.kind === "room" && !ref.legacy)),
     );
     if (!resources.length || !coordinatorActive) return false;
-    if (owner || independent) frameFailed(error, "local-state-error");
-    else {
-      degrade("local-state-error");
-      entityDelivery.invalidate();
-      broadcast({ kind: "resource-recovery", resources });
-    }
+    frameFailed(error, "local-state-error");
     return true;
   }
   const entityDelivery = new ResourceEntityDelivery(
@@ -1250,7 +990,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     source?.holdUntil?.(transferTail);
   }
 
-  function receiveResourceProgress(value: unknown, fromPeer = false) {
+  function receiveResourceProgress(value: unknown) {
     if (!hasRevisionFrame(value))
       throw new TypeError("Invalid resource progress frame");
     const candidate = value as Record<string, unknown>;
@@ -1309,10 +1049,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       (lastEpoch && event.epoch !== lastEpoch)
     )
       return;
-    if (fromPeer && (owner || independent)) return;
     const key = resourceKey(resource);
-    const active = new Set(aggregateResources().map(resourceKey));
-    if (!active.has(key) || (!fromPeer && !acceptedResources.has(key))) return;
+    const active = new Set(localResources().map(resourceKey));
+    if (!active.has(key) || !acceptedResources.has(key)) return;
     const previous = progressValues.get(key);
     if (previous?.epoch === event.epoch && previous.revision > event.revision)
       return;
@@ -1331,38 +1070,33 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     for (const listener of subscribers.get(key) ?? []) listener(version);
     if (generation !== subscriptionGeneration || source !== progressSource)
       return;
-    if (!fromPeer) refreshHeartbeatTimeout();
+    refreshHeartbeatTimeout();
     confirmConnectionActivity(receivedAt);
-    if (owner || independent) broadcast({ kind: "resource-progress", event });
   }
 
-  function receiveResourceEvent(value: unknown, fromPeer = false) {
+  function receiveResourceEvent(value: unknown) {
     if (!hasRevisionFrame(value) || !Array.isArray(value.resources))
       throw new TypeError("Invalid resource frame");
     const event = value as ResourceChangeEvent;
-    if (fromPeer && (owner || independent)) return;
     if (!workspaceId || event.workspaceId !== workspaceId) {
-      if (fromPeer) degrade("invalid-frame");
-      else reconnectNow("invalid-frame");
+      reconnectNow("invalid-frame");
       return;
     }
-    if (!fromPeer)
-      serverFrames.set(event, {
-        generation: subscriptionGeneration,
-        receivedAt: Date.now(),
-      });
+    serverFrames.set(event, {
+      generation: subscriptionGeneration,
+      receivedAt: Date.now(),
+    });
     const prerequisite = transferPending ? transferTail : undefined;
     if (prerequisite) source?.holdUntil?.(prerequisite);
     entityDelivery.receive(currentResourceEvent(event), prerequisite);
   }
 
-  function acceptHeartbeat(value: unknown, fromPeer = false) {
+  function acceptHeartbeat(value: unknown) {
     if (!hasRevisionFrame(value))
       throw new TypeError("Invalid heartbeat frame");
     const heartbeat = value as ResourceHeartbeatEvent;
     if (heartbeat.workspaceId !== workspaceId) {
-      if (fromPeer) degrade("invalid-frame");
-      else reconnectNow("invalid-frame");
+      reconnectNow("invalid-frame");
       return;
     }
     if (lastEpoch && heartbeat.epoch !== lastEpoch) {
@@ -1380,11 +1114,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       reconnectNow("invalid-frame");
       return;
     }
-    if (fromPeer) return;
     lastHeartbeatRevision = heartbeat.revision;
     refreshHeartbeatTimeout();
     confirmConnectionActivity();
-    if (owner) broadcast({ kind: "leader-heartbeat" });
   }
 
   function hasRevisionFrame(value: unknown): value is Record<string, unknown> {
@@ -1421,194 +1153,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     );
   }
 
-  function receiveChannelMessage(value: unknown) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return;
-    const record = value as Record<string, unknown>;
-    if (
-      record.workspaceId !== workspaceId ||
-      record.apiSchemaHash !== API_SCHEMA_HASH ||
-      typeof record.tabId !== "string" ||
-      !record.tabId ||
-      record.tabId === tabId ||
-      typeof record.kind !== "string"
-    )
-      return;
-    if (
-      pageHidden() &&
-      (record.kind === "resource-event" ||
-        record.kind === "resource-progress" ||
-        record.kind === "token-rates" ||
-        record.kind === "live-delta" ||
-        record.kind === "leader-heartbeat" ||
-        record.kind === "status")
-    )
-      return;
-    if (!owner && !independent && record.health !== undefined) {
-      if (!peerHealth.accept(record.tabId, record.health)) return;
-      if (record.kind === "leader-heartbeat" || record.kind === "status") {
-        setPeerStatus(peerHealth.status()!);
-      }
-    }
-    if (record.kind === "subscriptions") {
-      if (!Array.isArray(record.resources)) return;
-      const previous = peerSubscriptions.get(record.tabId);
-      const priorResources = new Set(
-        (previous?.resources || []).map(resourceKey),
-      );
-      const reset = record.reset === true;
-      const added = record.resources.filter(
-        (resource) => reset || !priorResources.has(resourceKey(resource)),
-      );
-      peerSubscriptions.set(record.tabId, {
-        resources: record.resources,
-        tokenRates: record.tokenRates === true,
-        seenAt: Date.now(),
-      });
-      if (owner) {
-        scheduleOwnerStreamUpdate();
-        replayResourceBaseline(added);
-        if (
-          record.tokenRates === true &&
-          (!previous?.tokenRates || reset) &&
-          lastTokenEvent
-        )
-          broadcast({ kind: "token-rates", event: tokenRateReplay()! });
-        scheduleCoordinatorIdleStop();
-      }
-    } else if (record.kind === "resource-recovery") {
-      const peer = peerSubscriptions.get(record.tabId);
-      if (
-        owner &&
-        source &&
-        peer &&
-        Array.isArray(record.resources) &&
-        record.resources.some(
-          (requested) =>
-            requested !== null &&
-            typeof requested === "object" &&
-            !Array.isArray(requested) &&
-            peer.resources.some((ref) => sameResource(ref, requested)),
-        )
-      ) {
-        // Reconnect once for the current source. Repeated requests while its
-        // replacement is pending do not reset the bounded retry schedule.
-        reconnectNow("local-state-error");
-      }
-    } else if (record.kind === "tab-heartbeat") {
-      const peer = peerSubscriptions.get(record.tabId);
-      if (peer) peer.seenAt = Date.now();
-    } else if (record.kind === "leader-heartbeat") {
-      lastLeaderHeartbeatAt = Date.now();
-      const peer = peerSubscriptions.get(record.tabId);
-      if (peer) peer.seenAt = Date.now();
-    } else if (
-      record.kind === "discover-subscriptions" &&
-      !owner &&
-      !independent &&
-      !pageHidden() &&
-      connectionState.phase !== "offline"
-    ) {
-      // A new lock owner has no reliable way to infer subscriptions from
-      // heartbeats. Advertise them once when ownership changes so takeover
-      // restores the full resource union without making quiet heartbeats reads.
-      announceSubscriptions(true);
-    } else if (record.kind === "resource-event") {
-      receiveResourceEvent(record.event, true);
-    } else if (record.kind === "resource-progress") {
-      receiveResourceProgress(record.event, true);
-    } else if (record.kind === "token-rates") {
-      receiveTokenRateEvent(record.event, true);
-    } else if (record.kind === "live-delta") {
-      try {
-        receiveLiveDelta(record.event, true);
-      } catch {
-        // A malformed peer frame is dropped; the durable item carries the text.
-      }
-    } else if (
-      record.kind === "status" &&
-      isResourceConnectionState(record.status)
-    ) {
-      if (!owner && !independent) {
-        if (record.status !== "live" && record.health === undefined)
-          setPeerStatus(record.status);
-        if (
-          record.status === "degraded" ||
-          record.status === "offline" ||
-          record.status === "paused"
-        ) {
-          lastLeaderHeartbeatAt = 0;
-          startAsOwner();
-        }
-      }
-    }
+  function announceSubscriptions() {
+    if (coordinatorReady && workspaceId) scheduleStreamUpdate();
   }
 
-  function replayResourceBaseline(resources: ResourceRef[]) {
-    for (const resource of resources) {
-      const event = progressValues.get(resourceKey(resource));
-      if (event) broadcast({ kind: "resource-progress", event });
-    }
-    if (!lastEpoch || lastRevision === undefined) return;
-    const groups = new Map<
-      string,
-      { version: Version; resources: ResourceRef[] }
-    >();
-    for (const resource of resources) {
-      const version = resourceValues.get(resourceKey(resource));
-      if (!version) continue;
-      const key = `${version.epoch}:${version.revision}`;
-      const group = groups.get(key) || { version, resources: [] };
-      group.resources.push(resource);
-      groups.set(key, group);
-    }
-    for (const { version, resources: known } of groups.values()) {
-      const resourceVersions = known.flatMap((resource) => {
-        const resourceVersion = resourceValues.get(resourceKey(resource));
-        if (!resourceVersion) return [];
-        return [
-          {
-            revision: resourceVersion.revision,
-            ...(resourceVersion.cursor
-              ? { cursor: resourceVersion.cursor, replyKind: "delta" as const }
-              : {}),
-            ...terminalPeerSnapshot(resource, resourceVersion),
-            ...(resource.kind === "state" && resourceVersion.entitySequenceReset
-              ? { entitySequenceReset: true }
-              : resource.kind === "state" &&
-                  resourceVersion.entitySequence !== undefined
-                ? { entitySequences: [resourceVersion.entitySequence] }
-                : {}),
-          },
-        ];
-      });
-      broadcast({
-        kind: "resource-event",
-        event: {
-          protocol: SYNC_PROTOCOL_VERSION,
-          workspaceId: workspaceId!,
-          epoch: version.epoch,
-          revision: version.revision,
-          reason: "initial",
-          resources: known,
-          resourceVersions,
-        },
-      });
-    }
-  }
-
-  function announceSubscriptions(reset = false) {
-    if (!coordinatorReady || !workspaceId) return;
-    broadcast({
-      kind: "subscriptions",
-      resources: localResources(),
-      tokenRates: tokenRateListeners.size > 0,
-      reset,
-    });
-    if (owner || independent) scheduleOwnerStreamUpdate();
-  }
-
-  function scheduleOwnerStreamUpdate() {
-    const active = new Set(aggregateResources().map(resourceKey));
+  function scheduleStreamUpdate() {
+    const active = new Set(localResources().map(resourceKey));
     const removed: ResourceRef[] = [];
     for (const resource of pendingSubscription?.resources ?? wireResources) {
       const key = resourceKey(resource);
@@ -1634,11 +1184,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const generation = ++streamUpdateGeneration;
     queueMicrotask(() => {
       if (generation !== streamUpdateGeneration) return;
-      if (!source) updateOwnerStream();
+      if (!source) updateStream();
       else if (subscriptionTimer === undefined)
         subscriptionTimer = setTimeout(() => {
           subscriptionTimer = undefined;
-          updateOwnerStream();
+          updateStream();
         }, SUBSCRIPTION_DEBOUNCE_MS);
     });
   }
@@ -1648,17 +1198,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       clearTimeout(coordinatorIdleStopTimer);
     coordinatorIdleStopTimer = setTimeout(() => {
       coordinatorIdleStopTimer = undefined;
-      const now = Date.now();
-      for (const [peerId, peer] of peerSubscriptions) {
-        if (now - peer.seenAt > RESOURCE_PEER_TIMEOUT_MS)
-          peerSubscriptions.delete(peerId);
-      }
-      if (
-        !subscribers.size &&
-        !tokenRateListeners.size &&
-        (!owner || (!aggregateResources().length && !hasTokenRateInterest()))
-      )
-        stopCoordinator();
+      if (!subscribers.size && !tokenRateListeners.size) stopCoordinator();
     }, COORDINATOR_IDLE_STOP_MS);
   }
 
@@ -1673,7 +1213,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   /** Forgets the state of one server connection; a native source survives it. */
   function resetConnection() {
-    validatedServerFrameAt = undefined;
+    if (sessionId) options.api.clearStreamSession?.(sessionId);
     clearTimeout(subscriptionTimer);
     subscriptionTimer = undefined;
     clearTimeout(subscriptionAckTimer);
@@ -1741,7 +1281,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     reconnectTimer = setTimeout(() => {
       cancelReconnect();
       if (!coordinatorReady) void initialize();
-      else if (owner || independent) openSource();
+      else openSource();
     }, delay);
     setConnection({
       phase: "reconnecting",
@@ -1801,17 +1341,15 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   /** Reads cursors for today's resource union and makes it the wire set. */
   async function prepareStreamPath(signal: AbortSignal) {
     const prepared = await prepareResourceCursors(
-      owner ? aggregateResources() : localResources(),
+      localResources(),
       signal,
-      () => (owner ? aggregateResources() : localResources()),
+      () => localResources(),
     );
     if (signal.aborted || !canOpenSource()) return;
     // Screens can change while optional local cursors are being read. Open
     // exactly today's union; late selectors share the original cursor budget.
-    const currentResources = owner ? aggregateResources() : localResources();
-    const currentTokenRates = owner
-      ? hasTokenRateInterest()
-      : tokenRateListeners.size > 0;
+    const currentResources = localResources();
+    const currentTokenRates = tokenRateListeners.size > 0;
     if (!currentResources.length && !currentTokenRates) return;
     const currentKeys = new Set(currentResources.map(resourceKey));
     const since = prepared.filter((entry) =>
@@ -1912,7 +1450,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     return (
       !isApiSchemaMismatch() &&
       coordinatorActive &&
-      (owner || independent) &&
       !pageHidden() &&
       !awaitingWakeup &&
       connectionState.phase !== "offline"
@@ -1927,10 +1464,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         connectionState.retryAt !== undefined)
     )
       return;
-    const resources = owner ? aggregateResources() : localResources();
-    const tokenRates = owner
-      ? hasTokenRateInterest()
-      : tokenRateListeners.size > 0;
+    const resources = localResources();
+    const tokenRates = tokenRateListeners.size > 0;
     if (!resources.length && !tokenRates) {
       cancelIdentityProbe();
       closeSource();
@@ -2062,8 +1597,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           )
             throw new TypeError("Invalid sync session");
           sessionId = event.sessionId;
+          options.api.receiveStreamSession?.(event);
           if (Array.isArray(event.routes)) options.onRoutes?.(event.routes);
-          scheduleOwnerStreamUpdate();
+          scheduleStreamUpdate();
         } catch (error) {
           frameFailed(error);
         }
@@ -2079,7 +1615,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           pendingSubscription = undefined;
           wireResources = pending.resources;
           wireTokenRates = pending.tokenRates;
-          const active = new Set(aggregateResources().map(resourceKey));
+          const active = new Set(localResources().map(resourceKey));
           acceptedResources = new Set(
             wireResources.map(resourceKey).filter((key) => active.has(key)),
           );
@@ -2096,7 +1632,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           blockedSelectors = [...blockedResources.values()];
           refreshHeartbeatTimeout();
           confirmConnectionActivity();
-          scheduleOwnerStreamUpdate();
+          scheduleStreamUpdate();
         });
       });
       connected.addEventListener("api-schema", (message: Event) => {
@@ -2237,147 +1773,19 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       .finally(() => {
         if (subscriptionRequest !== controller) return;
         subscriptionRequest = undefined;
-        if (source === connected) scheduleOwnerStreamUpdate();
+        if (source === connected) scheduleStreamUpdate();
       });
   }
 
-  function updateOwnerStream() {
+  function updateStream() {
     openSource();
-  }
-
-  function sendPeerHeartbeat() {
-    if (!coordinatorReady || pageHidden()) return;
-    if (!owner && !independent && healthOf(connectionState) === "live") {
-      const status = peerHealth.status();
-      if (status && status !== "live") setPeerStatus(status);
-    }
-    broadcast({ kind: "tab-heartbeat" });
-    if (owner) {
-      broadcast({ kind: "leader-heartbeat" });
-      const now = Date.now();
-      let removedPeer = false;
-      for (const [peerId, peer] of peerSubscriptions) {
-        if (now - peer.seenAt > RESOURCE_PEER_TIMEOUT_MS) {
-          peerSubscriptions.delete(peerId);
-          removedPeer = true;
-        }
-      }
-      scheduleOwnerStreamUpdate();
-      if (removedPeer) scheduleCoordinatorIdleStop();
-    } else if (
-      channel &&
-      navigator.locks &&
-      Date.now() - lastLeaderHeartbeatAt > RESOURCE_PEER_TIMEOUT_MS
-    ) {
-      degrade("stream-error");
-      lastLeaderHeartbeatAt = Date.now();
-      startAsOwner();
-    }
-  }
-
-  function startPeerHeartbeat() {
-    if (peerHeartbeatTimer !== undefined) clearInterval(peerHeartbeatTimer);
-    peerHeartbeatTimer = setInterval(sendPeerHeartbeat, PEER_HEARTBEAT_MS);
-  }
-
-  function startIndependent() {
-    if (!coordinatorActive || owner || independent) return;
-    entityDelivery.invalidate();
-    independent = true;
-    startPeerHeartbeat();
-    scheduleOwnerStreamUpdate();
-  }
-
-  function startAsOwner() {
-    if (!coordinatorActive || owner || independent || ownerRequestPending)
-      return;
-    lastLeaderHeartbeatAt = Date.now();
-    if (options.independent) {
-      startIndependent();
-      return;
-    }
-    const locks = navigator.locks;
-    if (!channel || !locks || !workspaceId) {
-      startIndependent();
-      return;
-    }
-    const requestController = new AbortController();
-    const generation = coordinatorGeneration;
-    const requestedWorkspaceId = workspaceId;
-    ownerRequestController = requestController;
-    ownerRequestPending = true;
-    setActivity("waiting-owner");
-    void locks
-      .request(
-        serverStorageName(
-          resourceCoordinationNames(location.origin, requestedWorkspaceId).lock,
-        ),
-        { mode: "exclusive", signal: requestController.signal },
-        async (lock) => {
-          if (ownerRequestController === requestController) {
-            ownerRequestController = undefined;
-            ownerRequestPending = false;
-          }
-          if (
-            !coordinatorActive ||
-            generation !== coordinatorGeneration ||
-            requestedWorkspaceId !== workspaceId ||
-            !lock ||
-            pageHidden() ||
-            connectionState.phase === "offline"
-          )
-            return;
-          requireBaselineReconciliation();
-          entityDelivery.invalidate();
-          owner = true;
-          startPeerHeartbeat();
-          broadcast({ kind: "discover-subscriptions" });
-          broadcast({ kind: "status", status: "connecting" });
-          scheduleOwnerStreamUpdate();
-          await new Promise<void>((resolve) => {
-            releaseOwner = resolve;
-          });
-          releaseOwner = undefined;
-          owner = false;
-          closeSource();
-          if (peerHeartbeatTimer !== undefined)
-            clearInterval(peerHeartbeatTimer);
-          peerHeartbeatTimer = undefined;
-        },
-      )
-      .catch((error: unknown) => {
-        if (ownerRequestController === requestController) {
-          ownerRequestController = undefined;
-          ownerRequestPending = false;
-        }
-        if (
-          requestController.signal.aborted ||
-          (error instanceof DOMException && error.name === "AbortError") ||
-          !coordinatorActive ||
-          generation !== coordinatorGeneration ||
-          requestedWorkspaceId !== workspaceId
-        )
-          return;
-        startIndependent();
-      });
   }
 
   function releaseStream() {
     cancelIdentityProbe();
-    const pendingRequest = ownerRequestController;
-    ownerRequestController = undefined;
-    ownerRequestPending = false;
-    pendingRequest?.abort();
-    const release = releaseOwner;
-    releaseOwner = undefined;
     if (source) requireBaselineReconciliation();
-    owner = false;
-    independent = false;
     closeSource();
-    if (peerHeartbeatTimer !== undefined) clearInterval(peerHeartbeatTimer);
-    peerHeartbeatTimer = undefined;
     cancelReconnect();
-    release?.();
   }
 
   async function initialize() {
@@ -2389,31 +1797,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       const storage = await syncDatabase();
       if (!coordinatorActive || generation !== coordinatorGeneration) return;
       workspaceId = storage.workspaceId;
-      tabId ||= randomUUID();
       coordinatorReady = true;
-      try {
-        if (!options.independent && typeof BroadcastChannel !== "undefined") {
-          channel = new BroadcastChannel(
-            serverStorageName(
-              resourceCoordinationNames(location.origin, workspaceId).channel,
-            ),
-          );
-          channel.onmessage = (event: MessageEvent<unknown>) => {
-            try {
-              receiveChannelMessage(event.data);
-            } catch (error) {
-              frameFailed(error);
-            }
-          };
-        }
-      } catch {
-        channel = undefined;
-      }
-      startPeerHeartbeat();
-      announceSubscriptions();
-      if (options.independent || !channel || !navigator.locks)
-        startIndependent();
-      else startAsOwner();
+      scheduleStreamUpdate();
     } catch (error) {
       if (generation === coordinatorGeneration) {
         if (retryableReadError(error)) scheduleReconnect("local-state-error");
@@ -2436,14 +1821,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (connectionState.phase === "paused")
       setConnection({ phase: "connecting", attempt: 1, activity: "stopped" });
     if (!coordinatorReady) void initialize();
-    else {
-      // A resumed follower must keep advertising its subscriptions even when
-      // another tab still holds the stream lock.
-      startPeerHeartbeat();
-      if (!owner && !independent) startAsOwner();
-    }
-    if (owner || independent) scheduleOwnerStreamUpdate();
-    announceSubscriptions(true);
+    else scheduleStreamUpdate();
   }
 
   /** A wakeup ends a wait for one. It also checks an open stream before keeping it. */
@@ -2494,7 +1872,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       .finally(() => {
         if (subscriptionRequest !== controller) return;
         subscriptionRequest = undefined;
-        if (source === connected) scheduleOwnerStreamUpdate();
+        if (source === connected) scheduleStreamUpdate();
       });
   }
 
@@ -2513,10 +1891,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     releaseStream();
     clearTimeout(heartbeatTimeout);
     cancelReconnect();
-    stopChannel();
     stopResume?.();
     stopResume = undefined;
-    peerHealth.clear();
     coordinatorReady = false;
     workspaceId = undefined;
     lastEpoch = undefined;
@@ -2530,7 +1906,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     baselineReconciliations.clear();
     deliveredEntitySequenceBatches.clear();
     resourceRefs.clear();
-    peerSubscriptions.clear();
     setConnection(
       isApiSchemaMismatch()
         ? { phase: "schema-mismatch" }
@@ -2541,12 +1916,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   function pauseTransport() {
     setConnection({ phase: "paused" });
     releaseStream();
-    broadcast({
-      kind: "subscriptions",
-      resources: [],
-      tokenRates: false,
-      reset: false,
-    });
   }
 
   function startCoordinator() {
@@ -2558,7 +1927,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       offline: () => {
         setConnection({ phase: "offline", since: Date.now() });
         releaseStream();
-        peerHealth.clear();
       },
       change: () => {
         if (connectionState.phase === "live") probeStream();
@@ -2609,7 +1977,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     options: { waitForBaseline?: boolean } = {},
   ): () => void {
     const key = resourceKey(resource);
-    const alreadyActive = aggregateResources().some(
+    const alreadyActive = localResources().some(
       (active) => resourceKey(active) === key,
     );
     if (coordinatorIdleStopTimer !== undefined)
@@ -2639,10 +2007,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     // shared stream and can be replayed immediately to a late resource reader.
     if (known) callback(known);
     startCoordinator();
-    // A first local listener may attach after another tab already added this
-    // resource to the shared stream union. Ask the owner for its baseline even
-    // when the resource is not new to this tab's aggregate subscription list.
-    announceSubscriptions(!known);
+    announceSubscriptions();
     if (
       options.waitForBaseline &&
       known &&
@@ -2683,14 +2048,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         subscribers.delete(key);
         resourceRefs.delete(key);
         baselineReconciliations.delete(key);
-        if (!owner && !independent) {
-          entityDelivery.remove([resource]);
-          removeEntityTransfers([resource]);
-        }
       }
-      if (
-        !aggregateResources().some((resource) => resourceKey(resource) === key)
-      )
+      if (!localResources().some((resource) => resourceKey(resource) === key))
         progressValues.delete(key);
       announceSubscriptions();
       if (!subscribers.size && !tokenRateListeners.size) {
@@ -2766,7 +2125,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       if (!coordinatorActive || source || connectionState.phase === "live")
         return;
       if (!coordinatorReady) void initialize();
-      else if (owner || independent) void openSource();
+      else void openSource();
     },
     dispose() {
       stopMismatch();
@@ -2783,6 +2142,8 @@ const defaultResourceEvents = createResourceEvents({
     markApiSchemaMismatch,
     onApiSchemaMismatch,
     post,
+    receiveStreamSession,
+    clearStreamSession,
   },
   sync: {
     readSubscriptionCursor: (resource) => readSubscriptionCursor(resource),
@@ -2800,7 +2161,6 @@ const defaultResourceEvents = createResourceEvents({
     getWorkspaceTokenRates,
   },
   openEvents: openServerEvents,
-  storageName: serverStorageName,
 });
 export const {
   acknowledgeEntitySequences,

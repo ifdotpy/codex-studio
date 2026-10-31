@@ -17,7 +17,6 @@ import { createAccountLimitsCache } from "../usage/accountUsage";
 import { createBrowserDrafts } from "../sync/drafts";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
-import { indexedDbKeyValue } from "../sync/thinCache";
 import { createServerSubscriptions } from "../sync/subscriptions/server";
 import { createTranscriptCache } from "../sync/transcriptCache";
 import { createTokenRateCache } from "../usage/tokenRate";
@@ -88,7 +87,6 @@ export function createServerServices(server: StudioServer) {
       resources,
       sequences,
       transcripts,
-      keyValue: () => indexedDbKeyValue(),
       databaseSuffix:
         transport.owner.id === "local"
           ? ""
@@ -104,17 +102,18 @@ export function createServerServices(server: StudioServer) {
   };
   const outbox = createOutbox({
     api,
-    syncDatabase: () => synchronization().sync.outboxDatabase(),
+    watchResourceConnection: (...args) =>
+      synchronization().resources.watchResourceConnection(...args),
     storage,
   });
   let browserDrafts: ReturnType<typeof createBrowserDrafts> | undefined;
   const drafts = () => {
     return (browserDrafts ??= createBrowserDrafts({
       api,
-      sync: {
-        syncDatabase: () => synchronization().sync.syncDatabase(),
-        startDraftReplication: (...args) =>
-          synchronization().sync.startDraftReplication(...args),
+      resources: {
+        watchResourceChanges: (...args) =>
+          synchronization().resources.watchResourceChanges(...args),
+        replaceStream: () => synchronization().resources.replaceStream(),
       },
     }));
   };

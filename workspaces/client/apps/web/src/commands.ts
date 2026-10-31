@@ -23,8 +23,12 @@ export type MessageDelivery =
 export function messageReceipt(
   response: CommandResponse,
 ): MessageDelivery | undefined {
-  return response.rows.find((row) => row.collection === "messageReceipt")
-    ?.payload as MessageDelivery | undefined;
+  return response.rows.find(
+    (row) =>
+      row.collection === "messageReceipt" &&
+      typeof row.payload.id === "string" &&
+      typeof row.payload.status === "string",
+  )?.payload as MessageDelivery | undefined;
 }
 
 /** Key of the saved client identity. One browser storage holds one client per server. */

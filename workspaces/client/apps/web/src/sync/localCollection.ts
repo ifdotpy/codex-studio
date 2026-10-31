@@ -2,7 +2,7 @@ import type { SyncDocument } from "./client";
 
 /**
  * An in-memory document collection. The sync client reads and writes its
- * projections, drafts, and outbox through this narrow surface. Memory is the
+ * projections and drafts through this narrow surface. Memory is the
  * only store the UI waits for. A collection may take a `durable` hook that
  * persists a row before the write is acknowledged; unsent input uses it.
  */

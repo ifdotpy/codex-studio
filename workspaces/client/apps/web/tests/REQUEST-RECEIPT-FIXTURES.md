@@ -12,10 +12,7 @@ or stored receipt using a request body field such as `id`, `request_id`, or
 - `drafts/draft-push-coalescing-browser.spec.ts`
 - `files/upload-recovery-browser.spec.ts`
 - `messages/message-delivery-ui.spec.ts`
-- `messages/mobile-send-reliability-browser.spec.ts`
-- `messages/send-session-token-browser.spec.ts`
-- `mobile/mobile-send-reliability-ui.spec.ts`
-- `outbox/send-preflight-browser.spec.ts`
+- `outbox/outbox-controls-ui.spec.ts`
 - `projects/new-chat-workspace-ui.spec.ts`
 - `queue/queue-mutation-deadline-browser.spec.ts`
 - `radio/radio-create-browser.spec.ts`

@@ -354,6 +354,9 @@ export function createApiScope(options: ApiScopeOptions) {
   let workspace = "";
 
   let latestStreamSession: components["schemas"]["SyncSessionEvent"];
+  let activeStreamSession:
+    | components["schemas"]["SyncSessionEvent"]
+    | undefined;
   let resolveStreamSession!: () => void;
   const streamSession = new Promise<void>((resolve) => {
     resolveStreamSession = resolve;
@@ -369,7 +372,17 @@ export function createApiScope(options: ApiScopeOptions) {
     workspace = event.workspaceId;
     if (event.token !== undefined) setToken(event.token);
     latestStreamSession = event;
+    activeStreamSession = event;
     resolveStreamSession();
+  }
+
+  function getStreamSession() {
+    return activeStreamSession;
+  }
+
+  function clearStreamSession(sessionId: string) {
+    if (activeStreamSession?.sessionId === sessionId)
+      activeStreamSession = undefined;
   }
 
   function waitForStreamSession() {
@@ -1024,6 +1037,8 @@ export function createApiScope(options: ApiScopeOptions) {
     client,
     serverAccess,
     receiveStreamSession,
+    getStreamSession,
+    clearStreamSession,
     waitForStreamSession,
     setWorkspace,
     setToken,
@@ -1066,6 +1081,8 @@ export const {
   client,
   serverAccess,
   receiveStreamSession,
+  getStreamSession,
+  clearStreamSession,
   waitForStreamSession,
   setWorkspace,
   setToken,

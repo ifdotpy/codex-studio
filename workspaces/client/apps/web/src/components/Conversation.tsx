@@ -6,7 +6,7 @@ import {
 } from "../generated/api.ts";
 import { randomUUID } from "../uuid";
 import { ProviderKind } from "../generated/providerKind.ts";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { IdleCompactionNotice } from "./IdleCompactionNotice";
 import {
   isCompactTools,
@@ -150,6 +150,24 @@ import {
 
 function isJsonObject(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function LiveTurnHistory({
+  liveAgentId,
+  ...props
+}: ComponentProps<typeof TurnHistory> & { liveAgentId?: string | undefined }) {
+  const liveText = useLiveText(liveAgentId);
+  const items = useMemo(
+    () =>
+      props.items.map((message) => {
+        const live = liveText.get(message.id);
+        if (!live || message.role !== "assistant") return message;
+        const text = withLiveText(message.text, live);
+        return text === message.text ? message : { ...message, text };
+      }),
+    [props.items, liveText],
+  );
+  return <TurnHistory {...props} items={items} />;
 }
 
 // Message controls keep stable identities while their actions read the latest
@@ -460,16 +478,10 @@ export default function Conversation(p: {
     [history, p.outgoing, p.id, receipts],
   );
   const removed = useRemovedMessages(p.data.stateDir, kind, p.id);
-  const liveText = useLiveText(p.room ? undefined : (p.id ?? undefined));
   const items = useMemo(
     () =>
       [
         ...delivery.items.map((message) => {
-          const live = liveText.get(message.id);
-          if (live && message.role === "assistant") {
-            const text = withLiveText(message.text, live);
-            if (text !== message.text) return { ...message, text };
-          }
           if (!isSendingMessage(message)) return message;
           // A stale receipt must not make a restored display copy send again.
           return (
@@ -491,7 +503,7 @@ export default function Conversation(p: {
             ),
         ),
       ].filter((message) => !removed.hidden(message)),
-    [delivery.items, liveText, removed.hidden, removed.restored],
+    [delivery.items, removed.hidden, removed.restored],
   );
   const historyAgentId = p.id;
   const promptRecall = usePromptRecall(
@@ -1396,6 +1408,7 @@ export default function Conversation(p: {
         <OutboxControls
           entry={p.outgoing?.find((entry) => entry.id === m.clientMessageId)}
           edit={editOutgoing}
+          onResolved={(id) => p.onObserved?.([id])}
         />
       )}
       {m.deliveryError &&
@@ -1500,8 +1513,9 @@ export default function Conversation(p: {
         {managed && !p.room && agent?.provider === ProviderKind.Claude && (
           <ClaudeRepairNotice agent={agent} />
         )}
-        <TurnHistory
+        <LiveTurnHistory
           key={`${p.data.stateDir}:${p.id}`}
+          liveAgentId={p.room ? undefined : (p.id ?? undefined)}
           items={transcriptItems}
           scrollContainer={scroll}
           rememberScroll={remember}

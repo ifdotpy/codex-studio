@@ -196,7 +196,7 @@ pub enum ReviewTarget {
     Custom { instructions: String },
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StartAttemptView {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -219,7 +219,7 @@ pub struct StartAttemptView {
     pub active_at_reservation: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created: Option<f64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "present_action")]
     #[schemars(with = "StartAttemptAction")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<StartAttemptAction>,
@@ -280,6 +280,12 @@ pub enum StartAttemptAction {
     Review,
     Capacity,
     Safety,
+}
+
+fn present_action<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<StartAttemptAction>, D::Error> {
+    StartAttemptAction::deserialize(deserializer).map(Some)
 }
 
 #[derive(Default)]
@@ -360,12 +366,6 @@ impl<'de> crate::raw_object::RawObjectFields<'de> for StartAttemptFields {
     }
 }
 
-impl<'de> Deserialize<'de> for StartAttemptView {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        crate::raw_object::deserialize::<D, StartAttemptFields>(deserializer)
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum InterruptOutcome {
@@ -421,5 +421,13 @@ mod tests {
         // The live request type still requires the root identity.
         let native = r#"{"ticket":{"operation":"op","agent":"a","epoch":1,"account":"acct","thread":"thread","connection":"c","generation":1,"request":"r"},"method":"review/start","params":{}}"#;
         assert!(serde_json::from_str::<NativeRequest>(native).is_err());
+    }
+
+    #[test]
+    fn attempt_rejects_unknown_duplicate_and_null_action() {
+        assert!(serde_json::from_str::<StartAttemptView>(r#"{"future":1}"#).is_err());
+        assert!(serde_json::from_str::<StartAttemptView>(r#"{"id":null,"id":null}"#).is_err());
+        assert!(serde_json::from_str::<StartAttemptView>(r#"{"action":null}"#).is_err());
+        assert!(serde_json::from_str::<StartAttemptView>(r#"{"action":"review"}"#).is_ok());
     }
 }

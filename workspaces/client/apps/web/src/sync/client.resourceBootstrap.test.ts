@@ -64,6 +64,8 @@ vi.mock("../api", () => ({
   syncGet: mocks.syncGet,
   get: mocks.syncGet,
   post: vi.fn(),
+  receiveStreamSession: vi.fn(),
+  clearStreamSession: vi.fn(),
   clearSchemaUpdateAttemptAfterMatch: vi.fn(),
   matchingApiSchemaResponseGeneration: () => 0,
   markApiSchemaMismatch: vi.fn(),
@@ -272,19 +274,12 @@ async function setup() {
   };
 }
 
-it("does not persist server projections in the local unsent store", async () => {
+it("opens workspace and writes projections without IndexedDB", async () => {
   const f = await setup();
   const { createEntitySequenceScope } = await import("./entitySequence");
   const { createTranscriptCache } = await import("./transcriptCache");
-  const entries = vi.fn(
-    async (
-      _store: "unsent",
-      _prefix: string,
-    ): Promise<Array<[string, unknown]>> => [],
-  );
-  const put = vi.fn(
-    async (_store: "unsent", _key: string, _value: unknown) => {},
-  );
+  const open = vi.fn();
+  vi.stubGlobal("indexedDB", { open });
   const client = f.client.createSyncClient({
     api: {
       syncGet: mocks.syncGet,
@@ -301,7 +296,6 @@ it("does not persist server projections in the local unsent store", async () => 
     sequences: createEntitySequenceScope(),
     transcripts: createTranscriptCache(),
     databaseSuffix: "memory-test",
-    keyValue: () => ({ entries, put, remove: vi.fn(async () => {}) }),
   });
   const { db } = await client.syncDatabase();
   await client.persistProjection(db.projections, {
@@ -310,8 +304,7 @@ it("does not persist server projections in the local unsent store", async () => 
     seq: 1,
     _deleted: false,
   });
-  expect(entries.mock.calls.every(([store]) => store === "unsent")).toBe(true);
-  expect(put).not.toHaveBeenCalled();
+  expect(open).not.toHaveBeenCalled();
 });
 
 it("keeps the newer row when command replies arrive out of order", async () => {
@@ -749,7 +742,6 @@ it.each([false, true])(
 
 it.each([
   { follower: false, staged: false, cancelled: false },
-  { follower: true, staged: false, cancelled: false },
   { follower: false, staged: true, cancelled: false },
   { follower: false, staged: true, cancelled: true },
 ])(
@@ -833,6 +825,8 @@ it.each([
         get: mocks.syncGet,
         post: vi.fn().mockResolvedValue({ gen: 1 }),
         clearSchemaUpdateAttemptAfterMatch: vi.fn(),
+        receiveStreamSession: vi.fn(),
+        clearStreamSession: vi.fn(),
         isApiSchemaMismatch: () => false,
         matchingApiSchemaResponseGeneration: () => 0,
         markApiSchemaMismatch: vi.fn(),
@@ -850,7 +844,6 @@ it.each([
         getWorkspaceTokenRates: vi.fn(() => ({ records: [] })),
       },
       openEvents: () => source,
-      storageName: (name) => name,
     });
     mocks.watch.mockImplementation(transport.watchResourceChanges);
     mocks.watchConnection.mockImplementation(transport.watchResourceConnection);

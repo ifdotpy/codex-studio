@@ -81,7 +81,9 @@ test("switching chats changes subscriptions on one EventSource", async ({
               sessions.set(sessionId, { response, resources, url });
               response.on("close", () => sessions.delete(sessionId));
               response.setHeader("Content-Type", "text/event-stream");
-              response.write(sse("session", { sessionId }));
+              response.write(
+                sse("session", { sessionId, workspaceId, routes: [] }),
+              );
               response.write(apiSchemaHandshakeSse());
               response.write(frame(resources));
               return;

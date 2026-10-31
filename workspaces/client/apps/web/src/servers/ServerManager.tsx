@@ -279,16 +279,6 @@ export default function ServerManager({
                         Remove
                       </ActionButton>
                     )}
-                    {!registered && peer?.paired && localEnabled && (
-                      <ActionButton
-                        actionRole="secondary"
-                        size="xs"
-                        disabled={busy || discovery.busy}
-                        onClick={() => discovery.addAgain(peer.id)}
-                      >
-                        Add to this UI
-                      </ActionButton>
-                    )}
                     {peer?.paired && localEnabled && (
                       <ActionButton
                         actionRole="secondary"

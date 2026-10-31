@@ -12593,6 +12593,11 @@ export interface components {
         | undefined;
       newDocumentState: components["schemas"]["DraftDocumentInput"];
     };
+    /** @description Bounded draft baseline at the current draft sequence. */
+    DraftSnapshot: {
+      complete: boolean;
+      documents: components["schemas"]["SyncDocument"][];
+    };
     /** DraftsResource */
     DraftsResource: {
       /**
@@ -19627,6 +19632,7 @@ export interface components {
         | components["schemas"]["DraftChangeBatch"]
         | null
         | undefined;
+      draftSnapshot?: components["schemas"]["DraftSnapshot"] | undefined;
       entityChanges?:
         | components["schemas"]["EntityChangeBatch"]
         | null

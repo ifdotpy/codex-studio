@@ -1,8 +1,5 @@
 import assert from "node:assert/strict";
-import type {
-  OutgoingTabMessage,
-  ResourceConnectionDetail,
-} from "./resourceEvents";
+import type { ResourceConnectionDetail } from "./resourceEvents";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   API_SCHEMA_HASH,
@@ -57,7 +54,11 @@ class Source {
   ) {
     if (name === "session" && this.autoHandshake) {
       listener({
-        data: JSON.stringify({ sessionId: "session-test" }),
+        data: JSON.stringify({
+          sessionId: "session-test",
+          workspaceId,
+          routes: [],
+        }),
       } as MessageEvent<string>);
       return;
     }
@@ -120,13 +121,13 @@ class Channel {
   readonly name: string;
   static instances: Channel[] = [];
   onmessage: ((event: MessageEvent) => void) | null = null;
-  messages: OutgoingTabMessage[] = [];
+  messages: unknown[] = [];
   constructor(name: string) {
     this.name = name;
 
     Channel.instances.push(this);
   }
-  postMessage(value: OutgoingTabMessage) {
+  postMessage(value: unknown) {
     this.messages.push(value);
   }
   close() {}
@@ -344,20 +345,24 @@ describe("shared resource event transport", () => {
                     ],
                   },
                 }
-              : {}),
+              : { draftSnapshot: { complete: true, documents: [] } }),
           },
         ],
       });
     emit(0, "initial");
-    await vi.advanceTimersByTimeAsync(20);
-    expect(listener).toHaveBeenCalledOnce();
-    listener.mockClear();
     emit(1, "change");
     emit(2, "change");
     await vi.advanceTimersByTimeAsync(0);
+    expect(listener.mock.calls[0]?.[0].draftSnapshot).toEqual({
+      complete: true,
+      documents: [],
+    });
     expect(
-      listener.mock.calls.map(([version]) => version.draftChanges.through),
+      listener.mock.calls
+        .slice(1)
+        .map(([version]) => version.draftChanges.through),
     ).toEqual([1, 2]);
+    listener.mockClear();
     Source.instances[0]!.emit("resources", {
       protocol: 4,
       workspaceId,
@@ -368,9 +373,9 @@ describe("shared resource event transport", () => {
       resourceVersions: [{ revision: 2 }],
     });
     await vi.advanceTimersByTimeAsync(20);
-    expect(listener).toHaveBeenCalledTimes(3);
-    assert.ok(listener.mock.calls[2] != null);
-    expect(listener.mock.calls[2][0].reason).toBe("reconnect");
+    expect(listener).toHaveBeenCalledOnce();
+    assert.ok(listener.mock.calls[0] != null);
+    expect(listener.mock.calls[0][0].reason).toBe("reconnect");
     stop();
   });
 
@@ -735,57 +740,6 @@ describe("shared resource event transport", () => {
     stop();
   });
 
-  it("rechecks peer subscriptions before the coordinator idle stop", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
-    vi.stubGlobal("navigator", {
-      onLine: true,
-      locks: {
-        request: (
-          _name: string,
-          _options: unknown,
-          callback: (lock: {}) => Promise<void>,
-        ) => Promise.resolve().then(() => callback({})),
-      },
-    });
-    vi.stubGlobal("crypto", { randomUUID: () => "tab-owner" });
-    vi.stubGlobal("BroadcastChannel", Channel);
-
-    const transport = await loadTransport();
-    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
-    await vi.advanceTimersByTimeAsync(20);
-    expect(Source.instances).toHaveLength(1);
-    const ownerChannel = Channel.instances[0]!;
-    stop();
-    await vi.advanceTimersByTimeAsync(900);
-    ownerChannel.onmessage?.({
-      data: {
-        kind: "subscriptions",
-        workspaceId,
-        tabId: "tab-peer",
-        apiSchemaHash: API_SCHEMA_HASH,
-        resources: [{ kind: "costs" }],
-        tokenRates: false,
-        reset: true,
-      },
-    } as MessageEvent);
-    await vi.advanceTimersByTimeAsync(100);
-    expect(Source.instances).toHaveLength(2);
-    expect(Source.instances[1]!.closed).toBe(false);
-    expect(Source.instances[1]!.url).not.toBe(Source.instances[0]!.url);
-    ownerChannel.onmessage?.({
-      data: {
-        kind: "subscriptions",
-        workspaceId,
-        tabId: "tab-peer",
-        apiSchemaHash: API_SCHEMA_HASH,
-        resources: [],
-        tokenRates: false,
-        reset: true,
-      },
-    } as MessageEvent);
-    await vi.advanceTimersByTimeAsync(1_000);
-  });
-
   it("cancels the pending idle-stop timer when the coordinator stops", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     const windowStub = {
@@ -808,63 +762,6 @@ describe("shared resource event transport", () => {
     await vi.advanceTimersByTimeAsync(1_001);
     expect(windowStub.removeEventListener).toHaveBeenCalledTimes(removeCalls);
     expect(vi.getTimerCount()).toBe(0);
-  });
-
-  it("ignores resource-channel messages sent by another schema version", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
-    vi.stubGlobal("navigator", {
-      onLine: true,
-      locks: {
-        request: (
-          _name: string,
-          _options: unknown,
-          callback: (lock: null) => Promise<void>,
-        ) => Promise.resolve().then(() => callback(null)),
-      },
-    });
-    vi.stubGlobal("crypto", { randomUUID: () => "tab-local" });
-    vi.stubGlobal("BroadcastChannel", Channel);
-    const transport = await loadTransport();
-    const onChange = vi.fn();
-    const stop = transport.watchResourceChanges(
-      { kind: "queue", agentId: "agent-one" },
-      onChange,
-    );
-    await Promise.resolve();
-    await Promise.resolve();
-    Channel.instances[0]!.onmessage?.({
-      data: {
-        kind: "resource-event",
-        workspaceId,
-        tabId: "tab-foreign",
-        apiSchemaHash: "foreign-schema",
-        event: {
-          protocol: 4,
-          workspaceId,
-          epoch: "epoch-one",
-          revision: 1,
-          reason: "initial",
-          resources: [{ kind: "queue", agentId: "agent-one" }],
-        },
-      },
-    } as MessageEvent);
-    Channel.instances[0]!.onmessage?.({
-      data: {
-        kind: "resource-event",
-        workspaceId,
-        tabId: "tab-hashless",
-        event: {
-          protocol: 4,
-          workspaceId,
-          epoch: "epoch-one",
-          revision: 1,
-          reason: "initial",
-          resources: [{ kind: "queue", agentId: "agent-one" }],
-        },
-      },
-    } as MessageEvent);
-    expect(onChange).not.toHaveBeenCalled();
-    stop();
   });
 
   it("stops the live resource stream when its first schema event mismatches", async () => {
@@ -1385,50 +1282,6 @@ describe("shared resource event transport", () => {
     stop();
   });
 
-  it("degrades and reconnects on a same-schema peer frame without an event", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
-    vi.stubGlobal("window", {
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    });
-    vi.stubGlobal("navigator", {
-      onLine: true,
-      locks: {
-        request: (
-          _name: string,
-          _options: unknown,
-          callback: (lock: {}) => Promise<void>,
-        ) => Promise.resolve().then(() => callback({})),
-      },
-    });
-    vi.stubGlobal("BroadcastChannel", Channel);
-    const log = vi.spyOn(console, "error").mockImplementation(() => {});
-    const transport = await loadTransport();
-    const statuses: string[] = [];
-    const stopStatus = transport.watchResourceConnection((status) =>
-      statuses.push(status),
-    );
-    const listener = vi.fn();
-    const stop = transport.watchResourceChanges({ kind: "state" }, listener);
-    await vi.advanceTimersByTimeAsync(20);
-    expect(Source.instances).toHaveLength(1);
-    Channel.instances[0]!.onmessage?.({
-      data: {
-        kind: "resource-event",
-        workspaceId,
-        tabId: "tab-peer",
-        apiSchemaHash: API_SCHEMA_HASH,
-      },
-    } as MessageEvent);
-    expect(Source.instances[0]!.closed).toBe(true);
-    expect(statuses).toContain("degraded");
-    expect(log).toHaveBeenCalledTimes(1);
-    await expectRecovered(listener);
-    stop();
-    stopStatus();
-  });
-
   it.each([
     ["null resource data", "resources", null],
     [
@@ -1470,39 +1323,6 @@ describe("shared resource event transport", () => {
     expect(() => source.emitRaw(eventName!, frame)).not.toThrow();
     expect(source.closed).toBe(true);
     expect(states).toContain("degraded");
-    stop();
-    stopStatus();
-  });
-
-  it("degrades and reconnects when a peer message has no event payload", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
-    vi.stubGlobal("window", {
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    });
-    vi.stubGlobal("navigator", { onLine: true, locks: undefined });
-    vi.stubGlobal("BroadcastChannel", Channel);
-    const transport = await loadTransport();
-    const states: string[] = [];
-    const stopStatus = transport.watchResourceConnection((status) =>
-      states.push(status),
-    );
-    const listener = vi.fn();
-    const stop = transport.watchResourceChanges({ kind: "state" }, listener);
-    await vi.advanceTimersByTimeAsync(20);
-    expect(Source.instances).toHaveLength(1);
-    Channel.instances[0]!.onmessage?.({
-      data: {
-        kind: "resource-event",
-        workspaceId,
-        tabId: "peer-tab",
-        apiSchemaHash: API_SCHEMA_HASH,
-      },
-    } as MessageEvent);
-    expect(Source.instances[0]!.closed).toBe(true);
-    expect(states).toContain("degraded");
-    await expectRecovered(listener);
     stop();
     stopStatus();
   });
@@ -1745,113 +1565,6 @@ describe("shared resource event transport", () => {
     stop();
   });
 
-  it("takes a queued Web Lock as soon as the current owner releases it", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
-    let releaseQueuedRequest: (() => void) | undefined;
-    const request = vi.fn(
-      (
-        _name: string,
-        options: { signal: AbortSignal },
-        callback: (lock: {}) => Promise<void>,
-      ) =>
-        new Promise<void>((resolve, reject) => {
-          const abort = () => reject(new DOMException("Aborted", "AbortError"));
-          options.signal.addEventListener("abort", abort, { once: true });
-          releaseQueuedRequest = () => {
-            options.signal.removeEventListener("abort", abort);
-            void callback({}).then(resolve, reject);
-          };
-        }),
-    );
-    vi.stubGlobal("navigator", { onLine: true, locks: { request } });
-    vi.stubGlobal("crypto", { randomUUID: () => "tab-waiter" });
-    vi.stubGlobal("BroadcastChannel", Channel);
-
-    const transport = await loadTransport();
-    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
-    const onTokenRates = vi.fn();
-    const stopTokens = transport.watchTokenRateEvents(onTokenRates);
-    await vi.advanceTimersByTimeAsync(20);
-    expect(request).toHaveBeenCalledTimes(1);
-    expect(request.mock.calls[0]?.[1].signal.aborted).toBe(false);
-    expect(Source.instances).toHaveLength(0);
-
-    // The mock delivers the held native lock only after its prior owner releases.
-    releaseQueuedRequest?.();
-    await vi.advanceTimersByTimeAsync(20);
-    expect(Source.instances).toHaveLength(1);
-    expect(Source.instances[0]?.closed).toBe(false);
-    expect(
-      new URL(Source.instances[0]!.url, "http://studio.test").searchParams.get(
-        "tokenRates",
-      ),
-    ).toBe("true");
-    const currentSnapshot = {
-      protocol: 4,
-      workspaceId,
-      epoch: "epoch-one",
-      revision: 1,
-      snapshot: true,
-      removed: [],
-      records: [],
-    };
-    Source.instances[0]!.emit("token-rates", currentSnapshot);
-    expect(onTokenRates).toHaveBeenCalledWith(currentSnapshot);
-    stopTokens();
-    await vi.advanceTimersByTimeAsync(30);
-    expect(subscriptionPosts).toHaveLength(1);
-    expect(subscriptionPosts[0]?.tokenRates).toBe(false);
-    expect(Source.instances).toHaveLength(1);
-    stop();
-    await vi.advanceTimersByTimeAsync(20);
-    expect(Source.instances[0]?.closed).toBe(true);
-  });
-
-  it("cancels a queued Web Lock on hide without falling back to a second stream", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
-    const documentListeners = new Map<string, () => void>();
-    vi.stubGlobal("document", {
-      hidden: false,
-      addEventListener: vi.fn((name: string, listener: () => void) =>
-        documentListeners.set(name, listener),
-      ),
-      removeEventListener: vi.fn(),
-    });
-    let requestSignal: AbortSignal | undefined;
-    const request = vi.fn(
-      (
-        _name: string,
-        options: { signal: AbortSignal },
-        _callback: (lock: {}) => Promise<void>,
-      ) =>
-        new Promise<void>((_resolve, reject) => {
-          requestSignal = options.signal;
-          options.signal.addEventListener(
-            "abort",
-            () => reject(new DOMException("Aborted", "AbortError")),
-            { once: true },
-          );
-        }),
-    );
-    vi.stubGlobal("navigator", { onLine: true, locks: { request } });
-    vi.stubGlobal("crypto", { randomUUID: () => "tab-hidden-waiter" });
-    vi.stubGlobal("BroadcastChannel", Channel);
-
-    const transport = await loadTransport();
-    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
-    await vi.advanceTimersByTimeAsync(20);
-    expect(request).toHaveBeenCalledTimes(1);
-    expect(Source.instances).toHaveLength(0);
-
-    (document as unknown as { hidden: boolean }).hidden = true;
-    documentListeners.get("visibilitychange")?.();
-    await vi.advanceTimersByTimeAsync(20);
-    expect(requestSignal?.aborted).toBe(true);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(Source.instances).toHaveLength(0);
-    stop();
-  });
-
   it("opens only one replacement stream when online and pageshow resume overlap", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     const windowListeners = new Map<string, () => void>();
@@ -2065,133 +1778,6 @@ describe("shared resource event transport", () => {
     stopStatus();
   });
 
-  it("sends aggregate token interest through follower changes and owner reacquisition", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
-    const visibility = {
-      hidden: false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    };
-    vi.stubGlobal("document", visibility);
-    vi.stubGlobal("navigator", {
-      onLine: true,
-      locks: {
-        request: (
-          _name: string,
-          _options: unknown,
-          callback: (lock: {}) => Promise<void>,
-        ) => Promise.resolve().then(() => callback({})),
-      },
-    });
-    vi.stubGlobal("crypto", { randomUUID: () => "tab-owner" });
-    vi.stubGlobal("BroadcastChannel", Channel);
-    const transport = await loadTransport();
-    const stop = transport.watchResourceChanges({ kind: "drafts" }, vi.fn());
-    await vi.advanceTimersByTimeAsync(20);
-    expect(Source.instances).toHaveLength(1);
-    const interest = (source: Source) =>
-      new URL(source.url, "http://studio.test").searchParams.get("tokenRates");
-    expect(interest(Source.instances[0]!)).toBe("false");
-    const channel = Channel.instances[0]!;
-    const peerInterest = (tokenRates: boolean) =>
-      channel.onmessage?.({
-        data: {
-          kind: "subscriptions",
-          workspaceId,
-          apiSchemaHash: API_SCHEMA_HASH,
-          tabId: "tab-follower",
-          resources: [],
-          tokenRates,
-          reset: true,
-        },
-      } as MessageEvent);
-    peerInterest(true);
-    await vi.advanceTimersByTimeAsync(30);
-    expect(subscriptionPosts).toHaveLength(1);
-    expect(Source.instances[0]!.closed).toBe(false);
-    expect(subscriptionPosts[0]?.tokenRates).toBe(true);
-    const event = {
-      protocol: 4,
-      workspaceId,
-      epoch: "epoch-one",
-      revision: 3,
-      snapshot: true,
-      removed: [],
-      records: [],
-    };
-    const beforeSnapshot = channel.messages.length;
-    Source.instances[0]!.emit("token-rates", event);
-    expect(channel.messages.slice(beforeSnapshot)).toContainEqual(
-      expect.objectContaining({ kind: "token-rates", event }),
-    );
-    peerInterest(false);
-    await vi.advanceTimersByTimeAsync(30);
-    expect(subscriptionPosts).toHaveLength(2);
-    expect(subscriptionPosts[1]?.tokenRates).toBe(false);
-    peerInterest(true);
-    await vi.advanceTimersByTimeAsync(30);
-    expect(subscriptionPosts).toHaveLength(3);
-    expect(subscriptionPosts[2]?.tokenRates).toBe(true);
-    expect(Source.instances).toHaveLength(1);
-    const visibilityChanged = vi
-      .mocked(visibility.addEventListener)
-      .mock.calls.filter(([name]) => name === "visibilitychange")
-      .at(-1)![1] as EventListener;
-    visibility.hidden = true;
-    visibilityChanged(new Event("visibilitychange"));
-    expect(Source.instances[0]!.closed).toBe(true);
-    visibility.hidden = false;
-    visibilityChanged(new Event("visibilitychange"));
-    await vi.advanceTimersByTimeAsync(20);
-    expect(Source.instances).toHaveLength(2);
-    expect(interest(Source.instances[1]!)).toBe("true");
-    const beforeTakeover = channel.messages.length;
-    Source.instances[1]!.emit("token-rates", { ...event, revision: 4 });
-    expect(channel.messages.slice(beforeTakeover)).toContainEqual(
-      expect.objectContaining({
-        kind: "token-rates",
-        event: { ...event, revision: 4 },
-      }),
-    );
-    stop();
-  });
-
-  it("delivers live text to local listeners and follower tabs without a revision", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
-    vi.stubGlobal("document", {
-      hidden: false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    });
-    vi.stubGlobal("navigator", {
-      onLine: true,
-      locks: {
-        request: (
-          _name: string,
-          _options: unknown,
-          callback: (lock: {}) => Promise<void>,
-        ) => Promise.resolve().then(() => callback({})),
-      },
-    });
-    vi.stubGlobal("crypto", { randomUUID: () => "tab-owner" });
-    vi.stubGlobal("BroadcastChannel", Channel);
-    const transport = await loadTransport();
-    const stop = transport.watchResourceChanges({ kind: "drafts" }, vi.fn());
-    await vi.advanceTimersByTimeAsync(20);
-    const onLive = vi.fn();
-    const stopLive = transport.watchLiveDeltas(onLive);
-    const event = { agentId: "a", itemId: "a:i", offset: 0, text: "Hi" };
-    Source.instances[0]!.emit("live-delta", event);
-    expect(onLive).toHaveBeenCalledWith(event);
-    expect(Channel.instances[0]!.messages).toContainEqual(
-      expect.objectContaining({ kind: "live-delta", event }),
-    );
-    stopLive();
-    Source.instances[0]!.emit("live-delta", { ...event, offset: 2 });
-    expect(onLive).toHaveBeenCalledTimes(1);
-    stop();
-  });
-
   it("delivers resource and token-rate events that share a hub revision", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("navigator", {
@@ -2262,213 +1848,9 @@ describe("shared resource event transport", () => {
     const late = vi.fn();
     const stopLate = transport.watchTokenRateEvents(late);
     expect(late).toHaveBeenCalledExactlyOnceWith(event);
-    const channel = Channel.instances[0]!;
-    channel.messages.length = 0;
-    channel.onmessage?.({
-      data: {
-        kind: "subscriptions",
-        workspaceId,
-        tabId: "late-follower",
-        apiSchemaHash: API_SCHEMA_HASH,
-        resources: [],
-        tokenRates: true,
-        reset: true,
-      },
-    } as MessageEvent);
-    expect(channel.messages).toContainEqual(
-      expect.objectContaining({ kind: "token-rates", event }),
-    );
     stopLate();
     stopTokenRates();
     stopResource();
-  });
-
-  it("replays a baseline for a late peer ref already present in an earlier SSE event", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
-    vi.stubGlobal("navigator", {
-      onLine: true,
-      locks: {
-        request: (
-          _name: string,
-          _options: unknown,
-          callback: (lock: {}) => Promise<void>,
-        ) => Promise.resolve().then(() => callback({})),
-      },
-    });
-    vi.stubGlobal("crypto", { randomUUID: () => "tab-owner" });
-    vi.stubGlobal("BroadcastChannel", Channel);
-
-    const transport = await loadTransport();
-    const local = { kind: "drafts" } as const;
-    const latePeerRef = { kind: "state" } as const;
-    const localChanges = vi.fn();
-    const stop = transport.watchResourceChanges(local, localChanges);
-    await vi.advanceTimersByTimeAsync(20);
-    expect(Source.instances).toHaveLength(1);
-    const ownerChannel = Channel.instances[0]!;
-    Source.instances[0]!.emit("resources", {
-      protocol: 4,
-      workspaceId,
-      epoch: "epoch-one",
-      revision: 7,
-      reason: "initial",
-      resources: [local, latePeerRef],
-      resourceVersions: [
-        { resource: local, revision: 7 },
-        { resource: latePeerRef, revision: 7, entitySequences: [42] },
-      ],
-    });
-    await vi.advanceTimersByTimeAsync(30);
-
-    expect(localChanges).toHaveBeenCalledTimes(1);
-
-    const sentBeforeLateSubscription = ownerChannel.messages.length;
-    ownerChannel.onmessage?.({
-      data: {
-        kind: "subscriptions",
-        workspaceId,
-        tabId: "tab-follower",
-        apiSchemaHash: API_SCHEMA_HASH,
-        resources: [latePeerRef],
-        tokenRates: false,
-        reset: true,
-      },
-    } as MessageEvent);
-
-    expect(
-      ownerChannel.messages
-        .slice(sentBeforeLateSubscription)
-        .some(
-          (message) =>
-            message.kind === "resource-event" &&
-            message.event.resources.some(
-              (resource) => resource.kind === "state",
-            ) &&
-            message.event.resourceVersions[0]?.entitySequences?.[0] === 42,
-        ),
-    ).toBe(true);
-    stop();
-  });
-
-  it("bounds inactive versions and reconciles an evicted late peer ref", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
-    vi.stubGlobal("navigator", {
-      onLine: true,
-      locks: {
-        request: (
-          _name: string,
-          _options: unknown,
-          callback: (lock: {}) => Promise<void>,
-        ) => Promise.resolve().then(() => callback({})),
-      },
-    });
-    vi.stubGlobal("crypto", { randomUUID: () => "tab-owner" });
-    vi.stubGlobal("BroadcastChannel", Channel);
-
-    const transport = await loadTransport();
-    const local = { kind: "state" } as const;
-    const bulkRefs = Array.from({ length: 129 }, (_, index) => ({
-      kind: "queue" as const,
-      agentId: `inactive-${index}`,
-    }));
-    const evictedRef = bulkRefs[0]!;
-    const localChanges = vi.fn();
-    const stop = transport.watchResourceChanges(local, localChanges);
-    await vi.advanceTimersByTimeAsync(20);
-    expect(Source.instances).toHaveLength(1);
-    const ownerChannel = Channel.instances[0]!;
-    Source.instances[0]!.emit("resources", {
-      protocol: 4,
-      workspaceId,
-      epoch: "epoch-one",
-      revision: 7,
-      reason: "initial",
-      resources: [local, ...bulkRefs],
-    });
-    await vi.advanceTimersByTimeAsync(20);
-
-    const beforeCacheInspection = ownerChannel.messages.length;
-    ownerChannel.onmessage?.({
-      data: {
-        kind: "subscriptions",
-        workspaceId,
-        tabId: "tab-cache-inspection",
-        apiSchemaHash: API_SCHEMA_HASH,
-        resources: [local, ...bulkRefs],
-        tokenRates: false,
-        reset: true,
-      },
-    } as MessageEvent);
-    const cachedBaseline = ownerChannel.messages
-      .slice(beforeCacheInspection)
-      .find((message) => message.kind === "resource-event");
-    const cachedResources = cachedBaseline?.event.resources ?? [];
-    expect(cachedResources).toHaveLength(129);
-    expect(cachedResources).toContainEqual(local);
-    expect(cachedResources).toContainEqual(bulkRefs.at(-1));
-    expect(cachedResources).not.toContainEqual(evictedRef);
-    ownerChannel.onmessage?.({
-      data: {
-        kind: "subscriptions",
-        workspaceId,
-        tabId: "tab-cache-inspection",
-        apiSchemaHash: API_SCHEMA_HASH,
-        resources: [],
-        tokenRates: false,
-        reset: true,
-      },
-    } as MessageEvent);
-
-    const sentBeforeLateSubscription = ownerChannel.messages.length;
-    const sourceCountBeforeLateSubscription = Source.instances.length;
-    ownerChannel.onmessage?.({
-      data: {
-        kind: "subscriptions",
-        workspaceId,
-        tabId: "tab-follower",
-        apiSchemaHash: API_SCHEMA_HASH,
-        resources: [evictedRef],
-        tokenRates: false,
-        reset: true,
-      },
-    } as MessageEvent);
-
-    await vi.advanceTimersByTimeAsync(30);
-    expect(subscriptionPosts).toHaveLength(1);
-    expect(subscriptionPosts[0]?.add).toEqual([
-      { resource: evictedRef, since: undefined },
-    ]);
-    expect(Source.instances).toHaveLength(sourceCountBeforeLateSubscription);
-    expect(
-      ownerChannel.messages
-        .slice(sentBeforeLateSubscription)
-        .some((message) => message.kind === "resource-event"),
-    ).toBe(false);
-
-    Source.instances.at(-1)!.emit("resources", {
-      protocol: 4,
-      workspaceId,
-      epoch: "epoch-one",
-      revision: 8,
-      reason: "initial",
-      resources: [local, evictedRef],
-    });
-    await vi.advanceTimersByTimeAsync(20);
-    expect(
-      ownerChannel.messages
-        .slice(sentBeforeLateSubscription)
-        .some(
-          (message) =>
-            message.kind === "resource-event" &&
-            message.event.resources.some(
-              (resource) =>
-                resource.kind === "queue" &&
-                resource.agentId === evictedRef.agentId,
-            ),
-        ),
-    ).toBe(true);
-    expect(localChanges).toHaveBeenCalledTimes(2);
-    stop();
   });
 
   it("reconciles an unchanged owner baseline once after reconnect", async () => {
@@ -2533,17 +1915,6 @@ describe("shared resource event transport", () => {
     await vi.advanceTimersByTimeAsync(20);
     expect(onChange).toHaveBeenCalledTimes(2);
 
-    Channel.instances[0]!.onmessage?.({
-      data: {
-        kind: "resource-event",
-        workspaceId,
-        tabId: "tab-peer",
-        apiSchemaHash: API_SCHEMA_HASH,
-        event: initial,
-      },
-    } as MessageEvent);
-    await vi.advanceTimersByTimeAsync(20);
-    expect(onChange).toHaveBeenCalledTimes(2);
     expect(identityProbe).not.toHaveBeenCalled();
     stop();
   });
@@ -2607,97 +1978,6 @@ describe("shared resource event transport", () => {
       stopChanges();
       stopStatus();
     }
-  });
-
-  it("reconciles an unchanged follower baseline once and forgets unsubscribed markers", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
-    vi.stubGlobal("navigator", {
-      onLine: true,
-      locks: {
-        request: (
-          _name: string,
-          _options: unknown,
-          callback: (lock: null) => Promise<void>,
-        ) => Promise.resolve().then(() => callback(null)),
-      },
-    });
-    vi.stubGlobal("crypto", { randomUUID: () => "tab-follower" });
-    vi.stubGlobal("BroadcastChannel", Channel);
-
-    const transport = await loadTransport();
-    const a = { kind: "queue", agentId: "follower-resume-a" } as const;
-    const b = { kind: "queue", agentId: "follower-resume-b" } as const;
-    const onA = vi.fn();
-    const onB = vi.fn();
-    let stopA = transport.watchResourceChanges(a, onA);
-    const stopB = transport.watchResourceChanges(b, onB);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(Source.instances).toHaveLength(0);
-    const followerChannel = Channel.instances[0]!;
-    const baseline = {
-      protocol: 4,
-      workspaceId,
-      epoch: "epoch-one",
-      revision: 7,
-      reason: "initial",
-      resources: [a, b],
-      resourceVersions: [
-        { resource: a, revision: 7 },
-        { resource: b, revision: 7 },
-      ],
-    };
-    let sequence = 0;
-    const send = (kind: string, value: unknown) =>
-      followerChannel.onmessage?.({
-        data: {
-          kind,
-          workspaceId,
-          tabId: "tab-owner",
-          apiSchemaHash: API_SCHEMA_HASH,
-          health: {
-            status: kind === "status" ? value : "live",
-            generation: 1,
-            sequence: ++sequence,
-            sentAt: Date.now(),
-            validatedAt: Date.now(),
-          },
-          ...(kind === "resource-event" ? { event: value } : { status: value }),
-        },
-      } as MessageEvent);
-
-    send("resource-event", baseline);
-    await vi.advanceTimersByTimeAsync(20);
-    expect(onA).toHaveBeenCalledTimes(1);
-    expect(onB).toHaveBeenCalledTimes(1);
-    send("status", "degraded");
-    send("resource-event", { ...baseline, reason: "reconnect" });
-    await vi.advanceTimersByTimeAsync(20);
-    expect(onA).toHaveBeenCalledTimes(2);
-    expect(onB).toHaveBeenCalledTimes(2);
-
-    send("resource-event", { ...baseline, reason: "reconnect" });
-    send("leader-heartbeat", undefined);
-    send("leader-heartbeat", undefined);
-    await vi.advanceTimersByTimeAsync(40);
-    expect(onA).toHaveBeenCalledTimes(2);
-    expect(onB).toHaveBeenCalledTimes(2);
-    expect(Source.instances).toHaveLength(0);
-
-    send("status", "degraded");
-    stopA();
-    const resumedA = vi.fn();
-    stopA = transport.watchResourceChanges(a, resumedA);
-    expect(resumedA).toHaveBeenCalledTimes(1);
-    send("resource-event", { ...baseline, reason: "reconnect" });
-    await vi.advanceTimersByTimeAsync(20);
-    expect(onB).toHaveBeenCalledTimes(3);
-    await vi.advanceTimersByTimeAsync(40);
-    expect(resumedA).toHaveBeenCalledTimes(1);
-    expect(Source.instances).toHaveLength(0);
-
-    stopA();
-    stopB();
   });
 
   it("drops a recovery marker when its last local subscriber leaves", async () => {
@@ -2795,7 +2075,11 @@ describe("shared resource event transport", () => {
     expect(Source.instances).toHaveLength(1);
     const source = Source.instances[0] as NativeSource;
     source.open();
-    source.emit("session", { sessionId: "session-one" });
+    source.emit("session", {
+      sessionId: "session-one",
+      workspaceId,
+      routes: [],
+    });
     source.emit("api-schema", { hash: API_SCHEMA_HASH });
     source.emit("resources", {
       protocol: 4,
@@ -2837,7 +2121,11 @@ describe("shared resource event transport", () => {
       { kind: "costs" },
     ]);
     source.open();
-    source.emit("session", { sessionId: "session-two" });
+    source.emit("session", {
+      sessionId: "session-two",
+      workspaceId,
+      routes: [],
+    });
     source.emit("api-schema", { hash: API_SCHEMA_HASH });
     source.emit("resources", {
       protocol: 4,

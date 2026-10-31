@@ -25,6 +25,7 @@ export type ResourceVersion = {
   revision: number;
   reason?: components["schemas"]["ResourceChangeEvent"]["reason"];
   draftChanges?: components["schemas"]["DraftChangeBatch"] | undefined;
+  draftSnapshot?: components["schemas"]["DraftSnapshot"] | undefined;
   /** Transient access metadata; never written to the entity cache. */
   discoverySnapshot?: components["schemas"]["AccessSnapshot"] | undefined;
   /** Transient cursor interval and media session state. */
