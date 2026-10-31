@@ -284,9 +284,11 @@ pub(crate) async fn state() -> (tempfile::TempDir, RuntimeStore, Value) {
         for item in seed.transcript_items { assert_eq!(item.record.value()["id"],item.id); Table::new(tx).put_with_columns(&item.record,&[("agent",SqlValue::Text(item.agent)),("created",SqlValue::Real(item.created))])?; }
         for monitor in seed.monitors { Table::new(tx).put(&monitor)?; }
         for project in seed.projects { ProjectsRepository::put_project(tx,&project)?; }
-        for request in seed.requests { Table::new(tx).put(&request)?; }
+        for request in seed.requests {
+            studio_runtime_services::provider_callbacks::legacy_view::insert(tx, &serde_json::json!(request))?;
+        }
         seed_tools(tx,seed.tool_requests)?;
-        for entity in seed.sync_entities { SyncDocumentsRepository::put_entity(tx,&entity.collection,&entity.id,entity.value,entity.deleted)?; }
+        for entity in seed.sync_entities.into_iter().filter(|entity| entity.collection != "request") { SyncDocumentsRepository::put_entity(tx,&entity.collection,&entity.id,entity.value,entity.deleted)?; }
         // Metadata counters and read-only analytics have no typed write owner.
         tx.execute_batch(&seed.metadata.join("\n"))?;
         Ok(())

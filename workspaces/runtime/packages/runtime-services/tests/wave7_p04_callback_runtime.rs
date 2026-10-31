@@ -147,7 +147,13 @@ async fn written_retires_transport_body_and_preserves_exact_http_replay() {
         true
     );
     assert!(matches!(
-        runtime.answer(&id, &json!({"answers":{}}), 21.0).await,
+        runtime
+            .answer(
+                &id,
+                &json!({"answers":{"secret":{"answers":["other-payload"]}}}),
+                21.0
+            )
+            .await,
         Err(CallbackError::Conflict)
     ));
     assert_eq!(port.calls.lock().unwrap().len(), 1);

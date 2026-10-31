@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_http::{HttpState, router};
 use studio_runtime_services::monitor_runtime_wiring::MonitorRuntime;
-use studio_runtime_store::{MonitorsRepository, RequestRecord, Table};
+use studio_runtime_store::MonitorsRepository;
 use tower::ServiceExt;
 
 fn database_snapshot(store: &studio_runtime_store::RuntimeStore) -> Value {
@@ -449,17 +449,18 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
         fixtures::seed(&store, &case, monitor).await;
         let id = case["before"]["id"].as_str().expect("monitor id");
         let request_id = format!("monitor-approval:{id}");
-        let request: RequestRecord = serde_json::from_str(&json!({
+        let request = json!({
             "id":request_id,
             "method":"monitor/approve",
             "agent":"agent",
             "params":{"monitorId":id,"command":case["before"]["command"],"cwd":case["before"]["cwd"]},
             "status":"pending",
             "createdAt":1000.0
-        }).to_string())
-        .expect("approval request");
+        });
         store
-            .transaction(move |tx| Table::<RequestRecord>::new(tx).put(&request))
+            .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
+                studio_runtime_services::provider_callbacks::legacy_view::insert(tx, &request)
+            })
             .await
             .expect("seed monitor approval request");
         let port = Arc::new(support::Port::default());
@@ -488,15 +489,13 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
         .await;
         assert_eq!(status, 200, "{response}");
         assert_eq!(response["status"], "answered");
-        let request = Table::<RequestRecord>::new(&store.test_reader().expect("read request"))
-            .get(&request_id)
-            .expect("get approval request")
-            .expect("approval request");
-        assert_eq!(request.status.as_str(), "answered");
-        assert_eq!(
-            request.answer_decision.map(|value| value.as_str()),
-            Some(decision)
-        );
+        let request = studio_runtime_services::provider_callbacks::legacy_view::stored(
+            &store.test_reader().expect("read request"),
+            &request_id,
+        )
+        .expect("approval request");
+        assert_eq!(request["status"], "answered");
+        assert_eq!(request["decision"], decision);
         let monitor = serde_json::to_value(
             MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
                 .expect("get monitor")

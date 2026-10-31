@@ -8,7 +8,7 @@ use studio_runtime_services::{
 };
 use studio_runtime_store::{
     AgentRecord, AgentRepository, MonitorsRepository, QueueEventId, QueueEventRepository,
-    RequestRecord, RuntimeStore, Table,
+    RuntimeStore, Table,
 };
 
 fn running(cases: &[Value]) -> Value {
@@ -24,11 +24,8 @@ fn operation(case: &Value) -> Operation {
 }
 
 fn add_request(tx: &rusqlite::Transaction<'_>, request: &Value) {
-    let record =
-        serde_json::from_str::<RequestRecord>(&request.to_string()).expect("valid request row");
-    Table::<RequestRecord>::new(tx)
-        .put(&record)
-        .expect("store request");
+    studio_runtime_services::provider_callbacks::legacy_view::insert(tx, request)
+        .expect("valid request row");
 }
 
 fn add_event(tx: &rusqlite::Transaction<'_>, id: &str, agent: &str, status: &str, epoch: i64) {
@@ -45,12 +42,7 @@ fn complete_rows(store: &RuntimeStore, id: &str) -> Value {
     let monitor = MonitorsRepository::get(&connection, id)
         .expect("read monitor")
         .expect("monitor exists");
-    let requests = Table::<RequestRecord>::new(&connection)
-        .list()
-        .expect("read requests")
-        .into_iter()
-        .map(|record| json!(record))
-        .collect::<Vec<_>>();
+    let requests = studio_runtime_services::provider_callbacks::legacy_view::views(&connection);
     let events = fixtures::events(store);
     let projections = ["sync_entities", "sync_documents", "sync_entity_meta"]
         .into_iter()
@@ -125,11 +117,14 @@ async fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() 
         monitor.reattach_recovery.as_ref().map(|r| &r.state),
         Some(studio_runtime_schema::monitor_record::ReattachState::Running { .. })
     ));
-    let requests = Table::<RequestRecord>::new(&connection)
-        .list()
-        .expect("list recovered requests")
+    let requests = studio_runtime_services::provider_callbacks::legacy_view::views(&connection)
         .into_iter()
-        .map(|request| (request.id().to_string(), json!(request)))
+        .map(|request| {
+            (
+                request["id"].as_str().unwrap_or_default().to_owned(),
+                request,
+            )
+        })
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(requests["approval"]["status"], "expired");
     assert_eq!(requests["answering"]["status"], "uncertain");
@@ -293,7 +288,7 @@ async fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let case = running(&cases);
-    for table in ["runtime_requests", "runtime_events", "runtime_monitors"] {
+    for table in ["approvals", "runtime_events", "runtime_monitors"] {
         let store = fixtures::store(root.path(), table).await;
         fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
         let id = case["before"]["id"]
@@ -310,7 +305,8 @@ async fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
                 );
                 add_event(tx, "dispatching-without-attempt", "agent", "dispatching", 2);
                 tx.execute_batch(&format!(
-                    "CREATE TRIGGER injected BEFORE UPDATE ON {table_name} BEGIN SELECT RAISE(ABORT,'injected'); END"
+                    "CREATE TRIGGER injected BEFORE {event} ON {table_name} BEGIN SELECT RAISE(ABORT,'injected'); END",
+                    event = if table_name == "approvals" { "DELETE" } else { "UPDATE" }
                 ))?;
                 Ok(())
             }).await
@@ -453,57 +449,6 @@ async fn startup_remote_owned_monitor_is_recovered_without_aborting() {
             .expect("read remote monitor exit")
             .is_none()
     );
-}
-
-#[tokio::test]
-async fn malformed_request_isolated_without_blocking_other_recovery() {
-    let root = fixtures::tempdir();
-    let case = running(&fixtures::corpus(root.path()));
-    let store = fixtures::store(root.path(), "malformed-request-startup").await;
-    fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
-    store.transaction(|tx| {
-        tx.execute("INSERT INTO runtime_requests(id,record) VALUES('bad',?1)", [json!({"id":"bad","status":"answering","method":false}).to_string()])?;
-        tx.execute("INSERT INTO runtime_requests(id,record) VALUES('sparse','{\"id\":\"sparse\"}')", [])?;
-        add_request(tx, &json!({"id":"good","agent":"agent","createdAt":1,"status":"answering","method":"item/commandExecution/requestApproval","params":{"opaque":{"x":[1,null]}}}));
-        Ok(())
-    }).await.unwrap();
-    let report = monitor_runtime::recover_on_startup(&store, 2000.0)
-        .await
-        .unwrap();
-    assert_eq!(report.requests, 1);
-    let db = store.test_reader().unwrap();
-    let sparse: String = db
-        .query_row(
-            "SELECT record FROM runtime_requests WHERE id='sparse'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(sparse, r#"{"id":"sparse"}"#);
-    assert!(
-        Table::<RequestRecord>::new(&db)
-            .get(&"sparse".into())
-            .is_err()
-    );
-    let bad: String = db
-        .query_row(
-            "SELECT record FROM runtime_requests WHERE id='bad'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        serde_json::from_str::<Value>(&bad).unwrap()["status"],
-        "answering"
-    );
-    let good = json!(
-        Table::<RequestRecord>::new(&db)
-            .get(&"good".into())
-            .unwrap()
-            .unwrap()
-    );
-    assert_eq!(good["status"], "uncertain");
-    assert_eq!(good["params"]["opaque"], json!({"x":[1,null]}));
 }
 
 #[tokio::test]

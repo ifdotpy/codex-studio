@@ -297,8 +297,6 @@ async fn installed_provider_supports_start_end_and_service_receipts() {
 
 #[tokio::test]
 async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
-    use studio_runtime_store::{RequestRecord, Table};
-
     let root = monitor_fixtures::tempdir();
     let mut case = monitor_fixtures::corpus(root.path())
         .into_iter()
@@ -405,14 +403,12 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
     );
     let response = approve(true).await.expect("monitor approval");
     assert_eq!(response["status"], "answered");
-    let request = Table::<RequestRecord>::new(&store.test_reader().expect("read request"))
-        .get(&request_id)
-        .expect("get monitor approval")
-        .expect("monitor approval");
-    assert_eq!(
-        request.answer_decision.map(|value| value.as_str()),
-        Some("accept")
-    );
+    let request = studio_runtime_services::provider_callbacks::legacy_view::stored(
+        &store.test_reader().expect("read request"),
+        &request_id,
+    )
+    .expect("monitor approval");
+    assert_eq!(request["decision"], "accept");
 
     // A saved accepted voice receipt must replay without the optional runtime.
     let replayed = approve(false).await.expect("approval replay");

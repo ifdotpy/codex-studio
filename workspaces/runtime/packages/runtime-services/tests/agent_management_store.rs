@@ -235,7 +235,7 @@ async fn lifecycle_failure_case(case_name: &str, tables: &[&str]) {
     let action: Action = serde_json::from_value(case["action"].clone()).expect("action");
     let before = state(&store);
     for table in tables {
-        let event = if *table == "sync_entities" {
+        let event = if matches!(*table, "sync_entities" | "approvals") {
             "INSERT"
         } else {
             "UPDATE"

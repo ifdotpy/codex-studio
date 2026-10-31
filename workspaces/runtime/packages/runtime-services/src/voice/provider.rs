@@ -2085,24 +2085,9 @@ mod tests {
         let (_directory, store) = voice_outbox_fixture().await;
         store.transaction(|tx| {
             tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('speech','agent','session','orchestrator','','','',?1,1)", [r#"{"request_id":"r"}"#])?;
-            tx.execute("INSERT INTO runtime_requests(id,record) VALUES('r',?1)", [r#"{"id":"r","agent":"agent","method":"monitor/approve","status":false,"createdAt":1,"params":{}}"#])?;
+            crate::provider_callbacks::legacy_view::insert(tx, &serde_json::json!({"id":"r","agent":"agent","method":"monitor/approve","status":"pending","createdAt":1,"params":{}}))?;
             Ok(())
         }).await.expect("seed approval");
-        assert!(
-            is_monitor_approval(&store, "agent", "speech")
-                .await
-                .is_err()
-        );
-        store
-            .transaction(|tx| {
-                tx.execute(
-                    "UPDATE runtime_requests SET record=?1 WHERE id='r'",
-                    [r#"{"id":"r","agent":"agent","method":"monitor/approve","status":"pending","createdAt":1,"params":{}}"#],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("repair request");
         assert!(
             is_monitor_approval(&store, "agent", "speech")
                 .await

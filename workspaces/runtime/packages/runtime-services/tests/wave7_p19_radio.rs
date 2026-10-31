@@ -296,6 +296,16 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
                     }
                     continue;
                 }
+                if table == "requests" {
+                    // The oracle names the retired table. The typed rows live in `approvals`.
+                    db.execute("DELETE FROM approvals", [])?;
+                    for row in rows.as_array().expect("rows") {
+                        let record: Value = serde_json::from_str(row["record"].as_str().expect("record"))
+                            .expect("request record");
+                        studio_runtime_services::provider_callbacks::legacy_view::insert(db, &record)?;
+                    }
+                    continue;
+                }
                 if table == "operation_receipts" {
                     db.execute("DELETE FROM request_results", [])?;
                     let receipts: Vec<LegacyReceipt> = serde_json::from_value(rows.clone()).expect("receipts");
@@ -362,6 +372,14 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
         if table == "operation_receipts" {
             // Replay and conflict checks below exercise the current request_results owner.
             result.insert(table.clone(), json!([]));
+            continue;
+        }
+        if table == "requests" {
+            let rows = studio_runtime_services::provider_callbacks::legacy_view::views(&db)
+                .iter()
+                .map(|view| json!({"id":view["id"],"status":view["status"]}))
+                .collect::<Vec<_>>();
+            result.insert(table.clone(), json!(rows));
             continue;
         }
         if table == "completed_turns" {
@@ -572,8 +590,12 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             ))
         }).await,
         "answer" => store.transaction_with(move |db| {
-            let question = serde_json::from_value(case["body"]["question"].clone())
-                .expect("typed approval fixture");
+            let raw = &case["body"]["question"];
+            let question = studio_runtime_store::approvals::from_legacy_record(
+                raw["id"].as_str().unwrap_or("question"),
+                raw,
+            )
+            .expect("typed approval fixture");
             radio_runtime::route_question_answer(
                 db,
                 &prepared,
@@ -705,6 +727,19 @@ async fn python_written_radio_corpus_and_restart_replay() {
         }
         let mut expected = original_case["after"].clone();
         expected["operation_receipts"] = json!([]);
+        expected["requests"] = json!(
+            expected["requests"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|row| {
+                    let record: Value =
+                        serde_json::from_str(row["record"].as_str().expect("record"))
+                            .expect("request record");
+                    json!({"id":record["id"],"status":record["status"]})
+                })
+                .collect::<Vec<_>>()
+        );
         normalize(&mut actual);
         normalize(&mut expected);
         assert_eq!(actual, expected, "{}", original_case["name"]);
@@ -905,8 +940,9 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
     seed(&store, &case["before"]).await;
     assert!(radio_runtime::holds_floor(&store.test_reader().expect("read"), "a").expect("floor"));
     let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
-    let question: studio_runtime_schema::approvals::Approval =
-        serde_json::from_value(case["body"]["question"].clone()).expect("typed approval fixture");
+    let question =
+        studio_runtime_store::approvals::from_legacy_record("q", &case["body"]["question"])
+            .expect("typed approval fixture");
     store
         .transaction_with(move |db| -> Result<(), ProjectsError> {
             use studio_runtime_schema::approvals::{Answer, CommandId, Principal, Timestamp};

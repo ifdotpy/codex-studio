@@ -870,7 +870,7 @@ mod tests {
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     [
                         "browser-answer-agent",
-                        &json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"browser-answer-agent","rootId":"browser-answer-agent",
+                        &json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"browser-answer-agent","rootId":"browser-answer-agent",
                                  "epoch":1,"status":"idle","autoWake":true})
                         .to_string(),
                     ],
