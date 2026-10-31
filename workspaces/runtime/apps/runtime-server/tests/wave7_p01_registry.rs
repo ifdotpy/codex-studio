@@ -815,11 +815,11 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
                         let mut record = record;
                         record["id"] = json!(stored_project_root.to_string_lossy());
                         record["path"] = json!(stored_project_root.to_string_lossy());
-                        if let Some(locations) = record["locations"].as_array_mut() {
-                            for location in locations {
-                                location["path"] = json!(stored_project_root.to_string_lossy());
-                            }
-                        }
+                        record["locations"] = json!([{
+                            "serverId": "local-test",
+                            "path": stored_project_root.to_string_lossy(),
+                            "projectId": stored_project_root.to_string_lossy()
+                        }]);
                         row["id"] = json!(stored_project_root.to_string_lossy());
                         row["record"] = json!(record.to_string());
                     }

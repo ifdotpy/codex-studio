@@ -164,6 +164,7 @@ struct Fields {
     path: Option<String>,
     peer_teams: Option<Vec<ProjectPeerTeam>>,
     name: Option<String>,
+    // In the sampled store, only removal tombstones omit locations.
     locations: Vec<ProjectLocation>,
     project_aliases: Vec<ProjectAlias>,
     locations_revision: u64,
