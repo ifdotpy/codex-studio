@@ -550,44 +550,31 @@ async fn prepare_new_agent_admission(
     // Python resolves the parent delegation/profile before deciding whether a
     // catalog is needed (`codex_runtime.py:4853-4888`). A profile contributes
     // only non-null model/effort values that the request did not override.
-    let validate = std::sync::Arc::clone(&context.validate);
     let profile_id = request.profile.clone().filter(|id| !id.is_empty());
     let profile = context
         .store
         .read_async::<_, OperationError>("runtime-services/agents_create/read", move |read| {
             profile_id
                 .map(|id| {
-                    load_record(
-                        read,
-                        "runtime_profiles",
-                        "ProfileRecord",
-                        &id,
-                        &|schema, value| validate(schema, value),
-                    )?
-                    .ok_or(OperationError::Invalid("Unknown worker profile"))
+                    load_profile(read, &id)?
+                        .ok_or(OperationError::Invalid("Unknown worker profile"))
                 })
                 .transpose()
         })
         .await?;
     let explicit = request.intent.as_object();
-    let profile_model_value = profile
-        .as_ref()
-        .and_then(|profile| profile.get("model"))
-        .filter(|value| !value.is_null());
-    let profile_model = profile_model_value.and_then(Value::as_str);
-    let profile_effort = profile
-        .as_ref()
-        .and_then(|profile| profile.get("effort"))
-        .filter(|value| !value.is_null());
+    let profile_model = profile.as_ref().map(|profile| profile.model.as_str());
     let model = explicit
         .and_then(|body| body.get("model"))
         .and_then(Value::as_str)
         .or(profile_model)
         .map(str::to_owned);
     let profile_supplies_model =
-        explicit.is_none_or(|body| !body.contains_key("model")) && profile_model_value.is_some();
-    let profile_supplies_effort =
-        explicit.is_none_or(|body| !body.contains_key("effort")) && profile_effort.is_some();
+        explicit.is_none_or(|body| !body.contains_key("model")) && profile.is_some();
+    let profile_supplies_effort = explicit.is_none_or(|body| !body.contains_key("effort"))
+        && profile
+            .as_ref()
+            .is_some_and(|profile| profile.effort.is_some());
     // Python's `needs_catalog` is based on the merged data keys, not on the
     // mere presence of `profile_id` (`codex_runtime.py:4875-4888`).
     let needs_catalog = agent_needs_catalog(
@@ -632,19 +619,30 @@ fn agent_needs_catalog(
         || profile_supplies_effort
 }
 
-fn merge_profile_catalog_fields(intent: &mut Value, original: &Value, profile: &Value) -> bool {
-    let mut needs_catalog = false;
-    for field in ["model", "effort"] {
-        let supplied = !original
-            .as_object()
-            .is_some_and(|body| body.contains_key(field))
-            && profile.get(field).is_some_and(|value| !value.is_null());
-        if supplied {
-            intent[field] = profile[field].clone();
-            needs_catalog = true;
-        }
+fn merge_profile_catalog_fields(
+    intent: &mut Value,
+    original: &Value,
+    profile: &studio_runtime_store::ProfileRecord,
+) -> bool {
+    let fields = original.as_object();
+    let model = fields.is_none_or(|body| !body.contains_key("model"));
+    let effort = fields.is_none_or(|body| !body.contains_key("effort")) && profile.effort.is_some();
+    if model {
+        intent["model"] = json!(profile.model);
     }
-    needs_catalog
+    if effort {
+        intent["effort"] = json!(profile.effort);
+    }
+    model || effort
+}
+
+fn load_profile(
+    connection: &Connection,
+    id: &str,
+) -> Result<Option<studio_runtime_store::ProfileRecord>, MutationError> {
+    studio_runtime_store::Table::<studio_runtime_store::ProfileRecord>::new(connection)
+        .get(&id.to_owned())
+        .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -691,7 +689,7 @@ mod agent_catalog_requirement_tests {
         // Python's `{profile fields, **data}` merge keeps both profile values
         // when the request omitted them (`codex_runtime.py:4859-4872`).
         let original = json!({"profile_id": "execution-profile"});
-        let profile = json!({"model": "gpt-6-luna", "effort": "high"});
+        let profile: studio_runtime_store::ProfileRecord = serde_json::from_str(r#"{"id":"p","name":"Profile","role":"reviewer","model":"gpt-6-luna","effort":"high","instructions":""}"#).unwrap();
         let mut effective = original.clone();
         assert!(merge_profile_catalog_fields(
             &mut effective,
@@ -780,14 +778,8 @@ async fn create(
             })?;
             let profile = profile_id
                 .map(|id| {
-                    load_record(
-                        read,
-                        "runtime_profiles",
-                        "ProfileRecord",
-                        &id,
-                        &|schema, value| read_validate(schema, value),
-                    )?
-                    .ok_or(OperationError::Invalid("Unknown worker profile"))
+                    load_profile(read, &id)?
+                        .ok_or(OperationError::Invalid("Unknown worker profile"))
                 })
                 .transpose()?;
             Ok((previous, profile))
@@ -795,10 +787,13 @@ async fn create(
         .await?;
     if let Some(profile) = &profile {
         if request.role.is_none() {
-            request.role = profile
-                .get("role")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            request.role = Some(
+                match profile.role {
+                    studio_runtime_store::ProfileRole::Reviewer => "reviewer",
+                    studio_runtime_store::ProfileRole::Implementer => "implementer",
+                }
+                .to_owned(),
+            );
         }
         request.catalog |= merge_profile_catalog_fields(&mut request.intent, &intent, profile);
     }
@@ -1085,7 +1080,7 @@ async fn create(
     record["cyberAccessProgram"] = json!(settings.cyber_access_program);
     record["profileId"] = json!(request.profile);
     if let Some(profile) = profile {
-        record["profileInstructions"] = profile["instructions"].clone();
+        record["profileInstructions"] = json!(profile.instructions);
     }
     if !draft {
         record["creationIntent"] = intent.clone();
@@ -1241,7 +1236,7 @@ async fn create_child(
     request: &Creation,
     id: &str,
     creation_intent: &Value,
-    profile: Option<&Value>,
+    profile: Option<&studio_runtime_store::ProfileRecord>,
     validate: PersistedRecordValidator,
 ) -> Result<Value, OperationError> {
     let parent_id = request.parent.as_deref().ok_or(OperationError::Internal)?;
@@ -1322,11 +1317,6 @@ async fn create_child(
         .ok_or(OperationError::Unavailable(
             "account-driver/managed-child-account",
         ))?;
-    let profile: Option<studio_runtime_store::ProfileRecord> = profile
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|_| OperationError::Internal)?;
     let account_load = context
         .store
         .read_async("runtime-services/agents_create/read", |read| {
@@ -1340,7 +1330,7 @@ async fn create_child(
             parent: &parent,
             root: &root,
             spec: creation_intent,
-            profile: profile.as_ref(),
+            profile,
             role,
             requested_account_key: request.account.as_deref(),
             account_load: &account_load,
@@ -1456,7 +1446,7 @@ async fn create_child(
     }
     record["creationIntent"] = creation_intent.clone();
     record["profileId"] = json!(request.profile);
-    if let Some(profile) = &profile {
+    if let Some(profile) = profile {
         record["profileInstructions"] = json!(profile.instructions);
     }
     record["provider"] = json!(provider);
@@ -3206,6 +3196,35 @@ async fn mutate(
 mod tests {
     use super::*;
     use crate::host_worker_create::CreationCatalog as _;
+
+    #[tokio::test]
+    async fn profile_admission_refuses_a_malformed_stored_profile() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_profiles(id,record) VALUES(?1,?2)", ("profile", r#"{"id":"profile","name":"Bad","role":"reviewer","model":null,"effort":null,"instructions":""}"#))?;
+            Ok(())
+        }).await.unwrap();
+        let context = Context {
+            store,
+            accounts: None,
+            driver: None,
+            catalog: None,
+            managed_creation_environment: None,
+            validate: std::sync::Arc::new(|_, _| true),
+        };
+        let request = Creation {
+            parent: Some("root".into()),
+            profile: Some("profile".into()),
+            intent: json!({}),
+            ..Creation::default()
+        };
+        assert!(
+            prepare_new_agent_admission(&context, &request)
+                .await
+                .is_err()
+        );
+    }
 
     #[test]
     fn project_selection_rejects_ambiguous_and_malformed_records() {
