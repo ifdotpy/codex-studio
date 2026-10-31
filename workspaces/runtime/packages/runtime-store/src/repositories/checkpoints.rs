@@ -144,11 +144,10 @@ impl CheckpointsRepository {
         if !table_exists(connection, "runtime_workspace_operations")? {
             return Ok(None);
         }
-        let placeholders = std::iter::repeat_n("?", ACTIVE_OPERATION_PHASES.len())
-            .collect::<Vec<_>>()
-            .join(",");
-        let mut statement = connection.prepare_cached(&format!(
-            "SELECT id,record FROM runtime_workspace_operations WHERE json_extract(record,'$.phase') IN ({placeholders}) ORDER BY rowid"
+        let mut statement = connection.prepare_cached(&active_query(
+            "runtime_workspace_operations",
+            "phase",
+            ACTIVE_OPERATION_PHASES.len(),
         ))?;
         let mut rows = statement.query(rusqlite::params_from_iter(ACTIVE_OPERATION_PHASES))?;
         let table = Table::<crate::WorkspaceOperationRecord>::new(connection);
@@ -917,12 +916,7 @@ fn read_active(
     if !table_exists(connection, table)? || values.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = std::iter::repeat_n("?", values.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let mut statement = connection.prepare_cached(&format!(
-        "SELECT id,record FROM {table} WHERE json_extract(record,'$.{field}') IN ({placeholders}) ORDER BY rowid"
-    ))?;
+    let mut statement = connection.prepare_cached(&active_query(table, field, values.len()))?;
     let rows = statement.query_map(rusqlite::params_from_iter(values.iter()), read_stored_row)?;
     let records = collect_records(connection, rows, table)?;
     for record in &records {
@@ -936,6 +930,13 @@ fn read_active(
         }
     }
     Ok(records)
+}
+
+fn active_query(table: &str, field: &str, count: usize) -> String {
+    let placeholders = vec!["?"; count].join(",");
+    format!(
+        "SELECT id,record FROM {table} WHERE json_extract(record,'$.{field}') IN ({placeholders}) ORDER BY rowid"
+    )
 }
 
 fn read_object(
