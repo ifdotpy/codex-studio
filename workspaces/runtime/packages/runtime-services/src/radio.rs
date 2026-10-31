@@ -396,6 +396,9 @@ impl RadioAuthorizationSnapshot {
                     ))
                 })?;
             decoder.end().map_err(|_| invalid(&location))?;
+            let ProjectRecord::Live(row) = row else {
+                continue;
+            };
             let path = resolved_path(
                 Some(row.path),
                 &records.resolved_paths,
@@ -610,10 +613,13 @@ mod project_contract_tests {
     #[test]
     fn project_team_projection_matches_stored_schema() {
         for (raw, valid) in [
-            (r#"{"id":"p","path":"/p","peerTeams":[]}"#, true),
-            (r#"{"id":"p","path":"/p"}"#, false),
             (
-                r#"{"id":"p","path":"/p","peerTeams":[{"id":"t","name":"T","members":[1]}]}"#,
+                r#"{"recordKind":"live","id":"p","path":"/p","peerTeams":[]}"#,
+                true,
+            ),
+            (r#"{"recordKind":"live","id":"p","path":"/p"}"#, true),
+            (
+                r#"{"recordKind":"live","id":"p","path":"/p","peerTeams":[{"id":"t","name":"T","members":[1]}]}"#,
                 false,
             ),
         ] {

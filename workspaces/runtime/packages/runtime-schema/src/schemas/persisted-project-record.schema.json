@@ -1,71 +1,343 @@
 {
   "$defs": {
-    "JsonValue": {},
-    "PersistedPeerTeam": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
+    "AdmittedRequest": {
+      "additionalProperties": false,
+      "description": "A request admitted for durable asynchronous settlement.",
+      "properties": {
+        "created": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "id": {
+          "type": "string"
+        },
+        "signature": {
+          "type": "string"
+        }
       },
+      "required": ["id", "signature", "created"],
+      "type": "object"
+    },
+    "ProjectAlias": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "serverId": {
+          "type": "string"
+        }
+      },
+      "required": ["serverId", "projectId", "name"],
+      "type": "object"
+    },
+    "ProjectFolder": {
+      "additionalProperties": false,
       "properties": {
         "id": {
-          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parentId": {
+          "type": ["string", "null"]
+        }
+      },
+      "required": ["id", "name"],
+      "type": "object"
+    },
+    "ProjectLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "gitOrigin": {
+          "type": ["string", "null"]
+        },
+        "path": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "requestedPath": {
+          "type": ["string", "null"]
+        },
+        "serverId": {
+          "type": "string"
+        }
+      },
+      "required": ["serverId", "path", "projectId"],
+      "type": "object"
+    },
+    "ProjectLocationIntent": {
+      "additionalProperties": false,
+      "properties": {
+        "request": {
+          "$ref": "#/$defs/AdmittedRequest"
+        }
+      },
+      "required": ["request"],
+      "type": "object"
+    },
+    "ProjectPeerTeam": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
           "type": "string"
         },
         "members": {
           "items": {
             "type": "string"
           },
-          "title": "Members",
           "type": "array"
         },
         "name": {
-          "title": "Name",
           "type": "string"
         }
       },
       "required": ["id", "name", "members"],
-      "title": "PersistedPeerTeam",
       "type": "object"
-    }
-  },
-  "additionalProperties": {
-    "$ref": "#/$defs/JsonValue"
-  },
-  "properties": {
-    "id": {
-      "title": "Id",
+    },
+    "ProjectRegistration": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": ["string", "null"]
+        },
+        "server": {
+          "type": "string"
+        },
+        "signature": {
+          "type": ["string", "null"]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkEffectStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["server", "path", "name"],
+      "type": "object"
+    },
+    "ProjectRemoval": {
+      "additionalProperties": false,
+      "properties": {
+        "deletedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "reason": {
+          "$ref": "#/$defs/ProjectRemovalReason"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "sequence": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": ["reason", "sequence", "requestId", "deletedAt"],
+      "type": "object"
+    },
+    "ProjectRemovalReason": {
+      "enum": ["delete"],
       "type": "string"
     },
-    "name": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
+    "WorkEffectStatus": {
+      "enum": [
+        "completed",
+        "terminal",
+        "pending",
+        "retryable",
+        "submitted",
+        "unknown",
+        "not_sent",
+        "complete",
+        "applied",
+        "failed",
+        "cancelled"
       ],
-      "title": "Name"
-    },
-    "path": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Path"
-    },
-    "peerTeams": {
-      "items": {
-        "$ref": "#/$defs/PersistedPeerTeam"
-      },
-      "title": "Peerteams",
-      "type": "array"
+      "type": "string"
     }
   },
-  "required": ["id", "peerTeams"],
-  "title": "PersistedProjectRecord",
-  "type": "object"
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "accountGroups": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "accountGroupsRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "accountKey": {
+          "type": ["string", "null"]
+        },
+        "accountKeys": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "accountRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "created": {
+          "type": ["number", "null"]
+        },
+        "folders": {
+          "items": {
+            "$ref": "#/$defs/ProjectFolder"
+          },
+          "type": "array"
+        },
+        "homeServerId": {
+          "type": ["string", "null"]
+        },
+        "id": {
+          "type": "string"
+        },
+        "locationIntents": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ProjectLocationIntent"
+          },
+          "type": "object"
+        },
+        "locations": {
+          "items": {
+            "$ref": "#/$defs/ProjectLocation"
+          },
+          "type": "array"
+        },
+        "locationsRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "name": {
+          "type": ["string", "null"]
+        },
+        "organizationRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "path": {
+          "type": "string"
+        },
+        "peerTeams": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ProjectPeerTeam"
+          },
+          "type": "array"
+        },
+        "peerTeamsRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "projectAliases": {
+          "items": {
+            "$ref": "#/$defs/ProjectAlias"
+          },
+          "type": "array"
+        },
+        "recordKind": {
+          "const": "live",
+          "type": "string"
+        },
+        "registration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectRegistration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sidebarHidden": {
+          "type": ["boolean", "null"]
+        },
+        "updated": {
+          "type": ["number", "null"]
+        },
+        "workerBaseRef": {
+          "type": ["string", "null"]
+        },
+        "workerBaseRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "workerEnvironment": {
+          "type": ["string", "null"]
+        },
+        "workerEnvironmentRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "workspacePolicy": {
+          "type": ["string", "null"]
+        },
+        "workspacePolicyRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": ["integer", "null"]
+        }
+      },
+      "required": ["recordKind", "id", "path"],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "peerTeams": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ProjectPeerTeam"
+          },
+          "type": "array"
+        },
+        "recordKind": {
+          "const": "removal",
+          "type": "string"
+        },
+        "removal": {
+          "$ref": "#/$defs/ProjectRemoval"
+        }
+      },
+      "required": ["recordKind", "id", "removal"],
+      "type": "object"
+    }
+  ],
+  "title": "ProjectRecord"
 }

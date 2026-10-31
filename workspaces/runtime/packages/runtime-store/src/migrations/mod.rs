@@ -44,6 +44,7 @@ mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
 mod m2026_10_31_native_status_error;
+mod m2026_10_31_project_record_kind;
 mod m2026_10_31_retired_start_indexes;
 mod m2026_10_31_transfer_history_pages;
 
@@ -60,6 +61,8 @@ pub use m2026_10_30_branch_phase::apply as migrate_branch_phase;
 pub use m2026_10_30_project_teams::apply as migrate_project_teams;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_30_radio_room::apply as migrate_radio_room;
+#[cfg(any(test, feature = "test-support"))]
+pub use m2026_10_31_project_record_kind::apply as migrate_project_record_kind;
 
 use std::path::Path;
 
@@ -949,6 +952,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| crate::StartupRecoveryRepository::prepare_agent_indexes(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-project-record-kind",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Project live records and removal tombstones without a discriminator",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_31_project_record_kind::apply(c.transaction),
     },
 ];
 

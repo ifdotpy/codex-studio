@@ -57,6 +57,8 @@ fn decode_records(value: &Value) -> RadioAuthorizationRecords {
         .expect("project fixture");
     }
     studio_runtime_store::migrations::migrate_project_teams(&tx).expect("migrate project fixture");
+    studio_runtime_store::migrations::migrate_project_record_kind(&tx)
+        .expect("migrate project fixture kinds");
     for (id, raw) in &mut records.rooms {
         *raw = tx
             .query_row(
