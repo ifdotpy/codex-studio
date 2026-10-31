@@ -369,6 +369,19 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
         .await
         .expect("Python records seed");
 }
+/// The oracle gives only the identity of the question it routes. It is a pending approval.
+fn pending_question(raw: &Value) -> studio_runtime_schema::approvals::Approval {
+    let mut raw = raw.clone();
+    if raw.get("status").is_none() {
+        raw["status"] = json!("pending");
+    }
+    studio_runtime_store::approvals::from_legacy_record(
+        raw["id"].as_str().unwrap_or("question"),
+        &raw,
+    )
+    .expect("typed approval fixture")
+}
+
 fn state(store: &RuntimeStore, tables: &Value) -> Value {
     let db = store.test_reader().expect("read");
     super::agent_view_fixtures::assert_agent_view_projections(&db);
@@ -601,12 +614,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             ))
         }).await,
         "answer" => store.transaction_with(move |db| {
-            let raw = &case["body"]["question"];
-            let question = studio_runtime_store::approvals::from_legacy_record(
-                raw["id"].as_str().unwrap_or("question"),
-                raw,
-            )
-            .expect("typed approval fixture");
+            let question = pending_question(&case["body"]["question"]);
             radio_runtime::route_question_answer(
                 db,
                 &prepared,
@@ -951,9 +959,7 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
     seed(&store, &case["before"]).await;
     assert!(radio_runtime::holds_floor(&store.test_reader().expect("read"), "a").expect("floor"));
     let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
-    let question =
-        studio_runtime_store::approvals::from_legacy_record("q", &case["body"]["question"])
-            .expect("typed approval fixture");
+    let question = pending_question(&case["body"]["question"]);
     store
         .transaction_with(move |db| -> Result<(), ProjectsError> {
             use studio_runtime_schema::approvals::{Answer, CommandId, Principal, Timestamp};

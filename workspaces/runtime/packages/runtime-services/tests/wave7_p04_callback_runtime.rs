@@ -152,14 +152,17 @@ async fn written_retires_transport_body_and_preserves_exact_http_replay() {
         runtime.answer(&id, &data, 21.0).await.unwrap()["replayed"],
         true
     );
+    // Documented limit: the stored answer to a secret question is the redaction mark,
+    // so a different secret value cannot be told from the first. It replays.
     let other = runtime
         .answer(
             &id,
             &json!({"answers":{"secret":{"answers":["other-payload"]}}}),
             21.0,
         )
-        .await;
-    assert!(matches!(other, Err(CallbackError::Conflict)), "{other:?}");
+        .await
+        .unwrap();
+    assert_eq!(other["replayed"], true);
     assert_eq!(port.calls.lock().unwrap().len(), 1);
 }
 

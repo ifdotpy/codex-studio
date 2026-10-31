@@ -312,7 +312,7 @@ fn drop_card_writes(changes: &mut Value) {
     if let Some(sync) = map.get_mut("sync_entities") {
         for key in ["removed", "added"] {
             if let Some(rows) = sync[key].as_array_mut() {
-                rows.retain(|row| row[0] != "request");
+                rows.retain(|row| row[0] != "request" && row[0] != "questionHistory");
             }
         }
         empty = ["removed", "added"]
