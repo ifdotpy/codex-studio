@@ -381,6 +381,8 @@ pub fn test_canvas() -> Connection {
     let tx = connection.transaction().expect("fixture transaction");
     crate::bootstrap::prepare_sync_schema(&tx).expect("sync schema");
     crate::migrations::prepare_canvas_fixture(&tx).expect("current canvas format");
+    // Migrations drop old indexes; startup recreates the retained ones from their owners.
+    crate::bootstrap::prepare_runtime_event_indexes(&tx).expect("owned indexes");
     tx.commit().expect("fixture commits");
     connection
 }
