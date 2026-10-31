@@ -39,6 +39,8 @@ const BRANCH_TURNS_PER_PAGE: u32 = 10;
 struct BranchOperation {
     signature: String,
     phase: OperationPhase,
+    #[serde(rename = "forkTurnId", default)]
+    fork_turn_id: Option<String>,
     #[serde(
         rename = "legacyPhase",
         default,
@@ -341,6 +343,7 @@ async fn branch(
                     let record = BranchOperation {
                         signature,
                         phase: OperationPhase::ProviderPending,
+                        fork_turn_id: None,
                         legacy_phase: Field::Missing,
                         legacy_phase_collision: Field::Missing,
                         legacy_record: Field::Missing,
@@ -859,11 +862,11 @@ async fn persist_fork_turn(
                 [operation_id.as_str()],
                 |row| row.get(0),
             )?;
-            let mut operation: Value = serde_json::from_str(&raw)?;
-            operation["forkTurnId"] = fork_turn.map_or(Value::Null, |turn| json!(turn));
+            let mut operation = decode_branch_operation(&raw)?;
+            operation.fork_turn_id = fork_turn;
             tx.execute(
                 "UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",
-                params![operation_id.as_str(), operation.to_string()],
+                params![operation_id.as_str(), serde_json::to_string(&operation)?],
             )?;
             Ok::<_, studio_runtime_store::StoreError>(())
         })
@@ -1531,6 +1534,33 @@ mod tests {
                 .unwrap();
             assert_eq!(actual, expected);
         }
+    }
+
+    #[tokio::test]
+    async fn fork_turn_refuses_unreconstructible_operation_without_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        let raw = r#"{"phase":"provider_pending","signature":null}"#;
+        store.transaction(move |tx| {
+            tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('branch:legacy',?1)", [raw])?;
+            Ok(())
+        }).await.unwrap();
+        assert!(
+            persist_fork_turn(&store, "branch:legacy", Some("turn"))
+                .await
+                .is_err()
+        );
+        let actual: String = store
+            .read_async("branch witness", |db| {
+                Ok::<_, studio_runtime_store::StoreError>(db.query_row(
+                    "SELECT record FROM runtime_workspace_operations WHERE id='branch:legacy'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(actual, raw);
     }
 
     #[test]
