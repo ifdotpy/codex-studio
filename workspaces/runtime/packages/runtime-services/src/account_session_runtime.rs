@@ -1982,7 +1982,7 @@ fn public_login(mut receipt: Value) -> Value {
     receipt
 }
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ClaudeProfileInput {
     binary_path: Option<String>,
     config_dir: Option<String>,
@@ -1991,8 +1991,6 @@ struct ClaudeProfileInput {
     auto_compact_window: Option<ClaudeWindowInput>,
     #[serde(default)]
     launch_args: String,
-    #[serde(flatten)]
-    extensions: serde_json::Map<String, Value>,
 }
 
 #[derive(Deserialize)]
@@ -2006,15 +2004,14 @@ enum ClaudeWindowInput {
 #[serde(untagged)]
 enum ClaudeModelInput {
     Name(String),
-    Model(ClaudeModelObject),
+    Model(studio_runtime_schema::json_object::JsonObject<ClaudeModelObject>),
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ClaudeModelObject {
     id: String,
     label: Option<String>,
-    #[serde(flatten)]
-    extensions: serde_json::Map<String, Value>,
 }
 
 pub fn normalize_profile(
@@ -2031,7 +2028,7 @@ pub fn normalize_profile(
     }
     let input: ClaudeProfileInput =
         serde::Deserialize::deserialize(Value::Object(options)).map_err(|_| invalid())?;
-    if !input.extensions.is_empty() || input.custom_models.len() > 100 {
+    if input.custom_models.len() > 100 {
         return Err(invalid());
     }
     let mut options = serde_json::Map::new();
@@ -2072,10 +2069,7 @@ pub fn normalize_profile(
     for model in input.custom_models {
         let (id, label) = match model {
             ClaudeModelInput::Name(id) => (id, None),
-            ClaudeModelInput::Model(model) if model.extensions.is_empty() => {
-                (model.id, model.label)
-            }
-            ClaudeModelInput::Model(_) => return Err(invalid()),
+            ClaudeModelInput::Model(model) => (model.0.id, model.0.label),
         };
         if !identifier.is_match(&id) || !seen.insert(id.clone()) {
             return Err(invalid());
