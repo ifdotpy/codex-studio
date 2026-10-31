@@ -71,21 +71,28 @@ impl Fixture {
         }
     }
 
-    async fn submit(&self, agent: &str, url: &str) -> Value {
-        self.bridge
+    async fn submit(&self, agent: &str, url: &str) -> QueueItem {
+        let result = self
+            .bridge
             .call("browser.submit", &json!({"agentId": agent, "url": url}))
             .await
-            .expect("the link queues")
+            .expect("the link queues");
+        let HostResult::Item(item) = result else {
+            panic!("expected queued item")
+        };
+        *item
     }
 
-    fn item(&self, id: &Value) -> Value {
-        self.bridge.lock().items[id.as_str().expect("id")].clone()
+    fn item(&self, id: &str) -> QueueItem {
+        self.bridge.lock().items[id].clone()
     }
 
-    fn end(&self, id: &Value, fields: Value) {
+    fn end(&self, id: &str, state: QueueState, reason: Option<&str>) {
         let mut queue = self.bridge.lock();
-        self.bridge
-            .update(&mut queue, id.as_str().expect("id"), fields);
+        self.bridge.update(&mut queue, id, |item| {
+            item.state = state;
+            item.close_reason = reason.map(str::to_owned);
+        });
     }
 }
 
@@ -93,21 +100,21 @@ impl Fixture {
 async fn a_second_chat_with_the_same_user_host_and_client_joins_the_open_request() {
     let fixture = Fixture::new();
     let first = fixture.submit(FIRST, &link("cli", 4241, "s1")).await;
-    assert_eq!(first["state"], "pending");
+    assert_eq!(first.state, QueueState::Pending);
     fixture.now.store(1001.0_f64.to_bits(), Ordering::SeqCst);
     let second = fixture.submit(SECOND, &link("cli", 4242, "s2")).await;
     assert_eq!(
-        (second["state"].clone(), second["joinedTo"].clone()),
-        (json!(JOINED), first["id"].clone())
+        (second.state, second.joined_to.as_deref()),
+        (QueueState::Joined, Some(first.id.as_str()))
     );
     // Another client gets its own card.
     let other = fixture.submit(THIRD, &link("other", 4243, "s3")).await;
-    assert_eq!(other["state"], "pending");
-    assert!(other.get("joinedTo").is_none());
+    assert_eq!(other.state, QueueState::Pending);
+    assert!(other.joined_to.is_none());
     // The same chat with a newer link still replaces its own link.
     let again = fixture.submit(FIRST, &link("cli", 4244, "s4")).await;
-    assert_eq!(again["state"], "pending");
-    assert_eq!(fixture.item(&first["id"])["state"], "replaced");
+    assert_eq!(again.state, QueueState::Pending);
+    assert_eq!(fixture.item(&first.id).state, QueueState::Replaced);
 }
 
 #[tokio::test]
@@ -116,24 +123,21 @@ async fn a_finished_sign_in_ends_every_joined_request_as_signed_in() {
     let first = fixture.submit(FIRST, &link("cli", 4241, "s1")).await;
     let second = fixture.submit(SECOND, &link("cli", 4242, "s2")).await;
     let third = fixture.submit(THIRD, &link("cli", 4243, "s3")).await;
-    assert_eq!(third["joinedTo"], first["id"]);
+    assert_eq!(third.joined_to.as_deref(), Some(first.id.as_str()));
     fixture.bridge.check().await;
     assert_eq!(
-        fixture.item(&second["id"])["state"],
-        JOINED,
+        fixture.item(&second.id).state,
+        QueueState::Joined,
         "it waits on the card"
     );
     // The person signed in on the card: the command took the result.
-    fixture.end(
-        &first["id"],
-        json!({"state": "closed", "closeReason": "completed"}),
-    );
+    fixture.end(&first.id, QueueState::Closed, Some("completed"));
     fixture.bridge.check().await;
     for joined in [&second, &third] {
-        let item = fixture.item(&joined["id"]);
+        let item = fixture.item(&joined.id);
         assert_eq!(
-            (item["state"].clone(), item["closeReason"].clone()),
-            (json!("closed"), json!(JOINED_SIGNED_IN_REASON))
+            (item.state, item.close_reason.as_deref()),
+            (QueueState::Closed, Some(JOINED_SIGNED_IN_REASON))
         );
     }
 }
@@ -146,12 +150,15 @@ async fn a_card_that_ends_without_a_sign_in_gives_the_oldest_joined_request_the_
     let second = fixture.submit(SECOND, &link("cli", 4242, "s2")).await;
     fixture.now.store(1002.0_f64.to_bits(), Ordering::SeqCst);
     let third = fixture.submit(THIRD, &link("cli", 4243, "s3")).await;
-    fixture.end(&first["id"], json!({"state": "declined"}));
+    fixture.end(&first.id, QueueState::Declined, None);
     fixture.bridge.check().await;
-    let promoted = fixture.item(&second["id"]);
-    assert_eq!(promoted["state"], "pending");
-    assert!(promoted.get("joinedTo").is_none_or(Value::is_null));
-    assert_eq!(fixture.item(&third["id"])["joinedTo"], second["id"]);
+    let promoted = fixture.item(&second.id);
+    assert_eq!(promoted.state, QueueState::Pending);
+    assert!(promoted.joined_to.is_none());
+    assert_eq!(
+        fixture.item(&third.id).joined_to.as_deref(),
+        Some(second.id.as_str())
+    );
 }
 
 #[tokio::test]
@@ -164,7 +171,7 @@ async fn a_device_code_link_without_a_client_never_joins() {
         .submit(SECOND, "https://id.example.com/device?user_code=CCCC-DDDD")
         .await;
     assert_eq!(
-        (first["state"].clone(), second["state"].clone()),
-        (json!("pending"), json!("pending"))
+        (first.state, second.state),
+        (QueueState::Pending, QueueState::Pending)
     );
 }

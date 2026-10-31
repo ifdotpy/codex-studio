@@ -79,7 +79,7 @@ fn launch(host: &Host, link: &str, opens: bool) -> (i32, String, Vec<String>) {
     (code, message, opened)
 }
 
-fn only_item(host: &Host) -> Value {
+fn only_item(host: &Host) -> QueueItem {
     let queue = host.service.bridge.lock();
     let mut items = queue.items.values();
     let item = items.next().expect("one request").clone();
@@ -103,8 +103,8 @@ async fn a_mac_host_opens_the_link_at_once_and_still_shows_a_card() {
     );
     let item = only_item(&host);
     assert_eq!(
-        (item["state"].clone(), item["localOpen"].clone()),
-        (json!("pending"), json!(true))
+        (item.state, item.local_open),
+        (QueueState::Pending, Some(true))
     );
     host.service.stop().await;
 }
@@ -141,7 +141,7 @@ async fn without_the_mac_fast_path_the_launcher_only_queues_the_card() {
         message,
         "studio-browser: Studio asks the person to open id.example.com. The sign-in continues in the browser on this computer after the approval."
     );
-    assert_eq!(only_item(&host).get("localOpen"), None);
+    assert_eq!(only_item(&host).local_open, None);
     host.service.stop().await;
 }
 
@@ -150,13 +150,13 @@ async fn the_request_of_a_page_that_this_mac_opened_closes_when_its_command_stop
     let host = host(true);
     launch(&host, LINK, true);
     host.service.bridge.check().await;
-    assert_eq!(only_item(&host)["state"], "pending");
+    assert_eq!(only_item(&host).state, QueueState::Pending);
     host.listening.store(false, Ordering::SeqCst);
     host.service.bridge.check().await;
     let item = only_item(&host);
     assert_eq!(
-        (item["state"].clone(), item["closeReason"].clone()),
-        (json!("closed"), json!(LOCAL_CLOSE_REASON))
+        (item.state, item.close_reason.as_deref()),
+        (QueueState::Closed, Some(LOCAL_CLOSE_REASON))
     );
     host.service.stop().await;
 }
@@ -249,6 +249,28 @@ async fn launcher_rejects_unknown_request_fields() {
         .handle_line(current_uid(), b"{\"v\":1,\"extra\":true}\n")
         .await;
     assert_eq!(reply["code"], "invalid_request");
+    host.service.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn control_socket_sends_typed_queue_in_existing_wire_shape() {
+    let host = host(false);
+    let (code, _, _) = launch(&host, LINK, false);
+    assert_eq!(code, 0);
+    let mut stream = UnixStream::connect(&host.service.control_socket)
+        .await
+        .expect("control socket");
+    stream.write_all(b"{\"id\":\"request\",\"method\":\"browser.wait\",\"params\":{\"after\":0,\"waitSeconds\":0}}\n").await.expect("request");
+    let mut line = Vec::new();
+    BufReader::new(stream)
+        .read_until(b'\n', &mut line)
+        .await
+        .expect("response");
+    let reply: Value = serde_json::from_slice(&line).expect("JSON response");
+    assert_eq!(reply["id"], "request");
+    assert_eq!(reply["result"]["items"][0]["state"], "pending");
+    assert_eq!(reply["result"]["items"][0]["agentId"], SESSION);
+    assert_eq!(reply["result"]["next"], 1);
     host.service.stop().await;
 }
 
