@@ -1036,79 +1036,11 @@ pub(crate) fn notify_continuation_hold(
     notify_parent_with_id(tx, &effect, Some(&format!("hold:{operation}:{transition}")))
 }
 
-/// This notification historically accepts partial work rows, unlike the checked
-/// WorkItem owner. Only the fields used by this projection are inspected.
-#[derive(Default)]
-struct NotificationWork {
-    id: Value,
-    root_id: Option<String>,
-    status: Option<String>,
-    updated: f64,
-    results: Option<Vec<Value>>,
-    decisions: Option<Vec<Value>>,
-}
-impl<'de> serde::Deserialize<'de> for NotificationWork {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct WorkVisitor;
-        impl<'de> serde::de::Visitor<'de> for WorkVisitor {
-            type Value = NotificationWork;
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a work object")
-            }
-            fn visit_map<M: serde::de::MapAccess<'de>>(
-                self,
-                mut map: M,
-            ) -> Result<Self::Value, M::Error> {
-                let mut work = NotificationWork::default();
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "id" => work.id = map.next_value()?,
-                        "rootId" => {
-                            work.root_id = map.next_value::<Value>()?.as_str().map(str::to_owned)
-                        }
-                        "status" => {
-                            work.status = map.next_value::<Value>()?.as_str().map(str::to_owned)
-                        }
-                        "updated" => {
-                            work.updated = map.next_value::<Value>()?.as_f64().unwrap_or_default()
-                        }
-                        "results" => {
-                            work.results = match map.next_value::<Value>()? {
-                                Value::Array(values) => Some(values),
-                                Value::Null
-                                | Value::Bool(_)
-                                | Value::Number(_)
-                                | Value::String(_)
-                                | Value::Object(_) => None,
-                            }
-                        }
-                        "decisions" => {
-                            work.decisions = match map.next_value::<Value>()? {
-                                Value::Array(values) => Some(values),
-                                Value::Null
-                                | Value::Bool(_)
-                                | Value::Number(_)
-                                | Value::String(_)
-                                | Value::Object(_) => None,
-                            }
-                        }
-                        _ => {
-                            map.next_value::<Value>()?;
-                        }
-                    }
-                }
-                Ok(work)
-            }
-        }
-        deserializer.deserialize_map(WorkVisitor)
-    }
-}
-
 /// Work records owned by `agent`, in rowid order, through the owner index.
 fn owned_work_records(
     tx: &Transaction<'_>,
     agent: &str,
-) -> Result<Vec<NotificationWork>, ManagementError> {
+) -> Result<Vec<studio_runtime_schema::work_item_record::WorkItem>, ManagementError> {
     if !sync_policy::table_exists(tx, "runtime_work")? {
         return Ok(Vec::new());
     }
@@ -1124,7 +1056,9 @@ fn owned_work_records(
         .map_err(studio_runtime_store::StoreError::from)?;
     Ok(rows
         .into_iter()
-        .filter_map(|raw| serde_json::from_str::<NotificationWork>(&raw).ok())
+        .filter_map(|raw| {
+            serde_json::from_str::<studio_runtime_schema::work_item_record::WorkItem>(&raw).ok()
+        })
         .collect())
 }
 
@@ -1193,25 +1127,29 @@ fn notify_parent_with_step(
     let mut tasks = owned_work_records(tx, id)?
         .into_iter()
         .filter(|work| {
-            work.root_id.as_deref() == agent.get("rootId").and_then(Value::as_str)
-                && work.status.as_deref().is_some_and(|status| {
-                    ["ready", "running", "blocked", "review"].contains(&status)
-                })
+            work.root_id() == agent.get("rootId").and_then(Value::as_str)
+                && matches!(
+                    work.status(),
+                    studio_runtime_schema::persistence::WorkStatus::Ready
+                        | studio_runtime_schema::persistence::WorkStatus::Running
+                        | studio_runtime_schema::persistence::WorkStatus::Blocked
+                        | studio_runtime_schema::persistence::WorkStatus::Review
+                )
         })
         .collect::<Vec<_>>();
-    tasks.sort_by(|left, right| right.updated.total_cmp(&left.updated));
+    tasks.sort_by(|left, right| right.updated().total_cmp(&left.updated()));
     let tasks = tasks.into_iter().map(|work| {
-        let current_result = work.results.as_ref().and_then(|values| values.last());
-        let latest = work.decisions.as_ref().and_then(|values| values.last());
+        let current_result = work.results().and_then(|values| values.last());
+        let latest = work.decisions().and_then(|values| values.last());
         let current_assignment = current_result
             .and_then(|result| result.get("agent").and_then(Value::as_str)) == Some(id);
         let undecided = current_assignment
-            && work.status.as_deref() == Some("review")
+            && work.status() == studio_runtime_schema::persistence::WorkStatus::Review
             && latest.and_then(|decision| decision.get("resultId"))
                 != current_result.and_then(|result| result.get("id"));
         json!({
-            "task_id": work.id,
-            "status": work.status,
+            "task_id": work.id(),
+            "status": work.status(),
             "current_result_id": current_result.and_then(|result| result.get("id")).cloned().unwrap_or(Value::Null),
             "latest_decision": latest.and_then(|decision| decision.get("decision")).cloned().unwrap_or(Value::Null),
             "result_submitted": undecided,
@@ -1474,13 +1412,12 @@ fn reports_turns(agent: &AgentRecord) -> bool {
 }
 
 /// Existing child-result fields plus the optional derived unsubmitted-assignment notice.
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(serde::Serialize)]
 struct ChildTurnResultPayload {
     agent_id: Option<String>,
     name: Option<String>,
     status: AgentStatus,
-    result: Value,
+    result: String,
     cwd: Option<String>,
     branch: Option<String>,
     workspace: Value,
@@ -1507,25 +1444,29 @@ fn enqueue_turn_result(
         .get("error")
         .filter(|error| studio_runtime_store::truthy(Some(error)))
     {
-        Some(error) => json!(
-            error
-                .get("message")
-                .and_then(Value::as_str)
-                .or(error.as_str())
-                .map_or_else(|| error.to_string(), str::to_owned)
-        ),
-        None => json!(
-            agent
-                .last_answer
-                .as_deref()
-                .unwrap_or("No final text returned")
-        ),
+        Some(error) => error
+            .get("message")
+            .and_then(Value::as_str)
+            .or(error.as_str())
+            .map_or_else(|| error.to_string(), str::to_owned),
+        None => agent
+            .last_answer
+            .as_deref()
+            .unwrap_or("No final text returned")
+            .to_owned(),
     };
     let assignments = crate::agent_progress::assignments(tx, &agent.id.0)?;
     let progress = crate::agent_progress::derive(tx, value, &assignments)?;
-    let mut payload: ChildTurnResultPayload =
-        serde_json::from_value(child_result_payload(value, json!(agent.status), result))?;
-    payload.stall = progress.stall;
+    let payload = ChildTurnResultPayload {
+        agent_id: Some(agent.id.0.clone()),
+        name: agent.name.clone(),
+        status: agent.status.clone(),
+        result,
+        cwd: agent.cwd.clone(),
+        branch: serde_json::from_value(value.get("branch").cloned().unwrap_or(Value::Null))?,
+        workspace: workspace_summary(value),
+        stall: progress.stall,
+    };
     event_write::enqueue_recovery_event(
         tx,
         &parent,
@@ -1631,21 +1572,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn notification_work_projection_keeps_legacy_shapes_and_duplicate_last_values() {
-        let work: NotificationWork = serde_json::from_str(r#"{"id":5,"id":{"final":true},"rootId":null,"status":9,"status":"review","updated":"bad","results":false,"decisions":[1,null,{"resultId":null}]}"#).unwrap();
-        assert_eq!(work.id, json!({"final":true}));
-        assert_eq!(work.root_id, None);
-        assert_eq!(work.status.as_deref(), Some("review"));
-        assert_eq!(work.updated, 0.0);
-        assert!(work.results.is_none());
-        assert_eq!(
-            work.decisions.unwrap(),
-            vec![json!(1), Value::Null, json!({"resultId":null})]
-        );
-        assert!(serde_json::from_str::<NotificationWork>("{").is_err());
-    }
-
-    #[test]
     fn notification_reader_skips_rows_with_invalid_unused_json_values() {
         let mut db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL);")
@@ -1677,7 +1603,7 @@ mod tests {
         let tx = db.transaction().unwrap();
         let work = owned_work_records(&tx, "child").unwrap();
         assert_eq!(work.len(), 1);
-        assert_eq!(work[0].id, "valid");
+        assert_eq!(work[0].id().0, "valid");
     }
 
     #[test]
@@ -1707,8 +1633,8 @@ mod tests {
             let parent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"completed","provider":"codex","isLead":true,"autoWake":true,"name":"Lead","cwd":"/work"}))?;
             AgentRepository::put(tx, &parent)?;
             for (row, work) in [
-                ("first", json!({"owner":"child","rootId":"lead","status":"review","id":{"legacy":1},"updated":"bad","results":[{"agent":"child","id":7}],"decisions":[{"resultId":7,"decision":"reject"}]})),
-                ("second", json!({"owner":"child","rootId":"lead","status":"ready","updated":4,"id":null})),
+                ("first", json!({"owner":"child","rootId":"lead","status":"review","id":"first","updated":0,"results":[{"agent":"child","id":7}],"decisions":[{"resultId":7,"decision":"reject"}]})),
+                ("second", json!({"owner":"child","rootId":"lead","status":"ready","updated":4,"id":"second"})),
                 ("third", json!({"owner":"child","rootId":"lead","status":"blocked","id":"third","updated":0})),
                 ("other", json!({"owner":"child","rootId":"other","status":"ready","id":"other"})),
             ] {
@@ -1778,8 +1704,8 @@ mod tests {
         assert_eq!(events.len(), 3);
         for (_, text) in events {
             let payload: Value = serde_json::from_str(&text).unwrap();
-            assert_eq!(payload["tasks"][0]["task_id"], Value::Null);
-            assert_eq!(payload["tasks"][1]["task_id"], json!({"legacy":1}));
+            assert_eq!(payload["tasks"][0]["task_id"], "second");
+            assert_eq!(payload["tasks"][1]["task_id"], "first");
             assert_eq!(payload["tasks"][2]["task_id"], "third");
             assert_eq!(payload["tasks"][1]["current_result_id"], 7);
             assert_eq!(payload["tasks"][1]["latest_decision"], "reject");
