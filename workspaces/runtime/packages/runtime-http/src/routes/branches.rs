@@ -967,7 +967,7 @@ struct BranchTurn {
 #[serde(rename_all = "camelCase")]
 struct BranchItem {
     #[serde(default)]
-    turn_id: Value,
+    turn_id: Option<String>,
     role: Option<String>,
     title: Option<String>,
     text: Option<String>,
@@ -1046,7 +1046,7 @@ async fn copy_branch_history(
         for (old_id, raw, _created) in rows.into_iter().take_while(|(_, _, created)| *created <= cutoff) {
             let source_record = serde_json::from_str::<studio_runtime_schema::json_object::JsonObject<BranchItem>>(&raw)
                 .map_err(|_| studio_runtime_store::StoreError::InvalidStoredObject { table: "runtime_items", id: old_id.clone() })?.0;
-            if before && source_record.turn_id.as_str()==selected.record.turn_id().value().map(String::as_str){continue;}
+            if before && source_record.turn_id.as_deref()==selected.record.turn_id().value().map(String::as_str){continue;}
             let local_id=old_id.split_once(':').map(|(_,id)|id).unwrap_or(&old_id);
             let id=format!("{target}:{local_id}");
             let role = source_record.role.as_deref().unwrap_or("assistant");
@@ -1377,6 +1377,12 @@ mod tests {
                 .is_err()
         );
         assert!(decode_branch_operation(r#"{"phase":"local_mutation","signature":"abc"}"#).is_ok());
+    }
+
+    #[test]
+    fn branch_item_rejects_non_string_turn_id() {
+        assert!(serde_json::from_str::<BranchItem>(r#"{"turnId":7}"#).is_err());
+        assert!(serde_json::from_str::<BranchItem>(r#"{"turnId":"turn"}"#).is_ok());
     }
     use axum::response::IntoResponse;
     use std::sync::Mutex;
