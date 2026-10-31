@@ -853,13 +853,22 @@ for (key, value) in [
                         .collect(),
                 }
             };
+            // The secret value is stored as the mark and the hash of what was typed.
+            let mut expected = answers(vec![
+                ("q", vec!["yes"]),
+                ("secret", vec!["[redacted]"]),
+                ("legacy", vec![]),
+            ]);
+            if let studio_runtime_schema::approvals::Answer::Answers { answers } = &mut expected {
+                answers[1].digest = Some(studio_runtime_store::sha256_hex(b"private"));
+            }
             assert!(matches!(
                 row.state,
                 studio_runtime_schema::approvals::ApprovalState::Answered {
                     ref answer,
                     by: studio_runtime_schema::approvals::Principal::Owner,
                     ..
-                } if *answer == answers(vec![("q", vec!["yes"]), ("secret", vec!["[redacted]"]), ("legacy", vec![])])
+                } if *answer == expected
             ));
             let claim = SchedulerRepository::claim_steer(tx, &agent_for_write, 3, "steer", 31.0)?
                 .expect("answer must be eligible for the running turn");
