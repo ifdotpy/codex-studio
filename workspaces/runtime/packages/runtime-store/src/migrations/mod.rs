@@ -727,6 +727,16 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
+            id: "2026-10-31-project-record-kind-repair",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Project records created without a discriminator after the first migration",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_31_project_record_kind::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-31-analytics-revision-schema",
             introduced: OCTOBER_31,
             target: MigrationTarget::Analytics,

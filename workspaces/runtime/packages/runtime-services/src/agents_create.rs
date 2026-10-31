@@ -426,12 +426,15 @@ pub(crate) fn ensure_project(
         "locationsRevision":0,
         "peerTeams":[]
     });
+    let live: studio_runtime_schema::project_record::ProjectLive =
+        serde_json::from_str(&project.to_string()).map_err(StoreError::from)?;
+    let stored = studio_runtime_schema::project_record::ProjectRecord::Live(Box::new(live));
     transaction
         .execute(
             "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
             rusqlite::params![
                 path,
-                serde_json::to_string(&project).map_err(StoreError::from)?
+                serde_json::to_string(&stored).map_err(StoreError::from)?
             ],
         )
         .map_err(StoreError::from)?;
@@ -1005,6 +1008,11 @@ mod tests {
         assert_eq!(created["id"], "agent-a");
         tx.commit().expect("transaction commits");
 
+        let stored = studio_runtime_store::ProjectsRepository::get_record(&connection, "/project")
+            .expect("created project is a valid stored record")
+            .expect("created project exists");
+        assert_eq!(stored.path, "/project");
+
         let event_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM runtime_events", [], |row| row.get(0))
             .expect("event count reads");
@@ -1100,6 +1108,12 @@ mod tests {
 
         ensure_project(&transaction, &agent)
             .expect("persisted agent identity supplies project location");
+
+        let stored = studio_runtime_store::ProjectsRepository::get_record(&transaction, "/project")
+            .expect("created project is a valid stored record")
+            .expect("created project exists");
+        assert_eq!(stored.path, "/project");
+        ensure_project(&transaction, &agent).expect("another agent can reuse the project");
 
         let payload: String = transaction
             .query_row(
