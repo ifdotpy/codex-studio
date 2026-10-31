@@ -389,12 +389,18 @@ impl SchedulerRepository {
             || agent.turn_id.is_some()
             || agent.native_safety_buffering.is_some()
             || agent.start_wait.is_some()
+            || agent
+                .restart_recovery
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+            || agent
+                .disconnect_recovery
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
             || [
                 "capacityRetry",
                 "usageResume",
                 "manualRecoveryDeliveryHold",
-                "restartRecovery",
-                "disconnectRecovery",
                 "remoteWorker",
                 "remoteAnchor",
             ]
@@ -447,11 +453,7 @@ impl SchedulerRepository {
         {
             return Ok(false);
         }
-        let current = match agent.start_attempt() {
-            Ok(value) => value,
-            Err(_) => return Ok(false),
-        };
-        if let Some(current) = current
+        if let Some(current) = agent.start_attempt.as_ref()
             && (current.id != attempt.id
                 || current.epoch != attempt.epoch
                 || current.account_key != attempt.account_key
@@ -1166,18 +1168,16 @@ impl SchedulerRepository {
         agent.in_flight = Some(true);
         agent.turn_id = None;
         agent.turn_epoch = Some(epoch);
-        agent.extra.insert(
-            "startAttempt".to_owned(),
-            json!({
-                "id": attempt_id,
-                "epoch": epoch,
-                "activeAtReservation": false,
-                "accountKey":Value::String(agent.account_key.clone()),
-                "events": event_ids,
-                "submitted": false,
-                "created": attempt_created
-            }),
-        );
+        agent.start_attempt = Some(Box::new(crate::StartAttemptView {
+            id: Some(attempt_id.to_owned()),
+            epoch: Some(epoch),
+            active_at_reservation: Some(false),
+            account_key: Some(agent.account_key.clone()),
+            events: Some(event_ids),
+            submitted: Some(false),
+            created: Some(attempt_created),
+            ..Default::default()
+        }));
         publish_agent(transaction, &agent)?;
         let identity = input_identity(&events, &metadata);
         crate::ExecutionHistoryRepository::save_claim(
@@ -1208,7 +1208,7 @@ impl SchedulerRepository {
         if agent.deleted_at.is_some() {
             return Err(invalid_agent(agent_id));
         }
-        let Some(attempt) = agent.start_attempt().map_err(|_| invalid_agent(agent_id))? else {
+        let Some(attempt) = agent.start_attempt.clone() else {
             return Ok(false);
         };
         if attempt.id.as_deref() != Some(attempt_id)

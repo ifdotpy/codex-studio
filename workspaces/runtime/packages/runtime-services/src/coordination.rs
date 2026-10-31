@@ -779,16 +779,11 @@ fn capacity_reset(
             Some(false) => return Err(invalid_stored("runtime_capacity_retries", &id)),
             None => return Err(invalid_stored("runtime_capacity_retries", &id)),
         }
-        if agent
-            .extra
-            .get("startAttempt")
-            .and_then(Value::as_object)
-            .is_some_and(|attempt| {
-                attempt.get("capacityRetryId").and_then(Value::as_str) == Some(&id)
-                    && attempt.get("submitted") == Some(&Value::Bool(false))
-            })
-        {
-            agent.extra.remove("startAttempt");
+        if agent.start_attempt.as_ref().is_some_and(|attempt| {
+            attempt.capacity_retry_id.as_deref() == Some(id.as_str())
+                && attempt.submitted == Some(false)
+        }) {
+            agent.start_attempt = None;
             agent.in_flight = Some(false);
             agent.status = studio_runtime_store::AgentStatus::Failed;
         }

@@ -22,15 +22,19 @@ async fn disconnected_running_turn(state: &State) {
                 agent.status = studio_runtime_store::AgentStatus::Running;
                 agent.turn_id = Some("old-turn".to_string());
                 agent.in_flight = Some(true);
-                agent.extra.insert(
-                    "startAttempt".into(),
-                    json!({
-                        "id":"old-attempt", "accountKey":"default", "epoch":agent.epoch,
-                        "threadId":"fake-thread-0", "turnId":"old-turn", "submitted":true,
-                        "connectionGeneration":1, "events":["annotation:input"],
-                        "activeAtReservation":false, "settingsFixed":true
-                    }),
-                );
+                agent.start_attempt = Some(Box::new(studio_runtime_store::StartAttemptView {
+                    id: Some("old-attempt".into()),
+                    account_key: Some("default".into()),
+                    epoch: Some(agent.epoch),
+                    thread_id: Some("fake-thread-0".into()),
+                    turn_id: Some("old-turn".into()),
+                    submitted: Some(true),
+                    connection_generation: Some(1),
+                    events: Some(vec!["annotation:input".into()]),
+                    active_at_reservation: Some(false),
+                    settings_fixed: Some(true),
+                    ..Default::default()
+                }));
                 AgentRepository::put(tx, &agent)?;
                 tx.execute(
                     "UPDATE runtime_events SET status='delivered',turn_id='old-turn' \

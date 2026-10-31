@@ -4969,7 +4969,7 @@ async fn vm_session_identity_refusal_holds_one_actor_and_keeps_sibling_usable() 
                     sibling_record.auto_wake = Some(true);
                     sibling_record.in_flight = Some(false);
                     sibling_record.extra.insert("error".into(), Value::Null);
-                    sibling_record.extra.remove("startAttempt");
+                    sibling_record.start_attempt.take();
                     sibling_record.extra.remove("preparationWake");
                     AgentRepository::put(tx, &sibling_record)
                 })
@@ -5133,7 +5133,7 @@ async fn vm_adapter_exit_recovers_only_its_actor_and_keeps_sibling_usable() {
                     sibling_record.auto_wake = Some(true);
                     sibling_record.in_flight = Some(false);
                     sibling_record.extra.insert("error".into(), Value::Null);
-                    sibling_record.extra.remove("startAttempt");
+                    sibling_record.start_attempt.take();
                     sibling_record.extra.remove("preparationWake");
                     AgentRepository::put(tx, &sibling_record)
                 })
@@ -5528,7 +5528,10 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         .unwrap()
         .unwrap();
     assert_eq!(saved.status, studio_runtime_store::AgentStatus::Running);
-    assert_eq!(saved.extra["startAttempt"]["executionOutcome"], "unknown");
+    assert_eq!(
+        saved.start_attempt.as_ref().unwrap().execution_outcome,
+        Some(studio_runtime_schema::persistence::ExecutionStatus::Unknown)
+    );
     assert_eq!(saved.in_flight, Some(true));
 
     let vm_entry = JournalEntry {
@@ -5590,7 +5593,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
         studio_runtime_store::AgentStatus::Interrupted
     );
     assert_eq!(retired.in_flight, Some(false));
-    assert!(retired.extra.contains_key("disconnectRecovery"));
+    assert!(retired.disconnect_recovery.is_some());
     assert_eq!(surviving.status, studio_runtime_store::AgentStatus::Running);
     assert_eq!(surviving.in_flight, Some(true));
     assert!(

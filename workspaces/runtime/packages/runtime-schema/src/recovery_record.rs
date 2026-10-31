@@ -9,12 +9,19 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
 #[serde(transparent)]
 pub struct SafeInteger(StoredJsonInteger);
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(transparent)]
 pub struct NonnegativeInteger(f64);
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(transparent)]
 pub struct NonnegativeNumber(f64);
 
 impl SafeInteger {
+    pub fn from_i64(value: i64) -> Option<Self> {
+        (0..=MAX_SAFE_INTEGER)
+            .contains(&value)
+            .then(|| Self(StoredJsonInteger::from_i64(value)))
+    }
     pub fn get(&self) -> f64 {
         // The constructor accepts only JSON numbers within the finite safe range.
         self.0.number().as_f64().expect("validated finite number")
@@ -32,6 +39,9 @@ impl NonnegativeInteger {
     }
 }
 impl NonnegativeNumber {
+    pub fn new(value: f64) -> Option<Self> {
+        (value.is_finite() && value >= 0.0).then_some(Self(value))
+    }
     pub fn get(&self) -> f64 {
         self.0
     }
@@ -95,7 +105,7 @@ fn nullable_string_enum<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
         .transpose()
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RecoverySource {
     Text(String),
@@ -108,44 +118,76 @@ pub enum RequestState {
     Result,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoverySupervisorIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<SafeInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub handle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub state_dir: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryFields {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub account_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub active_at_reservation: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_wake: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub automatic: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub created: Option<NonnegativeNumber>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub epoch: Option<SafeInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub events: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub new_thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub observed_turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<RecoverySource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub start_attempt: Option<Box<crate::start_attempt::StartAttemptView>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub submitted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub supervisor_identity: Option<RecoverySupervisorIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+impl RecoveryFields {
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -264,7 +306,7 @@ mod tests {
         let schema_text = include_str!("schemas/recovery-agent-record.schema.json");
         assert_eq!(
             data_encoding::HEXLOWER.encode(&Sha256::digest(schema_text.as_bytes())),
-            "54d8698ab8b95c809ab38a107b5d755aa6f2d657a51ded7069d7aa3a9fe447d2",
+            "758b46a137ede100c75bcbe734a63f74ca0cb8f6edc964cd4ecd27a8c8a56b09",
             "recovery-agent-record.schema.json changed: review the typed owner and parity cases"
         );
         let schema: Value = serde_json::from_str(schema_text).expect("schema");

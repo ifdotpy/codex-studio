@@ -276,7 +276,38 @@ async fn preparation_transaction_failpoints_roll_back_every_row() {
     for fail in ["before_first_event", "before_agent", "after_agent"] {
         let root = fixture();
         let store = open_store(root.path()).await;
-        lifecycle_transaction(&store,|tx| {let mut a=AgentRepository::get(tx,&AgentId::from("agent"))?.expect("valid recovery fixture");let attempt=a.extra.remove("startAttempt").expect("valid recovery fixture");a.status=studio_runtime_store::AgentStatus::Interrupted;a.auto_wake = Some(false);a.extra.insert("error".into(),json!(studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR));a.extra.insert("disconnectRecovery".into(),json!({"epoch":0,"accountKey":"default","threadId":"thread","turnId":null,"autoWake":true,"startAttempt":attempt}));AgentRepository::put(tx,&a)?;tx.execute("UPDATE runtime_events SET status='reserved' WHERE id='event'",[])?;Ok(())}).await.expect("valid recovery fixture");
+        lifecycle_transaction(&store, |tx| {
+            let mut a =
+                AgentRepository::get(tx, &AgentId::from("agent"))?.expect("valid recovery fixture");
+            let attempt = a.start_attempt.take().expect("valid recovery fixture");
+            a.status = studio_runtime_store::AgentStatus::Interrupted;
+            a.auto_wake = Some(false);
+            a.extra.insert(
+                "error".into(),
+                json!(studio_runtime_store::PROVIDER_DISCONNECTED_TURN_ERROR),
+            );
+            a.disconnect_recovery = Some(Box::new(
+                studio_runtime_schema::recovery_record::RecoveryFields {
+                    epoch: Some(
+                        studio_runtime_schema::recovery_record::SafeInteger::from_i64(0)
+                            .expect("safe epoch"),
+                    ),
+                    account_key: Some("default".into()),
+                    thread_id: Some("thread".into()),
+                    auto_wake: Some(true),
+                    start_attempt: Some(attempt),
+                    ..Default::default()
+                },
+            ));
+            AgentRepository::put(tx, &a)?;
+            tx.execute(
+                "UPDATE runtime_events SET status='reserved' WHERE id='event'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("valid recovery fixture");
         let before = snapshot(&store);
         let queue = events(&store);
         let renderer = projection(&store);
@@ -312,7 +343,7 @@ async fn orphan_requires_the_completed_turn_receipt_and_no_uncertain_input() {
     lifecycle_transaction(&store, |tx| {
         let mut a =
             AgentRepository::get(tx, &AgentId::from("agent"))?.expect("valid recovery fixture");
-        a.extra.remove("startAttempt");
+        a.start_attempt.take();
         a.in_flight = Some(true);
         AgentRepository::put(tx, &a)
     })
