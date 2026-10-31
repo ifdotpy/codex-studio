@@ -1187,6 +1187,8 @@ fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)
             .join(",");
         let receipt_filter = if name == "runtime_outbox" {
             " WHERE kind!='provider_callback'"
+        } else if name == "sync_entity_meta" {
+            " WHERE key!='migration_catalog'"
         } else {
             ""
         };

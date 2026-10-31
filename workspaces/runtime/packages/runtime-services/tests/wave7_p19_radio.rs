@@ -848,12 +848,12 @@ fn database_rows(store: &RuntimeStore) -> Vec<(String, Vec<Vec<SqlValue>>)> {
     tables
         .into_iter()
         .map(|name| {
-            let mut query = db
-                .prepare(
-                    &studio_runtime_store::agent_columns::select_declared_sql(&db, &name)
-                        .expect("columns"),
-                )
-                .expect("snapshot table");
+            let mut sql = studio_runtime_store::agent_columns::select_declared_sql(&db, &name)
+                .expect("columns");
+            if name == "sync_entity_meta" {
+                sql.push_str(" WHERE key != 'migration_catalog'");
+            }
+            let mut query = db.prepare(&sql).expect("snapshot table");
             let count = query.column_count();
             let rows = query
                 .query_map([], |r| {
