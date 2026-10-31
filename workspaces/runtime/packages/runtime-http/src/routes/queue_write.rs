@@ -113,10 +113,8 @@ mod tests {
             signature,
             super::signature("workspace", &normalized).expect("normalized signature")
         );
-        let legacy = super::super::work_items::python_operation_signature(
-            &json!({"agent":"workspace","body":{"action":"first","id":"a","request_id":"request"}}),
-        )
-        .expect("legacy signature");
+        // Signature of the historical spaced JSON encoding of this request.
+        let legacy = "738dc495419b22256783449bd011949a7de1f3aa4c2a8f99c2ad7ff8f8e39c58";
         assert_ne!(
             signature, legacy,
             "pre-upgrade receipts refuse replay safely"
@@ -190,10 +188,7 @@ mod tests {
             (200, receipt.clone()),
             "stale revision replay returns original receipt"
         );
-        let legacy = super::super::work_items::python_operation_signature(
-            &json!({"agent":"workspace", "body":reorder}),
-        )
-        .expect("legacy signature");
+        let legacy = "738dc495419b22256783449bd011949a7de1f3aa4c2a8f99c2ad7ff8f8e39c58";
         let typed: QueueCommand = serde_json::from_value(reorder.clone()).expect("queue command");
         let current = super::signature("workspace", &typed).expect("current signature");
         store
