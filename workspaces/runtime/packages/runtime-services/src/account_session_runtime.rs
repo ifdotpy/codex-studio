@@ -1580,7 +1580,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                     .await?
                     .map_err(mutation_error)?;
                     let receipt = match reservation {
-                        LoginReservation::Replay(receipt) => return Ok(public_login(receipt)),
+                        LoginReservation::Replay(receipt) => return Ok(public_login(*receipt)),
                         LoginReservation::Dispatch(receipt) => receipt,
                     };
                     let account = receipt["accountKey"].as_str().ok_or_else(|| {
@@ -1727,7 +1727,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                             .await?
                             .map_err(mutation_error)?;
                     let receipt = match reservation {
-                        LoginReservation::Replay(receipt) => return Ok(public_login(receipt)),
+                        LoginReservation::Replay(receipt) => return Ok(public_login(*receipt)),
                         LoginReservation::Dispatch(receipt) => receipt,
                     };
                     let account = receipt["accountKey"].as_str().ok_or_else(|| {
