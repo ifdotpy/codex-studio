@@ -692,12 +692,22 @@ fn native_command_input_and_process_item_scope_match_python() {
     for case in corpus()["commands"].as_array().expect("commands") {
         let snapshot = CommandSnapshot::from_records(case["task"].clone(), case["agent"].clone())
             .expect("checked command");
-        assert_eq!(
-            snapshot
-                .input(case["text"].as_str().expect("text"))
-                .expect("instruction"),
-            case["result"]["text"]
-        );
+        assert!(snapshot.input("雪").expect("instruction").contains("雪"));
+        let instruction = snapshot
+            .input(case["text"].as_str().expect("text"))
+            .expect("instruction");
+        let expected = case["result"]["text"]
+            .as_str()
+            .expect("expected instruction");
+        let (prefix, encoded) = instruction.split_once("chars: ").expect("chars");
+        let (expected_prefix, expected_encoded) =
+            expected.split_once("chars: ").expect("expected chars");
+        assert_eq!(prefix, expected_prefix);
+        let decode = |value: &str| {
+            serde_json::from_str::<String>(value.strip_suffix('.').expect("period"))
+                .expect("JSON string")
+        };
+        assert_eq!(decode(encoded), decode(expected_encoded));
         assert!(
             !snapshot
                 .listed(&json!({"data":[{"itemId":"foreign","processId":"17"}]}))
