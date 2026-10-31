@@ -8,6 +8,7 @@ import {
   SHARED_INPUTS,
   cachedStepKey,
   passedCrates,
+  selectCrates,
   recordPass,
   reusedResult,
   stepKey,
@@ -160,4 +161,30 @@ test("passedCrates lists the crates of a nextest report without a failure", () =
 <testsuite name="studio-c" tests="1" failures="0" errors="1"><testcase name="w"><error/></testcase></testsuite></testsuites>`;
   assert.deepEqual([...passedCrates(report)], ["studio-a"]);
   assert.deepEqual([...passedCrates("not a report")], []);
+});
+
+test("nextest selects stale crates with a filter so the workspace feature set and build stay the same", () => {
+  const selected = selectCrates(
+    [["cargo", ["nextest", "run", "--workspace", "--profile", "fast"]]],
+    ["studio-a", "studio-b"],
+  );
+  assert.deepEqual(selected, [
+    [
+      "cargo",
+      [
+        "nextest",
+        "run",
+        "--workspace",
+        "-E",
+        "package(=studio-a) | package(=studio-b)",
+        "--profile",
+        "fast",
+      ],
+    ],
+  ]);
+  // Cargo test has no filter set: it takes package arguments.
+  assert.deepEqual(
+    selectCrates([["cargo", ["test", "--workspace"]]], ["studio-a"]),
+    [["cargo", ["test", "-p", "studio-a"]]],
+  );
 });

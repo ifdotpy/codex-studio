@@ -28,6 +28,7 @@ import {
   recordPass,
   passedCrates,
   reusedResult,
+  selectCrates,
 } from "./test-result-cache.ts";
 
 import type ts from "typescript";
@@ -1442,14 +1443,10 @@ export async function executeRecipe(
             reused: true,
           };
         else if (crates)
-          commands = step.commands!.map(([command, args]): Command => [
-            command,
-            args.flatMap((arg) =>
-              arg === "--workspace"
-                ? stale.flatMap(([name]) => ["-p", name])
-                : [arg],
-            ),
-          ]);
+          commands = selectCrates(
+            step.commands!,
+            stale.map(([name]) => name),
+          );
         if (!result)
           try {
             result = await (options.execute ?? execute)(

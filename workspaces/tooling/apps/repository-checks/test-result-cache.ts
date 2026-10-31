@@ -129,6 +129,24 @@ export function cachedStepKey(
     : stepKey(root, { ...step, inputs: step.inputs ?? ["."] }, env);
 }
 
+/** The commands of a workspace test step, limited to the given crates. Nextest keeps `--workspace`
+ * and filters by package: `-p` would change the feature set and rebuild third-party crates. */
+export function selectCrates(
+  commands: [string, string[]][],
+  crates: string[],
+): [string, string[]][] {
+  return commands.map(([command, args]) => [
+    command,
+    args.flatMap((arg) =>
+      arg !== "--workspace"
+        ? [arg]
+        : args[0] === "nextest"
+          ? [arg, "-E", crates.map((name) => `package(=${name})`).join(" | ")]
+          : crates.flatMap((name) => ["-p", name]),
+    ),
+  ]);
+}
+
 /** Crates of a nextest JUnit report that have a test suite and no failed or errored test. */
 export function passedCrates(report: string): Set<string> {
   const passed = new Set<string>();
