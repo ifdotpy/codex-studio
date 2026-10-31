@@ -1,3 +1,11 @@
+fn typed_question(value: &serde_json::Value) -> studio_runtime_store::RequestRecord {
+    let mut fixture = value.clone();
+    fixture["status"] = serde_json::json!("pending");
+    fixture["createdAt"] = serde_json::json!(0.0);
+    fixture["params"] = serde_json::json!({});
+    serde_json::from_str(&fixture.to_string()).expect("typed question fixture")
+}
+
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
@@ -516,7 +524,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             radio_runtime::route_question_answer(
                 db,
                 &prepared,
-                &case["body"]["question"],
+                &typed_question(&case["body"]["question"]),
                 case["body"]["text"].as_str().unwrap_or("answer"),
                 None,
                 1000.0,
@@ -818,7 +826,7 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
     seed(&store, &case["before"]).await;
     assert!(radio_runtime::holds_floor(&store.test_reader().expect("read"), "a").expect("floor"));
     let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
-    let question = case["body"]["question"].clone();
+    let question = typed_question(&case["body"]["question"]);
     store.transaction_with(move |db|->Result<(),ProjectsError> {
         assert_eq!(radio_runtime::route_question_answer(db,&prepared,&question,"answer",None,1000.0)?, radio_runtime::QuestionAnswerRoute::ConsumedByRadio);
         db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;

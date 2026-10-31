@@ -48,7 +48,6 @@ async fn answer(
     let async_store = store.clone();
     let browser_store = store.clone();
     let browser_id = id.clone();
-    let validators = state.validators.clone();
     let local_window = super::browser::local_window(&headers, peer);
     let vm_state_dir = state.vm_state_dir.clone();
     let browser_guest = state.browser_answer_guest.clone();
@@ -94,12 +93,12 @@ async fn answer(
             )
         })?;
         Ok::<_, studio_runtime_services::browser_answer::BrowserAnswerError>((
-            guest, forwarder, now, validators,
+            guest, forwarder, now,
         ))
     }
     .await
     .map_err(browser_answer_error)?;
-    let (guest, forwarder, now, validators) = browser_context;
+    let (guest, forwarder, now) = browser_context;
     let browser_answer = studio_runtime_services::browser_answer::answer(
         &store,
         &id,
@@ -109,9 +108,6 @@ async fn answer(
             guest,
             local_forwarder: forwarder,
             now,
-            validate: move |record: &serde_json::Value| {
-                validators.validate_table_record("runtime_requests", record)
-            },
             http_providers: Default::default(),
         },
     )
@@ -123,13 +119,11 @@ async fn answer(
             super::generated_json::<crate::generated::AnswerResult>(answer.response)?,
         ));
     }
-    let validators = state.validators.clone();
     if let Some(answer) = questions_write::answer_async_question_in_store(
         async_store,
         &id,
         &data,
         callback_clock().map_err(|_| ApiError::internal())?,
-        move |record| validators.validate_table_record("runtime_requests", record),
     )
     .await
     .map_err(async_question_error)?
@@ -349,11 +343,8 @@ async fn defer_question(
     let id = body.id;
     let deferred = body.deferred;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let validators = state.validators.clone();
     let result = write(store, move |transaction| {
-        questions_write::defer_question(transaction, &id, deferred, |record| {
-            validators.validate_table_record("runtime_requests", record)
-        })
+        questions_write::defer_question(transaction, &id, deferred)
     })
     .await?;
     Ok(Json(super::generated_json::<
@@ -373,11 +364,8 @@ async fn delete_question(
             .map_err(callback_error)?
     } else {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let validators = state.validators.clone();
         write(store, move |transaction| {
-            questions_write::delete_question(transaction, &id, |record| {
-                validators.validate_table_record("runtime_requests", record)
-            })
+            questions_write::delete_question(transaction, &id)
         })
         .await?
     };

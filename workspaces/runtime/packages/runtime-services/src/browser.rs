@@ -273,22 +273,16 @@ impl BrowserCallbackReceiver {
                 "The sign-in request is unknown",
             )
         })?;
-        let record: Value = serde_json::from_str(&raw).map_err(|_| {
-            refused(
-                503,
-                "browser_request_invalid",
-                "The sign-in request is invalid",
-            )
-        })?;
-        let params = record.get("params").ok_or_else(|| {
-            refused(
-                503,
-                "browser_request_invalid",
-                "The sign-in request is invalid",
-            )
-        })?;
-        let parsed = crate::browser_cards::BrowserParams::read(params);
-        if record.get("method").and_then(Value::as_str) != Some("browser/open")
+        let record: studio_runtime_store::RequestRecord =
+            serde_json::from_str(&raw).map_err(|_| {
+                refused(
+                    503,
+                    "browser_request_invalid",
+                    "The sign-in request is invalid",
+                )
+            })?;
+        let parsed = crate::browser_cards::BrowserParams::read(&record.params);
+        if record.method != studio_runtime_schema::request_record::RequestMethod::BrowserOpen
             || parsed
                 .as_ref()
                 .and_then(|params| params.bridge_id.as_deref())
@@ -325,21 +319,19 @@ impl BrowserCallbackReceiver {
                 "The sign-in forward token is not valid",
             ));
         }
-        let redirect = params.get("redirect").ok_or_else(|| {
-            refused(
-                404,
-                "browser_redirect_missing",
-                "The sign-in redirect is unavailable",
-            )
-        })?;
-        let host = redirect
-            .get("host")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let port = redirect
-            .get("port")
-            .and_then(Value::as_u64)
-            .filter(|p| (1024..=65535).contains(p))
+        let redirect = parsed
+            .as_ref()
+            .and_then(|params| params.redirect.as_ref())
+            .ok_or_else(|| {
+                refused(
+                    404,
+                    "browser_redirect_missing",
+                    "The sign-in redirect is unavailable",
+                )
+            })?;
+        let host = redirect.host.as_str();
+        let port = (redirect.port >= 1024)
+            .then_some(redirect.port)
             .ok_or_else(|| {
                 refused(
                     503,
@@ -359,12 +351,7 @@ impl BrowserCallbackReceiver {
         studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/browser",
             move || {
-                BrowserForwarder::deliver_local_callback(
-                    &host,
-                    port as u16,
-                    &target,
-                    headers.as_ref(),
-                )
+                BrowserForwarder::deliver_local_callback(&host, port, &target, headers.as_ref())
             },
         )
         .await

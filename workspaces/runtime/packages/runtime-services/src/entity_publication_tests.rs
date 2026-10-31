@@ -1036,7 +1036,7 @@ async fn retained_worktree_entities_follow_cleanup_even_after_worker_deletion() 
 async fn question_history_entities_retain_answers_after_pending_request_is_retired() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let question = json!({"id":"history-question","agent":CHAT,"method":"agent/asyncQuestion","status":"pending",
+    let question = json!({"id":"history-question","agent":CHAT,"method":"agent/asyncQuestion","status":"pending","createdAt":1,
         "params":{"message":"Continue?","questions":[{"id":"choice","question":"Continue?","options":[{"label":"Yes"}]}]}});
     write(
         &store,
@@ -1076,7 +1076,7 @@ async fn question_history_entities_retain_answers_after_pending_request_is_retir
 async fn conversation_detail_entities_remove_private_answers_and_hard_deleted_sources() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let question = json!({"id":"private-question","agent":CHAT,"method":"agent/asyncQuestion","status":"answered",
+    let question = json!({"id":"private-question","agent":CHAT,"method":"agent/asyncQuestion","status":"answered","createdAt":1,
         "params":{"questions":[{"id":"password","question":"Password?","isSecret":true}]},
         "answerHistory":[{"id":"password","question":"Password?","isSecret":true,"answer":"never-cache-this"}]});
     write(

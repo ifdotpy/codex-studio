@@ -198,10 +198,7 @@ fn card(store: &studio_runtime_store::RuntimeStore) -> Value {
     serde_json::from_str(&raw).expect("test step")
 }
 
-fn answer_context(
-    guest: Arc<dyn GuestRpc>,
-    providers: &BTreeSet<String>,
-) -> BrowserAnswerContext<impl Fn(&Value) -> bool + Send + Sync + 'static> {
+fn answer_context(guest: Arc<dyn GuestRpc>, providers: &BTreeSet<String>) -> BrowserAnswerContext {
     BrowserAnswerContext {
         local_window: false,
         guest,
@@ -210,7 +207,6 @@ fn answer_context(
             .duration_since(std::time::UNIX_EPOCH)
             .expect("test step")
             .as_secs_f64(),
-        validate: |_: &Value| true,
         http_providers: providers.clone(),
     }
 }

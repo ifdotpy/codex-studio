@@ -1179,11 +1179,23 @@ impl JsonRecord for RequestRecord {
     fn record_key(&self) -> Option<&String> {
         Some(self.id())
     }
+    fn encode_stored(&self, _connection: &Connection, row_id: &str) -> StoreResult<String> {
+        if self.id != row_id
+            || !self.created_at.is_finite()
+            || !self.params.get().trim_start().starts_with('{')
+        {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: Self::TABLE,
+                id: row_id.to_owned(),
+            });
+        }
+        Ok(serde_json::to_string(self)?)
+    }
 }
 #[cfg(test)]
 mod request_typed_tests {
     use super::{RequestRecord, Table};
-    use serde_json::{Value, json};
+    use serde_json::Value;
 
     #[test]
     fn shared_decoder_requires_object_for_direct_records() {
@@ -1216,15 +1228,15 @@ mod request_typed_tests {
         assert!(Table::<RequestRecord>::new(&db).get(&"r".into()).is_err());
         db.execute(
             "UPDATE runtime_requests SET record=?1",
-            [r#"{"id":"r","status":"future","method":"x","params":{"opaque":[1,null]}}"#],
+            [r#"{"id":"r","agent":"a","createdAt":1,"status":"pending","method":"agent/asyncQuestion","params":{"opaque":[1,null]}}"#],
         )
         .unwrap();
         let row = Table::<RequestRecord>::new(&db)
             .get(&"r".into())
             .unwrap()
             .unwrap();
-        assert_eq!(row.status(), Some("future"));
-        assert_eq!(row.into_value()["params"], json!({"opaque":[1,null]}));
+        assert_eq!(row.status.as_str(), "pending");
+        assert_eq!(row.params.get(), r#"{"opaque":[1,null]}"#);
         db.execute(
             "UPDATE runtime_requests SET record=?1",
             [r#"{"id":"other","status":"pending"}"#],
@@ -2898,11 +2910,9 @@ mod tests {
             Value::Bool(true)
         );
 
-        let request = RequestRecord::from_value(json!({
-            "id":"request-1", "connectionId":null
-        }))
+        let request: RequestRecord = serde_json::from_str(r#"{"id":"request-1","agent":"a","method":"agent/asyncQuestion","status":"pending","createdAt":1,"params":{},"connectionId":null}"#)
         .expect("Python may persist a request without a connection identity");
-        assert_eq!(request.value().get("connectionId"), Some(&Value::Null));
+        assert!(request.connection_id.is_none());
     }
 
     #[test]
