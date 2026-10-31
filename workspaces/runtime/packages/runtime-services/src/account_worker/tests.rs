@@ -339,7 +339,7 @@ const FIXTURE_AGENT_EPOCH: i64 = 0;
 async fn seed_fixture_root(root: &std::path::Path) -> RuntimeStore {
     std::fs::create_dir_all(root).unwrap();
     let store = RuntimeStore::open(Some(root)).await.unwrap();
-    let mut record = json!({
+    let mut record = json!({"compactions":0,
         "id":FIXTURE_AGENT_ID,"rootId":FIXTURE_AGENT_ID,"epoch":FIXTURE_AGENT_EPOCH,
         "status":"queued","name":"Rust turn fixture","cwd":root,"autoWake":true,
         "accountKey":"default","threadId":"fake-thread-0","model":"fake-model",
@@ -1158,7 +1158,7 @@ async fn invalid_agent_record_is_held_without_stopping_other_agent_dispatch() {
                 let write_bad_id = bad_id.clone();
                 let write_good_id = good_id.clone();
                 store.transaction_with(move |tx| {
-                    let invalid = json!({
+                    let invalid = json!({"compactions":0,
                         "id": write_bad_id.clone(),
                         "rootId": write_good_id.clone(),
                         "epoch": good_epoch,
@@ -1335,7 +1335,7 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         .transaction(move |tx| {
             tx.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES('racy',?1)",
-                [json!({"accountKey":"default",
+                [json!({"compactions":0,"accountKey":"default",
                     "id":"racy", "rootId":17, "epoch":1,
                     "provider":studio_runtime_schema::ProviderKind::Codex,
                     "status":"idle", "isLead":true
@@ -1376,6 +1376,8 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         | error @ StoreError::InvalidStoredObject { .. }
         | error @ StoreError::SchemaValidation(_)
         | error @ StoreError::RecordContract(_)
+        | error @ StoreError::TranscriptFullTextUnavailable { .. }
+        | error @ StoreError::TranscriptInputsIncomplete { .. }
         | error @ StoreError::WriterPoisoned
         | error @ StoreError::WriterActorInitialization(_)
         | error @ StoreError::WriterActorControl(_)
@@ -1388,11 +1390,13 @@ async fn invalid_agent_hold_rechecks_the_same_field_before_publishing() {
         .transaction(move |tx| {
             AgentRepository::put(
                 tx,
-                &studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default",
-                    "id":"racy", "rootId":"racy", "epoch":1,
-                    "provider":studio_runtime_schema::ProviderKind::Codex,
-                    "status":"idle", "isLead":true
-                }))?,
+                &studio_runtime_store::AgentRecord::from_value(
+                    json!({"compactions":0,"accountKey":"default",
+                        "id":"racy", "rootId":"racy", "epoch":1,
+                        "provider":studio_runtime_schema::ProviderKind::Codex,
+                        "status":"idle", "isLead":true
+                    }),
+                )?,
             )?;
             Ok(())
         })
@@ -1462,7 +1466,7 @@ async fn unresolved_receipt_for_held_invalid_agent_does_not_block_recovery() {
                         } => Ok((pointer, reason)),
                         error @ StoreError::StateDirectory(_) | error @ StoreError::AlreadyOwned | error @ StoreError::MissingDatabase(_) | error @ StoreError::UnsafeStateDirectory | error @ StoreError::SchemaMismatch(_) | error @ StoreError::InvalidSyncObject { .. } | error @ StoreError::InvalidStoredRecord { .. } | error @ StoreError::SchemaObjectMismatch { .. } | error @ StoreError::Sqlite(_) | error @ StoreError::CommitOutcomeUnknown(_) | error @ StoreError::RequestResult(_)
         | error @ StoreError::Outbox(_)
-        | error @ StoreError::Json(_) | error @ StoreError::InvalidStoredObject { .. } | error @ StoreError::SchemaValidation(_) | error @ StoreError::RecordContract(_) | error @ StoreError::WriterPoisoned | error @ StoreError::WriterActorInitialization(_) | error @ StoreError::WriterActorControl(_) | error @ StoreError::CommitActorOutcomeUnknown(_) | error @ StoreError::Migration { .. } | error @ StoreError::ReadTaskFailed => Err(error),
+        | error @ StoreError::Json(_) | error @ StoreError::InvalidStoredObject { .. } | error @ StoreError::SchemaValidation(_) | error @ StoreError::RecordContract(_) | error @ StoreError::TranscriptFullTextUnavailable { .. } | error @ StoreError::TranscriptInputsIncomplete { .. } | error @ StoreError::WriterPoisoned | error @ StoreError::WriterActorInitialization(_) | error @ StoreError::WriterActorControl(_) | error @ StoreError::CommitActorOutcomeUnknown(_) | error @ StoreError::Migration { .. } | error @ StoreError::ReadTaskFailed => Err(error),
                     }
                 }).await?;
                 store::hold_invalid_agent_record(
@@ -5440,7 +5444,7 @@ async fn vm_claude_refresh_copies_rotation_to_active_guest_without_restart() {
 async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
-    let vm_actor = AgentRecord::from_value(json!({
+    let vm_actor = AgentRecord::from_value(json!({"compactions":0,
         "id":"vm-actor","rootId":"vm-actor","epoch":4,"status":"running",
         "provider":"codex","accountKey":"default","executionMode":"vm",
         "threadId":"vm-thread","autoWake":true,"inFlight":true,"turnEpoch":4,
@@ -5450,7 +5454,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
             "executionOutcome":"unknown","events":[]}
     }))
     .unwrap();
-    let sibling = AgentRecord::from_value(json!({
+    let sibling = AgentRecord::from_value(json!({"compactions":0,
         "id":"sibling","rootId":"sibling","epoch":7,"status":"running",
         "provider":"codex","accountKey":"default","executionMode":"host",
         "threadId":"sibling-thread","autoWake":true,"inFlight":true,"turnEpoch":7,
@@ -5460,7 +5464,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
             "executionOutcome":"unknown","events":[]}
     }))
     .unwrap();
-    let vm_sibling = AgentRecord::from_value(json!({
+    let vm_sibling = AgentRecord::from_value(json!({"compactions":0,
         "id":"vm-sibling","rootId":"vm-sibling","epoch":6,"status":"running",
         "provider":"codex","accountKey":"default","executionMode":"vm",
         "threadId":"vm-sibling-thread","autoWake":true,"inFlight":true,"turnEpoch":6,
@@ -5470,7 +5474,7 @@ async fn vm_journal_cannot_settle_a_sibling_actors_attempt() {
             "executionOutcome":"unknown","events":[]}
     }))
     .unwrap();
-    let completed_vm = AgentRecord::from_value(json!({
+    let completed_vm = AgentRecord::from_value(json!({"compactions":0,
         "id":"vm-completed","rootId":"vm-completed","epoch":8,"status":"completed",
         "provider":"codex","accountKey":"default","executionMode":"vm",
         "threadId":"completed-thread","autoWake":false,"inFlight":false,"turnEpoch":8
@@ -6355,7 +6359,7 @@ async fn cold_vm_lead_prepares_with_fake_guest_and_returns_guest_workspace_token
             .unwrap();
     let agent_id = "turn-start-vm-lead";
     let attempt_id = "turn-start-attempt";
-    let record = AgentRecord::from_value(json!({
+    let record = AgentRecord::from_value(json!({"compactions":0,
         "id":agent_id,"rootId":agent_id,"epoch":3,"status":"starting",
         "provider":"codex","accountKey":"default","autoWake":true,
         "executionMode":"vm","isLead":true,"workspaceMode":"layr",

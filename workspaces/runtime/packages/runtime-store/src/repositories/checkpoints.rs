@@ -1153,7 +1153,7 @@ mod tests {
     fn workspace_activity_ignores_unrelated_record_metadata() {
         let agent = StoredCheckpointObject {
             id: "agent".to_owned(),
-            record: json!({
+            record: json!({"compactions":0,
                 "id": "agent",
                 "provider": "codex",
                 "cwd": "/workspace",

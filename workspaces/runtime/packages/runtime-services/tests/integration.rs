@@ -1,4 +1,11 @@
 // Register every integration test module here; the tooling witness checks coverage.
+fn task_record(value: &serde_json::Value) -> studio_runtime_store::TaskRecord {
+    let mut canonical = value.clone();
+    if canonical.get("name").is_none() {
+        canonical["name"] = canonical["type"].clone();
+    }
+    serde_json::from_str(&canonical.to_string()).expect("canonical task fixture")
+}
 mod account_login_registry_cleanup;
 mod account_login_session_start;
 mod account_transfer_corpus;

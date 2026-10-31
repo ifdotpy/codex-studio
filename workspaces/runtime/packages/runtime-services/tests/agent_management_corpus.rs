@@ -11,7 +11,7 @@ use studio_runtime_store::{RuntimeStore, Transaction, agent_management as reposi
 const NOW: f64 = 1_234_567.5;
 
 fn seed() -> Value {
-    let mut lead = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":3,"status":"idle","name":"Lead","cwd":"/fixture","isLead":true,"autoWake":true,"inFlight":false,"created":1.0});
+    let mut lead = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":3,"status":"idle","name":"Lead","cwd":"/fixture","isLead":true,"autoWake":true,"inFlight":false,"created":1.0});
     let mut worker = lead.clone();
     worker["id"] = json!("worker");
     worker["parentId"] = json!("lead");

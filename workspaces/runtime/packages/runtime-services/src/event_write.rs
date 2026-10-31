@@ -737,7 +737,7 @@ mod tests {
 
     #[test]
     fn pending_recovery_matches_typed_identity() {
-        let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"id":"a","rootId":"a","epoch":3,"status":"interrupted","accountKey":"account","threadId":"thread","autoWake":false,"restartRecovery":{"epoch":3,"accountKey":"account","threadId":"thread","stage":"pending","autoWake":true}})).unwrap();
+        let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,"id":"a","rootId":"a","epoch":3,"status":"interrupted","accountKey":"account","threadId":"thread","autoWake":false,"restartRecovery":{"epoch":3,"accountKey":"account","threadId":"thread","stage":"pending","autoWake":true}})).unwrap();
         assert!(super::recovery_pending(&agent));
         agent.account_key = "other".into();
         assert!(!super::recovery_pending(&agent));

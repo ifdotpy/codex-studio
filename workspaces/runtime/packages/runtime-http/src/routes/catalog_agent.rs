@@ -889,8 +889,8 @@ mod native_command_tests {
                 .unwrap(),
         );
         store.transaction_with(|tx| {
-            let owner = json!({"id":"owner","rootId":"owner","epoch":1,"status":"running","accountKey":"default","provider":"codex","threadId":"thread","turnId":"turn","inFlight":true,"autoWake":true});
-            let task = json!({"id":"owner:command","agent":"owner","kind":"command","itemId":"command","processId":"42","status":"running","ownerEpoch":1,"sourceAccountKey":"default","sourceConnectionId":"actual-uuid","sourceThreadId":"thread","turnId":"turn","created":1});
+            let owner = json!({"compactions":0,"id":"owner","rootId":"owner","epoch":1,"status":"running","accountKey":"default","provider":"codex","threadId":"thread","turnId":"turn","inFlight":true,"autoWake":true});
+            let task = json!({"id":"owner:command","agent":"owner","kind":"command","type":"commandExecution","name":"commandExecution","itemId":"command","processId":"42","status":"running","ownerEpoch":1,"sourceAccountKey":"default","sourceConnectionId":"actual-uuid","sourceThreadId":"thread","turnId":"turn","created":1});
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('owner',?)", [owner.to_string()])?;
             tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('owner:command',?)", [task.to_string()])?;
             Ok::<_, studio_runtime_store::StoreError>(())
@@ -1029,8 +1029,8 @@ mod native_command_tests {
         let stored_cancel_root = cancel_root.clone();
         store.transaction(move |tx| {
             studio_runtime_store::receipt_schema::create(tx)?;
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle"}).to_string()])?;
-            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('task',?1)", [json!({"id":"task","agent":"agent","kind":"command","status":"completed","processId":"17","itemId":"item","created":1.0}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('task',?1)", [json!({"id":"task","agent":"agent","kind":"command","status":"completed","processId":"17","itemId":"item","turnId":"turn","type":"commandExecution","name":"commandExecution","created":1.0}).to_string()])?;
             let signature = json!({"task":"task","action":"input","text":"one"}).to_string();
             let envelope = json!({"actor":"agent","reply":{"id":"original-input","status":"pending"},"references":[]});
             let identity = studio_runtime_schema::persistence::RequestIdentity::new("native-command", &[], &request_root, &[]).expect("identity");

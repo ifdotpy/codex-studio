@@ -90,7 +90,7 @@ impl ProjectsRepository {
             deleted_at,
         };
         tx.execute("INSERT INTO runtime_projects(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
-            params![id, json!({"id":id,"removal":removal}).to_string()])?;
+            params![id, json!({"id":id,"removal":removal,"peerTeams":[]}).to_string()])?;
         Ok(())
     }
     pub fn is_destructive_removal(

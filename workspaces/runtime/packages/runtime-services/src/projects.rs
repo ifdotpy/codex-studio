@@ -737,7 +737,7 @@ fn new_project(
     let server = prepared.server()?;
     Ok(
         json!({"id":path,"path":path,"name":name,"created":now_seconds(),"accountKey":account,"accountRevision":1,
-        "homeServerId":server,"locations":[{"serverId":server,"path":path,"projectId":path}],"locationsRevision":0}),
+        "homeServerId":server,"locations":[{"serverId":server,"path":path,"projectId":path}],"locationsRevision":0,"peerTeams":[]}),
     )
 }
 
@@ -1304,6 +1304,21 @@ mod compatibility_tests {
 mod account_order_tests {
     use super::*;
 
+    #[test]
+    fn persisted_projects_require_canonical_peer_teams() {
+        assert!(
+            !studio_runtime_schema::validate("PersistedProjectRecord", &json!({"id":"p"}))
+                .expect("project schema")
+        );
+        assert!(
+            studio_runtime_schema::validate(
+                "PersistedProjectRecord",
+                &json!({"id":"p","peerTeams":[]})
+            )
+            .expect("project schema")
+        );
+    }
+
     #[tokio::test]
     async fn explicit_registration_reveals_the_retained_project_owner() {
         let folder = tempfile::tempdir().expect("project folder");
@@ -1314,7 +1329,7 @@ mod account_order_tests {
         let state = tempfile::tempdir().expect("state");
         let store = Arc::new(RuntimeStore::open(Some(state.path())).await.expect("store"));
         let seeded = path.clone();
-        store.transaction(move |tx| ProjectsRepository::put_project(tx,&json!({"id":seeded,"path":seeded,"name":"Retained","sidebarHidden":true,"locationsRevision":9}))).await.expect("hidden owner");
+        store.transaction(move |tx| ProjectsRepository::put_project(tx,&json!({"id":seeded,"path":seeded,"name":"Retained","sidebarHidden":true,"locationsRevision":9,"peerTeams":[]}))).await.expect("hidden owner");
         assert!(
             list(&store).await.expect("sidebar")["items"]
                 .as_array()
@@ -1351,7 +1366,7 @@ mod account_order_tests {
             .transaction(move |tx| {
                 ProjectsRepository::put_project(
                     tx,
-                    &json!({"id":seeded,"path":seeded,"name":"P","created":0,"accountKey":"default"}),
+                    &json!({"id":seeded,"path":seeded,"name":"P","created":0,"accountKey":"default","peerTeams":[]}),
                 )
             })
             .await

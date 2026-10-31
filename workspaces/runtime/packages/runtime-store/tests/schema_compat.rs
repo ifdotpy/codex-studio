@@ -369,7 +369,7 @@ async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
 
             let mut task = TaskRepository::get(tx, &TaskId::from("fixture-task"))?
                 .expect("seeded task exists");
-            task.set_status("running");
+            task.set_status(studio_runtime_schema::task_record::TaskStatus::Running);
             TaskRepository::put(tx, &task)?;
 
             QueueEventRepository::put(
@@ -1073,6 +1073,17 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
     let store = RuntimeStore::open(Some(state))
         .await
         .expect("partially prepared fixture opens");
+    let reader = store.test_reader().expect("reader opens");
+    let raw: String = reader
+        .query_row(
+            "SELECT record FROM runtime_tasks WHERE id='protected-task'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("protected task remains");
+    assert_eq!(raw, "{}");
+    assert!(TaskRepository::get(&reader, &TaskId::from("protected-task")).is_err());
+    drop(reader);
     let protected_trigger: i64 = store
         .test_reader()
         .expect("reader opens")
@@ -1294,7 +1305,7 @@ fn seed_records(path: &Path) {
     .expect("agent fixture inserts");
     db.execute(
         "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
-        params!["fixture-task", r#"{"id":"fixture-task","agent":"fixture-agent","kind":"command","status":"completed","created":1.0}"#],
+        params!["fixture-task", r#"{"id":"fixture-task","agent":"fixture-agent","itemId":"item","turnId":"turn","kind":"command","status":"completed","type":"commandExecution","name":"commandExecution","created":1.0}"#],
     )
     .expect("runtime task fixture inserts");
     db.execute(

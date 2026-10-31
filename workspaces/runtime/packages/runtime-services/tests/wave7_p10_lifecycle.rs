@@ -112,6 +112,10 @@ async fn seed(store: &RuntimeStore, records: Records) {
 
 // Frozen fixtures used numeric tickets before the current agent view stored strings.
 fn use_current_ticket_shape(row: &mut Value) {
+    row.as_object_mut()
+        .expect("agent fixture")
+        .entry("compactions")
+        .or_insert(json!(0));
     if row.get("accountKey").is_none_or(Value::is_null) {
         row["accountKey"] = json!("default");
     }
@@ -556,7 +560,7 @@ async fn committed_delete_drains_its_intent_despite_unrelated_cleanup_failure() 
         .expect("delete case");
     let mut records: Records = serde_json::from_value(case["records"].clone()).expect("records");
     let root = tempfile::tempdir().expect("root");
-    records.tables.get_mut("runtime_agents").expect("agents").push(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+    records.tables.get_mut("runtime_agents").expect("agents").push(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
         "id":"a-broken-cleanup", "rootId":"a-broken-cleanup", "epoch":1, "status":"paused", "deletedAt":1,
         "cwd":root.path(), "worktreeReady":true, "agentArchive":{"at":1,"epoch":1,"cleanupPending":true},
         "workspaceCleanupIntent":studio_runtime_services::workspace_cleanup_runtime::queued_cleanup_intent("a-broken-cleanup", 1, studio_runtime_services::workspace_cleanup_runtime::CleanupAction::Archive)
@@ -1058,6 +1062,7 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
             let mut payload: Value = serde_json::from_str(row[2].as_str().expect("agent payload"))
                 .expect("frozen agent JSON");
             payload["value"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            payload["value"]["compactions"] = json!(0);
             if payload["value"].get("accountKey").is_none() {
                 payload["value"]["accountKey"] = json!("default");
             }
@@ -1566,6 +1571,7 @@ async fn production_child_notification_matches_python_corpus() {
         if row[0] == "agent" && row[3] == 0 {
             let mut payload: Value = serde_json::from_str(row[2].as_str().expect("agent payload"))
                 .expect("frozen agent JSON");
+            payload["value"]["compactions"] = json!(0);
             payload["value"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
             if payload["value"].get("accountKey").is_none() {
                 payload["value"]["accountKey"] = json!("default");

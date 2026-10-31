@@ -2026,7 +2026,7 @@ mod tests {
                      ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                     rusqlite::params![
                         id,
-                        serde_json::json!({"id":id,"rootId":id,"epoch":0,"status":"idle",
+                        serde_json::json!({"compactions":0,"id":id,"rootId":id,"epoch":0,"status":"idle",
                             "provider":provider})
                         .to_string()
                     ],
@@ -2117,7 +2117,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('worker',?1)",
                     [
-                        serde_json::json!({"id":"worker","rootId":"codex-agent","epoch":0,
+                        serde_json::json!({"compactions":0,"id":"worker","rootId":"codex-agent","epoch":0,
                         "status":"idle","provider":"codex"})
                         .to_string(),
                     ],
@@ -2201,7 +2201,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"owner","rootId":"owner","epoch":0,"status":"ready",
                             "autoWake":true,"accountKey":"default","threadId":"thread"
                         })
@@ -2948,7 +2948,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"owner","rootId":"owner","epoch":1,"status":"interrupted",
                             "autoWake":true,"accountKey":"default","threadId":"thread",
                             "nativeFailureHold":{"reason":"pending"},
@@ -2986,7 +2986,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"owner","rootId":"owner","epoch":1,"status":"ready",
                             "autoWake":true,"accountKey":"default","threadId":"thread",
                             "nativeFailureHold":{},
@@ -3144,7 +3144,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('worker',?1)",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"worker","rootId":"owner","epoch":0,
                             "status":"running","isLead":false
                         })
@@ -3208,7 +3208,7 @@ mod tests {
                 tx.execute(
                     "UPDATE runtime_agents SET record=?1 WHERE id='worker'",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"worker","rootId":"owner","epoch":0,
                             "status":"completed","isLead":false
                         })

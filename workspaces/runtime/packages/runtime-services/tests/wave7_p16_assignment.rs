@@ -15,12 +15,12 @@ fn database() -> Connection {
         .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
     for agent in [
-        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running","isLead":true,"autoWake":true}),
-        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"lead","parentId":"lead","epoch":2,"status":"starting","autoWake":true}),
-        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"other-child","rootId":"lead","parentId":"lead","epoch":3,"status":"starting","autoWake":true}),
-        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"other-lead","rootId":"other-lead","epoch":1,"status":"running","isLead":true,"autoWake":true}),
-        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"reviewer","rootId":"reviewer","epoch":1,"status":"running","isLead":true,"role":"reviewer","autoWake":true}),
-        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"impostor","rootId":"impostor","epoch":1,"status":"running","autoWake":true}),
+        json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running","isLead":true,"autoWake":true}),
+        json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"lead","parentId":"lead","epoch":2,"status":"starting","autoWake":true}),
+        json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"other-child","rootId":"lead","parentId":"lead","epoch":3,"status":"starting","autoWake":true}),
+        json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"other-lead","rootId":"other-lead","epoch":1,"status":"running","isLead":true,"autoWake":true}),
+        json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"reviewer","rootId":"reviewer","epoch":1,"status":"running","isLead":true,"role":"reviewer","autoWake":true}),
+        json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"impostor","rootId":"impostor","epoch":1,"status":"running","autoWake":true}),
     ] {
         connection
             .execute(
@@ -171,7 +171,7 @@ fn spawn_creator_failpoints_before_and_after_assignment_roll_back_child_and_work
         let tx = connection
             .transaction()
             .expect("creator transaction starts");
-        let child = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"created-child","rootId":"lead","parentId":"lead","epoch":2,"status":"starting","autoWake":true});
+        let child = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"created-child","rootId":"lead","parentId":"lead","epoch":2,"status":"starting","autoWake":true});
         AgentRepository::put(
             &tx,
             &AgentRecord::from_value(child).expect("creator child is a typed record"),

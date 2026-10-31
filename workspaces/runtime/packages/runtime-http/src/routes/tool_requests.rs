@@ -135,7 +135,7 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let agent = studio_runtime_store::AgentRecord::from_value(json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","provider":"codex"})).unwrap();
+        let agent = studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","provider":"codex"})).unwrap();
         store
             .transaction(move |tx| studio_runtime_store::AgentRepository::put(tx, &agent))
             .await

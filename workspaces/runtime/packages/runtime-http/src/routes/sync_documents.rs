@@ -866,6 +866,8 @@ fn map_sync_store_error(error: StoreError) -> ApiError {
         StoreError::InvalidSyncObject { scope, id } => ApiError::invalid_stored(&scope, &id),
         StoreError::RequestResult(error) => error.into(),
         StoreError::Outbox(error) => error.into(),
+        error @ (StoreError::TranscriptFullTextUnavailable { .. }
+        | StoreError::TranscriptInputsIncomplete { .. }) => ApiError::stored(error),
         StoreError::StateDirectory(_)
         | StoreError::AlreadyOwned
         | StoreError::MissingDatabase(_)
@@ -1231,11 +1233,14 @@ mod vault_maintenance_tests {
             .join("Project")
             .to_string_lossy()
             .into_owned();
-        std::fs::create_dir_all(&project_path).expect("project directory is created");
+        tokio::fs::create_dir_all(&project_path)
+            .await
+            .expect("project directory is created");
         let project = json!({
             "id": project_path,
             "path": project_path,
             "projectAliases": [],
+            "peerTeams": [],
         });
         let stored_project = project.clone();
         store
@@ -1506,6 +1511,7 @@ mod vault_maintenance_tests {
         let project = json!({
             "id": source,
             "path": source,
+            "peerTeams": [],
             "projectAliases": [{
                 "serverId": "fixture-server",
                 "projectId": source,
@@ -1516,16 +1522,20 @@ mod vault_maintenance_tests {
             .root()
             .join("linux-vm/layr-projects")
             .join(&project_id);
-        std::fs::create_dir_all(&project_folder).expect("vault folder is created");
-        std::fs::write(
+        tokio::fs::create_dir_all(&project_folder)
+            .await
+            .expect("vault folder is created");
+        tokio::fs::write(
             project_folder.join("vault.json"),
             br#"{"configured":true,"prefix":"project"}"#,
         )
+        .await
         .expect("vault record is written");
-        std::fs::write(
+        tokio::fs::write(
             project_folder.join("vault-site.json"),
             br#"{"site":"https://before.example/"}"#,
         )
+        .await
         .expect("site record is written");
 
         let source_for_store = source.to_owned();
@@ -1594,10 +1604,11 @@ mod vault_maintenance_tests {
             "https://before.example/"
         );
 
-        std::fs::write(
+        tokio::fs::write(
             project_folder.join("vault-site.json"),
             br#"{"site":"https://after.example/"}"#,
         )
+        .await
         .expect("cached vault changes without a SQLite write");
         let second_pull = pull().await.expect("entity pull succeeds");
         assert!(response_value(&second_pull)["documents"].is_array());
@@ -1641,7 +1652,7 @@ mod vault_maintenance_tests {
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     rusqlite::params![
                         "agent-1",
-                        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
+                        json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
                             .to_string()
                     ],
                 )?;
@@ -1702,7 +1713,7 @@ mod vault_maintenance_tests {
                         "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                         rusqlite::params![
                             id,
-                            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()
+                            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()
                         ],
                     )?;
                     transaction.execute(

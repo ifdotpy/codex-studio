@@ -2265,7 +2265,7 @@ mod tests {
             .expect("pricing directory");
         tokio::fs::write(root.path().join("model-pricing/models-dev-v1.json"),json!({"version":1,"catalog":{"providers":{"openai":{"models":{"gpt-test":{"cost":{"input":1,"output":1}}}},"anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":1}}}}}}}).to_string()).await.expect("pricing source");
         let store = state.store.as_ref().expect("store");
-        store.transaction(|tx|{tx.execute("INSERT INTO runtime_agents(id,record) VALUES('lead',?1)",[json!({"id":"lead","rootId":"lead","epoch":1,"isLead":true,"status":"idle","provider":"codex","model":"gpt-test","cwd":"/fixture","accountKey":"default"}).to_string()])?;Ok(())}).await.expect("chat source");
+        store.transaction(|tx|{tx.execute("INSERT INTO runtime_agents(id,record) VALUES('lead',?1)",[json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,"isLead":true,"status":"idle","provider":"codex","model":"gpt-test","cwd":"/fixture","accountKey":"default"}).to_string()])?;Ok(())}).await.expect("chat source");
         publish_sessions(&state)
             .await
             .expect("session costs published");

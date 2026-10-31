@@ -165,6 +165,7 @@ async fn action_receipt_replays_without_dispatch_and_rejects_identity_reuse() {
     let fixture = corpus()["processes"][0].clone();
     let mut owner = fixture["owner"].clone();
     owner["status"] = json!("idle");
+    owner["compactions"] = json!(0);
     let mut raw = json!({"id":"watch","agent":"owner","epoch":3,"status":"running","requestId":"request","created":1,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":"","interactive":false,"livenessCommand":"","log":"","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"});
     raw.as_object_mut()
         .unwrap()

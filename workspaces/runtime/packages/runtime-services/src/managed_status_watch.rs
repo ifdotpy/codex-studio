@@ -1493,14 +1493,14 @@ mod tests {
             .transaction_with(move |tx| {
                 studio_runtime_store::receipt_schema::create(tx)?;
                 for record in [
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"lead","rootId":"lead","epoch":3,"status":"running",
                         "isLead":true,"autoWake":true,"cwd":cwd,
                         "concurrency":2,"maxAgents":8,
                         "workerDefaults":{"model":"gpt-fixture","effort":"high","fastMode":false}
                     }),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
                 ] {
                     AgentRepository::put(
                         tx,

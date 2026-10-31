@@ -1324,10 +1324,10 @@ mod tests {
                 .await
                 .expect("store"),
         );
-        let lead = json!({"id":"lead-00000000","rootId":"lead-00000000","parentId":null,"epoch":1,
+        let lead = json!({"compactions":0,"id":"lead-00000000","rootId":"lead-00000000","parentId":null,"epoch":1,
             "status":"running","isLead":true,"autoWake":true,"inFlight":true,"threadId":"lead-thread",
             "turnId":"lead-turn","accountKey":"default","provider":"codex"});
-        let worker = json!({"id":"worker-00000000","rootId":"lead-00000000","parentId":"lead-00000000","epoch":3,
+        let worker = json!({"compactions":0,"id":"worker-00000000","rootId":"lead-00000000","parentId":"lead-00000000","epoch":3,
             "status":"completed","isLead":false,"autoWake":true,"inFlight":false,"threadId":"worker-thread",
             "turnId":null,"accountKey":"default","provider":"codex","executionMode":"native","activeTools":[]});
         let actor = Actor::from_record(&lead, "lead-00000000", 1).expect("actor");

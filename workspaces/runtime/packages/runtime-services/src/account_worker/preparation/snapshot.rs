@@ -1852,7 +1852,7 @@ mod resource_tests {
             for (error, context_wait) in [(Value::Null, Value::Null), (json!("plain error"), Value::Null),
                 (json!({"message":"Claude Code process exited with code 143"}), Value::Null),
                 (json!({"message":"context error","codexErrorInfo":"misalignmentPolicyViolation"}), json!("repair"))] {
-                let record = json!({"id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                let record = json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,"status":"queued",
                     "isLead":true,"autoWake":true,"provider":"claude","accountKey":"default",
                     "cwd":"/project","threadId":"existing-thread","error":error,
                     "lastCompletedTurn":"old-turn","lastCompletedTurnStatus":"interrupted",
@@ -1885,7 +1885,7 @@ mod resource_tests {
             .expect("resources");
         store.transaction_with(move |tx| {
             for error in [json!(false), json!(42), json!([])] {
-                let record = json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                let record = json!({"compactions":0,"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"queued",
                     "isLead":true,"provider":"claude","cwd":"/project","threadId":"existing-thread","error":error});
                 AgentRepository::put(tx, &AgentRecord::from_value(record.clone()).expect("agent"))?;
                 assert!(matches!(thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"), None),
@@ -2056,7 +2056,7 @@ mod resource_tests {
             .expect("runtime resources");
         store
             .transaction_with(move |tx| {
-                let root = json!({"id":"root","rootId":"root","epoch":1,"status":"completed",
+                let root = json!({"compactions":0,"id":"root","rootId":"root","epoch":1,"status":"completed",
                     "isLead":true,"name":"Lead","provider":"codex","accountKey":"default"});
                 AgentRepository::put(tx, &AgentRecord::from_value(root).expect("root"))?;
                 let review = json!({"id":"review","rootId":"root","parentId":"root",
@@ -2086,7 +2086,7 @@ mod resource_tests {
         let alias = directory.path().join("alias");
         std::os::unix::fs::symlink(&root, &alias).expect("store alias");
         let stored_cwd = alias.join("projects/project/lines/main");
-        let record = json!({"id":"worker", "rootId":"worker", "epoch":1,
+        let record = json!({"compactions":0,"id":"worker", "rootId":"worker", "epoch":1,
             "status":"paused", "isLead":true, "role":"implementer", "provider":"codex",
             "model":"fake-model",
             "accountKey":"default", "cwd":stored_cwd, "workspaceMode":"layr-native",
@@ -2151,7 +2151,7 @@ mod resource_tests {
             (Value::Null, false, canonical_custom),
             (Value::Null, true, default_root.clone()),
         ] {
-            let record = json!({"accountKey":"default","id":"reviewer", "rootId":"reviewer", "epoch":1,
+            let record = json!({"compactions":0,"accountKey":"default","id":"reviewer", "rootId":"reviewer", "epoch":1,
                 "isLead":true, "role":"reviewer", "provider":"claude", "status":"queued",
                 "cwd":"/scratch", "workspaceMode":"layr-native", "layrReady":ready,
                 "layrReadCwd":default_root.join("projects/project/lines/main"),
@@ -2300,7 +2300,7 @@ mod resource_tests {
                     // of an agent whose saved source is legacy.
                     for (thread_id, source) in [(Some("thread-old"), None), (None, Some("legacy"))]
                     {
-                        let mut record = json!({"id":mode, "rootId":mode, "epoch":1,
+                        let mut record = json!({"compactions":0,"id":mode, "rootId":mode, "epoch":1,
                             "status":"running", "isLead":true, "name":"Lead", "provider":"codex",
                             "accountKey":"default", "executionMode":mode, "cwd":"/line",
                             "workspaceMode":if vm { "layr" } else { "layr-native" }});
@@ -2395,7 +2395,7 @@ mod resource_tests {
                         (Some("thread-old"), Some("legacy")),
                         (None, None),
                     ] {
-                        let mut record = json!({"id":"claude", "rootId":"claude", "epoch":1,
+                        let mut record = json!({"compactions":0,"id":"claude", "rootId":"claude", "epoch":1,
                             "status":"running", "isLead":true, "name":"Lead", "provider":"claude",
                             "accountKey":"default", "executionMode":mode, "cwd":"/line"});
                         if let Some(thread_id) = thread_id {
@@ -2749,7 +2749,7 @@ mod workspace_fence_tests {
     async fn receipt_store_and_scratch_changes_are_isolatable() {
         let state = tempfile::tempdir().expect("state");
         let store = RuntimeStore::open(Some(state.path())).await.expect("store");
-        let record = json!({"accountKey":"default","id":"reviewer", "rootId":"reviewer", "epoch":1,
+        let record = json!({"compactions":0,"accountKey":"default","id":"reviewer", "rootId":"reviewer", "epoch":1,
             "status":"running", "isLead":true, "provider":"claude", "cwd":"/scratch",
             "workspaceMode":"layr-native", "role":"reviewer", "layrStoreRoot":"/store-a", "layrScratch":"/scratch"});
         let saved = record.clone();
@@ -2880,11 +2880,11 @@ mod workspace_fence_tests {
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
             .expect("resources");
         store.transaction_with(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"lead","rootId":"lead","epoch":1,
                 "status":"running","isLead":true,"cwd":"/project","provider":studio_runtime_schema::ProviderKind::Claude})).expect("lead"))?;
             for mode in crate::claude_controls::PERMISSION_MODES {
                 for resumed in [false, true] {
-                    let mut record = json!({"accountKey":"default","id":"worker","rootId":"lead","parentId":"lead","epoch":1,
+                    let mut record = json!({"compactions":0,"accountKey":"default","id":"worker","rootId":"lead","parentId":"lead","epoch":1,
                         "status":"queued","isLead":false,"role":"implementer","provider":"claude","cwd":"/project",
                         "workspaceMode":"shared","yoloMode":*mode == "bypassPermissions","claudeOptions":{"permissionMode": mode}});
                     if resumed {
@@ -2921,7 +2921,7 @@ mod workspace_fence_tests {
         }).collect();
         store
             .transaction_with(move |tx| {
-                let root = json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"running",
+                let root = json!({"compactions":0,"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"running",
                 "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout","provider":studio_runtime_schema::ProviderKind::Claude});
                 AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
                 for (mode, provider, role, ready, fenced, expected_sandbox) in [
@@ -2983,7 +2983,7 @@ mod workspace_fence_tests {
                         "danger-full-access",
                     ),
                 ] {
-                    let record = json!({"accountKey":"default","id":"worker","rootId":"lead","parentId":"lead",
+                    let record = json!({"compactions":0,"accountKey":"default","id":"worker","rootId":"lead","parentId":"lead",
                     "epoch":1,"status":"queued","isLead":false,"role":role,"provider":provider,
                     "cwd":"/worker copy:quoted\"path","hostProjectPath":"/parent copy",
                     "workspaceMode":mode,"worktree":mode == "worktree","worktreeReady":ready,

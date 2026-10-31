@@ -795,7 +795,7 @@ fn send_to_user(
             }
         })?;
     let result = UserSendReply {
-        id: super::text(&message, "id")?.to_owned(),
+        id: message.id,
         room: format!("user:{who}"),
         recipient: UserRecipient::User,
     };

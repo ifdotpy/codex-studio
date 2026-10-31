@@ -367,6 +367,7 @@ async fn queued_active_snapshot(store: &Arc<RuntimeStore>) -> RecoverySnapshot {
         .expect("queued active fixture")["agent"]
         .clone();
     agent["connectionRecovery"]["requestId"] = json!("queued-recovery");
+    agent["compactions"] = json!(0);
     agent["connectionRecovery"]["requestState"] = json!("pending");
     agent["connectionRecovery"]["requestBasis"] = json!([]);
     agent["connectionRecovery"]["requestReceipt"] = serde_json::Value::Null;
@@ -492,6 +493,7 @@ fn frozen_cases(corpus: Corpus) -> Vec<serde_json::Value> {
     // Adapt their agent input and expected agent output, leaving receipts intact.
     for case in &mut cases {
         case["agent"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        case["agent"]["compactions"] = json!(0);
         if let Some(history) = case["agent"]
             .get_mut("accountHistory")
             .and_then(serde_json::Value::as_array_mut)
@@ -502,6 +504,7 @@ fn frozen_cases(corpus: Corpus) -> Vec<serde_json::Value> {
         }
         if agent_output && case["after"].is_object() {
             case["after"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            case["after"]["compactions"] = json!(0);
         }
     }
     cases
@@ -972,7 +975,8 @@ async fn seed_task(store: &Arc<RuntimeStore>, case: &serde_json::Value) {
     lifecycle_transaction(store, move |tx| {
         tx.execute(
             "INSERT INTO runtime_tasks(id,record) VALUES('agent:item',?1)",
-            [case["task"].to_string()],
+            [serde_json::to_string(&super::task_record(&case["task"]))
+                .expect("serialize canonical task fixture")],
         )?;
         tx.execute(
             "INSERT INTO runtime_items(id,agent,record,created) VALUES('agent:item','agent',?1,10)",
@@ -1096,7 +1100,7 @@ async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
             serde_json::from_value(case["observation"].clone()).expect("observation");
         let before = TaskRecoverySnapshot::from_records(
             snapshot(&store).record().clone(),
-            case["task"].clone(),
+            super::task_record(&case["task"]),
             vec![],
             vec![],
         )
@@ -1168,7 +1172,9 @@ async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
             rows[0]["error"]
         );
         if case["absent"] == true {
-            assert_eq!(rows[0], case["after"], "{}", case["name"]);
+            let mut expected = case["after"].clone();
+            expected["name"] = case["task"]["type"].clone();
+            assert_eq!(rows[0], expected, "{}", case["name"]);
             assert_eq!(rows[1], case["item"]);
         } else {
             assert_eq!(rows[0]["status"], "running");
@@ -1204,7 +1210,7 @@ async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
             seed_task(&store, case).await;
             let before = TaskRecoverySnapshot::from_records(
                 snapshot(&store).record().clone(),
-                case["task"].clone(),
+                super::task_record(&case["task"]),
                 vec![],
                 vec![],
             )
@@ -1251,7 +1257,7 @@ async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
         seed_task(&store, case).await;
         let before = TaskRecoverySnapshot::from_records(
             snapshot(&store).record().clone(),
-            case["task"].clone(),
+            super::task_record(&case["task"]),
             vec![],
             vec![],
         )
@@ -1310,7 +1316,7 @@ async fn held_task_rechecks_current_receipts_before_later_absence_recovery() {
     seed_task(&store, &case).await;
     let before = TaskRecoverySnapshot::from_records(
         snapshot(&store).record().clone(),
-        case["task"].clone(),
+        super::task_record(&case["task"]),
         vec![],
         vec![],
     )
@@ -1352,9 +1358,13 @@ async fn held_task_rechecks_current_receipts_before_later_absence_recovery() {
             .await
             .expect("stale proof")
     );
-    let current_task =
-        TaskRecoverySnapshot::from_records(snapshot(&store).record().clone(), held, vec![], vec![])
-            .expect("held snapshot");
+    let current_task = TaskRecoverySnapshot::from_records(
+        snapshot(&store).record().clone(),
+        super::task_record(&held),
+        vec![],
+        vec![],
+    )
+    .expect("held snapshot");
     let mut reader = TaskReader {
         observation: observation.clone(),
         options: json!({}),
@@ -1386,7 +1396,7 @@ async fn an_adopted_turn_that_finished_while_the_worker_was_dead_is_reconciled()
     let attempt = json!({"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread",
         "turnId":"turn","events":["event"],"submitted":true,"connectionGeneration":1,
         "activeAtReservation":false,"created":10});
-    let agent = json!({
+    let agent = json!({"compactions":0,
         "id":"agent","rootId":"agent","epoch":0,"turnEpoch":0,"accountKey":"default",
         "threadId":"thread","turnId":"turn","status":"running","autoWake":true,"inFlight":false,
         "error":null,"provider":"codex","lastCompletedTurn":"earlier",
@@ -1471,7 +1481,7 @@ async fn restart_continues_only_a_confirmed_interruption() {
         let root = fixture();
         let store = open_store(root.path()).await;
         lifecycle_transaction(&store, move |tx| {
-            let agent = json!({
+            let agent = json!({"compactions":0,
                 "id":"agent","rootId":"agent","epoch":0,"turnEpoch":0,"accountKey":"default",
                 "threadId":"thread","turnId":"turn","status":"interrupted","autoWake":false,"inFlight":false,
                 "error":"Server restarted during a turn.","provider":"claude",

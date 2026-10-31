@@ -684,7 +684,7 @@ mod tests {
         drop(connection);
 
         let agent = |id: &str| {
-            json!({
+            json!({"compactions":0,
                 "id": id, "rootId": id, "epoch": 1, "status": "running", "autoWake": true,
                 "provider": studio_runtime_schema::ProviderKind::Codex,
                 "accountKey": "account-a", "threadId": "thread-a", "turnId": "turn-a",
@@ -830,7 +830,7 @@ mod catalog_wait_tests {
                 .await
                 .expect("runtime store"),
         );
-        let agent = json!({
+        let agent = json!({"compactions":0,
             "provider": "codex", "id": "agent-a", "rootId": "agent-a", "epoch": 1, "status": "running",
             "autoWake": true, "accountKey": "account-a", "threadId": "thread-a",
             "turnId": "turn-a",

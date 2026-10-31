@@ -15,12 +15,75 @@ struct InputIdentity {
 }
 
 #[derive(serde::Deserialize)]
-struct ClaimResult {
-    agent: AgentRecord,
+struct ClaimResult<T> {
+    agent: T,
     metadata: BTreeMap<String, Value>,
 }
 
-fn claim_result(saved: &crate::ExecutionAttempt) -> StoreResult<ClaimResult> {
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoricalReplayAgent {
+    id: AgentId,
+    epoch: i64,
+    #[serde(flatten)]
+    agent: ClaimedAgent,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoricalAgentSnapshot {
+    account_key: String,
+    #[serde(default = "missing_historical_field")]
+    provider: HistoricalField<studio_runtime_schema::provider_kind::ProviderKind>,
+    thread_id: Option<String>,
+    cwd: Option<String>,
+    id: AgentId,
+    root_id: AgentId,
+    epoch: i64,
+    execution_mode: Option<crate::AgentExecutionMode>,
+    is_lead: Option<bool>,
+    workspace_mode: Option<WorkspaceMode>,
+    parent_id: Option<String>,
+    #[serde(default = "missing_historical_field")]
+    role: HistoricalField<String>,
+    #[serde(default = "missing_historical_field")]
+    real_cwd: HistoricalField<String>,
+    start_attempt: Option<Box<serde_json::value::RawValue>>,
+}
+
+enum HistoricalField<T> {
+    Missing,
+    Null,
+    Present(T),
+}
+
+fn missing_historical_field<T>() -> HistoricalField<T> {
+    HistoricalField::Missing
+}
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for HistoricalField<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match <Option<T> as serde::Deserialize>::deserialize(d)? {
+            Some(value) => Self::Present(value),
+            None => Self::Null,
+        })
+    }
+}
+
+fn historical_text<T>(
+    value: &HistoricalField<T>,
+    text: impl FnOnce(&T) -> String,
+) -> Option<Value> {
+    match value {
+        HistoricalField::Missing => None,
+        HistoricalField::Null => Some(Value::Null),
+        HistoricalField::Present(value) => Some(Value::String(text(value))),
+    }
+}
+
+fn claim_result<T: serde::de::DeserializeOwned>(
+    saved: &crate::ExecutionAttempt,
+) -> StoreResult<ClaimResult<T>> {
     let invalid = || {
         ExecutionHistoryRepository::invalid(
             "runtime_execution_attempts",
@@ -222,29 +285,25 @@ fn wake_candidate(
     let raw: rusqlite::types::Value = row.get(2)?;
     let mode = match raw {
         rusqlite::types::Value::Null => Some(None),
-        rusqlite::types::Value::Text(value) => {
-            serde_json::from_value::<WorkspaceMode>(Value::String(value))
-                .ok()
-                .map(Some)
-        }
+        rusqlite::types::Value::Text(value) => serde::Deserialize::deserialize(
+            serde::de::value::StrDeserializer::<serde_json::Error>::new(&value),
+        )
+        .ok()
+        .map(Some),
         rusqlite::types::Value::Integer(_)
         | rusqlite::types::Value::Real(_)
         | rusqlite::types::Value::Blob(_) => None,
     };
-    let workspace_mode = match mode {
-        Some(mode) => Ok(mode),
-        None => {
-            // The actual agent reader owns the located diagnostic, including
-            // its safe shape facts. It runs only for a malformed projection.
-            let error = match AgentRepository::get(connection, &AgentId::from(agent_id.as_str())) {
-                Err(error) => error,
-                Ok(_) => StoreError::RecordContract(
-                    "workspaceMode projection disagrees with its generated owner",
-                ),
-            };
-            Err(std::sync::Arc::new(error))
-        }
-    };
+    let workspace_mode = mode.ok_or_else(|| {
+        // The agent reader owns the located diagnostic for malformed projections.
+        let error = match AgentRepository::get(connection, &AgentId::from(agent_id.as_str())) {
+            Err(error) => error,
+            Ok(_) => StoreError::RecordContract(
+                "workspaceMode projection disagrees with its generated owner",
+            ),
+        };
+        std::sync::Arc::new(error)
+    });
     Ok(WakeCandidate {
         agent_id,
         epoch,
@@ -405,23 +464,26 @@ impl SchedulerRepository {
         else {
             return Ok(false);
         };
-        let original = claim_result(&saved)?.agent;
+        let original = claim_result::<HistoricalAgentSnapshot>(&saved)?.agent;
         if original.id != agent.id
             || original.root_id != agent.root_id
             || original.epoch != agent.epoch
-            || !same_native_scope(&original, agent)
+            || original.account_key != agent.account_key
+            || original.thread_id != agent.thread_id
             || original.execution_mode != agent.execution_mode
             || original.is_lead != agent.is_lead
             || original.workspace_mode != agent.workspace_mode
             || original.cwd != agent.cwd
             || original.parent_id != agent.parent_id
-            || ["provider", "role", "realCwd"]
-                .iter()
-                .any(|key| original.extra.get(*key) != agent.extra.get(*key))
+            || historical_text(&original.provider, |provider| provider.key().to_owned()).as_ref()
+                != agent.extra.get("provider")
+            || historical_text(&original.role, Clone::clone).as_ref() != agent.extra.get("role")
+            || historical_text(&original.real_cwd, Clone::clone).as_ref()
+                != agent.extra.get("realCwd")
             || original
-                .start_attempt()
-                .ok()
-                .flatten()
+                .start_attempt
+                .as_ref()
+                .and_then(|raw| serde_json::from_str::<crate::StartAttemptView>(raw.get()).ok())
                 .is_none_or(|original| {
                     original.id.as_deref() != Some(id)
                         || original.events != attempt.events
@@ -1115,7 +1177,7 @@ impl SchedulerRepository {
             &json!({"agent":agent,"metadata":metadata}),
         )?;
         Ok(Some(ClaimedEvents {
-            agent,
+            agent: ClaimedAgent::from(&agent),
             events,
             metadata,
             refusal_reason: None,
@@ -1270,7 +1332,7 @@ pub(super) fn replay_claim(
             saved.start.id.as_deref().unwrap_or("unknown"),
         )
     };
-    let claim = claim_result(saved)?;
+    let claim = claim_result::<HistoricalReplayAgent>(saved)?;
     let original = claim.agent;
     let preparation = crate::ExecutionHistoryRepository::receipt::<serde_json::Value>(
         tx,
@@ -1284,6 +1346,7 @@ pub(super) fn replay_claim(
             && preparation.input["account"] == Value::String(agent.account_key.clone())
             && preparation.input["previousThread"]
                 == original
+                    .agent
                     .thread_id
                     .clone()
                     .map(Value::String)
@@ -1297,7 +1360,9 @@ pub(super) fn replay_claim(
     });
     if original.id != agent.id
         || original.epoch != epoch
-        || !(same_native_scope(&original, &agent) || prepared_scope)
+        || !((original.agent.account_key == agent.account_key
+            && original.agent.thread_id == agent.thread_id)
+            || prepared_scope)
     {
         return Err(invalid_agent(&agent.id.0));
     }
@@ -1340,7 +1405,8 @@ pub(super) fn replay_claim(
     }
     let metadata = claim.metadata;
     Ok(ClaimedEvents {
-        agent: original,
+        // Historical receipt bytes stay untouched; only the fields consumed by scheduling are projected.
+        agent: original.agent,
         events,
         metadata,
         refusal_reason: None,
@@ -1357,7 +1423,7 @@ pub(super) struct PreparedBatch {
 
 pub(super) fn refused(agent: &AgentRecord, reason: String) -> ClaimedEvents {
     ClaimedEvents {
-        agent: agent.clone(),
+        agent: ClaimedAgent::from(agent),
         events: Vec::new(),
         metadata: BTreeMap::new(),
         refusal_reason: Some(reason),
@@ -1977,7 +2043,7 @@ mod account_wake_index_tests {
             "queued-retry",
             json!({
                 "provider":"codex", "epoch":1, "status":"queued", "autoWake":true,
-                "capacityRetry":{"id":"retry", "status":"due"}
+                "capacityRetry":{"id":"retry", "status":"due"}, "workspaceMode":"layr-native"
             }),
         );
         connection
@@ -1993,6 +2059,10 @@ mod account_wake_index_tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].agent_id, "queued-retry");
         assert_eq!(agents[0].epoch, 1);
+        assert_eq!(
+            agents[0].workspace_mode.as_ref().unwrap(),
+            &Some(super::WorkspaceMode::LayrNative)
+        );
     }
 
     #[test]

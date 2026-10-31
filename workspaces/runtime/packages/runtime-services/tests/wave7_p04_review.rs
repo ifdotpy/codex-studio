@@ -43,7 +43,6 @@ async fn complaint_event_failure_returns_error_and_rolls_back_complaint() {
                 &agent,
                 "rollback-event-failure",
                 "Injected event failure",
-                |_| true,
             )
         })
         .await;

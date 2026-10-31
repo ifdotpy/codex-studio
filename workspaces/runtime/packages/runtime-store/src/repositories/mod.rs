@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn repository_sql_uses_only_declared_tables() {
         let db = database_with(&agents::REQUIREMENTS);
-        let agent = AgentRecord::from_value(json!({"accountKey":"default",
+        let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
             "id":"a", "provider":"codex", "rootId":"a", "epoch":0, "status":"idle"
         }))
         .expect("agent JSON has a string id");
@@ -201,10 +201,10 @@ mod tests {
         AgentRepository::get(&db, agent.id()).expect("agent read uses declared objects");
 
         let db = database_with(&tasks::REQUIREMENTS);
-        let task = TaskRecord::from_value(json!({
+        let task: TaskRecord = serde_json::from_str(&json!({
             "id":"t", "agent":"a", "kind":"command", "status":"completed",
-            "created":0, "interactive":false, "exitCode":0
-        }))
+            "created":0, "itemId":"i", "turnId":"turn", "type":"commandExecution", "name":"commandExecution", "interactive":false, "exitCode":0
+        }).to_string())
         .expect("task JSON has a string id");
         TaskRepository::put(&db, &task).expect("task write uses declared objects");
         TaskRepository::get(&db, task.id()).expect("task read uses declared objects");

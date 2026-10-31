@@ -10,7 +10,7 @@ async fn seed_state(state: &std::path::Path, cwd: &std::path::Path) {
     let store = RuntimeStore::open(Some(state))
         .await
         .expect("valid fixture");
-    let agent = json!({"id":"agent","rootId":"agent","epoch":2,"cwd":cwd,"provider":"claude",
+    let agent = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":2,"cwd":cwd,"provider":"claude",
         "accountKey":"account","threadId":"thread","status":"paused","autoWake":false})
     .to_string();
     store
@@ -430,7 +430,7 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
             ("commands", json!("thread")),
             ("stop_task", json!("thread")),
         ] {
-            let agent = json!({"id":"agent","rootId":"agent","epoch":2,"cwd":"/fixture","provider":"claude","accountKey":"account","threadId":thread,"status":"paused"});
+            let agent = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":2,"cwd":"/fixture","provider":"claude","accountKey":"account","threadId":thread,"status":"paused"});
             let body = json!({"id":"agent","action":action,"task_id":"task","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
             service
                 .read_or_stop(&agent, &body, None)

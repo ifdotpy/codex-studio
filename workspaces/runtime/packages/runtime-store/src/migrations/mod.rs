@@ -37,14 +37,21 @@ mod m2026_10_28_usage_revision;
 mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
+mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
+mod m2026_10_30_branch_phase;
+mod m2026_10_30_capture_errors;
+mod m2026_10_30_complaint_record;
 pub(crate) mod m2026_10_30_monitor_errors;
 mod m2026_10_30_monitor_generated;
 pub(crate) mod m2026_10_30_monitor_queue;
 pub(crate) mod m2026_10_30_monitor_status;
+mod m2026_10_30_project_teams;
+mod m2026_10_30_radio_room;
 mod m2026_10_30_retire_graph_agents;
 mod m2026_10_30_rule_monitor_records;
 mod m2026_10_30_start_wait;
+mod m2026_10_30_task_records;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
@@ -56,6 +63,12 @@ pub use m2026_10_20_agents::prepare_columns;
 pub use m2026_10_26_provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_26_provider_identity::migrate_canvas_2026_10_26;
+#[cfg(any(test, feature = "test-support"))]
+pub use m2026_10_30_branch_phase::apply as migrate_branch_phase;
+#[cfg(any(test, feature = "test-support"))]
+pub use m2026_10_30_project_teams::apply as migrate_project_teams;
+#[cfg(any(test, feature = "test-support"))]
+pub use m2026_10_30_radio_room::apply as migrate_radio_room;
 
 use std::path::Path;
 
@@ -272,6 +285,16 @@ static CATALOG: &[&dyn Migration] = &[
             crate::schema::ensure_analytics_limits_index(c.transaction)?;
             crate::repositories::cost_aggregate::install(c.transaction)
         },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-agent-compactions",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records with missing compaction counts",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_agent_compactions::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -745,7 +768,67 @@ static CATALOG: &[&dyn Migration] = &[
             Ok(())
         },
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-capture-errors",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Analytics,
+            supported_source: "Capture error timestamps stored as decimal strings",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_capture_errors::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-complaint-record",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Complaint records before strict typed state",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_complaint_record::apply(c.transaction),
+    },
     &RegistryMigration,
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-task-records",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Task records before strict typed validation",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_task_records::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-radio-room",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Radio rooms with missing or null direct and missing active fields",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_radio_room::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-project-teams",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Project records without peerTeams",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_project_teams::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-branch-phase",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Branch operations with missing or unclassifiable phases",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_branch_phase::apply(c.transaction),
+    },
 ];
 
 /// Operator-facing catalog; implementation and metadata have one owner.

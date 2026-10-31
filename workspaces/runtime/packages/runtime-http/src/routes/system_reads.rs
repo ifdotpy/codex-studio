@@ -401,7 +401,7 @@ struct AnalyticsCaptureStatus {
 impl AnalyticsCaptureStatus {
     fn from_read(
         read: Result<
-            Result<studio_runtime_store::analytics::CaptureErrorSummary, ()>,
+            Result<studio_runtime_store::analytics::CaptureErrors, ()>,
             tokio::task::JoinError,
         >,
     ) -> Self {

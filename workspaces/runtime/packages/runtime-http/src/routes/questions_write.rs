@@ -5,10 +5,12 @@ use super::manifest::{OperationStatus, RouteGroup, post};
 use axum::Json;
 use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use studio_runtime_services::questions_write::{self, ComplaintResponseWrite, QuestionsWriteError};
+use studio_runtime_services::questions_write::{
+    self, ComplaintResponseWrite, ComplaintWriteReply, QuestionsWriteError,
+};
 use studio_runtime_store::{RuntimeStore, Transaction};
 
 use crate::error::ApiError;
@@ -405,6 +407,13 @@ enum ComplaintCommand {
     },
 }
 
+#[derive(serde::Serialize)]
+struct ComplaintSignature<'a> {
+    #[serde(flatten)]
+    body: &'a crate::generated::ComplaintBody,
+    operation: &'static str,
+}
+
 impl TryFrom<crate::generated::ComplaintBody> for ComplaintCommand {
     type Error = ApiError;
 
@@ -427,11 +436,13 @@ impl TryFrom<crate::generated::ComplaintBody> for ComplaintCommand {
             ComplaintBodyAction::Respond => {
                 // Serialize before consuming the wire DTO: omitted and explicit
                 // null fields must keep their historical receipt signatures.
-                let mut data = serde_json::to_value(&body).map_err(|_| ApiError::internal())?;
-                data.as_object_mut()
-                    .ok_or_else(ApiError::internal)?
-                    .insert("operation".to_owned(), json!("complaint_response"));
-                let signature = studio_runtime_services::event_write::request_signature(&data);
+                let data = ComplaintSignature {
+                    body: &body,
+                    operation: "complaint_response",
+                };
+                let encoded = studio_runtime_schema::json_compat::python_json_serialized(&data)
+                    .map_err(|_| ApiError::internal())?;
+                let signature = studio_runtime_store::sha256_hex(encoded.as_bytes());
                 let (Some(complaint_id), Some(status), Some(version)) = (
                     body.complaint_id.flatten(),
                     body.status.flatten(),
@@ -456,48 +467,125 @@ async fn complaints(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ComplaintBody>,
 ) -> Result<Json<crate::generated::ComplaintRecordResponse>, ApiError> {
-    let validators = state.validators.clone();
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let command = ComplaintCommand::try_from(body)?;
     let event_inserted = Arc::new(AtomicBool::new(false));
     let inserted = event_inserted.clone();
-    let result = write(store, move |transaction| {
-        let result = match command {
-            ComplaintCommand::Submit { lead, id, text } => {
-                questions_write::submit_complaint(transaction, &lead, &id, &text, |record| {
-                    validators.validate_table_record("runtime_complaints", record)
-                })
-            }
-            ComplaintCommand::Respond {
-                complaint_id,
-                id,
-                text,
-                status,
-                version,
-                signature,
-            } => questions_write::respond_to_complaint(
-                transaction,
-                ComplaintResponseWrite {
-                    complaint_id: &complaint_id,
-                    request_id: &id,
-                    text: &text,
+    let result = super::sync_delta::write(
+        store,
+        move |transaction| {
+            let result = match command {
+                ComplaintCommand::Submit { lead, id, text } => {
+                    questions_write::submit_complaint(transaction, &lead, &id, &text)
+                }
+                ComplaintCommand::Respond {
+                    complaint_id,
+                    id,
+                    text,
                     status,
                     version,
-                    signature: &signature,
-                },
-                |record| validators.validate_table_record("runtime_complaints", record),
-            ),
-        }?;
-        inserted.store(result.wake_event_worker, Ordering::Relaxed);
-        Ok(result.record)
-    })
+                    signature,
+                } => questions_write::respond_to_complaint(
+                    transaction,
+                    ComplaintResponseWrite {
+                        complaint_id: &complaint_id,
+                        request_id: &id,
+                        text: &text,
+                        status,
+                        version,
+                        signature: &signature,
+                    },
+                ),
+            }?;
+            inserted.store(result.wake_event_worker, Ordering::Relaxed);
+            Ok(result.record)
+        },
+        api_error,
+    )
     .await?;
     if event_inserted.load(Ordering::Relaxed) {
         state.event_wake.notify_one();
     }
-    Ok(Json(super::generated_json::<
-        crate::generated::ComplaintRecordResponse,
-    >(result)?))
+    Ok(Json(match result {
+        ComplaintWriteReply::Current(record) => complaint_response(record)?,
+        ComplaintWriteReply::Historical(value) => super::generated_json(value)?,
+    }))
+}
+
+fn complaint_response(
+    record: studio_runtime_store::ComplaintRecord,
+) -> Result<crate::generated::ComplaintRecordResponse, ApiError> {
+    use crate::generated::{
+        ComplaintRecordResponse, ComplaintRecordResponseStatus, JsonValue, JsonValueVariant,
+    };
+    use studio_runtime_schema::complaint_record::{
+        ComplaintRecipient, ComplaintSource, ComplaintStatus,
+    };
+    use studio_runtime_schema::complaints::ComplaintResponseStatus;
+    let status = match record.status {
+        ComplaintStatus::Open => ComplaintRecordResponseStatus::Open,
+        ComplaintStatus::InProgress => ComplaintRecordResponseStatus::InProgress,
+        ComplaintStatus::Resolved => ComplaintRecordResponseStatus::Resolved,
+        ComplaintStatus::Declined => ComplaintRecordResponseStatus::Declined,
+    };
+    let responses = record
+        .responses
+        .into_iter()
+        .map(|response| {
+            let status = match response.status {
+                ComplaintResponseStatus::InProgress => "in_progress",
+                ComplaintResponseStatus::Resolved => "resolved",
+                ComplaintResponseStatus::Declined => "declined",
+            };
+            let fields = [
+                ("id", JsonValue::String(response.id)),
+                ("author", JsonValue::String(response.author)),
+                ("text", JsonValue::String(response.text)),
+                ("status", JsonValue::String(status.to_owned())),
+                ("at", JsonValue::Number(response.at)),
+            ]
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), Some(Box::new(value))))
+            .collect();
+            Some(Box::new(JsonValue::JsonValueVariant(JsonValueVariant {
+                additional_properties: fields,
+            })))
+        })
+        .collect();
+    let mut additional_properties = std::collections::BTreeMap::new();
+    if let Some(title) = record.title {
+        additional_properties.insert("title".to_owned(), Some(Box::new(JsonValue::String(title))));
+    }
+    Ok(ComplaintRecordResponse {
+        id: record.id,
+        author: record.author.ok_or_else(ApiError::internal)?,
+        lead_id: record.lead_id.ok_or_else(ApiError::internal)?,
+        text: record.text.ok_or_else(ApiError::internal)?,
+        created: record.created.ok_or_else(ApiError::internal)?,
+        status,
+        recipient: Some(
+            match record.recipient {
+                ComplaintRecipient::User => "user",
+                ComplaintRecipient::Lead => "lead",
+            }
+            .to_owned(),
+        ),
+        version: record.version,
+        updated: record.updated,
+        read_at: Some(record.read_at),
+        responses: Some(responses),
+        source_type: record.source_type.map(|value| {
+            match value {
+                ComplaintSource::Message => "message",
+                ComplaintSource::UserTask => "user_task",
+            }
+            .to_owned()
+        }),
+        responded_at: None,
+        responded_by: None,
+        response: None,
+        additional_properties,
+    })
 }
 
 async fn write(

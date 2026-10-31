@@ -375,14 +375,14 @@ mod tests {
 
     fn agents() -> Vec<Value> {
         vec![
-            json!({"id":"lead","rootId":"lead","epoch":2,"status":"running","accountKey":"acct",
+            json!({"compactions":0,"id":"lead","rootId":"lead","epoch":2,"status":"running","accountKey":"acct",
                 "provider":"claude","threadId":"t1","turnId":"u1","inFlight":true,"autoWake":true,
                 "cwd":"/w","workspaceOperation":"branch","startAttempt":{"submitted":true,
                 "connectionGeneration":4,"activeAtReservation":false},"prompt":"keep"}),
-            json!({"id":"child","provider":"codex","rootId":"lead","parentId":"lead","epoch":0,"status":"completed","accountKey":"default",
+            json!({"compactions":0,"id":"child","provider":"codex","rootId":"lead","parentId":"lead","epoch":0,"status":"completed","accountKey":"default",
                 "role":"reviewer","reviewArchiveScheduled":"",
                 "restartRecovery":{"stage":"held"},"deletedAt":5.5}),
-            json!({"id":"bare","provider":"codex","rootId":"bare","epoch":0,"status":"idle","accountKey":"default"}),
+            json!({"compactions":0,"id":"bare","provider":"codex","rootId":"bare","epoch":0,"status":"idle","accountKey":"default"}),
         ]
     }
 

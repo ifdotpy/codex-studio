@@ -781,7 +781,14 @@ pub(crate) fn publish_summary_changes(
     pending: &studio_runtime_store::PendingEntities,
 ) -> StoreResult<()> {
     for (id, raw) in records_by_id(transaction, "runtime_tasks", &pending.tasks)? {
-        let task: Value = serde_json::from_str(&raw)?;
+        let task: studio_runtime_store::TaskRecord = serde_json::from_str(&raw)?;
+        if task.id().as_ref() != id {
+            return Err(StoreError::InvalidStoredObject {
+                table: "runtime_tasks",
+                id,
+            });
+        }
+        let task = studio_runtime_store::projection_value(&task);
         let prior: Option<String> = transaction
             .query_row(
                 "SELECT payload FROM sync_entities WHERE collection='task' AND id=?1 AND deleted=0",
@@ -1602,9 +1609,14 @@ pub(crate) fn maintain_task_window(
     drop(rows);
     let mut kept = BTreeSet::new();
     for (id, raw) in eligible {
-        let Ok(record) = serde_json::from_str::<Value>(&raw) else {
-            continue;
-        };
+        let record: studio_runtime_store::TaskRecord = serde_json::from_str(&raw)?;
+        if record.id().as_ref() != id {
+            return Err(StoreError::InvalidStoredObject {
+                table: "runtime_tasks",
+                id,
+            });
+        }
+        let record = studio_runtime_store::projection_value(&record);
         if let Some(projected) = project_persisted_record("task", &record) {
             kept.insert(id.clone());
             put_projection(transaction, "task", &id, projected, false, validate)?;
@@ -2699,6 +2711,8 @@ pub async fn push_preferences(
             | other @ StoreError::Outbox(_)
             | other @ StoreError::Json(_)
             | other @ StoreError::InvalidStoredObject { .. }
+            | other @ StoreError::TranscriptFullTextUnavailable { .. }
+            | other @ StoreError::TranscriptInputsIncomplete { .. }
             | other @ StoreError::SchemaValidation(_)
             | other @ StoreError::RecordContract(_)
             | other @ StoreError::WriterPoisoned
@@ -2817,7 +2831,7 @@ mod tests {
             store
                 .transaction_with(move |tx| {
                     let actor = AgentRecord::from_value(
-                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"agent", "rootId":"agent", "epoch":1, "autoWake":true,
                             "status":"idle", "cwd":cwd, "accountKey":"default"
                         }),
@@ -3286,7 +3300,7 @@ mod tests {
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("open isolated runtime store");
-        let agent = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle","isLead":true});
+        let agent = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle","isLead":true});
         let snapshot = ProjectVaultSnapshot::default();
 
         store
@@ -3297,7 +3311,7 @@ mod tests {
                     "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
                     rusqlite::params![
                         "task",
-                        json!({"id":"task","agent":"agent","status":"running","created":1})
+                        json!({"id":"task","agent":"agent","status":"running","created":1,"itemId":"item","turnId":"turn","type":"commandExecution","kind":"command","name":"commandExecution"})
                             .to_string()
                     ],
                 )?;
@@ -3351,7 +3365,7 @@ mod tests {
             .transaction(move |transaction| {
                 transaction.execute(
                     "UPDATE runtime_tasks SET record=?1 WHERE id='task'",
-                    [json!({"id":"task","agent":"agent","status":"completed","created":2}).to_string()],
+                    [json!({"id":"task","agent":"agent","status":"completed","created":2,"itemId":"item","turnId":"turn","type":"commandExecution","kind":"command","name":"commandExecution"}).to_string()],
                 )?;
                 let rooms = crate::sync_entity_context::RoomDirectory::load(transaction)?;
                 maintain_entity_projections_with_server_id(
@@ -3408,7 +3422,7 @@ mod tests {
             .transaction(move |transaction| {
                 for id in ["live", "deleting"] {
                     let agent = studio_runtime_store::AgentRecord::from_value(
-                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id": id,
                             "rootId": id,
                             "epoch": 0,
@@ -3429,7 +3443,7 @@ mod tests {
                                 "id": id,
                                 "agent": "live",
                                 "status": "completed",
-                                "created": index
+                                "created": index, "itemId": id, "turnId":"turn", "type":"commandExecution", "kind":"command", "name":"commandExecution"
                             })
                             .to_string()
                         ],
@@ -3444,7 +3458,7 @@ mod tests {
                                 "id": id,
                                 "agent": agent,
                                 "status": "running",
-                                "created": 200
+                                "created": 200, "itemId": id, "turnId":"turn", "type":"commandExecution", "kind":"command", "name":"commandExecution"
                             })
                             .to_string()
                         ],
@@ -3524,7 +3538,8 @@ mod tests {
                     [],
                     |row| row.get(0),
                 )?;
-                let task: Value = serde_json::from_str(&raw)?;
+                let task: studio_runtime_store::TaskRecord = serde_json::from_str(&raw)?;
+                let task = studio_runtime_store::projection_value(&task);
                 put_projection(
                     transaction,
                     "task",
@@ -3602,7 +3617,7 @@ mod tests {
                             .transpose()?;
                         let mut task = previous
                             .clone()
-                            .unwrap_or_else(|| json!({"id":id,"agent":"live"}));
+                            .unwrap_or_else(|| json!({"id":id,"agent":"live","itemId":id,"turnId":"turn","type":"commandExecution","kind":"command","name":"commandExecution"}));
                         task["status"] = json!(status);
                         task["created"] = json!(created);
                         transaction.execute(
@@ -3716,7 +3731,7 @@ mod tests {
             .transaction(|transaction| {
                 for id in ["a", "b"] {
                     let agent = studio_runtime_store::AgentRecord::from_value(
-                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id": id, "rootId": id, "epoch": 0, "status": "idle", "accountKey": "default", "isLead": true
                         }),
                     )?;
@@ -3742,7 +3757,7 @@ mod tests {
                         "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
                         rusqlite::params![
                             id,
-                            json!({"id":id,"agent":"a","status":"completed","created":index})
+                            json!({"id":id,"agent":"a","status":"completed","created":index,"itemId":id,"turnId":"turn","type":"commandExecution","kind":"command","name":"commandExecution"})
                                 .to_string()
                         ],
                     )?;
@@ -3766,7 +3781,7 @@ mod tests {
                     let agent = ["a", "b"][next(2) as usize];
                     let task = json!({
                         "id": format!("t{index}"), "agent": agent,
-                        "status": status, "created": created
+                        "status": status, "created": created, "itemId":format!("t{index}"), "turnId":"turn", "type":"commandExecution", "kind":"command", "name":"commandExecution"
                     });
                     write_task(transaction, &task)?;
                     let incremental = live_task_projection(transaction);
@@ -3797,14 +3812,14 @@ mod tests {
                             rusqlite::params![
                                 format!("h{history}-{index}"),
                                 json!({"id": format!("h{history}-{index}"), "agent": "a",
-                                       "status": "completed", "created": index})
+                                       "status": "completed", "created": index, "itemId":format!("h{history}-{index}"), "turnId":"turn", "type":"commandExecution", "kind":"command", "name":"commandExecution"})
                                 .to_string()
                             ],
                         )?;
                     }
                     maintain_task_window(transaction, &|_, _, _, _| true)?;
                     let running = json!({"id": format!("run{history}"), "agent": "a", "status": "running",
-                                         "created": 1_000_000 + history});
+                                         "created": 1_000_000 + history, "itemId":format!("run{history}"), "turnId":"turn", "type":"commandExecution", "kind":"command", "name":"commandExecution"});
                     TRACED_SQL.with_borrow_mut(Vec::clear);
                     transaction.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(trace_sql));
                     write_task(transaction, &running)?;
@@ -4231,8 +4246,8 @@ mod tests {
             json!({"state":"conflict","conflicts":["a.txt"],"choices":[],"withAgent":[],"deletes":0,"reason":null,"at":5.0,"sent":2}).to_string(),
         )
         .unwrap();
-        let project = json!({"id":source,"path":source,"projectAliases":[{"projectId":source}]});
-        let other = json!({"id":"/workspace/Plain","path":"/workspace/Plain"});
+        let project = json!({"id":source,"path":source,"peerTeams":[],"projectAliases":[{"projectId":source}]});
+        let other = json!({"id":"/workspace/Plain","path":"/workspace/Plain","peerTeams":[]});
         let records = [
             (source.to_owned(), project.clone()),
             ("/workspace/Plain".to_owned(), other.clone()),
@@ -4316,6 +4331,7 @@ mod tests {
             fs::create_dir(&workspace).unwrap();
             let mut project = case["project"].clone();
             project["path"] = json!(workspace.to_string_lossy());
+            project["peerTeams"] = json!([]);
             let prior = project.clone();
             let snapshot = ProjectVaultSnapshot::capture(
                 store.root(),

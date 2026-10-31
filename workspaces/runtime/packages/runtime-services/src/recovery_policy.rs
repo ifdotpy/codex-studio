@@ -708,7 +708,7 @@ mod unbounded_batch_tests {
     fn recovery_batch_eligibility_keeps_identity_checks_above_the_former_cap() {
         for count in [1, 1000] {
             let ids: Vec<_> = (0..count).map(|index| format!("event-{index}")).collect();
-            let mut agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":1,"accountKey":"default",
+            let mut agent = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":1,"accountKey":"default",
                 "threadId":"thread","status":"interrupted","inFlight":false,"autoWake":false,
                 "error":PROVIDER_DISCONNECTED_TURN_ERROR,"disconnectRecovery":{"autoWake":true,
                     "epoch":1,"accountKey":"default","threadId":"thread",
@@ -735,7 +735,7 @@ mod unbounded_batch_tests {
 
     #[test]
     fn numeric_epoch_alias_does_not_change_exact_receipt_identity() {
-        let mut agent = json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default",
+        let mut agent = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":1,"accountKey":"default",
             "threadId":"thread","status":"interrupted","inFlight":false,"autoWake":false,
             "error":PROVIDER_DISCONNECTED_TURN_ERROR,"disconnectRecovery":{"autoWake":true,
                 "epoch":1,"accountKey":"default","threadId":"thread",
@@ -787,7 +787,7 @@ mod disconnect_text_tests {
     };
 
     fn interrupted(error: &str) -> serde_json::Value {
-        json!({"id":"agent-1","rootId":"agent-1","epoch":4,"accountKey":"acct","status":"interrupted",
+        json!({"compactions":0,"id":"agent-1","rootId":"agent-1","epoch":4,"accountKey":"acct","status":"interrupted",
                "inFlight":false,"autoWake":false,"threadId":"thread-1","turnId":"turn-1",
                "error":error})
     }
@@ -823,7 +823,7 @@ mod reattached_turn_tests {
         let attempt = json!({"id":"attempt-1","accountKey":"acct","epoch":0,"threadId":"thread-1",
             "turnId":"turn-9","submitted":true,"connectionGeneration":5,"events":["event-1"],
             "activeAtReservation":false});
-        json!({
+        json!({"compactions":0,
             "id":"agent-1","rootId":"agent-1","epoch":0,"turnEpoch":0,"accountKey":"acct","threadId":"thread-1",
             "provider":"codex","status":"running","inFlight":in_flight,"autoWake":true,
             "turnId":"turn-9","error":null,"lastCompletedTurn":"turn-8",

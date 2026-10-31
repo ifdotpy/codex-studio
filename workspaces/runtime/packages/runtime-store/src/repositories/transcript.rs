@@ -361,12 +361,12 @@ impl TranscriptRepository {
             return Ok(Some(full));
         }
         match item.record.text() {
-            studio_runtime_schema::queue_command::Field::Missing => Ok(None),
-            studio_runtime_schema::queue_command::Field::Null => {
+            studio_runtime_schema::transcript_record::TranscriptText::InFulltextMissing => Ok(None),
+            studio_runtime_schema::transcript_record::TranscriptText::InFulltextNull => {
                 Err(invalid_record("runtime_items", &item.id))
             }
-            studio_runtime_schema::queue_command::Field::Value(text) => {
-                if item.record.extra("truncated").and_then(Value::as_bool) != Some(true)
+            studio_runtime_schema::transcript_record::TranscriptText::Inline(text) => {
+                if item.record.truncated() != Some(true)
                     && (item.record.inputs().is_missing() || !text.is_empty())
                 {
                     Ok(Some(text.clone()))
@@ -508,6 +508,28 @@ impl TranscriptRepository {
         search: TranscriptSearchKind<'_>,
     ) -> TranscriptStoreResult<()> {
         if record.get("id").and_then(Value::as_str) != Some(id)
+            || record.get("text").and_then(Value::as_str).is_none()
+            || record.get("inputs").is_some_and(|inputs| {
+                !inputs.as_array().is_some_and(|inputs| {
+                    inputs.iter().all(|input| {
+                        input.get("id").and_then(Value::as_str).is_some()
+                            && input
+                                .get("kind")
+                                .and_then(Value::as_str)
+                                .is_some_and(|kind| {
+                                    kind.parse::<studio_runtime_schema::persistence::EventKind>()
+                                        .is_ok()
+                                })
+                            && input.get("text").and_then(Value::as_str).is_some()
+                            && input.get("truncated").and_then(Value::as_bool).is_some()
+                            && input
+                                .get("at")
+                                .and_then(Value::as_f64)
+                                .is_some_and(f64::is_finite)
+                            && input.get("assets").is_some_and(Value::is_array)
+                    })
+                })
+            })
             || !matches!(
                 record.get("role").and_then(Value::as_str),
                 Some("assistant" | "user" | "system" | "output")
@@ -622,6 +644,8 @@ fn map_store_error(error: crate::StoreError) -> TranscriptStoreError {
         | other @ crate::StoreError::InvalidSyncObject { .. }
         | other @ crate::StoreError::InvalidSyncObjectField { .. }
         | other @ crate::StoreError::InvalidStoredRecord { .. }
+        | other @ crate::StoreError::TranscriptFullTextUnavailable { .. }
+        | other @ crate::StoreError::TranscriptInputsIncomplete { .. }
         | other @ crate::StoreError::SchemaObjectMismatch { .. }
         | other @ crate::StoreError::Sqlite(_)
         | other @ crate::StoreError::CommitOutcomeUnknown(_)
@@ -655,9 +679,7 @@ fn invalid_record(table: &'static str, id: &str) -> TranscriptStoreError {
 }
 
 fn visible(record: &TranscriptItemRecord) -> bool {
-    record
-        .extra("afterRestore")
-        .is_none_or(|after_restore| after_restore.is_null())
+    record.after_restore().is_none()
 }
 
 pub(super) fn stored_truthy(value: &Value) -> bool {
@@ -1248,6 +1270,134 @@ mod tests {
     use super::{TranscriptRepository, TranscriptStoreError, enrich_persisted_items};
 
     #[test]
+    #[ignore]
+    fn inspect_transcript_records_on_explicit_copy() {
+        let path =
+            std::env::var_os("STUDIO_TRANSCRIPT_COPY").expect("explicit disposable database copy");
+        let db =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let start = std::time::Instant::now();
+        let mut statement = db.prepare("SELECT id,record FROM runtime_items").unwrap();
+        let mut rows = statement.query([]).unwrap();
+        let mut count = 0usize;
+        while let Some(row) = rows.next().unwrap() {
+            let id: String = row.get(0).unwrap();
+            let raw: String = row.get(1).unwrap();
+            let record: crate::TranscriptItemRecord = serde_json::from_str(&raw)
+                .unwrap_or_else(|error| panic!("invalid transcript {id}: {error}"));
+            assert_eq!(record.id().as_ref(), id);
+            count += 1;
+        }
+        eprintln!(
+            "validated {count} transcript records in {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn transcript_writer_requires_inline_text() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL,created REAL NOT NULL)").unwrap();
+        let tx = db.transaction().unwrap();
+        for record in [
+            json!({"id":"agent:x","role":"user"}),
+            json!({"id":"agent:x","role":"user","text":null}),
+        ] {
+            assert!(
+                TranscriptRepository::put_item(
+                    &tx, "agent:x", "agent", &record, 1.0, "body", false
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn transcript_writer_requires_complete_input_fields() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL,created REAL NOT NULL)").unwrap();
+        let tx = db.transaction().unwrap();
+        for field in ["id", "kind", "text", "truncated", "at", "assets"] {
+            let mut input = json!({"id":"i","kind":"user","text":"body","truncated":false,"at":1.0,"assets":[]});
+            input.as_object_mut().unwrap().remove(field);
+            let record = json!({"id":"agent:x","role":"user","text":"body","inputs":[input]});
+            assert!(
+                TranscriptRepository::put_item(
+                    &tx, "agent:x", "agent", &record, 1.0, "body", false
+                )
+                .is_err(),
+                "{field}"
+            );
+        }
+        let complete = json!({"id":"agent:x","role":"user","text":"body","inputs":[{"id":"i","kind":"user","text":"body","truncated":false,"at":1.0,"assets":[]}]});
+        TranscriptRepository::put_item(&tx, "agent:x", "agent", &complete, 1.0, "body", false)
+            .expect("complete input writes");
+    }
+
+    #[test]
+    fn transcript_typed_update_hydrates_legacy_text_and_preserves_opaque_bytes() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL,created REAL NOT NULL); CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT NOT NULL);").unwrap();
+        let raw =
+            r#"{"id":"agent:x","role":"assistant","truncated":true,"provider":{"z":  1,"a":2}}"#;
+        db.execute(
+            "INSERT INTO runtime_items VALUES('agent:x','agent',?1,1)",
+            [raw],
+        )
+        .unwrap();
+        let table = crate::Table::<crate::TranscriptItemRecord>::new(&db);
+        let record = table
+            .get(&crate::TranscriptItemId::from("agent:x"))
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                table.update(&record),
+                Err(crate::StoreError::TranscriptFullTextUnavailable { .. })
+            ),
+            "missing fulltext must fail with a typed error"
+        );
+        let unchanged: String = db
+            .query_row("SELECT record FROM runtime_items", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(unchanged, raw);
+        db.execute(
+            "INSERT INTO runtime_item_fulltext VALUES('agent:x','hydrated')",
+            [],
+        )
+        .unwrap();
+        assert!(table.update(&record).unwrap());
+        let encoded: String = db
+            .query_row("SELECT record FROM runtime_items", [], |row| row.get(0))
+            .unwrap();
+        assert!(encoded.contains(r#""text":"hydrated""#), "{encoded}");
+        assert!(encoded.contains(r#"{"z":  1,"a":2}"#), "{encoded}");
+
+        let incomplete = r#"{"id":"agent:y","role":"user","text":"body","inputs":[{"id":"i"}]}"#;
+        db.execute(
+            "INSERT INTO runtime_items VALUES('agent:y','agent',?1,1)",
+            [incomplete],
+        )
+        .unwrap();
+        let record = table
+            .get(&crate::TranscriptItemId::from("agent:y"))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            table.update(&record),
+            Err(crate::StoreError::TranscriptInputsIncomplete { .. })
+        ));
+        let unchanged: String = db
+            .query_row(
+                "SELECT record FROM runtime_items WHERE id='agent:y'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unchanged, incomplete);
+    }
+
+    #[test]
     fn retired_sqlite_search_keeps_current_rollout_phases() {
         let mut db = crate::fresh_state::test_canvas();
         for phase in [
@@ -1259,7 +1409,7 @@ mod tests {
         ] {
             let tx = db.transaction().expect("transaction");
             tx.execute("INSERT INTO runtime_search_rollout(id,phase,cursor,updated) VALUES(1,?1,0,0) ON CONFLICT(id) DO UPDATE SET phase=excluded.phase", [phase]).expect("phase");
-            let record = json!({"id":"item", "role":"assistant"});
+            let record = json!({"id":"item", "role":"assistant", "text":"searchable sentinel"});
             TranscriptRepository::put_item(
                 &tx,
                 "item",
@@ -1493,12 +1643,20 @@ mod tests {
     }
 
     #[test]
-    fn raw_writers_keep_legacy_admission_and_checked_reads_enforce_shell() {
+    fn writers_reject_invalid_inputs_and_checked_reads_enforce_shell() {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL,created REAL NOT NULL); CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT NOT NULL)").unwrap();
         let tx = db.transaction().unwrap();
         let raw = json!({"id":"agent:x","role":"user","text":"body","inputs":[null]});
-        TranscriptRepository::put_item(&tx, "agent:x", "agent", &raw, 1.0, "body", false).unwrap();
+        assert!(
+            TranscriptRepository::put_item(&tx, "agent:x", "agent", &raw, 1.0, "body", false)
+                .is_err()
+        );
+        tx.execute(
+            "INSERT INTO runtime_items(id,agent,record,created) VALUES('agent:x','agent',?1,1.0)",
+            [raw.to_string()],
+        )
+        .unwrap();
         assert!(TranscriptRepository::item(&tx, "agent", "agent:x").is_err());
         let before: String = tx
             .query_row(
@@ -1556,7 +1714,7 @@ mod tests {
                 .unwrap()
                 .record
                 .role(),
-            Some("output")
+            studio_runtime_schema::transcript_record::TranscriptRole::Output
         );
         assert!(
             TranscriptRepository::item(&tx, "other", "agent:x")
@@ -1571,8 +1729,11 @@ mod tests {
         db.execute_batch("CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT NOT NULL,record TEXT NOT NULL,created REAL NOT NULL); CREATE TABLE runtime_item_fulltext(id TEXT PRIMARY KEY,body TEXT NOT NULL)").unwrap();
         let tx = db.transaction().unwrap();
         let visible = json!({"id":"agent:x","role":"user","text":"parent","inputs":[{"id":"m","text":"one","future":true},{"id":null,"text":"two"}],"future":{"v":1}});
-        TranscriptRepository::put_item(&tx, "agent:x", "agent", &visible, 1.0, "parent", false)
-            .unwrap();
+        tx.execute(
+            "INSERT INTO runtime_items(id,agent,record,created) VALUES('agent:x','agent',?1,1.0)",
+            [visible.to_string()],
+        )
+        .unwrap();
         for id in ["agent:x", "agent:m", "agent:x:1"] {
             let row = TranscriptRepository::resolve_item(&tx, "agent", id)
                 .unwrap()
@@ -1586,6 +1747,8 @@ mod tests {
                 .is_none()
         );
         tx.execute("UPDATE runtime_items SET record=json_set(record,'$.afterRestore',json('[]')) WHERE id='agent:x'",[]).unwrap();
+        assert!(TranscriptRepository::resolve_item(&tx, "agent", "agent:x").is_err());
+        tx.execute("UPDATE runtime_items SET record=json_set(record,'$.afterRestore','restored') WHERE id='agent:x'",[]).unwrap();
         assert!(
             TranscriptRepository::resolve_item(&tx, "agent", "agent:x")
                 .unwrap()
@@ -1620,8 +1783,8 @@ mod tests {
         let item = super::TranscriptItem {
             id: "agent:long".to_owned(),
             agent: "agent".to_owned(),
-            record: crate::TranscriptItemRecord::from_value(
-                json!({"id":"agent:long","role":"assistant","text":"preview","truncated":true}),
+            record: serde_json::from_str(
+                r#"{"id":"agent:long","role":"assistant","text":"preview","truncated":true}"#,
             )
             .unwrap(),
         };
@@ -1720,7 +1883,7 @@ mod tests {
         let item = super::TranscriptItem {
             id: "agent:long".to_owned(),
             agent: "agent".to_owned(),
-            record: crate::TranscriptItemRecord::from_value(record).unwrap(),
+            record: serde_json::from_str(&record.to_string()).unwrap(),
         };
         assert_eq!(
             TranscriptRepository::full_text(&transaction, &item)

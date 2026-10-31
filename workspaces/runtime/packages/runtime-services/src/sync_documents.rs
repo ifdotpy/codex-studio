@@ -117,6 +117,8 @@ pub async fn push_drafts(
             | error @ StoreError::Outbox(_)
             | error @ StoreError::Json(_)
             | error @ StoreError::InvalidStoredObject { .. }
+            | error @ StoreError::TranscriptFullTextUnavailable { .. }
+            | error @ StoreError::TranscriptInputsIncomplete { .. }
             | error @ StoreError::SchemaValidation(_)
             | error @ StoreError::RecordContract(_)
             | error @ StoreError::WriterPoisoned

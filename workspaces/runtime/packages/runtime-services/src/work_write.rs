@@ -3952,8 +3952,8 @@ mod actor_tests {
     fn database() -> Connection {
         let connection = studio_runtime_store::test_canvas();
         for agent in [
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"inFlight":true,"agentMode":"multi","concurrency":8}),
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"running","autoWake":true,"inFlight":true,"agentMode":"multi","concurrency":8}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"inFlight":true,"agentMode":"multi","concurrency":8}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"running","autoWake":true,"inFlight":true,"agentMode":"multi","concurrency":8}),
         ] {
             connection
                 .execute(
@@ -4023,8 +4023,8 @@ mod actor_tests {
         let request = root.clone();
         store.transaction_with_error(move |tx| -> Result<(), super::WorkWriteError> {
             for agent in [
-                json!({"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":true,"executionMode":"vm"}),
-                json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"idle","autoWake":true,"executionMode":"vm"}),
+                json!({"compactions":0,"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":true,"executionMode":"vm"}),
+                json!({"compactions":0,"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"idle","autoWake":true,"executionMode":"vm"}),
             ] { AgentRepository::put(tx, &AgentRecord::from_value(agent).expect("agent"))?; }
             let mut item = work("retry", Some("worker"), "review", json!([{"id":"result-1","agent":"worker","text":"done","checks":"checked","revision":"state","files":[]}]));
             item["vmAccept"] = json!({"status":"completed","requestId":"merge","taskId":"retry","owner":"worker","revision":"state","resultId":"result-1","created":1.0});
@@ -4053,8 +4053,8 @@ mod actor_tests {
         let request = root.clone();
         store.transaction_with_error(move |tx| -> Result<(), super::WorkWriteError> {
             for agent in [
-                json!({"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true}),
-                json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"idle","autoWake":true,"executionMode":"vm"}),
+                json!({"compactions":0,"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true}),
+                json!({"compactions":0,"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"idle","autoWake":true,"executionMode":"vm"}),
             ] { AgentRepository::put(tx, &AgentRecord::from_value(agent).expect("fixture agent"))?; }
             let mut item = work("unknown", Some("worker"), "review", json!([{"id":"result-1","agent":"worker","text":"done","checks":"checked","revision":"state","files":[]}]));
             item["vmAccept"] = json!({"status":"completed","requestId":"merge","taskId":"unknown","owner":"worker","revision":"state","resultId":"result-1","created":1.0});
@@ -4130,7 +4130,7 @@ mod actor_tests {
     #[test]
     fn receipt_domain_refusal_reads_current_owner_without_receipt_history() {
         let connection = database();
-        let owner = AgentRecord::from_value(json!({"accountKey":"default",
+        let owner = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
             "id":"worker", "rootId":"worker", "provider":"codex", "epoch":3,
             "status":"idle"
         }))
@@ -4535,8 +4535,8 @@ mod actor_tests {
         store
             .transaction(|tx| {
                 for agent in [
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running"}),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"paused",
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running"}),
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"paused",
                         "remoteWorker":{"server":"remote","link":"worker-link"}}),
                 ] {
                     AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
@@ -4614,8 +4614,8 @@ mod actor_tests {
         store
             .transaction(|tx| {
                 for agent in [
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running"}),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"paused",
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running"}),
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"paused",
                         "remoteWorker":{"server":"remote","link":"worker-link"}}),
                 ] {
                     AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
@@ -4691,9 +4691,9 @@ mod actor_tests {
         store
             .transaction(move |tx| {
                 for agent in [
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,
                         "epoch":1,"status":"running","autoWake":true,"isLead":true}),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"lead","parentId":"lead",
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"lead","parentId":"lead",
                         "epoch":2,"status":"completed","autoWake":false,"inFlight":false,
                         "role":role}),
                 ] {
@@ -5060,7 +5060,7 @@ mod actor_tests {
         let revision = git(&["rev-parse", "HEAD"]).trim().to_owned();
         let dir = tempfile::tempdir().expect("state");
         let store = Arc::new(RuntimeStore::open(Some(dir.path())).await.expect("store"));
-        let owner = json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"paused","cwd":repo.path().to_str().expect("path")});
+        let owner = json!({"compactions":0,"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"paused","cwd":repo.path().to_str().expect("path")});
         let item = work(
             "race",
             Some("worker"),
@@ -5070,7 +5070,7 @@ mod actor_tests {
         let saved_owner = owner.clone();
         let saved_work = super::WorkItemRecord::checked(&item).expect("checked work");
         store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running"}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running"}))?)?;
             AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
             WorkItemsRepository::put_work(tx, "race", &item)?;
             Ok(())
@@ -5130,7 +5130,7 @@ mod actor_tests {
         let public_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let mut connection = database();
         for id in ["worker", "replacement-worker"] {
-            let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":id,"rootId":"lead","epoch":2,"status":"running","autoWake":true,
                 "inFlight":true,"agentMode":"multi","concurrency":8,"executionMode":"vm",
                 "layrProjectId":"project","layrLine":id
@@ -5479,7 +5479,7 @@ mod actor_tests {
     ) {
         let mut connection = database();
         for (id, role) in [("lead", "lead"), ("worker", "reviewer")] {
-            let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":id,"rootId":"lead","epoch":2,"status":"running","autoWake":true,
                 "inFlight":true,"agentMode":"multi","concurrency":8,"executionMode":execution_mode,"workspaceMode":workspace_mode,
                 "isLead":(id == "lead"),"role":role,"layrProjectId":"project","layrLine":id
@@ -5621,7 +5621,7 @@ mod actor_tests {
         let store = RuntimeStore::open(Some(state.path())).await.expect("store");
         let request_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let cwd = project.path().to_string_lossy().into_owned();
-        let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running",
+        let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running",
             "autoWake":true,"cwd":cwd});
         let item = work("file-submission", Some("lead"), "running", json!([]));
         store
@@ -5815,7 +5815,7 @@ mod release_tests {
 
     #[test]
     fn continuation_identity_only_preserves_an_exact_pending_retry() {
-        let agent = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+        let agent = AgentRecord::from_value(json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"worker","rootId":"lead","epoch":7,"status":"failed",
             "autoWake":true,"accountKey":"acct","threadId":"thread",
             "lastCompletedTurn":"turn-3",
@@ -5851,8 +5851,8 @@ mod release_tests {
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         for agent in [
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"paused","autoWake":false}),
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"failed","parentId":"lead","autoWake":false,"error":"worker exited"}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"paused","autoWake":false}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"failed","parentId":"lead","autoWake":false,"error":"worker exited"}),
         ] {
             connection
                 .execute(
@@ -5878,7 +5878,7 @@ mod release_tests {
             )
             .expect("work items insert");
         let failed = AgentRecord::from_value(
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"worker","rootId":"lead","epoch":2,"status":"failed",
                 "parentId":"lead","autoWake":false,"error":"worker exited"
             }),

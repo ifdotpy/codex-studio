@@ -138,7 +138,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, axum::Router) {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     store.transaction(|tx|{
-        let actor=AgentRecord::from_value(json!({"id":ACTOR,"rootId":ACTOR,"parentId":null,"isLead":true,"name":"fixture","epoch":0,"status":"queued","provider":"codex","accountKey":"default","threadId":"original-thread","autoWake":true,"inFlight":false}))?;
+        let actor=AgentRecord::from_value(json!({"compactions":0,"id":ACTOR,"rootId":ACTOR,"parentId":null,"isLead":true,"name":"fixture","epoch":0,"status":"queued","provider":"codex","accountKey":"default","threadId":"original-thread","autoWake":true,"inFlight":false}))?;
         AgentRepository::put(tx,&actor)?;
         for(index,kind)in ["followup","followup","work_ready","followup","user"].into_iter().enumerate(){
             let id=if kind=="user"{USER.into()}else{format!("original-{index}")};

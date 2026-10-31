@@ -985,11 +985,11 @@ pub(crate) mod tests {
         std::fs::create_dir(&state).unwrap();
         let store = Arc::new(RuntimeStore::open(Some(&state)).await.unwrap());
         let cwd = cwd.to_string_lossy().into_owned();
-        let lead = json!({"id":"lead","rootId":"lead","parentId":null,"epoch":0,"status":"running",
+        let lead = json!({"compactions":0,"id":"lead","rootId":"lead","parentId":null,"epoch":0,"status":"running",
             "name":"Lead","cwd":cwd,"isLead":true,"autoWake":true,"inFlight":true,"created":1.0,
             "threadId":"lead-thread","turnId":"lead-turn","accountKey":"default","provider":"codex",
             "model":"gpt-6","effort":"medium","fastMode":false,"concurrency":32});
-        let child = json!({"id":"review","rootId":"lead","parentId":"lead","epoch":0,
+        let child = json!({"compactions":0,"id":"review","rootId":"lead","parentId":"lead","epoch":0,
             "status":"queued","name":"Review","cwd":cwd,"isLead":false,"autoWake":true,
             "inFlight":false,"created":2.0,"threadId":null,"turnId":null,"accountKey":"default",
             "provider":"codex","role":"reviewer","model":"gpt-6","effort":"medium",

@@ -3,6 +3,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
+use studio_runtime_schema::complaint_record::{
+    ComplaintRecipient, ComplaintRecord, ComplaintResponse, ComplaintStatus,
+};
 use studio_runtime_schema::complaints::ComplaintResponseStatus;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, QuestionsWriteRepository, RuntimeStore,
@@ -56,9 +59,39 @@ pub struct ComplaintResponseWrite<'a> {
 }
 
 pub struct ComplaintWriteResult {
-    pub record: Value,
+    pub record: ComplaintWriteReply,
     pub event_inserted: bool,
     pub wake_event_worker: bool,
+}
+
+pub enum ComplaintWriteReply {
+    Current(ComplaintRecord),
+    Historical(Value),
+}
+
+// Historical receipts predate the strict stored-row contract. Replay returns
+// their original JSON shape, including sparse fields.
+#[derive(serde::Deserialize)]
+#[serde(try_from = "Value")]
+struct ComplaintReceiptReply(Value);
+
+impl TryFrom<Value> for ComplaintReceiptReply {
+    type Error = &'static str;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        if value.as_object().is_some_and(|object| {
+            object.get("id").is_some_and(Value::is_string)
+                && ["author", "leadId", "status", "text"].iter().all(|field| {
+                    object
+                        .get(*field)
+                        .is_none_or(|value| value.is_null() || value.is_string())
+                })
+        }) {
+            Ok(Self(value))
+        } else {
+            Err("invalid historical complaint reply")
+        }
+    }
 }
 
 pub struct AsyncQuestionAnswerResult {
@@ -424,7 +457,6 @@ pub fn submit_complaint(
     lead_id: &str,
     request_id: &str,
     text: &str,
-    validate: impl Fn(&Value) -> bool,
 ) -> Result<ComplaintWriteResult, QuestionsWriteError> {
     let actor = stored_agent(transaction, lead_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Invalid request"))?;
@@ -459,45 +491,39 @@ pub fn submit_complaint(
     .to_string();
     let now = unix_time()?;
     if let Some(raw) = QuestionsWriteRepository::complaint(transaction, &id)? {
-        let previous = parse_complaint(&raw, &id, &validate)?;
-        if previous.get("text").and_then(Value::as_str) != Some(text)
-            || previous.get("author").and_then(Value::as_str) != Some(USER)
-            || previous.get("leadId").and_then(Value::as_str) != Some(lead.id.0.as_str())
+        let previous = parse_complaint(&raw, &id)?;
+        if previous.text() != Some(text)
+            || previous.author() != Some(USER)
+            || previous.lead_id() != Some(lead.id.0.as_str())
         {
             return Err(QuestionsWriteError::InvalidRequest(
                 "This complaint id has different content",
             ));
         }
         return Ok(ComplaintWriteResult {
-            record: previous,
+            record: ComplaintWriteReply::Current(previous),
             event_inserted: false,
             wake_event_worker: false,
         });
     }
-    let record = json!({
-        "id": id,
-        "leadId": lead.id.0,
-        "author": USER,
-        "text": text,
-        "recipient": "lead",
-        "version": 1,
-        "status": "open",
-        "created": now,
-        "updated": now,
-        "readAt": null,
-        "responses": []
-    });
-    if !validate(&record) {
-        return Err(invalid_stored(
-            "runtime_complaints",
-            record["id"].as_str().unwrap_or_default(),
-        ));
-    }
-    let id = record["id"]
-        .as_str()
-        .ok_or_else(|| QuestionsWriteError::InvalidRequest("Invalid complaint"))?;
-    QuestionsWriteRepository::put_complaint(transaction, id, &event_write::python_json(&record))?;
-    let message = complaint_message(&record);
+    let typed = ComplaintRecord {
+        id,
+        lead_id: Some(lead.id.0.clone()),
+        author: Some(USER.to_owned()),
+        text: Some(text.to_owned()),
+        recipient: ComplaintRecipient::Lead,
+        version: Some(1),
+        status: ComplaintStatus::Open,
+        created: Some(now),
+        updated: Some(now),
+        read_at: None,
+        responses: Vec::new(),
+        source_type: None,
+        title: None,
+    };
+    let id = &typed.id;
+    QuestionsWriteRepository::put_typed_complaint(transaction, &typed)?;
+    let message = complaint_message(&typed);
     let event_inserted = event_write::enqueue_event(
         transaction,
         &lead,
@@ -512,7 +538,7 @@ pub fn submit_complaint(
     let wake_event_worker =
         event_inserted && lead.auto_wake == Some(true) && !event_write::recovery_pending(&lead);
     Ok(ComplaintWriteResult {
-        record,
+        record: ComplaintWriteReply::Current(typed),
         event_inserted,
         wake_event_worker,
     })
@@ -521,7 +547,6 @@ pub fn submit_complaint(
 pub fn respond_to_complaint(
     transaction: &Transaction<'_>,
     input: ComplaintResponseWrite<'_>,
-    validate: impl Fn(&Value) -> bool,
 ) -> Result<ComplaintWriteResult, QuestionsWriteError> {
     let ComplaintResponseWrite {
         complaint_id,
@@ -533,7 +558,7 @@ pub fn respond_to_complaint(
     } = input;
     let receipt_id = format!("user:{request_id}");
     let now_ms = (unix_time()? * 1000.0) as i64;
-    let admitted = match event_write::begin_request::<studio_runtime_store::ComplaintRecord>(
+    let admitted = match event_write::begin_request::<ComplaintReceiptReply>(
         transaction,
         event_write::RequestKey::new("complaint_response", &[complaint_id, USER], request_id)
             .raw(&receipt_id),
@@ -544,7 +569,7 @@ pub fn respond_to_complaint(
     {
         event_write::CallerAdmission::Replay(reply) => {
             return Ok(ComplaintWriteResult {
-                record: reply.into_value(),
+                record: ComplaintWriteReply::Historical(reply.0),
                 event_inserted: false,
                 wake_event_worker: false,
             });
@@ -553,32 +578,22 @@ pub fn respond_to_complaint(
     };
     let raw = QuestionsWriteRepository::complaint(transaction, complaint_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown complaint"))?;
-    let mut complaint = parse_complaint(&raw, complaint_id, &validate)?;
-    let recipient = complaint
-        .get("recipient")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("runtime_complaints", complaint_id))?
-        .to_owned();
+    let mut complaint = parse_complaint(&raw, complaint_id)?;
     let author = complaint
-        .get("author")
-        .and_then(Value::as_str)
+        .author()
         .ok_or_else(|| invalid_stored("runtime_complaints", complaint_id))?
         .to_owned();
     let lead_id = complaint
-        .get("leadId")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid_stored("runtime_complaints", complaint_id))?;
-    if recipient != USER {
-        let lead = stored_agent(transaction, lead_id)?
+        .lead_id()
+        .ok_or_else(|| invalid_stored("runtime_complaints", complaint_id))?
+        .to_owned();
+    if complaint.recipient == ComplaintRecipient::Lead {
+        let lead = stored_agent(transaction, &lead_id)?
             .ok_or(QuestionsWriteError::InvalidRequest("Unknown managed agent"))?;
         let answered = complaint
-            .get("responses")
-            .and_then(Value::as_array)
-            .is_some_and(|responses| {
-                responses
-                    .iter()
-                    .any(|response| response.get("author").and_then(Value::as_str) == Some(lead_id))
-            });
+            .responses
+            .iter()
+            .any(|response| response.author == lead_id);
         let stopped = lead.is_deleted() || lead.auto_wake != Some(true);
         let closing = match status {
             ComplaintResponseStatus::InProgress => false,
@@ -590,7 +605,7 @@ pub fn respond_to_complaint(
             ));
         }
     }
-    if complaint.get("version").and_then(Value::as_i64) != Some(version) {
+    if complaint.version != Some(version) {
         return Err(QuestionsWriteError::Conflict(
             "This complaint changed. Review the latest response before replying",
         ));
@@ -603,33 +618,27 @@ pub fn respond_to_complaint(
     }
     let now = unix_time()?;
     let response_id = format!("user:{request_id}");
-    let response = json!({
-        "id": response_id,
-        "author": USER,
-        "text": text,
-        "status": status,
-        "at": now
-    });
-    complaint["responses"]
-        .as_array_mut()
-        .ok_or_else(|| invalid_stored("runtime_complaints", complaint_id))?
-        .push(response.clone());
-    complaint["status"] = json!(status);
-    complaint["updated"] = json!(now);
-    if complaint.get("readAt").is_none_or(Value::is_null) {
-        complaint["readAt"] = json!(now);
+    let response = ComplaintResponse {
+        id: response_id.clone(),
+        author: USER.to_owned(),
+        text: text.to_owned(),
+        status,
+        at: now,
+    };
+    complaint.responses.push(response.clone());
+    complaint.status = match status {
+        ComplaintResponseStatus::InProgress => ComplaintStatus::InProgress,
+        ComplaintResponseStatus::Resolved => ComplaintStatus::Resolved,
+        ComplaintResponseStatus::Declined => ComplaintStatus::Declined,
+    };
+    complaint.updated = Some(now);
+    if complaint.read_at.is_none() {
+        complaint.read_at = Some(now);
     }
-    complaint["version"] = json!(version + 1);
-    if !validate(&complaint) {
-        return Err(invalid_stored("runtime_complaints", complaint_id));
-    }
+    complaint.version = Some(version + 1);
     let reporter = stored_agent(transaction, &author)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown managed agent"))?;
-    QuestionsWriteRepository::put_complaint(
-        transaction,
-        complaint_id,
-        &event_write::python_json(&complaint),
-    )?;
+    QuestionsWriteRepository::put_typed_complaint(transaction, &complaint)?;
     let event_inserted = if !reporter.is_deleted() {
         let event = json!({
             "complaint_id": complaint_id,
@@ -652,15 +661,10 @@ pub fn respond_to_complaint(
     let wake_event_worker = event_inserted
         && reporter.auto_wake == Some(true)
         && !event_write::recovery_pending(&reporter);
-    event_write::settle_request(
-        transaction,
-        &admitted,
-        Some(USER),
-        &studio_runtime_store::ComplaintRecord::from_value(complaint.clone())?,
-    )
-    .map_err(EventWriteError::from)?;
+    event_write::settle_request(transaction, &admitted, Some(USER), &complaint)
+        .map_err(EventWriteError::from)?;
     Ok(ComplaintWriteResult {
-        record: complaint,
+        record: ComplaintWriteReply::Current(complaint),
         event_inserted,
         wake_event_worker,
     })
@@ -718,14 +722,14 @@ fn is_question(record: &Value) -> bool {
     }
 }
 
-fn complaint_message(record: &Value) -> String {
+fn complaint_message(record: &ComplaintRecord) -> String {
     let complaint = json!({
-        "complaint_id": record["id"],
+        "complaint_id": record.id,
         "author": USER,
         "author_name": USER,
-        "text": record["text"],
-        "status": record["status"],
-        "created": record["created"]
+        "text": record.text,
+        "status": record.status,
+        "created": record.created
     });
     event_write::python_json(&json!({
         "complaints": [complaint],
@@ -740,18 +744,10 @@ fn stored_agent(
     Ok(AgentRepository::get(transaction, &AgentId::from(id))?)
 }
 
-fn parse_complaint(
-    raw: &str,
-    id: &str,
-    validate: &impl Fn(&Value) -> bool,
-) -> Result<Value, QuestionsWriteError> {
+fn parse_complaint(raw: &str, id: &str) -> Result<ComplaintRecord, QuestionsWriteError> {
     let complaint: studio_runtime_store::ComplaintRecord =
         serde_json::from_str(raw).map_err(|_| invalid_stored("runtime_complaints", id))?;
     if complaint.id() != id {
-        return Err(invalid_stored("runtime_complaints", id));
-    }
-    let complaint = complaint.into_value();
-    if !validate(&complaint) {
         return Err(invalid_stored("runtime_complaints", id));
     }
     Ok(complaint)
@@ -769,4 +765,22 @@ fn unix_time() -> Result<f64, QuestionsWriteError> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs_f64())
         .map_err(|_| QuestionsWriteError::Clock)
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::ComplaintReceiptReply;
+    use serde_json::json;
+
+    #[test]
+    fn sparse_historical_complaint_reply_remains_replayable() {
+        let reply: ComplaintReceiptReply =
+            serde_json::from_str(r#"{"id":"c","status":"future","text":null,"opaque":{"a":1}}"#)
+                .unwrap();
+        assert_eq!(
+            reply.0,
+            json!({"id":"c","status":"future","text":null,"opaque":{"a":1}})
+        );
+        assert!(serde_json::from_str::<ComplaintReceiptReply>(r#"{"text":false}"#).is_err());
+    }
 }

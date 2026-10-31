@@ -46,6 +46,7 @@ pub mod provider_rate_limits;
 pub mod question_answers;
 pub mod queue_command;
 pub mod raw_json;
+pub mod raw_object;
 pub mod records;
 pub mod recovery_record;
 pub mod request_record;
@@ -1307,7 +1308,7 @@ mod tests {
         assert!(
             validate(
                 "PersistedAgentRecord",
-                &json!({"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
+                &json!({"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle","compactions":0})
             )
             .expect("persisted agent schema exists")
         );
@@ -1317,6 +1318,7 @@ mod tests {
                 &json!({
                     "id":"agent-1",
                     "rootId":"agent-1",
+                    "compactions":0,
                     "epoch":0,
                     "status":"idle",
                     "sandbox":null,
@@ -1331,6 +1333,7 @@ mod tests {
                 &json!({
                     "id":"agent-1",
                     "rootId":"agent-1",
+                    "compactions":0,
                     "epoch":0,
                     "status":"idle",
                     "sandbox":{},
@@ -1345,6 +1348,7 @@ mod tests {
                 &json!({
                     "id":"agent-1",
                     "rootId":"agent-1",
+                    "compactions":0,
                     "epoch":0,
                     "status":"running",
                     "startAttempt":{
@@ -1369,6 +1373,7 @@ mod tests {
                 &json!({
                     "id":"agent-1",
                     "rootId":"agent-1",
+                    "compactions":0,
                     "epoch":0,
                     "status":"idle",
                     "sandbox":"workspace-write"
@@ -1390,9 +1395,9 @@ mod tests {
         );
         assert!(validate(
             "PersistedTaskRecord",
-            &json!({"id":"t","agent":"a","kind":"command","status":"completed","reattachRecovery":{"attempt":2},"outputPreviewOnly":true})
+            &json!({"id":"t","agent":"a","kind":"command","status":"completed","created":1,"itemId":"i","turnId":"u","type":"commandExecution","name":"commandExecution","outputPreviewOnly":true})
         )
-        .expect("persisted task schema accepts Python state extensions"));
+        .expect("persisted task schema accepts canonical task"));
         assert!(
             validate(
                 "PersistedRequestRecord",
@@ -1410,14 +1415,14 @@ mod tests {
         assert!(
             validate(
                 "PersistedTranscriptRecord",
-                &json!({"id":"i","inputs":[{"id":"a"}]})
+                &json!({"id":"i","role":"user","inputs":[{"id":"a"}]})
             )
             .expect("legacy transcript item can be hydrated before response validation")
         );
         assert!(
             validate(
                 "PersistedTranscriptRecord",
-                &json!({"id":"i","text":null,"inputs":[{"text":null}]})
+                &json!({"id":"i","role":"user","text":null,"inputs":[{"text":null}]})
             )
             .expect("nullable transcript text remains readable")
         );

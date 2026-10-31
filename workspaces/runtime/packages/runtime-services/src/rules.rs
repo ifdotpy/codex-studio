@@ -119,7 +119,7 @@ mod tests {
     }
 
     fn agent(id: &str, deleted_at: Option<serde_json::Value>) -> AgentRecord {
-        let mut record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+        let mut record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
             "id": id,
             "rootId": id,
             "epoch": 0,
@@ -171,8 +171,10 @@ mod tests {
     #[test]
     fn refuses_invalid_agent_deletion_marker() {
         assert!(
-            AgentRecord::from_value(json!({"id":"agent", "rootId":"agent", "epoch":0,
-            "status":"idle", "accountKey":"default", "deletedAt":true}))
+            AgentRecord::from_value(
+                json!({"compactions":0,"id":"agent", "rootId":"agent", "epoch":0,
+            "status":"idle", "accountKey":"default", "deletedAt":true})
+            )
             .is_err()
         );
     }

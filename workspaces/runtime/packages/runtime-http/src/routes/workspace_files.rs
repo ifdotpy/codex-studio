@@ -207,6 +207,8 @@ fn map_store_error(error: StoreError) -> ApiError {
         StoreError::InvalidStoredObject { table, id } => invalid_stored(table, &id),
         StoreError::RequestResult(error) => error.into(),
         StoreError::Outbox(error) => error.into(),
+        error @ (StoreError::TranscriptFullTextUnavailable { .. }
+        | StoreError::TranscriptInputsIncomplete { .. }) => ApiError::stored(error),
         StoreError::StateDirectory(_)
         | StoreError::AlreadyOwned
         | StoreError::MissingDatabase(_)
@@ -305,7 +307,7 @@ mod tests {
             .await
             .unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
-        let agent = AgentRecord::from_value(json!({"id":"worker","rootId":"worker","epoch":1,"status":"idle","accountKey":"default","provider":"codex","cwd":workspace.path()})).unwrap();
+        let agent = AgentRecord::from_value(json!({"compactions":0,"id":"worker","rootId":"worker","epoch":1,"status":"idle","accountKey":"default","provider":"codex","cwd":workspace.path()})).unwrap();
         store
             .transaction(move |tx| AgentRepository::put(tx, &agent))
             .await
@@ -351,9 +353,11 @@ mod tests {
                 .await
                 .expect("store"),
         );
-        let agent = AgentRecord::from_value(json!({"id":"worker","rootId":"worker","epoch":1,
+        let agent = AgentRecord::from_value(
+            json!({"compactions":0,"id":"worker","rootId":"worker","epoch":1,
             "status":"idle","accountKey":"claude","provider":"claude","model":"sonnet",
-            "cwd":"/fixture","isLead":true}))
+            "cwd":"/fixture","isLead":true}),
+        )
         .expect("agent");
         store
             .transaction(move |tx| AgentRepository::put(tx, &agent))

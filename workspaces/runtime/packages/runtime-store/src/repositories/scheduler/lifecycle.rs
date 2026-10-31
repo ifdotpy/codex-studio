@@ -2561,9 +2561,6 @@ pub(super) fn interrupt_uncertain(attempt: &Value, thread: &str, turn: &str) -> 
         && receipt["turnId"] == turn
         && matches!(receipt["outcome"].as_str(), Some("unknown" | "accepted"))
 }
-pub(super) fn same_native_scope(a: &AgentRecord, b: &AgentRecord) -> bool {
-    a.account_key == b.account_key && a.thread_id == b.thread_id
-}
 pub(super) fn same_recovery_scope(a: &Value, b: &Value) -> bool {
     ["epoch", "accountKey", "threadId"]
         .iter()
@@ -3198,7 +3195,7 @@ mod account_scope_tests {
     #[test]
     fn clearing_account_hold_restores_prior_error_and_hold() {
         let mut agent: crate::AgentRecord = serde_json::from_str(
-            r#"{"id":"a","rootId":"a","epoch":1,"status":"waiting","accountKey":"default","error":"paused","nativeFailureHold":true,"startOutcomeHold":{"stage":"account_settlement","cursor":12,"reason":"paused","previousError":"original","previousNativeFailureHold":{"present":true,"value":"previous"}}}"#,
+            r#"{"id":"a","rootId":"a","epoch":1,"status":"waiting","accountKey":"default","compactions":0,"error":"paused","nativeFailureHold":true,"startOutcomeHold":{"stage":"account_settlement","cursor":12,"reason":"paused","previousError":"original","previousNativeFailureHold":{"present":true,"value":"previous"}}}"#,
         )
         .expect("stored agent");
         super::clear_hold(&mut agent);

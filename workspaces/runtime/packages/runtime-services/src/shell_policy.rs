@@ -567,7 +567,7 @@ mod receipt_tests {
         let directory = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"claude","threadId":"thread","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"claude","threadId":"thread","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
             tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
             Ok::<_, StoreError>(())
         }).await.unwrap();
@@ -597,7 +597,7 @@ mod receipt_tests {
         store.transaction_with(|tx| {
             for (id, value) in [
                 ("a-partial", json!({"id":"a-partial","provider":"claude","threadId":"t","accountKey":"inactive","status":"idle","autoWake":true})),
-                ("z-valid", json!({"id":"z-valid","rootId":"z-valid","epoch":1,"provider":"claude","threadId":"t","accountKey":"default","status":"idle","autoWake":true})),
+                ("z-valid", json!({"compactions":0,"id":"z-valid","rootId":"z-valid","epoch":1,"provider":"claude","threadId":"t","accountKey":"default","status":"idle","autoWake":true})),
             ] {
                 tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", (id, value.to_string()))?;
                 tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", (format!("task-{id}"), json!({"id":format!("task-{id}"),"agent":id,"status":"running","name":"local_bash"}).to_string()))?;
@@ -666,7 +666,7 @@ mod receipt_tests {
         let directory = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","accountKey":"default","epoch":7,"autoWake":true,"status":"idle"}).to_string()))?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"compactions":0,"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","accountKey":"default","epoch":7,"autoWake":true,"status":"idle"}).to_string()))?;
             tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
             Ok::<_, StoreError>(())
         }).await.unwrap();
@@ -721,7 +721,7 @@ mod receipt_tests {
 
     #[test]
     fn shell_projection_agrees_with_persisted_agent_owner_on_valid_fields() {
-        let value = json!({"id":"a","rootId":"r","epoch":3,"status":"idle","accountKey":"default","threadId":"t","turnId":"","autoWake":true,"inFlight":false,"executionMode":"host","deletedAt":null,"accountTransferId":"transfer","remoteWorker":false,"remoteAnchor":null});
+        let value = json!({"compactions":0,"id":"a","rootId":"r","epoch":3,"status":"idle","accountKey":"default","threadId":"t","turnId":"","autoWake":true,"inFlight":false,"executionMode":"host","deletedAt":null,"accountTransferId":"transfer","remoteWorker":false,"remoteAnchor":null});
         let owner = studio_runtime_store::AgentRecord::from_value(value.clone()).unwrap();
         let partial = ShellPolicyAgent::deserialize(value).unwrap();
         assert_eq!(partial.id.as_deref(), Some(owner.id.0.as_str()));
@@ -763,7 +763,7 @@ mod receipt_tests {
         let directory = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","accountKey":"default","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", ("agent", json!({"compactions":0,"id":"agent","rootId":"agent","provider":"claude","threadId":"thread","accountKey":"default","epoch":1,"autoWake":true,"status":"idle"}).to_string()))?;
             tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)", ("task", json!({"id":"task","agent":"agent","status":"running","name":"local_bash"}).to_string()))?;
             Ok::<_, StoreError>(())
         }).await.unwrap();
