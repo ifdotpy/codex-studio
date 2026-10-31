@@ -925,10 +925,8 @@ export function createApiScope(options: ApiScopeOptions) {
       "codex-desktop-opened:",
       "project-last-server:",
       "studio-recovered-limit:",
-      "studio-chat-scroll:",
       "codex-chat-seen:",
     ].some((prefix) => key.startsWith(prefix)) ||
-    key.endsWith(":window-anchor") ||
     key.endsWith(":tools-v3");
   function saved<T>(key: string, fallback: T): T {
     try {

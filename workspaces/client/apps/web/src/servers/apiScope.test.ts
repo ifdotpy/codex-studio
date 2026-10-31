@@ -164,16 +164,16 @@ describe("concurrent servers in one interface", () => {
     const a = scope("a", async () => response({}), disk);
     const b = scope("b", async () => response({}), disk);
     const position = { top: 120, following: false, distance: 240 };
-    a.save("studio-chat-scroll:chat", position);
-    a.save("studio-chat-scroll:chat", { ...position });
-    b.save("studio-chat-scroll:chat", position);
+    a.save("codex-desktop-opened:chat", position);
+    a.save("codex-desktop-opened:chat", { ...position });
+    b.save("codex-desktop-opened:chat", position);
     expect(write).toHaveBeenCalledTimes(2);
-    a.save("studio-chat-scroll:chat", { ...position, top: 121 });
+    a.save("codex-desktop-opened:chat", { ...position, top: 121 });
     expect(write).toHaveBeenCalledTimes(3);
-    disk.setItem("a:studio-chat-scroll:chat", cacheFixture(null));
-    a.save("studio-chat-scroll:chat", { ...position, top: 121 });
+    disk.setItem("a:codex-desktop-opened:chat", cacheFixture(null));
+    a.save("codex-desktop-opened:chat", { ...position, top: 121 });
     expect(write).toHaveBeenCalledTimes(5);
-    expect(b.saved("studio-chat-scroll:chat", null)).toEqual(position);
+    expect(b.saved("codex-desktop-opened:chat", null)).toEqual(position);
   });
 
   afterEach(() => vi.unstubAllGlobals());

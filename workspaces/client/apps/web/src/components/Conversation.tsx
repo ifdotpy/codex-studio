@@ -559,6 +559,20 @@ export default function Conversation(p: {
     setPageAnchor(getAnchorId());
     void older().catch((error) => p.notify(errorText(error)));
   };
+  const historyStart = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = scroll.current;
+    const sentinel = historyStart.current;
+    if (!root || !sentinel || !before) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) loadOlderAtStart();
+      },
+      { root },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  });
   const input = useRef<HTMLTextAreaElement>(null);
   const navigationAttempt = useRef(0);
   const handledJump = useRef("");
@@ -1736,19 +1750,9 @@ export default function Conversation(p: {
           </details>,
           headerTools,
         )}
-      <div
-        id="messages"
-        ref={scroll}
-        onScroll={() => {
-          onScroll();
-          if (!getFollow()) setPageAnchor(getAnchorId());
-          loadOlderAtStart();
-        }}
-        onWheel={(event) => {
-          if (event.deltaY < 0) loadOlderAtStart();
-        }}
-      >
+      <div id="messages" ref={scroll} onScroll={onScroll}>
         <div ref={content} className="message-content">
+          <div ref={historyStart} aria-hidden="true" />
           {p.transcriptHeading && (
             <div className="transcript-heading">{p.transcriptHeading}</div>
           )}

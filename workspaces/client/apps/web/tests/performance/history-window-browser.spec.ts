@@ -1,5 +1,4 @@
 import { fixtureOrigin } from "./performance-fixture.ts";
-import { readCachedStorage } from "../cacheFixture.ts";
 import type {} from "./history-window.fixture.tsx";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -171,19 +170,10 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
     await page.evaluate(() => document.getSelection()!.removeAllRanges());
     await page.evaluate(() => window.jump("a500"));
     await expect(page.locator("#message")).toHaveValue("Preserve this draft");
-    const savedOffset = await offset("a500");
-    // HistoryWindow publishes its visible range, then persists the anchor.
-    await page.evaluate(
-      () =>
-        new Promise((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(resolve)),
-        ),
-    );
     await page.reload();
+    await expect(page.locator('[data-message="a999"]')).toBeVisible();
+    await page.evaluate(() => window.jump("a500"));
     await expect(page.locator('[data-message="a500"]')).toBeVisible();
-    await expect
-      .poll(async () => Math.abs((await offset("a500")) - savedOffset))
-      .toBeLessThan(2);
     await page.locator("#message").fill("Send after history navigation");
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect(page.locator("output")).toHaveText(
@@ -256,37 +246,15 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
       .toBeLessThan(2);
     await page.evaluate(() => document.getSelection()!.removeAllRanges());
     await page.evaluate(() => window.jump("large-20"));
-    const sameTurnReloadOffset = await sameTurnTarget.evaluate(
-      (node) =>
-        node.getBoundingClientRect().top -
-        document.querySelector("#messages")!.getBoundingClientRect().top,
-    );
-    await expect
-      .poll(async () => {
-        const anchor:
-          | (Pick<import("../../src/types.ts").Message, "id"> & {
-              kind?: string;
-            })
-          | null = await page.evaluate(
-          readCachedStorage,
-          "history-window-browser:window-anchor",
-        );
-        return anchor?.kind === "message" && anchor.id.startsWith("large-");
-      })
-      .toBe(true);
+    expect(
+      await page.evaluate(() =>
+        localStorage.getItem("history-window-browser:window-anchor"),
+      ),
+    ).toBeNull();
     await page.reload();
+    await expect(page.locator('[data-message="large-2999"]')).toBeAttached();
+    await page.evaluate(() => window.jump("large-20"));
     await expect(sameTurnTarget).toBeVisible();
-    await expect
-      .poll(async () =>
-        Math.abs(
-          (await sameTurnTarget.evaluate(
-            (node) =>
-              node.getBoundingClientRect().top -
-              document.querySelector("#messages")!.getBoundingClientRect().top,
-          )) - sameTurnReloadOffset,
-        ),
-      )
-      .toBeLessThan(2);
     await page.evaluate(() => window.small());
     await expect(page.locator('[data-message="a0"]')).toBeAttached();
     await expect(page.locator("[data-history-window]")).toHaveCount(0);

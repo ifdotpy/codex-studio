@@ -1,13 +1,12 @@
-import { useServerApi } from "../servers/ServerServicesContext";
 import {
   useCallback,
   useLayoutEffect,
   useRef,
   useSyncExternalStore,
 } from "react";
-import "../api";
 
 type Position = { top: number; following: boolean; distance: number };
+const positions = new Map<string, Position>();
 
 /** Distance from the bottom, in CSS pixels, inside which the transcript keeps
  * following new content. */
@@ -31,8 +30,6 @@ export function useFollowState(
 // One owner for scroll anchoring. Browser anchoring and React effects must not
 // both compensate for the same composer resize or streamed paragraph.
 export function useConversationScroll(id: string, ready: boolean) {
-  const { saved, save } = useServerApi();
-
   const scroll = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const following = useRef(true);
@@ -49,7 +46,6 @@ export function useConversationScroll(id: string, ready: boolean) {
     following.current = value;
     followListeners.current.forEach((listener) => listener());
   };
-  const positions = useRef(new Map<string, Position>());
   const current = useRef("");
   const available = useRef(ready);
   available.current = ready;
@@ -77,10 +73,6 @@ export function useConversationScroll(id: string, ready: boolean) {
   // False until the first restore of the current chat applies its position.
   const restored = useRef(false);
 
-  const persist = () => {
-    const position = positions.current.get(current.current);
-    if (position) save(`studio-chat-scroll:${current.current}`, position);
-  };
   const remember = () => {
     const root = scroll.current;
     if (!root) return;
@@ -90,7 +82,7 @@ export function useConversationScroll(id: string, ready: boolean) {
       0,
       root.scrollHeight - root.clientHeight - root.scrollTop,
     );
-    positions.current.set(current.current, {
+    positions.set(current.current, {
       top: root.scrollTop,
       following: following.current,
       distance: bottomDistance.current,
@@ -177,7 +169,7 @@ export function useConversationScroll(id: string, ready: boolean) {
   const restore = (explicit = false) => {
     const root = scroll.current;
     if (!root || !available.current) return;
-    const unseen = !explicit && trackUnseenScroll();
+    if (!explicit) trackUnseenScroll();
     restored.current = true;
     const hadAnchor = !!anchor.current;
     if (following.current)
@@ -195,8 +187,6 @@ export function useConversationScroll(id: string, ready: boolean) {
     remember();
     // A first restore uses the saved offset. Do not replace it with a layout anchor.
     if (!hadAnchor && !following.current) anchor.current = null;
-    // The scroll event of an unseen move sees no change and does not persist.
-    if (unseen) persist();
   };
   const setFollow = (value: boolean) => {
     updateFollow(value);
@@ -204,18 +194,14 @@ export function useConversationScroll(id: string, ready: boolean) {
       bottomDistance.current = 0;
       restore(true);
     } else remember();
-    persist();
   };
 
   useLayoutEffect(() => {
     if (current.current !== id) {
-      persist();
       current.current = id;
       lastScrollInput.current = -Infinity;
       anchor.current = null;
-      const stored =
-        positions.current.get(id) ||
-        saved<Position | null>(`studio-chat-scroll:${id}`, null);
+      const stored = positions.get(id);
       const valid =
         stored &&
         Number.isFinite(stored.top) &&
@@ -295,20 +281,12 @@ export function useConversationScroll(id: string, ready: boolean) {
     root.addEventListener("touchstart", touchStart, { passive: true });
     for (const type of ["wheel", "touchmove", "keydown", "pointerdown"])
       root.addEventListener(type, input, { passive: true });
-    const checkpoint = () => {
-      if (available.current) persist();
-    };
-    window.addEventListener("pagehide", checkpoint);
-    document.addEventListener("visibilitychange", checkpoint);
     const observer = new ResizeObserver(() => restore());
     observer.observe(root);
     observer.observe(body);
     const mutations = new MutationObserver(() => restore());
     mutations.observe(body, { childList: true, subtree: true });
     return () => {
-      checkpoint();
-      window.removeEventListener("pagehide", checkpoint);
-      document.removeEventListener("visibilitychange", checkpoint);
       observer.disconnect();
       mutations.disconnect();
       root.removeEventListener("touchstart", touchStart);
@@ -322,7 +300,6 @@ export function useConversationScroll(id: string, ready: boolean) {
     if (!root || !available.current || root.scrollTop === lastTop.current)
       return;
     track();
-    persist();
   };
   const revealRequest = useCallback((node: HTMLElement) => {
     const root = scroll.current;
@@ -337,7 +314,6 @@ export function useConversationScroll(id: string, ready: boolean) {
       offset:
         node.getBoundingClientRect().top - root.getBoundingClientRect().top,
     };
-    persist();
   }, []);
   const getAnchorId = () => {
     const root = scroll.current;
