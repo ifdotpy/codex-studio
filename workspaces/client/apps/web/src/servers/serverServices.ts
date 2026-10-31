@@ -66,6 +66,11 @@ export function createServerServices(server: StudioServer) {
     beginMutation: createMutationJournal(transport.owner.id, storage),
     beginActivity: activity.beginServerActivity,
   });
+  // The pending layer of this server ends when its own stream checkpoint reaches the response.
+  sequences.onEntitySequenceAdvance((sequence, reset) => {
+    if (reset) api.pending.resetClientSeq();
+    api.pending.observeClientSeq(sequence);
+  });
   const audio = createServerAudio();
   const sessionCosts = createSessionCostCache(storage);
   const transcripts = createTranscriptCache();
