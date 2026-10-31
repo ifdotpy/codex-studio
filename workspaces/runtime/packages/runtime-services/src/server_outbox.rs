@@ -40,14 +40,19 @@ fn failed(error: OutboxError) -> AccessError {
 pub(crate) fn state(status: OutboxStatus) -> ServerDeliveryState {
     match status {
         OutboxStatus::Pending => ServerDeliveryState::Queued,
-        _ => ServerDeliveryState::Running,
+        OutboxStatus::Submitted
+        | OutboxStatus::Unknown
+        | OutboxStatus::Committed
+        | OutboxStatus::Unrecognized => ServerDeliveryState::Running,
     }
 }
 
 fn status(state: ServerDeliveryState) -> OutboxStatus {
     match state {
         ServerDeliveryState::Queued => OutboxStatus::Pending,
-        _ => OutboxStatus::Submitted,
+        ServerDeliveryState::Running
+        | ServerDeliveryState::Waiting
+        | ServerDeliveryState::Complete => OutboxStatus::Submitted,
     }
 }
 

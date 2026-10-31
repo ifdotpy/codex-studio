@@ -160,7 +160,13 @@ fn followup_error(error: crate::commands::CommandError) -> crate::managed_host_t
         CommandError::Coordination(CoordinationError::RequiresDependency(name)) => {
             Error::Unavailable(name)
         }
-        _ => Error::Invalid("Agent input was refused"),
+        CommandError::Forbidden
+        | CommandError::TooOld
+        | CommandError::Invalid(_)
+        | CommandError::Conflict(_)
+        | CommandError::NotFound
+        | CommandError::Lifecycle(_)
+        | CommandError::Coordination(_) => Error::Invalid("Agent input was refused"),
     }
 }
 

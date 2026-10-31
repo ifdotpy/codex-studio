@@ -463,13 +463,15 @@ pub fn federation_signed_headers(
     let signature = identity.sign(&federation_signing_bytes(
         method, &path, timestamp, nonce, body,
     ));
+    // A request id must start with a letter or digit; a random nonce can start with `-` or `_`.
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
     let mut headers = multi_server_signed_headers(
         identity,
         &MultiServerRequest {
             server_id,
             method,
             url,
-            request_id: &new_nonce()?,
+            request_id: &request_id,
             timestamp,
             nonce,
             body,

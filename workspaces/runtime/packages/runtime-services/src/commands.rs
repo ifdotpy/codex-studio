@@ -314,7 +314,9 @@ pub fn response(
                 rusqlite::types::ValueRef::Text(bytes) | rusqlite::types::ValueRef::Blob(bytes) => {
                     bytes.to_vec()
                 }
-                _ => Vec::new(),
+                rusqlite::types::ValueRef::Null
+                | rusqlite::types::ValueRef::Integer(_)
+                | rusqlite::types::ValueRef::Real(_) => Vec::new(),
             };
             Ok((
                 row.get::<_, String>(0)?,
@@ -411,7 +413,11 @@ pub fn execute_sync(
         Command::Stop { target, body } => {
             let (sender, sender_epoch) = match principal {
                 Principal::Agent { id, epoch } => (Some(id.clone()), i64::try_from(*epoch).ok()),
-                _ => (None, None),
+                Principal::Owner
+                | Principal::Device { .. }
+                | Principal::Peer { .. }
+                | Principal::Federated { .. }
+                | Principal::Policy => (None, None),
             };
             // TODO(#630): a stop pauses the chat and clears its queue (today's lifecycle).
             // The rule "stop does not pause and does not clear the queue" needs the Turn
