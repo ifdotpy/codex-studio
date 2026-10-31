@@ -1143,10 +1143,40 @@ async fn project_locations(
         .map(Json)
         .map_err(ApiError::json);
     }
+    let query = projects::LocationQuery {
+        project: query
+            .get("project")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        server: query
+            .get("server")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        action: query
+            .get("action")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        path: query.get("path").and_then(Value::as_str).map(str::to_owned),
+    };
     let value = projects::location_query(&store, query)
         .await
         .map_err(projects_error)?;
-    super::generated_json::<crate::generated::ProjectLocationQueryResponse>(value).map(Json)
+    let matches = value
+        .matches
+        .into_iter()
+        .map(|item| {
+            Ok(crate::generated::ProjectLocationMatch {
+                project_id: item.project_id,
+                path: item.path,
+                name: item.name.ok_or_else(ApiError::internal)?,
+            })
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    Ok(Json(crate::generated::ProjectLocationQueryResponse {
+        git_head: value.git_head,
+        git_origin: value.git_origin,
+        matches: Some(matches),
+    }))
 }
 
 async fn remote_location_request(

@@ -81,15 +81,26 @@ pub async fn list(store: &RuntimeStore) -> Result<Value, ProjectsError> {
 
 /// Read this server's project-location metadata. A request for a paired server
 /// remains owned by the cross-server transport adapter.
-pub async fn location_query(store: &RuntimeStore, query: Value) -> Result<Value, ProjectsError> {
+#[derive(Clone)]
+pub struct LocationQuery {
+    pub project: Option<String>,
+    pub server: Option<String>,
+    pub action: Option<String>,
+    pub path: Option<String>,
+}
+
+pub async fn location_query(
+    store: &RuntimeStore,
+    query: LocationQuery,
+) -> Result<LocationReply, ProjectsError> {
     let project_id = query
-        .get("project")
-        .and_then(Value::as_str)
+        .project
+        .as_deref()
         .filter(|value| !value.is_empty() && value.chars().count() <= 4096)
         .ok_or(ProjectsError::BadRequest("Select an existing project"))?;
     let server = query
-        .get("server")
-        .and_then(Value::as_str)
+        .server
+        .as_deref()
         .filter(|value| !value.is_empty() && value.chars().count() <= 128)
         .ok_or(ProjectsError::BadRequest("The server ID is invalid"))?;
     let local_server_id = store.local_server_id()?;
@@ -107,7 +118,7 @@ pub async fn location_query(store: &RuntimeStore, query: Value) -> Result<Value,
     }
     let server_id = server_id.to_owned();
     let project_id = project_id.to_owned();
-    let matches = query.get("action").and_then(Value::as_str) == Some("matches");
+    let matches = query.action.as_deref() == Some("matches");
     let (project, projects) = store
         .read_async("runtime-services/projects", move |db| {
             let project = ProjectsRepository::get_record(db, &project_id)?;
@@ -127,14 +138,26 @@ pub async fn location_query(store: &RuntimeStore, query: Value) -> Result<Value,
     .map_err(|_| ProjectsError::PreparationWorker)?
 }
 
+pub struct LocationReply {
+    pub git_head: Option<Option<String>>,
+    pub git_origin: Option<Option<String>>,
+    pub matches: Vec<LocationMatch>,
+}
+
+pub struct LocationMatch {
+    pub project_id: String,
+    pub path: String,
+    pub name: Option<String>,
+}
+
 /// The filesystem and Git part of [`location_query`], after its rows are read.
 fn location_from_rows(
-    query: &Value,
+    query: &LocationQuery,
     server_id: &str,
     project: &studio_runtime_schema::project_record::ProjectLive,
     projects: Vec<(String, studio_runtime_schema::project_record::ProjectLive)>,
-) -> Result<Value, ProjectsError> {
-    if query.get("action").and_then(Value::as_str) == Some("matches") {
+) -> Result<LocationReply, ProjectsError> {
+    if query.action.as_deref() == Some("matches") {
         let origin = project
             .locations
             .iter()
@@ -145,7 +168,11 @@ fn location_from_rows(
                     .and_then(|path| git_origin(std::path::Path::new(path)))
             });
         let Some(origin) = origin else {
-            return Ok(json!({"matches":[]}));
+            return Ok(LocationReply {
+                git_head: None,
+                git_origin: None,
+                matches: vec![],
+            });
         };
         let mut candidates = Vec::new();
         let mut seen = BTreeSet::new();
@@ -155,14 +182,14 @@ fn location_from_rows(
                 continue;
             }
             if seen.insert(path.to_owned()) {
-                candidates.push(json!({"projectId":id,"path":path,"name":candidate.name}));
+                candidates.push(LocationMatch {
+                    project_id: id,
+                    path: path.to_owned(),
+                    name: candidate.name,
+                });
             }
         }
-        if let Some(cwd) = query
-            .get("path")
-            .and_then(Value::as_str)
-            .filter(|p| !p.is_empty())
-        {
+        if let Some(cwd) = query.path.as_deref().filter(|p| !p.is_empty()) {
             let cwd = CanonicalPath::existing(expand_home(cwd))
                 .map_err(|_| ProjectsError::BadRequest("This directory is unavailable"))?;
             if !cwd.is_dir() {
@@ -190,25 +217,31 @@ fn location_from_rows(
             for path in children {
                 let text = path.to_string_lossy().into_owned();
                 if seen.insert(text.clone()) {
-                    candidates.push(json!({"projectId":text,"path":text,"name":path.file_name().map(|n|n.to_string_lossy().into_owned()).unwrap_or_default()}));
+                    candidates.push(LocationMatch {
+                        project_id: text.clone(),
+                        path: text,
+                        name: Some(
+                            path.file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default(),
+                        ),
+                    });
                 }
             }
         }
         let matches = candidates
             .into_iter()
-            .filter(|row| {
-                row["path"]
-                    .as_str()
-                    .and_then(|path| git_origin(Path::new(path)))
-                    .as_deref()
-                    == Some(origin.as_str())
-            })
+            .filter(|row| git_origin(Path::new(&row.path)).as_deref() == Some(origin.as_str()))
             .collect::<Vec<_>>();
-        return Ok(json!({"matches":matches}));
+        return Ok(LocationReply {
+            git_head: None,
+            git_origin: None,
+            matches,
+        });
     }
     let path = query
-        .get("path")
-        .and_then(Value::as_str)
+        .path
+        .as_deref()
         .filter(|path| !path.is_empty())
         .or_else(|| {
             project
@@ -231,7 +264,11 @@ fn location_from_rows(
     let head = git_read(&directory, &["rev-parse", "--verify", "HEAD"])
         .filter(|value| value.len() == 40 || value.len() == 64)
         .map(|value| value[..8].to_owned());
-    Ok(json!({"gitHead":head,"gitOrigin":git_origin(&directory),"matches":[]}))
+    Ok(LocationReply {
+        git_head: Some(head),
+        git_origin: Some(git_origin(&directory)),
+        matches: vec![],
+    })
 }
 
 fn expand_home(path: &str) -> PathBuf {
@@ -425,7 +462,12 @@ mod peer_location_tests {
             })
             .await
             .unwrap();
-        let query = json!({"project":"p","server":"local","path":root.path().to_string_lossy()});
+        let query = LocationQuery {
+            project: Some("p".into()),
+            server: Some("local".into()),
+            action: None,
+            path: Some(root.path().to_string_lossy().into_owned()),
+        };
         assert!(location_query(&store, query.clone()).await.is_err());
         store
             .transaction(|tx| {
