@@ -50,5 +50,5 @@ Nothing is deleted if a row could not be copied.
 
 ## Native core
 
-The core still has the `projection.*Rows` commands. The web client does not call
-them.
+The core no longer has the `projection.getRows`, `rangeRows`, `putRows` and
+`pruneRows` commands (removed 2026-10-30, #630).
