@@ -657,6 +657,19 @@ for (const mode of ["slow", "exit", "restart", "timeout"] as const) {
         1,
       );
       assert.equal(fs.readlinkSync(path.join(root, "current")), release);
+      const layout: { unitName: string } = JSON.parse(
+        fs.readFileSync(path.join(scriptDir, "service-layout.json"), "utf8"),
+      );
+      const dropin = fs.readFileSync(
+        path.join(
+          fixture,
+          "config/systemd/user",
+          `${layout.unitName}.d`,
+          "zz-delivery.conf",
+        ),
+        "utf8",
+      );
+      assert.match(dropin, /^Environment="MALLOC_ARENA_MAX=2"$/m);
       if (mode === "slow") {
         assert.equal(output.status, 0, output.stderr);
         assert.match(output.stdout, /delivered fixture-commit/);
