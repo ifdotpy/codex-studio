@@ -123,7 +123,7 @@ pub(crate) struct Inner {
     /// Sorted manifests during paging, by operation and area.
     pages: HashMap<String, Vec<(String, Value)>>,
     /// Hashes of files cloned into a slot, for its next scan, by slot folder.
-    pub(crate) cloned: HashMap<PathBuf, Map<String, Value>>,
+    pub(crate) cloned: HashMap<PathBuf, protocol::HashCache>,
     clients: usize,
     reading: usize,
     retiring: bool,

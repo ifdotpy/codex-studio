@@ -698,7 +698,7 @@ impl HostService {
             let cache = slot.join("hash-cache.json");
             let mut hashes = protocol::load_hashes(&cache);
             hashes.extend(pending);
-            protocol::atomic(&cache, &Value::Object(hashes))?;
+            protocol::atomic(&cache, &hashes)?;
         }
         self.evict(project, self.budget_of(op), 0, None)?;
         Ok(())

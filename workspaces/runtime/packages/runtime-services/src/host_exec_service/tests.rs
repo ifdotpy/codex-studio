@@ -362,16 +362,24 @@ fn name_alias_and_page_rules() {
 }
 
 #[test]
+fn hash_cache_discards_invalid_rows_without_losing_valid_rows() {
+    use std::io::Write;
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    write!(file, "{{\"bad\":[1],\"good\":[1,2,3,4,\"abc\"]}}").unwrap();
+    let hashes = protocol::load_hashes(file.path());
+    assert_eq!(hashes.len(), 1);
+}
+
+#[test]
 fn the_hash_cache_keeps_only_settled_files() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("file");
     fs::write(&path, "content").unwrap();
     let meta = fs::symlink_metadata(&path).unwrap();
-    let mut hashes = Map::new();
+    let mut hashes = protocol::HashCache::new();
     // A file that just changed is not kept: a second write in the same clock step would hide.
     let stamp = protocol::stamp(&meta);
-    let boundary =
-        i128::from(stamp[1].as_i64().unwrap().max(stamp[3].as_i64().unwrap())) + protocol::RACY_NS;
+    let boundary = i128::from(stamp.1.max(stamp.3)) + protocol::RACY_NS;
     let (checksum, known) =
         protocol::file_hash(&path, &meta, "file", Some(&mut hashes), boundary).unwrap();
     assert!(!known && hashes.is_empty());
@@ -379,13 +387,14 @@ fn the_hash_cache_keeps_only_settled_files() {
     let (again, known) =
         protocol::file_hash(&path, &meta, "file", Some(&mut hashes), later).unwrap();
     assert_eq!((again.as_str(), known), (checksum.as_str(), true));
-    assert_eq!(hashes["file"][4], json!(checksum));
+    assert_eq!(hashes["file"].4, checksum);
     // The cached hash answers without a read while the stat key is the same.
     fs::write(&path, "changed").unwrap();
     hashes.insert("file".into(), {
-        let mut row = protocol::stamp(&fs::symlink_metadata(&path).unwrap()).to_vec();
-        row.push(json!("cached"));
-        Value::Array(row)
+        protocol::HashRow::new(
+            protocol::stamp(&fs::symlink_metadata(&path).unwrap()),
+            "cached".into(),
+        )
     });
     let meta = fs::symlink_metadata(&path).unwrap();
     let (cached, known) =

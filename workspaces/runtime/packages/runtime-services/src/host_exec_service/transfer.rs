@@ -89,7 +89,7 @@ impl HostService {
     pub(crate) fn scan_slot(
         slot: &Path,
         skip: &[String],
-        cloned: Option<Map<String, Value>>,
+        cloned: Option<protocol::HashCache>,
     ) -> Outcome<Manifest> {
         let cache = slot.join("hash-cache.json");
         let mut hashes = protocol::load_hashes(&cache);
@@ -97,7 +97,7 @@ impl HostService {
             hashes.extend(cloned);
         }
         let entries = protocol::scan(&slot.join("source"), skip, Some(&mut hashes))?;
-        protocol::atomic(&cache, &Value::Object(hashes))?;
+        protocol::atomic(&cache, &hashes)?;
         Ok(entries)
     }
 
@@ -386,14 +386,14 @@ impl HostService {
             .join("host-exec-hashes.json");
         let mut hashes = protocol::load_hashes(&cache);
         if hashes.len() > PROJECT_HASHES_LIMIT {
-            hashes = Map::new();
+            hashes.clear();
         }
         let Ok((checksum, known)) =
             protocol::file_hash(&origin, &info, &name, Some(&mut hashes), protocol::now_ns())
         else {
             return skipped("the project file cannot be read");
         };
-        protocol::atomic(&cache, &Value::Object(hashes))?;
+        protocol::atomic(&cache, &hashes)?;
         if entry.get("sha256").and_then(Value::as_str) != Some(checksum.as_str()) {
             return skipped("the project file differs");
         }
@@ -415,13 +415,12 @@ impl HostService {
         if known && protocol::stamp(&after) == protocol::stamp(&info) {
             // The origin did not change since its known hash: the run check need not read the clone.
             let mine = fs::symlink_metadata(&path)?;
-            let mut row = protocol::stamp(&mine).to_vec();
-            row.push(Value::String(checksum));
+            let row = protocol::HashRow::new(protocol::stamp(&mine), checksum);
             self.inner()
                 .cloned
                 .entry(slot.to_path_buf())
                 .or_default()
-                .insert(name, Value::Array(row));
+                .insert(name, row);
         }
         Ok(json!({"cloned": true, "bytes": entry.get("bytes").cloned().unwrap_or(Value::Null)}))
     }
@@ -489,12 +488,10 @@ impl HostService {
                 "sync_conflict",
             )?;
             let stamp = protocol::stamp(&info);
-            let known = match hashes.get(&name) {
-                Some(Value::Array(cached)) if cached.len() == 5 && cached[..4] == stamp => {
-                    cached[4].as_str().map(str::to_owned)
-                }
-                _ => None,
-            };
+            let known = hashes
+                .get(&name)
+                .filter(|cached| cached.stamp() == stamp)
+                .map(|cached| cached.4.clone());
             let checksum = match &known {
                 Some(checksum) => checksum.clone(),
                 None => protocol::digest_file(&path)?.0,
@@ -507,15 +504,15 @@ impl HostService {
             set_mode(&path, mode)?;
             let after = fs::symlink_metadata(&path)?;
             let after_stamp = protocol::stamp(&after);
-            if known.is_some() && after_stamp[..3] == stamp[..3] {
-                let mut row = after_stamp.to_vec();
-                row.push(Value::String(checksum));
-                hashes.insert(name, Value::Array(row));
+            if known.is_some()
+                && (after_stamp.0, after_stamp.1, after_stamp.2) == (stamp.0, stamp.1, stamp.2)
+            {
+                hashes.insert(name, protocol::HashRow::new(after_stamp, checksum));
             } else {
                 hashes.remove(&name);
             }
         }
-        protocol::atomic(&cache, &Value::Object(hashes))?;
+        protocol::atomic(&cache, &hashes)?;
         Ok(())
     }
 

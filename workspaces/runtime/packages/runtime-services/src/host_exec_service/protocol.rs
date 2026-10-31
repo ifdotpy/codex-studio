@@ -104,12 +104,14 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 }
 
 /// The text of Python `json.dumps(value, sort_keys=True)`, which the guest hashes.
+// Identity-hash debt: keep Value until the Python-compatible serializer accepts
+// strict types without changing the bytes used for request and manifest hashes.
 pub(crate) fn sorted_json(value: &Value) -> String {
     studio_runtime_store::python_json(value)
 }
 
 /// Write `value` as JSON to `path` through a synced temporary file and a rename.
-pub(crate) fn atomic(path: &Path, value: &Value) -> std::io::Result<()> {
+pub(crate) fn atomic(path: &Path, value: &impl serde::Serialize) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
     let mut temporary = tempfile::Builder::new()
         .prefix(".host-exec-")
@@ -187,30 +189,49 @@ pub(crate) fn under(path: &str, roots: &[String]) -> bool {
     })
 }
 
-/// A saved hash cache; a missing or damaged file is an empty cache.
-pub(crate) fn load_hashes(path: &Path) -> Map<String, Value> {
+/// The four metadata fields that identify a cached file hash.
+pub(crate) type Stamp = (u64, i64, u64, i64);
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct HashRow(pub u64, pub i64, pub u64, pub i64, pub String);
+
+impl HashRow {
+    pub(crate) fn new(stamp: Stamp, checksum: String) -> Self {
+        Self(stamp.0, stamp.1, stamp.2, stamp.3, checksum)
+    }
+
+    pub(crate) fn stamp(&self) -> Stamp {
+        (self.0, self.1, self.2, self.3)
+    }
+}
+
+pub(crate) type HashCache = BTreeMap<String, HashRow>;
+
+/// A missing or damaged cache is empty; individual damaged rows are discarded.
+pub(crate) fn load_hashes(path: &Path) -> HashCache {
     fs::read_to_string(path)
         .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|value| match value {
-            Value::Object(map) => Some(map),
-            Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::String(_)
-            | Value::Array(_) => None,
+        .and_then(|text| {
+            serde_json::from_str::<BTreeMap<String, Box<serde_json::value::RawValue>>>(&text).ok()
+        })
+        .map(|rows| {
+            rows.into_iter()
+                .filter_map(|(path, row)| {
+                    serde_json::from_str(row.get()).ok().map(|row| (path, row))
+                })
+                .collect()
         })
         .unwrap_or_default()
 }
 
 /// The hash cache key of a file: size, modification time, inode and change time.
-pub(crate) fn stamp(meta: &fs::Metadata) -> [Value; 4] {
-    [
-        Value::from(meta.size()),
-        Value::from(nanoseconds(meta.mtime(), meta.mtime_nsec())),
-        Value::from(meta.ino()),
-        Value::from(nanoseconds(meta.ctime(), meta.ctime_nsec())),
-    ]
+pub(crate) fn stamp(meta: &fs::Metadata) -> Stamp {
+    (
+        meta.size(),
+        nanoseconds(meta.mtime(), meta.mtime_nsec()),
+        meta.ino(),
+        nanoseconds(meta.ctime(), meta.ctime_nsec()),
+    )
 }
 
 fn nanoseconds(seconds: i64, nanoseconds: i64) -> i64 {
@@ -247,16 +268,14 @@ pub(crate) fn file_hash(
     path: &Path,
     meta: &fs::Metadata,
     rel: &str,
-    hashes: Option<&mut Map<String, Value>>,
+    hashes: Option<&mut HashCache>,
     started: i128,
 ) -> std::io::Result<(String, bool)> {
     let key = stamp(meta);
-    if let Some(Value::Array(cached)) = hashes.as_deref().and_then(|hashes| hashes.get(rel))
-        && cached.len() == 5
-        && cached[..4] == key
-        && let Some(checksum) = cached[4].as_str()
+    if let Some(cached) = hashes.as_deref().and_then(|hashes| hashes.get(rel))
+        && cached.stamp() == key
     {
-        return Ok((checksum.to_owned(), true));
+        return Ok((cached.4.clone(), true));
     }
     let (checksum, done) = digest_file(path)?;
     let Some(hashes) = hashes else {
@@ -265,9 +284,7 @@ pub(crate) fn file_hash(
     let newest = i128::from(nanoseconds(meta.mtime(), meta.mtime_nsec()))
         .max(i128::from(nanoseconds(meta.ctime(), meta.ctime_nsec())));
     if stamp(&done) == key && started - newest > RACY_NS {
-        let mut row = key.to_vec();
-        row.push(Value::String(checksum.clone()));
-        hashes.insert(rel.to_owned(), Value::Array(row));
+        hashes.insert(rel.to_owned(), HashRow::new(key, checksum.clone()));
         return Ok((checksum, true));
     }
     hashes.remove(rel);
@@ -284,7 +301,7 @@ pub(crate) type Manifest = BTreeMap<String, Value>;
 pub(crate) fn scan(
     root: &Path,
     skip: &[String],
-    mut hashes: Option<&mut Map<String, Value>>,
+    mut hashes: Option<&mut HashCache>,
 ) -> Outcome<Manifest> {
     let mut result = Manifest::new();
     let started = now_ns();
