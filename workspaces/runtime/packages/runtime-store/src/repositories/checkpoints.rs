@@ -139,20 +139,40 @@ impl CheckpointsRepository {
         agent_id: &str,
         checkpoint_id: &str,
     ) -> StoreResult<Option<String>> {
-        let operations = read_active(
-            connection,
-            "runtime_workspace_operations",
-            "phase",
-            ACTIVE_OPERATION_PHASES,
-        )?;
+        use studio_runtime_schema::workspace_operation::OperationKind;
+
+        if !table_exists(connection, "runtime_workspace_operations")? {
+            return Ok(None);
+        }
+        let placeholders = std::iter::repeat_n("?", ACTIVE_OPERATION_PHASES.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = connection.prepare_cached(&format!(
+            "SELECT id,record FROM runtime_workspace_operations WHERE json_extract(record,'$.phase') IN ({placeholders}) ORDER BY rowid"
+        ))?;
+        let mut rows = statement.query(rusqlite::params_from_iter(ACTIVE_OPERATION_PHASES))?;
+        let table = Table::<crate::WorkspaceOperationRecord>::new(connection);
+        let mut operations = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let encoded: String = row.get(1)?;
+            let operation = table.decode_stored(&id, &encoded)?;
+            if operation.agent.is_empty() {
+                return Err(invalid_record("runtime_workspace_operations", &id));
+            }
+            operations.push(operation);
+        }
         Ok(operations.into_iter().find_map(|operation| {
-            (operation.record.get("kind").and_then(Value::as_str) == Some("restore")
-                && operation.record.get("agent").and_then(Value::as_str) == Some(agent_id)
-                && operation.record.get("checkpoint").and_then(Value::as_str)
+            (operation.kind == OperationKind::Restore
+                && operation.agent == agent_id
+                && operation
+                    .extensions()
+                    .get("checkpoint")
+                    .and_then(Value::as_str)
                     == Some(checkpoint_id))
             .then(|| {
                 operation
-                    .record
+                    .extensions()
                     .get("expectedTree")
                     .and_then(Value::as_str)
                     .map(str::to_owned)
@@ -1227,5 +1247,26 @@ mod tests {
                 |row| row.get::<_, String>(0),
             )
             .is_ok_and(|phase| phase == "capture_running"));
+    }
+
+    #[test]
+    fn restore_tree_refuses_duplicate_operation_fields() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             INSERT INTO runtime_workspace_operations VALUES
+             ('op','{\"id\":\"op\",\"kind\":\"capture\",\"kind\":\"restore\",\"phase\":\"provider_pending\",\"agent\":\"a\",\"checkpoint\":\"c\",\"expectedTree\":\"tree\"}');",
+        ).unwrap();
+        assert!(CheckpointsRepository::restore_expected_tree(&connection, "a", "c").is_err());
+        connection.execute(
+            "UPDATE runtime_workspace_operations SET record=?1 WHERE id='op'",
+            [r#"{"id":"op","kind":"restore","phase":"provider_pending","agent":"a","checkpoint":"c","expectedTree":"tree"}"#],
+        ).unwrap();
+        assert_eq!(
+            CheckpointsRepository::restore_expected_tree(&connection, "a", "c")
+                .unwrap()
+                .as_deref(),
+            Some("tree")
+        );
     }
 }
