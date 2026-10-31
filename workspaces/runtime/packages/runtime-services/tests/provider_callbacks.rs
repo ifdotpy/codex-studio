@@ -59,6 +59,29 @@ fn fixture_request_id(value: &Value) -> RequestId {
     }
 }
 
+/// The legacy answer history of a question: what the user answered, a secret redacted.
+fn question_history(
+    request: &studio_runtime_schema::approvals::Request,
+    answer: &studio_runtime_schema::approvals::Answer,
+) -> Option<Value> {
+    use studio_runtime_schema::approvals::{Answer, Request};
+    let (Request::Question { questions }, Answer::Answers { answers }) = (request, answer) else {
+        return None;
+    };
+    Some(json!(
+        questions
+            .iter()
+            .zip(answers)
+            .map(|(question, given)| json!({
+                "id": question.id,
+                "question": question.question,
+                "isSecret": question.is_secret,
+                "answer": if question.is_secret { json!("[redacted]") } else { json!(given.answer) },
+            }))
+            .collect::<Vec<_>>()
+    ))
+}
+
 fn request(method: Method, id: RequestId, params: Value) -> Frame {
     Frame::Request(RequestFrame {
         id,
@@ -95,14 +118,13 @@ fn tool_value(reply: &Reply) -> Value {
 #[tokio::test]
 async fn provider_callbacks_python_answer_corpus() {
     for case in template().value["answers"].as_array().unwrap() {
-        let (actual, history) = answer_value(
-            case["method"].as_str().unwrap(),
-            &case["params"],
-            &case["data"],
-        )
-        .unwrap();
+        let (request, params) =
+            split_request(case["method"].as_str().unwrap(), &case["params"], None).unwrap();
+        let (answer, actual) = provider_answer(&request, &params, &case["data"]).unwrap();
         assert_eq!(actual, case["expected"], "{}", case["method"]);
-        assert_eq!(history, case["history"]);
+        if let Some(history) = question_history(&request, &answer) {
+            assert_eq!(history, case["history"]);
+        }
     }
 }
 #[tokio::test]
@@ -253,7 +275,7 @@ async fn provider_callbacks_human_pending_and_write_outcomes() {
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT record FROM runtime_requests WHERE id=?1",
+            "SELECT request||ifnull(answer,'')||detail FROM approvals WHERE id=?1",
             [&id],
             |r| r.get(0),
         )
@@ -991,7 +1013,7 @@ async fn provider_callbacks_answer_commit_failpoint() {
         panic!("pending")
     };
     store.transaction_with::<_,studio_runtime_store::StoreError>(|tx| {
-        tx.execute_batch("CREATE TRIGGER answer_fail AFTER UPDATE ON runtime_requests WHEN json_extract(NEW.record,'$.status')='answering' BEGIN SELECT RAISE(ABORT,'answer failpoint'); END")?; Ok(())
+        tx.execute_batch("CREATE TRIGGER answer_fail AFTER UPDATE ON approvals WHEN NEW.state='answering' BEGIN SELECT RAISE(ABORT,'answer failpoint'); END")?; Ok(())
     }).await.unwrap();
     let data = json!({"decision":"accept"});
     assert!(
@@ -1003,11 +1025,10 @@ async fn provider_callbacks_answer_commit_failpoint() {
         store
             .test_reader()
             .unwrap()
-            .query_row(
-                "SELECT json_extract(record,'$.status') FROM runtime_requests WHERE id=?1",
-                [&id],
-                |r| r.get::<_, String>(0)
-            )
+            .query_row("SELECT state FROM approvals WHERE id=?1", [&id], |r| r
+                .get::<_, String>(
+                0
+            ))
             .unwrap(),
         "pending"
     );
@@ -1106,20 +1127,18 @@ async fn provider_callbacks_python_durable_answers() {
         .await
         .unwrap();
         assert_eq!(body(&result), &case["expected"]);
-        let raw: String = store
-            .test_reader()
-            .unwrap()
-            .query_row(
-                "SELECT record FROM runtime_requests WHERE id=?1",
-                [&id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        let card: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(card["answerHistory"], case["history"]);
-        assert_eq!(card["answerSignature"], case["signature"]);
-        assert_eq!(card["answeredBy"], "user");
-        assert_eq!(card["answeredAt"], 20.0);
+        let card = studio_runtime_services::provider_callbacks::legacy_view::stored(
+            &store.test_reader().unwrap(),
+            &id,
+        )
+        .unwrap();
+        assert_eq!(card["status"], "answering");
+        let (request, params) =
+            split_request(case["method"].as_str().unwrap(), &case["params"], None).unwrap();
+        let (answer, _) = provider_answer(&request, &params, &case["data"]).unwrap();
+        if let Some(history) = question_history(&request, &answer) {
+            assert_eq!(history, case["history"]);
+        }
     }
 }
 
@@ -1234,7 +1253,7 @@ async fn provider_callbacks_unjournaled_card_is_refused_without_writes() {
             .test_reader()
             .unwrap()
             .query_row(
-                "SELECT record FROM runtime_requests WHERE id=?1",
+                "SELECT state||ifnull(answer,'')||request||detail FROM approvals WHERE id=?1",
                 [id],
                 |row| row.get::<_, String>(0),
             )

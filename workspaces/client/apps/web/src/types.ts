@@ -1,6 +1,7 @@
 import { NativeReleasePhase, AgentStatus } from "./generated/api";
 import { nativeErrorView } from "./nativeErrors";
 import type { GetResult } from "./api";
+import type { Approval } from "./approvals";
 import type {
   AgentEntityDto,
   ChatEntityDto,
@@ -10,7 +11,6 @@ import type {
   MonitorEntityDto,
   PeerTeamEntityDto,
   ProjectEntityDto,
-  RequestEntityDto,
   RoomEntityDto,
   RuleEntityDto,
   TaskEntityDto,
@@ -38,7 +38,6 @@ export type Complaint = ComplaintEntityDto;
 export type BackgroundTask = TaskEntityDto;
 export type WorkspaceTask = GetResult<"/api/workspace/tasks">["tasks"][number];
 export type Monitor = MonitorEntityDto;
-export type Request = RequestEntityDto;
 export type Rule = RuleEntityDto;
 export type Project = ProjectEntityDto;
 export type Event = EventEntityDto;
@@ -70,7 +69,7 @@ type SnapshotRuntime = WorkspaceEntityDto & {
   retainedWorktrees?:
     | components["schemas"]["RetainedWorktreeEntityDto"][]
     | undefined;
-  questionHistory?: components["schemas"]["AgentRequest"][] | undefined;
+  questionHistory?: Approval[] | undefined;
   messageReceipts?:
     | components["schemas"]["MessageReceiptEntityDto"][]
     | undefined;
@@ -82,7 +81,7 @@ type SnapshotRuntime = WorkspaceEntityDto & {
   tasks: BackgroundTask[];
   monitors: Monitor[];
   complaints: Complaint[];
-  requests: Request[];
+  requests: Approval[];
   rules: Rule[];
   projects: Project[];
   /** Project entity sequence by native ID, owned by the entity projection; stale-delete guard. */

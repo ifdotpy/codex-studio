@@ -188,20 +188,15 @@ test("agent phase browser", async ({ page: runnerPage }) => {
               autoWake: false,
             });
           if (kind === "input")
-            runtime.requests = Array.from({ length: count }, (_, i) => ({
-              id: "input-" + i,
-              agent: "lead",
-              status: "pending",
-              epoch: 2,
-            }));
+            runtime.requests = Array.from({ length: count }, (_, i) =>
+              window.input("input-" + i),
+            );
           if (kind === "mixed") {
             threads.push(window.worker(1), window.worker(2));
             runtime.tasks = [window.command(1)];
             runtime.monitors = [window.monitor(1)];
             lead.parkedEvent = "very-long-event-name-".repeat(10);
-            runtime.requests = [
-              { id: "input", agent: "lead", status: "pending", epoch: 2 },
-            ];
+            runtime.requests = [window.input("input")];
           }
           if (kind === "completed") lead.status = "completed";
           if (kind === "completed-monitor") {

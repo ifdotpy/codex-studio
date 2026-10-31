@@ -3,7 +3,11 @@ import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import type { Message } from "../../src/types.ts";
-import type { components } from "../../src/generated/api.ts";
+import {
+  approval,
+  question as questionField,
+} from "../../src/approvalFixtures.ts";
+import type { Approval } from "../../src/approvals.ts";
 import Requests, {
   RequestCard,
 } from "../../src/components/questions/Requests.tsx";
@@ -14,7 +18,6 @@ import {
   type QuestionLookup,
 } from "../../src/components/questions/questionCardModel.ts";
 
-type RequestDto = components["schemas"]["RequestEntityDto"];
 const question: Message = {
   id: "lead:question-item",
   role: "output",
@@ -40,26 +43,22 @@ const approval: Message = {
     status: "inProgress",
   }),
 };
-const initial: RequestDto[] = [
-  {
+const initial: Approval[] = [
+  approval({
     id: "question",
     agent: "lead",
-    method: "item/tool/requestUserInput",
-    status: "pending",
-    params: {
-      itemId: "question-item",
-      questions: [
-        { id: "0", question: "Continue?", options: [{ label: "Yes" }] },
-      ],
+    request: {
+      kind: "question",
+      questions: [questionField("0", "Continue?", ["Yes"])],
     },
-  },
-  {
+    params: { itemId: "question-item" },
+  }),
+  approval({
     id: "approval",
     agent: "lead",
-    method: "item/commandExecution/requestApproval",
-    status: "pending",
-    params: { itemId: "command-item", command: "pwd" },
-  },
+    request: { kind: "exec", command: "pwd", cwd: "/", reason: null },
+    params: { itemId: "command-item" },
+  }),
 ];
 function Fixture() {
   const [requests, setRequests] = useState(initial);

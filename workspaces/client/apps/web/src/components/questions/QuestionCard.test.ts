@@ -1,4 +1,9 @@
-import { RequestStatus } from "../../generated/api";
+import {
+  approval,
+  question as questionField,
+  simpleRequest,
+} from "../../approvalFixtures";
+import type { Approval } from "../../approvals";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -16,7 +21,6 @@ import {
   type QuestionHistoryEntry,
   type QuestionLookup,
 } from "./questionCardModel";
-import type { components } from "../../generated/api";
 
 const AGENT = "lead";
 const options = [
@@ -55,6 +59,18 @@ function askItem(
       },
       ...fields,
     }),
+  };
+}
+
+/** The state of a question that its owner has answered. */
+function answeredState(
+  answers: { id: string; answer: string[] }[],
+): Approval["state"] {
+  return {
+    kind: "answered",
+    answer: { kind: "answers", answers },
+    by: { kind: "owner" },
+    at: 2,
   };
 }
 
@@ -98,11 +114,11 @@ const chosen = (markup: string) =>
 
 describe("question card", () => {
   it("keeps one editor when a tool and message refer to the same request", () => {
-    const request = {
+    const request = approval({
       id: "question",
-      status: RequestStatus.pending,
       agent: AGENT,
-    } satisfies components["schemas"]["RequestEntityDto"];
+      request: { kind: "question", questions: [questionField("0", "Which?")] },
+    });
     const tool = askItem({ status: "inProgress" }, "running");
     const message: Message = {
       id: "lead:message",
@@ -123,41 +139,48 @@ describe("question card", () => {
   });
   it("links only loaded, active request rows by exact question or approval identity", () => {
     const question = askItem({ status: "inProgress" }, "running");
-    const approval: Message = {
+    const command: Message = {
       id: "lead:command",
       role: "output",
       text: "Command",
     };
-    const requests: components["schemas"]["RequestEntityDto"][] = [
-      {
+    const exec = {
+      kind: "exec",
+      command: "pwd",
+      cwd: "/",
+      reason: null,
+    } as const;
+    const requests: Approval[] = [
+      approval({
         id: "question",
         agent: AGENT,
-        method: "item/tool/requestUserInput",
-        status: RequestStatus.pending,
+        request: {
+          kind: "question",
+          questions: [questionField("0", "Which?")],
+        },
         params: { itemId: "toolu_1" },
-      },
-      {
+      }),
+      approval({
         id: "approval",
         agent: AGENT,
-        method: "item/commandExecution/requestApproval",
-        status: RequestStatus.pending,
+        request: exec,
         params: { itemId: "command" },
-      },
-      {
+      }),
+      approval({
         id: "other-agent",
         agent: "worker",
-        status: RequestStatus.pending,
+        request: exec,
         params: { itemId: "command" },
-      },
-      {
+      }),
+      approval({
         id: "outside-page",
         agent: AGENT,
-        status: RequestStatus.pending,
+        request: exec,
         params: { itemId: "older" },
-      },
+      }),
     ];
     const linked = transcriptRequests(
-      [question, approval],
+      [question, command],
       requests,
       () => undefined,
     );
@@ -165,19 +188,33 @@ describe("question card", () => {
       [...linked].map(([message, request]) => [message, request?.id]),
     ).toEqual([
       [question.id, "question"],
-      [approval.id, "approval"],
+      [command.id, "approval"],
     ]);
     expect(
       transcriptRequests(
-        [approval],
-        requests.map((request) => ({ ...request, deferred: true })),
+        [command],
+        requests.map((request) =>
+          approval({
+            id: request.id,
+            agent: request.agent,
+            request: request.request,
+            params: request.detail.params,
+            deferred: true,
+          }),
+        ),
         () => undefined,
       ).size,
     ).toBe(0);
     expect(
       transcriptRequests(
-        [approval],
-        requests.map((request) => ({ ...request, status: "answered" })),
+        [command],
+        requests.map((request) =>
+          simpleRequest({
+            id: request.id,
+            agent: request.agent,
+            answered: true,
+          }),
+        ),
         () => undefined,
       ).size,
     ).toBe(0);
@@ -246,28 +283,16 @@ describe("question card", () => {
     const exact = render(
       item,
       lookup([
-        {
+        approval({
           id: "request-1",
           agent: AGENT,
-          method: "item/tool/requestUserInput",
-          status: "answered",
-          itemId: "toolu_1",
-          questions: [
-            {
-              id: "0",
-              question: "Where should the release go?",
-              isSecret: false,
-            },
-          ],
-          answerHistory: [
-            {
-              id: "0",
-              question: "Where should the release go?",
-              isSecret: false,
-              answer: ["Dev", "Prod, US"],
-            },
-          ],
-        },
+          request: {
+            kind: "question",
+            questions: [questionField("0", "Where should the release go?")],
+          },
+          params: { itemId: "toolu_1" },
+          state: answeredState([{ id: "0", answer: ["Dev", "Prod, US"] }]),
+        }),
       ]),
     );
     expect(chosen(exact)).toEqual(["Dev", "Prod, US"]);
@@ -356,27 +381,15 @@ describe("question card", () => {
       text: "Which scope?",
       phase: "final_answer",
     };
-    const entry: QuestionHistoryEntry = {
+    const entry: QuestionHistoryEntry = approval({
       id: `${AGENT}:question:call_7`,
       agent: AGENT,
-      method: "agent/asyncQuestion",
-      status: "pending",
-      itemId: "call_7",
-      questions: [
-        {
-          id: "0",
-          question: "Which scope?",
-          isSecret: false,
-          header: null,
-          options: [
-            { label: "One", description: null },
-            { label: "All", description: null },
-          ],
-          multiSelect: false,
-          isOther: false,
-        },
-      ],
-    };
+      request: {
+        kind: "agent_question",
+        questions: [questionField("0", "Which scope?", ["One", "All"])],
+      },
+      params: { itemId: "call_7" },
+    });
     const waiting = render(message, lookup([entry], [["", entry.id]]));
     expect(waiting).toContain("Agent can continue");
     expect(waiting).toContain(">Answer</");
@@ -385,18 +398,7 @@ describe("question card", () => {
     const answered = render(
       message,
       lookup([
-        {
-          ...entry,
-          status: "answered",
-          answerHistory: [
-            {
-              id: "0",
-              question: "Which scope?",
-              isSecret: false,
-              answer: ["All"],
-            },
-          ],
-        },
+        { ...entry, state: answeredState([{ id: "0", answer: ["All"] }]) },
       ]),
     );
     expect(chosen(answered)).toEqual(["All"]);

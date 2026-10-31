@@ -123,7 +123,7 @@ domain!(FederationAckState { Pending=>"pending", Sent=>"sent", Confirmed=>"confi
 domain!(FederationMessageKind { ChatMessage=>"chat-message", RoomInvite=>"room-invite", RoomAccept=>"room-accept" });
 domain!(AccessOutboundState { Unknown=>"unknown", Complete=>"complete", Redacted=>"redacted" });
 domain!(RemoteOutcome { Applied=>"applied", NotApplied=>"not_applied", Unknown=>"unknown" });
-domain!(RequestCardStatus { Pending=>"pending", Answering=>"answering", Answered=>"answered", Uncertain=>"uncertain", Blocked=>"blocked", Resolved=>"resolved", Expired=>"expired", Deleted=>"deleted" });
+domain!(RequestCardStatus { Pending=>"pending", Answering=>"answering", Answered=>"answered", Uncertain=>"uncertain", Resolved=>"resolved", Expired=>"expired", Deleted=>"deleted" });
 domain!(TerminalActionFailure { UnknownOutcome=>"unknown_outcome", Rejected=>"rejected", Disconnected=>"disconnected" });
 domain!(NativeReleasePhase { Checking=>"checking", Unsubscribing=>"unsubscribing", Unknown=>"unknown", Released=>"released", Blocked=>"blocked", Resumed=>"resumed" });
 domain!(ServerFetchState { Preparing=>"preparing", Fetching=>"fetching", Complete=>"complete" });

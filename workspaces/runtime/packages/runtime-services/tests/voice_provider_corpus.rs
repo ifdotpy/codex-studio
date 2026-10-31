@@ -1193,44 +1193,32 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
                 "UPDATE runtime_agents SET record=?1 WHERE id='agent'",
                 [actor.to_string()],
             )?;
-            tx.execute(
-                "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
-                rusqlite::params![
-                    callback_request_id_for_transaction,
-                    json!({
-                        "id":callback_request_id_for_transaction,
-                        "rpcId":99,
-                        "method":"item/commandExecution/requestApproval",
-                        "params":{"threadId":"thread","turnId":"turn"},
-                        "agent":"agent",
-                        "accountKey":"account",
-                        "connectionId":connection_id_for_transaction,
-                        "epoch":0,
-                        "supervisor":{"generation":7},
-                        "status":"pending",
-                        "createdAt":1.0
-                    })
-                    .to_string()
-                ],
+            studio_runtime_services::provider_callbacks::legacy_view::insert(
+                tx,
+                &json!({
+                    "id":callback_request_id_for_transaction,
+                    "rpcId":99,
+                    "method":"item/commandExecution/requestApproval",
+                    "params":{"threadId":"thread","turnId":"turn"},
+                    "agent":"agent",
+                    "accountKey":"account",
+                    "connectionId":connection_id_for_transaction,
+                    "epoch":0,
+                    "supervisor":{"generation":7},
+                    "status":"pending",
+                    "createdAt":1.0
+                }),
             )?;
             Ok(())
         })
         .await
         .expect("seed callback request and live actor");
-    let card: String = store
-        .test_reader()
-        .expect("fixture reader")
-        .query_row(
-            "SELECT record FROM runtime_requests WHERE id=?1",
-            [&callback_request_id],
-            |row| row.get(0),
-        )
-        .expect("callback card");
-    crate::callback_fixtures::seed_admission(
-        &store,
-        &serde_json::from_str(&card).expect("callback record"),
+    let card = studio_runtime_services::provider_callbacks::legacy_view::stored(
+        &store.test_reader().expect("fixture reader"),
+        &callback_request_id,
     )
-    .await;
+    .expect("callback card");
+    crate::callback_fixtures::seed_admission(&store, &card).await;
 
     let store = Arc::new(store);
     let reply_port = Arc::new(LiveCallbackReplyPort::default());

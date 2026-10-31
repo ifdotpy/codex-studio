@@ -11,6 +11,10 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use studio_runtime_schema::approvals::{
+    Approval, ApprovalState, BrowserCard, BrowserOutcome, BrowserPhase, BrowserRedirect,
+    BrowserSource, Request,
+};
 use studio_runtime_services::browser_answer::{self, BrowserAnswerContext};
 use studio_runtime_services::browser_cards::{self, CardSource};
 use studio_runtime_services::browser_host::{
@@ -190,12 +194,11 @@ async fn seeded_store(agent: &str) -> (tempfile::TempDir, Arc<studio_runtime_sto
     (dir, store)
 }
 
-fn card(store: &studio_runtime_store::RuntimeStore) -> Value {
-    let connection = store.test_reader().expect("test step");
-    let raw: String = connection
-        .query_row("SELECT record FROM runtime_requests", [], |row| row.get(0))
-        .expect("test step");
-    serde_json::from_str(&raw).expect("test step")
+type Card = (Approval, BrowserCard);
+
+fn card(store: &studio_runtime_store::RuntimeStore) -> Card {
+    let [one]: [Card; 1] = cards(store).try_into().expect("one card");
+    one
 }
 
 fn answer_context(guest: Arc<dyn GuestRpc>, providers: &BTreeSet<String>) -> BrowserAnswerContext {
@@ -253,20 +256,24 @@ async fn a_phone_signs_in_a_kubelogin_style_command_with_a_pasted_redirect() {
         .await
         .expect("test step");
     assert!(next >= 1);
-    let pending = card(&store);
-    assert_eq!(pending["status"], "pending");
-    assert_eq!(pending["agent"], agent);
-    assert_eq!(pending["params"]["source"], "host");
-    assert_eq!(pending["params"]["clientId"], "kube");
+    let (pending, details) = card(&store);
+    assert!(matches!(pending.state, ApprovalState::Pending));
+    assert_eq!(pending.agent.as_str(), agent);
+    assert_eq!(details.source, BrowserSource::Host);
+    assert_eq!(details.client_id.as_deref(), Some("kube"));
     assert_eq!(
-        pending["params"]["redirect"],
-        json!({"host":"localhost","port":tool.port,"path":"/"})
+        details.redirect,
+        Some(BrowserRedirect {
+            host: "localhost".into(),
+            port: tool.port,
+            path: "/".into()
+        })
     );
     assert!(
         tool.codes.lock().expect("test step").is_empty(),
         "the first hop uses no code"
     );
-    let id = pending["id"].as_str().expect("test step").to_owned();
+    let id = pending.id.0.clone();
 
     let opened = browser_answer::answer(
         &store,
@@ -282,7 +289,7 @@ async fn a_phone_signs_in_a_kubelogin_style_command_with_a_pasted_redirect() {
         .expect("test step")
         .to_owned();
     assert!(open_url.starts_with(&format!("http://127.0.0.1:{}/authorize", identity.port)));
-    assert_eq!(card(&store)["params"]["phase"], "waiting");
+    assert!(matches!(card(&store).1.phase, BrowserPhase::Waiting { .. }));
 
     let failed_page = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/browser_host",
@@ -342,16 +349,24 @@ async fn a_phone_signs_in_a_kubelogin_style_command_with_a_pasted_redirect() {
         1,
         "the provider gets one token request"
     );
-    let finished = card(&store);
-    assert_eq!(finished["status"], "answered");
-    assert_eq!(finished["params"]["outcome"], "signed-in");
-    assert_eq!(finished["params"]["outcomeHttp"], 200);
+    let (finished, details) = card(&store);
+    assert!(matches!(finished.state, ApprovalState::Answered { .. }));
+    assert_eq!(
+        details.phase,
+        BrowserPhase::Finished {
+            outcome: BrowserOutcome::SignedIn,
+            http: Some(200)
+        }
+    );
 
     // The guest closed its request after the code; the next poll keeps the answered card.
     browser_cards::poll_once(&store, &source, next, 0, None)
         .await
         .expect("test step");
-    assert_eq!(card(&store)["status"], "answered");
+    assert!(matches!(
+        card(&store).0.state,
+        ApprovalState::Answered { .. }
+    ));
     let queue: Value = serde_json::from_slice(
         &std::fs::read(dir.path().join("browser-host/browser/requests.json")).expect("test step"),
     )
@@ -413,10 +428,10 @@ async fn an_aws_style_device_code_card_shows_the_code_and_needs_no_forward() {
     browser_cards::poll_once(&store, &source, 0, 0, None)
         .await
         .expect("test step");
-    let pending = card(&store);
-    assert_eq!(pending["params"]["userCode"], "WDJB-MJHT");
-    assert_eq!(pending["params"]["redirect"], Value::Null);
-    let id = pending["id"].as_str().expect("test step").to_owned();
+    let (pending, details) = card(&store);
+    assert_eq!(details.user_code.as_deref(), Some("WDJB-MJHT"));
+    assert_eq!(details.redirect, None);
+    let id = pending.id.0.clone();
     let opened = browser_answer::answer(
         &store,
         &id,
@@ -427,7 +442,10 @@ async fn an_aws_style_device_code_card_shows_the_code_and_needs_no_forward() {
     .expect("test step")
     .expect("test step");
     assert_eq!(opened.response["openUrl"], device);
-    assert_eq!(card(&store)["status"], "answered");
+    assert!(matches!(
+        card(&store).0.state,
+        ApprovalState::Answered { .. }
+    ));
     service.stop().await;
 }
 
@@ -520,15 +538,19 @@ fn the_open_shim_sends_only_one_web_link_to_the_launcher() {
     assert!(!record.exists());
 }
 
-fn cards(store: &studio_runtime_store::RuntimeStore) -> Vec<Value> {
-    let connection = store.test_reader().expect("test step");
-    let mut statement = connection
-        .prepare("SELECT record FROM runtime_requests ORDER BY id")
-        .expect("test step");
-    statement
-        .query_map([], |row| row.get::<_, String>(0))
+fn cards(store: &studio_runtime_store::RuntimeStore) -> Vec<Card> {
+    store
+        .test_read_transaction(|tx| {
+            studio_runtime_store::approvals::all(tx).map_err(|error| {
+                studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
+            })
+        })
         .expect("test step")
-        .map(|raw| serde_json::from_str(&raw.expect("test step")).expect("test step"))
+        .into_iter()
+        .filter_map(|row| match row.request.clone() {
+            Request::BrowserOpen(card) => Some((row, card)),
+            _ => None,
+        })
         .collect()
 }
 
@@ -594,22 +616,22 @@ async fn a_link_from_the_tool_and_from_the_message_gets_one_card() {
     let first = sign_in::tool(&store, &sources, &record, Some(device), "call-1")
         .await
         .expect("test step");
-    let [pending]: [Value; 1] = cards(&store).try_into().expect("one card");
+    let [(pending, details)]: [Card; 1] = cards(&store).try_into().expect("one card");
     assert_eq!(first["status"], "pending");
-    assert_eq!(first["requestId"], pending["id"]);
+    assert_eq!(first["requestId"], pending.id.as_str());
     assert!(
         first["message"]
             .as_str()
             .expect("test step")
             .contains("sign-in card")
     );
-    assert_eq!(pending["params"]["userCode"], "WDJB-MJHT");
-    assert_eq!(pending["params"]["source"], "host");
+    assert_eq!(details.user_code.as_deref(), Some("WDJB-MJHT"));
+    assert_eq!(details.source, BrowserSource::Host);
     // A retry and the same link in the agent's message keep the one card.
     let again = sign_in::tool(&store, &sources, &record, Some(device), "call-2")
         .await
         .expect("test step");
-    assert_eq!(again["requestId"], pending["id"]);
+    assert_eq!(again["requestId"], pending.id.as_str());
     let text = format!("Open **{device}** now.");
     let note = agent_message(&store, agent, "item-1", &text, false).await;
     assert_eq!(note.links, vec![device.to_owned()]);
@@ -625,7 +647,7 @@ async fn a_link_from_the_tool_and_from_the_message_gets_one_card() {
     sign_in::handle_message(&store, &sources, &done, &[0]).await;
     let all = cards(&store);
     assert_eq!(all.len(), 2);
-    assert!(all.iter().any(|card| card["params"]["url"] == other));
+    assert!(all.iter().any(|(_, card)| card.url == other));
     // A refusal reaches the model as text, and no card is written.
     let scheme = sign_in::tool(
         &store,
@@ -734,9 +756,9 @@ async fn a_new_host_card_is_published_to_clients_and_pushed_to_the_phone() {
     browser_cards::poll_once(&store, &source, 0, 0, None)
         .await
         .expect("test step");
-    let pending = card(&store);
-    assert_eq!(pending["status"], "pending");
-    let card_id = pending["id"].as_str().expect("test step").to_owned();
+    let (pending, _) = card(&store);
+    assert!(matches!(pending.state, ApprovalState::Pending));
+    let card_id = pending.id.0.clone();
 
     // Pushed: one alert after the grace, from the stored card alone, before any client
     // reads it.
@@ -770,7 +792,7 @@ async fn a_new_host_card_is_published_to_clients_and_pushed_to_the_phone() {
         subject: "https://studio.example.org".into(),
     };
     let pushes = KeptPushes(Mutex::new(Vec::new()));
-    let created = pending["createdAt"].as_f64().expect("test step");
+    let created = pending.created.0;
     let grace = studio_runtime_schema::shared_values::SIGN_IN_ALERT_GRACE_SECONDS as f64;
     sender
         .deliver(&pushes, &cards, created + grace)

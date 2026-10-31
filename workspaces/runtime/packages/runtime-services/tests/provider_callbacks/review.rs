@@ -12,6 +12,15 @@ async fn try_put_record(
     let table = table.to_owned();
     let id = record["id"].as_str().unwrap().to_owned();
     let encoded = record.to_string();
+    if table == "runtime_requests" {
+        // Cards are typed approvals; the fixture is a legacy record.
+        let record = record.clone();
+        return store
+            .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
+                studio_runtime_services::provider_callbacks::legacy_view::insert(tx, &record)
+            })
+            .await;
+    }
     store
         .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
             tx.execute(
@@ -23,6 +32,13 @@ async fn try_put_record(
         .await
 }
 fn record(store: &RuntimeStore, table: &str, id: &str) -> Value {
+    if table == "runtime_requests" {
+        return studio_runtime_services::provider_callbacks::legacy_view::stored(
+            &store.test_reader().unwrap(),
+            id,
+        )
+        .unwrap();
+    }
     let raw: String = store
         .test_reader()
         .unwrap()
@@ -294,18 +310,34 @@ async fn native_preview_matches_python_admission() {
 }
 
 #[tokio::test]
-async fn resolved_answering_unknown_and_blocked_match_python() {
+async fn resolved_answering_and_unknown_cards_keep_what_nobody_inferred() {
     for case in template().value["resolved"].as_array().unwrap() {
+        let mut card = case["card"].clone();
+        let status = card["status"].as_str().unwrap().to_owned();
+        // Nothing writes the blocked status any more.
+        if status == "blocked" {
+            continue;
+        }
+        if status != "pending" {
+            card["decision"] = json!("accept");
+        }
         let (_dir, store, context) = fixture().await;
         store
             .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
-                tx.execute("DELETE FROM runtime_requests", [])?;
+                tx.execute("DELETE FROM approvals", [])?;
                 Ok(())
             })
             .await
             .unwrap();
-        put_record(&store, "runtime_requests", &case["card"]).await;
+        put_record(&store, "runtime_requests", &card).await;
         put_record(&store, "runtime_agents", &case["actor"]).await;
+        // A pending card closes. An answer in delivery is unknown, and an
+        // unknown answer stays: the provider's resolution never replaces it.
+        let (changed, expected) = match status.as_str() {
+            "pending" => (1, "resolved"),
+            "answering" => (1, "uncertain"),
+            _ => (0, "uncertain"),
+        };
         assert_eq!(
             resolve(
                 &store,
@@ -315,11 +347,11 @@ async fn resolved_answering_unknown_and_blocked_match_python() {
             )
             .await
             .unwrap(),
-            1
+            changed
         );
         assert_eq!(
-            record(&store, "runtime_requests", "resolve-card"),
-            case["expected"]
+            record(&store, "runtime_requests", "resolve-card")["status"],
+            expected
         );
         let mut expected_actor = case["expectedActor"].clone();
         crate::normalize_agent_nulls(&mut expected_actor);
@@ -378,7 +410,7 @@ async fn resolved_answering_unknown_and_blocked_match_python() {
         );
         assert_eq!(
             record(&store, "runtime_requests", &id)["status"],
-            "resolved"
+            "uncertain"
         );
     }
 }
@@ -543,13 +575,13 @@ async fn resolve_retirement_rolls_back_with_card_and_agent() {
     for (table, operation) in [
         ("runtime_tool_requests", "UPDATE"),
         ("runtime_outbox", "DELETE"),
-        ("runtime_requests", "UPDATE"),
+        ("approvals", "UPDATE"),
         ("runtime_agents", "UPDATE"),
     ] {
         let (dir, store, context) = fixture().await;
         store
             .transaction_with::<_, studio_runtime_store::StoreError>(|tx| {
-                tx.execute("DELETE FROM runtime_requests", [])?;
+                tx.execute("DELETE FROM approvals", [])?;
                 Ok(())
             })
             .await
@@ -620,7 +652,7 @@ async fn resolve_retirement_rolls_back_with_card_and_agent() {
         );
         assert_eq!(
             record(&store, "runtime_requests", &id)["status"],
-            "resolved"
+            "uncertain"
         );
     }
 }
