@@ -13,6 +13,7 @@ fn snapshot_records(model: &str) -> Value {
         "turnId":"turn","cause":"rate_limit","status":"scheduled","failedAt":900.0,
         "dueAt":990.0,"taskClaims":[]});
     json!({"agent":{
+        "compactions":0,
         "id":"a","rootId":"a","epoch":1,"status":"failed","accountKey":"default",
         "threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,
         "cwd":"/fixture","isLead":true,"provider":"claude","model":model,"usageResume":record
@@ -248,7 +249,7 @@ async fn account_limits_change_updates_each_wait_by_its_model() {
     store.transaction_with(|tx| {
         for model in ["sonnet", "opus", "default"] {
             let record = json!({"id":model,"accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","cause":"rate_limit","status":"scheduled","failedAt":900.0,"dueAt":9005.0,"taskClaims":[]});
-            let agent = json!({"id":model,"rootId":model,"epoch":1,"status":"failed","accountKey":"default","threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,"cwd":"/fixture","isLead":true,"provider":"claude","model":model,"usageResume":record});
+            let agent = json!({"compactions":0,"id":model,"rootId":model,"epoch":1,"status":"failed","accountKey":"default","threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,"cwd":"/fixture","isLead":true,"provider":"claude","model":model,"usageResume":record});
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", [model, &agent.to_string()]).map_err(studio_runtime_store::StoreError::from)?;
             tx.execute("INSERT INTO runtime_usage_resumes(id,agent,record) VALUES(?1,?1,?2)", [model, &record.to_string()]).map_err(studio_runtime_store::StoreError::from)?;
         }
@@ -404,7 +405,7 @@ fn a_wait_resumes_once_after_the_provider_reset_when_limits_reads_fail() {
             }],
             "{case}"
         );
-        let agent = decision.agent.clone().expect("agent").into_value();
+        let agent = decision.agent.clone().expect("agent").value().clone();
         assert_eq!(agent["status"], "queued", "{case}");
         assert!(agent.get("nativeFailureHold").is_none(), "{case}");
         // The started wait never sends its follow-up again.

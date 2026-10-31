@@ -102,6 +102,9 @@ async fn seed(store: &RuntimeStore, records: Records) {
                         "INSERT INTO voice_sessions(id,agent,created,ended,state) VALUES(?1,?2,1,?3,?4)",
                         params![row["id"].as_str(), row["agent"].as_str(), row["ended"].as_f64(), row["state"].as_str()],
                     )?;
+                } else if table == "runtime_requests" {
+                    let request: studio_runtime_store::RequestRecord = serde_json::from_str(&row.to_string())?;
+                    studio_runtime_store::Table::<studio_runtime_store::RequestRecord>::new(tx).put(&request)?;
                 } else { agent_management::write(tx, &table, &row)?; }
             }
         }
@@ -112,6 +115,10 @@ async fn seed(store: &RuntimeStore, records: Records) {
 
 // Frozen fixtures used numeric tickets before the current agent view stored strings.
 fn use_current_ticket_shape(row: &mut Value) {
+    row.as_object_mut()
+        .expect("agent fixture")
+        .entry("compactions")
+        .or_insert(json!(0));
     if row.get("accountKey").is_none_or(Value::is_null) {
         row["accountKey"] = json!("default");
     }
@@ -556,7 +563,7 @@ async fn committed_delete_drains_its_intent_despite_unrelated_cleanup_failure() 
         .expect("delete case");
     let mut records: Records = serde_json::from_value(case["records"].clone()).expect("records");
     let root = tempfile::tempdir().expect("root");
-    records.tables.get_mut("runtime_agents").expect("agents").push(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+    records.tables.get_mut("runtime_agents").expect("agents").push(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
         "id":"a-broken-cleanup", "rootId":"a-broken-cleanup", "epoch":1, "status":"paused", "deletedAt":1,
         "cwd":root.path(), "worktreeReady":true, "agentArchive":{"at":1,"epoch":1,"cleanupPending":true},
         "workspaceCleanupIntent":studio_runtime_services::workspace_cleanup_runtime::queued_cleanup_intent("a-broken-cleanup", 1, studio_runtime_services::workspace_cleanup_runtime::CleanupAction::Archive)
@@ -749,17 +756,16 @@ impl InterruptFixture {
                         tx,
                         &studio_runtime_store::AgentId::from(id.as_str()),
                     )? {
-                        if agent.extra.get("deletedAt").is_none_or(Value::is_null) {
+                        if agent.deleted_at.is_none() {
                             continue;
                         }
-                        let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
+                        let attempt = agent.start_attempt.as_ref();
                         let needs_settlement = agent.in_flight == Some(true)
                             || agent
                                 .turn_id
                                 .as_deref()
                                 .is_some_and(|turn| !turn.is_empty())
-                            || attempt.get("activeAtReservation").and_then(Value::as_bool)
-                                == Some(true)
+                            || attempt.and_then(|value| value.active_at_reservation) == Some(true)
                             || matches!(
                                 agent.status,
                                 studio_runtime_store::AgentStatus::Running
@@ -771,12 +777,12 @@ impl InterruptFixture {
                         }
                         agent.in_flight = Some(false);
                         agent.turn_id = None;
-                        agent.extra.insert("activity".to_owned(), Value::Null);
-                        agent.extra.insert("activeTools".to_owned(), json!([]));
-                        if let Some(attempt) = agent.extra.get_mut("startAttempt")
-                            && attempt.get("activeAtReservation") == Some(&json!(true))
+                        agent.activity = None;
+                        agent.active_tools = Some(Vec::new());
+                        if let Some(attempt) = agent.start_attempt.as_mut()
+                            && attempt.active_at_reservation == Some(true)
                         {
-                            attempt["activeAtReservation"] = json!(false);
+                            attempt.active_at_reservation = Some(false);
                         }
                         studio_runtime_store::AgentRepository::put(tx, &agent)?;
                     }
@@ -1018,6 +1024,8 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
                 }
             }
         }
+        crate::normalize_agent_nulls(&mut actual);
+        crate::normalize_agent_nulls(&mut expected);
         assert_eq!(actual, expected, "{} {table}", case["name"]);
     }
     let mut expected_sync = case["expected"]["syncEntities"]
@@ -1056,9 +1064,11 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
             let mut payload: Value = serde_json::from_str(row[2].as_str().expect("agent payload"))
                 .expect("frozen agent JSON");
             payload["value"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            payload["value"]["compactions"] = json!(0);
             if payload["value"].get("accountKey").is_none() {
                 payload["value"]["accountKey"] = json!("default");
             }
+            crate::normalize_agent_nulls(&mut payload);
             row[2] = json!(payload.to_string());
         }
         *row = json!([row[0], row[1], row[2], row[3]]);
@@ -1469,6 +1479,8 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
                         use_current_ticket_shape(row);
                     }
                 }
+                crate::normalize_agent_nulls(&mut actual_rows);
+                crate::normalize_agent_nulls(&mut expected);
                 assert_eq!(actual_rows, expected, "Python effect corpus rows: {table}");
             }
         }
@@ -1529,10 +1541,10 @@ async fn production_child_notification_matches_python_corpus() {
                     use_current_ticket_shape(row);
                 }
             }
-            assert_eq!(
-                actual["tables"][table], expected,
-                "Python event corpus: {table}"
-            );
+            let mut actual_row = actual["tables"][table].clone();
+            crate::normalize_agent_nulls(&mut actual_row);
+            crate::normalize_agent_nulls(&mut expected);
+            assert_eq!(actual_row, expected, "Python event corpus: {table}");
         }
     }
     assert_conversation_detail_sources(&actual);
@@ -1561,10 +1573,12 @@ async fn production_child_notification_matches_python_corpus() {
         if row[0] == "agent" && row[3] == 0 {
             let mut payload: Value = serde_json::from_str(row[2].as_str().expect("agent payload"))
                 .expect("frozen agent JSON");
+            payload["value"]["compactions"] = json!(0);
             payload["value"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
             if payload["value"].get("accountKey").is_none() {
                 payload["value"]["accountKey"] = json!("default");
             }
+            crate::normalize_agent_nulls(&mut payload);
             row[2] = json!(payload.to_string());
         }
     }
@@ -2116,7 +2130,11 @@ async fn successful_adapter_cannot_replace_attempt_or_provider_identity() {
             effect: &LifecycleEffect,
         ) -> Result<(), ManagementError> {
             let mut changed = effect.stopped().clone();
-            changed[self.0] = json!("replacement");
+            changed[self.0] = if self.0 == "startAttempt" {
+                json!({"id":"replacement"})
+            } else {
+                json!("replacement")
+            };
             agent_management::write(tx, "runtime_agents", &changed)?;
             Ok(())
         }

@@ -1058,10 +1058,6 @@ fn apply_effect_result(
                 "identity": identity.get("lifecycleIdentity"),
                 "bytes": bytes
             });
-            agent
-                .as_object_mut()
-                .ok_or(WorkspaceCleanupError::InvalidRecord)?
-                .remove("worktreeCleanup");
         }
         CompletedEffect::SaveNativeTurn { state_id } => {
             agent["layrStateId"] = json!(state_id);
@@ -1525,6 +1521,7 @@ mod tests {
         record["rootId"] = json!("cleanup-agent");
         record["epoch"] = json!(7);
         record["status"] = json!("paused");
+        record["compactions"] = json!(0);
         record["deletedAt"] = json!(7);
         if record["agentArchive"].is_object() {
             record["agentArchive"]
@@ -1644,7 +1641,7 @@ mod tests {
             "agentArchive":{"cleanupPending":true},
             "workspaceCleanupIntent":super::queued_cleanup_intent("cleanup-agent", 7, CleanupAction::Archive)
         })).await;
-        let other = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+        let other = AgentRecord::from_value(json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"z-unrelated", "rootId":"z-unrelated", "epoch":1, "status":"paused", "accountKey":"default", "deletedAt":1,
             "workspaceCleanupIntent":super::queued_cleanup_intent("z-unrelated", 1, CleanupAction::Delete)
         })).expect("unrelated record");

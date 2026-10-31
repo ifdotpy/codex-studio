@@ -1,24 +1,202 @@
 {
+  "$defs": {
+    "RequestAnswer": {
+      "additionalProperties": false,
+      "properties": {
+        "answer": true,
+        "id": {
+          "type": "string"
+        },
+        "isSecret": {
+          "type": "boolean"
+        },
+        "question": {
+          "type": "string"
+        }
+      },
+      "required": ["id", "question", "isSecret", "answer"],
+      "type": "object"
+    },
+    "RequestCardStatus": {
+      "enum": [
+        "pending",
+        "answering",
+        "answered",
+        "uncertain",
+        "blocked",
+        "resolved",
+        "expired",
+        "deleted"
+      ],
+      "type": "string"
+    },
+    "RequestDecision": {
+      "enum": ["accept", "decline", "cancel", "answer"],
+      "type": "string"
+    },
+    "RequestId": {
+      "anyOf": [
+        {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "Numeric Codex IDs and string Claude bridge IDs are distinct on the wire."
+    },
+    "RequestMethod": {
+      "description": "Methods that create durable request cards.",
+      "enum": [
+        "agent/asyncQuestion",
+        "browser/open",
+        "monitor/approve",
+        "item/commandExecution/requestApproval",
+        "item/fileChange/requestApproval",
+        "item/permissions/requestApproval",
+        "item/tool/requestUserInput",
+        "mcpServer/elicitation/request"
+      ],
+      "type": "string"
+    },
+    "RequestSupervisor": {
+      "additionalProperties": false,
+      "properties": {
+        "generation": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["generation"],
+      "type": "object"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
+    "accountKey": {
+      "type": ["string", "null"]
+    },
     "agent": {
+      "type": "string"
+    },
+    "answerDecision": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RequestDecision"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "answerError": {
+      "type": ["string", "null"]
+    },
+    "answerHistory": {
+      "items": {
+        "$ref": "#/$defs/RequestAnswer"
+      },
+      "type": ["array", "null"]
+    },
+    "answerSignature": {
+      "type": ["string", "null"]
+    },
+    "answeredAt": {
+      "format": "double",
+      "type": ["number", "null"]
+    },
+    "answeredBy": {
+      "type": ["string", "null"]
+    },
+    "closeReason": {
       "type": ["string", "null"]
     },
     "connectionId": {
       "type": ["string", "null"]
     },
+    "createdAt": {
+      "format": "double",
+      "type": "number"
+    },
+    "decision": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RequestDecision"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "deferred": {
+      "type": ["boolean", "null"]
+    },
+    "deferredAt": {
+      "format": "double",
+      "type": ["number", "null"]
+    },
+    "deferredBy": {
+      "type": ["string", "null"]
+    },
+    "deletedAt": {
+      "format": "double",
+      "type": ["number", "null"]
+    },
+    "deletedBy": {
+      "type": ["string", "null"]
+    },
+    "epoch": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": ["integer", "null"]
+    },
     "id": {
       "type": "string"
     },
     "method": {
-      "type": ["string", "null"]
+      "$ref": "#/$defs/RequestMethod"
+    },
+    "params": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "preview": true,
+    "resolvedAt": {
+      "format": "double",
+      "type": ["number", "null"]
+    },
+    "rpcId": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RequestId"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "status": {
+      "$ref": "#/$defs/RequestCardStatus"
+    },
+    "supervisor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RequestSupervisor"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "turnId": {
       "type": ["string", "null"]
     }
   },
-  "required": ["id"],
+  "required": ["id", "agent", "method", "status", "createdAt", "params"],
   "title": "PersistedRequestRecord",
   "type": "object"
 }

@@ -71,10 +71,6 @@ impl ApiError {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "reserved for JSON transport rejections from route extractors"
-    )]
     pub(crate) fn json_transport(status: StatusCode, message: &str) -> Self {
         let mut error = Self::new(status, message);
         error.content_type = Some("application/json; charset=utf-8");
@@ -191,6 +187,12 @@ impl ApiError {
             StoreError::InvalidStoredObject { table, id }
             | StoreError::InvalidStoredRecord { object: table, id } => {
                 Self::invalid_stored(table, &id)
+            }
+            StoreError::TranscriptFullTextUnavailable { id } => {
+                Self::invalid_stored("runtime_item_fulltext", &id)
+            }
+            StoreError::TranscriptInputsIncomplete { id } => {
+                Self::invalid_stored("runtime_items", &id)
             }
             StoreError::InvalidSyncObjectField { scope, id, .. } => {
                 Self::invalid_stored(&scope, &id)

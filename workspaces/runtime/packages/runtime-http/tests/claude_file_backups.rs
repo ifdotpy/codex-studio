@@ -216,7 +216,7 @@ pub(crate) async fn fixture() -> (
     let state_dir = root.path().join("state");
     std::fs::create_dir(&state_dir).unwrap();
     let store = Arc::new(RuntimeStore::open(Some(&state_dir)).await.unwrap());
-    let agent = json!({"id":"agent","rootId":"agent","epoch":2,"cwd":cwd,"provider":"claude","accountKey":"account","threadId":"thread","status":"paused","autoWake":false});
+    let agent = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":2,"cwd":cwd,"provider":"claude","accountKey":"account","threadId":"thread","status":"paused","autoWake":false});
     store
         .transaction(move |tx| {
             tx.execute(
@@ -337,6 +337,18 @@ async fn claude_control_session_reads_and_stop_keep_dispatch() {
 }
 
 #[tokio::test]
+async fn claude_command_preserves_message_request_identity() {
+    let (_root, _store, app, mut worker, _native) = fixture().await;
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let body = json!({"id":"agent","action":"command","command":"/help","request_id":request_id});
+    let first = post(&app, "/api/claude/session", body.clone()).await;
+    assert_eq!(first.0, 200, "{first:?}");
+    let replay = post(&app, "/api/claude/session", body).await;
+    assert_eq!(replay, first);
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn claude_control_settings_ingress_and_exact_receipt_replay() {
     use studio_runtime_http::generated::ClaudeSessionApiClaudeSessionPostRequest as SessionRequest;
     use studio_runtime_schema::claude_controls::ClaudeControlCommand;
@@ -427,7 +439,7 @@ async fn quota_reason_crosses_retained_adapter_and_http_release_allows_same_requ
     store
         .transaction(move |tx| {
             tx.execute(
-                "INSERT INTO runtime_monitors VALUES('retry-blocker',?1)",
+                "INSERT INTO runtime_monitors(id,record) VALUES('retry-blocker',?1)",
                 [json!({"id":"retry-blocker","cwd":cwd,"status":"running"}).to_string()],
             )?;
             Ok(())

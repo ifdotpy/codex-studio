@@ -243,7 +243,7 @@ pub async fn request(
             drop_orphan_summary_in(tx, &lead)?;
             let actor = crate::event_write::checked_agent(tx, &lead)
                 .map_err(|_| TransferError::Refused("Unknown managed agent"))?;
-            if actor.extra.get("isLead") != Some(&Value::Bool(true)) {
+            if actor.is_lead != Some(true) {
                 return Err(TransferError::Refused(
                     "Choose the orchestrator to transfer its team",
                 ));
@@ -1084,9 +1084,9 @@ mod request_tests {
         let cwd = store.root().to_path_buf();
         run_async(store.transaction_with_error(move |tx| {
             for value in [
-                json!({"id":"lead","rootId":"lead","epoch":1,"status":"idle","isLead":true,
+                json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,"status":"idle","isLead":true,
                     "accountKey":"source","provider":"codex","model":"gpt-6-astra","cwd":cwd}),
-                json!({"id":"child","rootId":"lead","epoch":2,"status":"idle","isLead":false,
+                json!({"compactions":0,"id":"child","rootId":"lead","epoch":2,"status":"idle","isLead":false,
                     "accountKey":"source","provider":"codex","model":"gpt-6-astra","cwd":cwd}),
             ] {
                 let agent =
@@ -1103,7 +1103,7 @@ mod request_tests {
         let root = root.to_owned();
         let cwd = store.root().to_path_buf();
         run_async(store.transaction(move |tx| {
-            let template = AgentRecord::from_value(json!({
+            let template = AgentRecord::from_value(json!({"compactions":0,
                 "id":"template", "rootId":root, "epoch":1, "status":"idle",
                 "isLead":false, "accountKey":"source", "provider":"codex",
                 "model":"gpt-6-astra", "cwd":cwd
@@ -1144,10 +1144,11 @@ mod request_tests {
         add_agents(&store, "another-team", 4097);
         let cwd = store.root().to_path_buf();
         run_async(store.transaction(move |tx| {
-            let late =
-                AgentRecord::from_value(json!({"id":"late","rootId":"lead","parentId":"child",
+            let late = AgentRecord::from_value(
+                json!({"compactions":0,"id":"late","rootId":"lead","parentId":"child",
                 "epoch":3,"status":"idle","isLead":false,"accountKey":"source","provider":"codex",
-                "model":"gpt-6-astra","cwd":cwd}))?;
+                "model":"gpt-6-astra","cwd":cwd}),
+            )?;
             AgentRepository::put(tx, &late)
         }))
         .expect("late descendant");
@@ -1190,8 +1191,10 @@ mod request_tests {
         assert_eq!(lead["accountTransfer"]["id"], result["id"]);
         assert_eq!(stored(&store, "child")["accountKey"], "target");
         run_async(store.transaction(|tx| {
-            let late = AgentRecord::from_value(json!({"id":"late", "rootId":"lead", "epoch":3,
-                "status":"idle", "provider":"codex", "accountKey":"source"}))?;
+            let late = AgentRecord::from_value(
+                json!({"compactions":0,"id":"late", "rootId":"lead", "epoch":3,
+                "status":"idle", "provider":"codex", "accountKey":"source"}),
+            )?;
             AgentRepository::put(tx, &late)
         }))
         .expect("late subagent");
@@ -1219,7 +1222,7 @@ mod request_tests {
             lead.root_id = AgentId::from("legacy-root");
             AgentRepository::put(tx, &lead)?;
             let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.expect("child");
-            child.extra.insert("deletedAt".into(), json!(0));
+            child.deleted_at = Some((0) as f64);
             AgentRepository::put(tx, &child)?;
             for value in [
                 json!({"id":"nested", "rootId":"lead", "parentId":"child", "provider":"codex"}),
@@ -1231,6 +1234,7 @@ mod request_tests {
                 value["epoch"] = json!(3);
                 value["status"] = json!("idle");
                 value["accountKey"] = json!("source");
+                value["compactions"] = json!(0);
                 AgentRepository::put(tx, &AgentRecord::from_value(value)?)?;
             }
             Ok(())
@@ -1352,8 +1356,10 @@ mod request_tests {
         let original =
             request(&store, id, "lead", "target", "team", "codex", 10.0).expect("original request");
         run_async(store.transaction(|tx| {
-            let other = AgentRecord::from_value(json!({"id":"other", "rootId":"other", "epoch":1,
-                "status":"idle", "isLead":true, "provider":"codex", "accountKey":"source"}))?;
+            let other = AgentRecord::from_value(
+                json!({"compactions":0,"id":"other", "rootId":"other", "epoch":1,
+                "status":"idle", "isLead":true, "provider":"codex", "accountKey":"source"}),
+            )?;
             AgentRepository::put(tx, &other)
         }))
         .expect("other lead");
@@ -1388,7 +1394,7 @@ mod request_tests {
         run_async(store.transaction(|tx| {
             let mut deleted =
                 AgentRepository::get(tx, &AgentId::from("fixture-1"))?.expect("fixture member");
-            deleted.extra.insert("deletedAt".into(), json!(1.0));
+            deleted.deleted_at = Some(1.0);
             AgentRepository::put(tx, &deleted)
         }))
         .expect("deleted own-team records do not consume the snapshot boundary");
@@ -1398,7 +1404,7 @@ mod request_tests {
         run_async(store.transaction(|tx| {
             let mut restored =
                 AgentRepository::get(tx, &AgentId::from("fixture-1"))?.expect("fixture member");
-            restored.extra.insert("deletedAt".into(), json!(0));
+            restored.deleted_at = Some((0) as f64);
             AgentRepository::put(tx, &restored)
         }))
         .expect("restore a member beyond the active transfer boundary");
@@ -1429,15 +1435,13 @@ mod request_tests {
         let (_root, store) = store_with_agents();
         let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42291";
         request(&store, id, "lead", "target", "team", "codex", 10.0).expect("initial transfer");
-        run_async(
-            store.transaction(|tx| {
-                let vm = AgentRecord::from_value(
-                    json!({"id":"late-vm", "rootId":"lead", "epoch":3,
+        run_async(store.transaction(|tx| {
+            let vm = AgentRecord::from_value(
+                json!({"compactions":0,"id":"late-vm", "rootId":"lead", "epoch":3,
                 "status":"idle", "provider":"codex", "accountKey":"source", "environment":"linux"}),
-                )?;
-                AgentRepository::put(tx, &vm)
-            }),
-        )
+            )?;
+            AgentRepository::put(tx, &vm)
+        }))
         .expect("late VM fixture");
         let before = Repository::get(&store.test_reader().expect("reader"), id).expect("operation");
         let vm = stored(&store, "late-vm");
@@ -1474,7 +1478,7 @@ mod request_tests {
                             .expect("active transfer");
                     }
                     run_async(store.transaction(move |tx| {
-                        let mut candidate = json!({"id":"candidate", "rootId":"lead", "epoch":3,
+                        let mut candidate = json!({"compactions":0,"id":"candidate", "rootId":"lead", "epoch":3,
                             "status":"idle", "provider":provider, "accountKey":"source"});
                         if vm {
                             candidate["environment"] = json!("linux");
@@ -1535,7 +1539,7 @@ mod request_tests {
             // Each valid row fits the per-record limit; their combined size
             // crosses the snapshot bound before the final oversized sentinel.
             let padding_bytes = studio_runtime_store::MAX_TRANSFER_RECORD_BYTES - 1024 * 1024;
-            let template = json!({"accountKey":"default","id":"padding", "rootId":"lead", "epoch":1, "status":"idle",
+            let template = json!({"compactions":0,"accountKey":"default","id":"padding", "rootId":"lead", "epoch":1, "status":"idle",
                 "provider":"codex", "fixturePadding":"x".repeat(padding_bytes)}).to_string();
             let count = Repository::MAX_SNAPSHOT_BYTES / padding_bytes + 1;
             for index in 0..count {
@@ -1582,7 +1586,7 @@ mod request_tests {
                 params:json!({"processId":"watch","cwd":cwd,"command":["true"]}),
             })?;
             tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
-                [json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original","rootRequestId":root,"providerRequest":admitted}}).to_string()])?;
+                [crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original","rootRequestId":root,"providerRequest":admitted}})).to_string()])?;
             let key=studio_runtime_schema::provider_call_contract::transport_key("source","monitor:watch");
             let prepared = studio_runtime_schema::provider_call_contract::TransportRequest {
                 id:studio_runtime_schema::provider_input::RequestId::String(key.clone()),generation:4,method,
@@ -1603,8 +1607,19 @@ mod request_tests {
         )
         .expect("read monitor")
         .expect("monitor remains");
-        assert_eq!(monitor.value()["status"], "running");
-        assert_eq!(monitor.value()["operation"]["accountKey"], "source");
+        assert_eq!(
+            monitor.status,
+            studio_runtime_schema::studio_errors::MonitorStatus::Running
+        );
+        assert_eq!(
+            monitor
+                .operation
+                .as_ref()
+                .expect("operation")
+                .account_key
+                .as_str(),
+            "source"
+        );
     }
 
     #[test]
@@ -1634,7 +1649,7 @@ mod request_tests {
         }
         let (_root, store) = store_with_agents();
         run_async(store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",[json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}}).to_string()])?;
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",[crate::monitor_policy::complete_test_monitor(json!({"id":"watch","agent":"lead","epoch":1,"status":"running","operation":{"agent":"lead","epoch":1,"accountKey":"source","connectionId":"original"}})).to_string()])?;
             Ok(())
         })).expect("persist the unproven monitor");
         let transfer = "5a300f72-4ea6-4d30-8a0e-9b2c13c4a001";
@@ -1753,9 +1768,11 @@ mod request_tests {
         .expect("test fixture operation succeeds");
         let cwd = store.root().to_path_buf();
         run_async(store.transaction_with_error(move |tx| {
-            let late = AgentRecord::from_value(json!({"id":"late","rootId":"lead","epoch":3,
+            let late = AgentRecord::from_value(
+                json!({"compactions":0,"id":"late","rootId":"lead","epoch":3,
                 "status":"idle","isLead":false,"accountKey":"source","provider":"codex",
-                "model":"gpt-6-astra","cwd":cwd}))
+                "model":"gpt-6-astra","cwd":cwd}),
+            )
             .expect("test fixture operation succeeds");
             AgentRepository::put(tx, &late)
         }))
@@ -1925,7 +1942,7 @@ mod provider_admission_tests {
         if let Some(admission) = admission {
             operation["members"]["agent"]["providerAdmission"] = admission;
         }
-        Snapshot::read(&operation.to_string(),[("agent".into(), json!({"provider":"codex","id":"agent",
+        Snapshot::read(&operation.to_string(),[("agent".into(), json!({"compactions":0,"provider":"codex","id":"agent",
             "rootId":"agent","epoch":0,"status":"idle","accountKey":"target","accountTransferId":"transfer"}).to_string())])
             .expect("transfer owner")
     }

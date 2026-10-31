@@ -28,15 +28,8 @@ pub(crate) struct RawRequest {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ValidatedRequest {
-    #[allow(dead_code, reason = "ApiJson consumes validated bodies")]
-    pub body: Option<Value>,
     pub raw_body: Option<Bytes>,
-    #[allow(
-        dead_code,
-        reason = "shared QueryParams retains the original ordered wire values"
-    )]
     pub query: Arc<Map<String, Value>>,
-    #[allow(dead_code, reason = "shared header validation feeds route handlers")]
     pub headers: Arc<Map<String, Value>>,
 }
 
@@ -72,6 +65,7 @@ pub(crate) struct MatchedOperation {
 
 // Temporary migration marker; remove when every body uses a typed extractor.
 const TYPED_BODIES: &[(&str, &str)] = &[
+    ("POST", "/api/processes/action"),
     ("POST", "/api/queue"),
     ("POST", "/api/orchestration/settings"),
 ];
@@ -291,22 +285,19 @@ impl Registry {
             });
         }
         let raw_body = raw.raw_body;
-        let body = if let Some(part) = &operation.body {
+        if let Some(part) = &operation.body {
             match raw.body {
                 Some(mut value) => {
                     validate_part(part, &mut value, raw_body.as_deref())?;
-                    Some(value)
                 }
                 None if operation.body_required => {
                     return Err(LocatedError {
                         location: vec![Value::String("body".to_owned())],
                     });
                 }
-                None => None,
+                None => {}
             }
-        } else {
-            None
-        };
+        }
         let mut query = Value::Object(parameter_object(raw.query, operation.query.as_ref()));
         if let Some(part) = &operation.query {
             validate_part(part, &mut query, None)?;
@@ -361,7 +352,6 @@ impl Registry {
             validate_part(part, &mut headers, None)?;
         }
         Ok(ValidatedRequest {
-            body,
             raw_body,
             query: Arc::new(query.as_object().cloned().unwrap_or_default()),
             headers: Arc::new(headers.as_object().cloned().unwrap_or_default()),
@@ -1534,7 +1524,7 @@ mod tests {
     fn integer_schema_uses_json_schema_integral_decimal_semantics() {
         let registry = Registry::compile(&[("POST".to_owned(), "/api/agents".to_owned())])
             .expect("documented integer schema compiles");
-        let validated = registry
+        registry
             .validate_route(
                 "POST",
                 "/api/agents",
@@ -1544,10 +1534,6 @@ mod tests {
                 },
             )
             .expect("JSON Schema treats an integral decimal as integer");
-        assert_eq!(
-            validated.body.expect("body exists")["concurrency"],
-            json!(1.0)
-        );
     }
 
     #[test]
@@ -2157,7 +2143,7 @@ mod tests {
     #[test]
     fn persisted_runtime_schemas_are_used_for_typed_store_records() {
         let registry = Registry::compile(&[]).expect("stored schemas compile");
-        let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"a","rootId":"a","epoch":0,"status":"idle","runtimeField":true});
+        let agent = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"a","rootId":"a","epoch":0,"status":"idle","runtimeField":true});
         assert!(registry.validate_table_record("runtime_agents", &agent));
         assert!(!registry.validate_table_record(
             "runtime_agents",

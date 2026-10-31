@@ -59,21 +59,97 @@
       "enum": ["failed_input_held", "native_failure_hold", "archived"],
       "type": "string"
     },
-    "RuleKind": {
-      "enum": ["interval", "once", "file", "event", "low_workers"],
-      "type": "string"
+    "RestartCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "checks": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "epoch": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "monitorId": {
+          "type": "string"
+        }
+      },
+      "required": ["epoch", "checks", "monitorId"],
+      "type": "object"
     },
     "RuleStatus": {
       "enum": ["active", "paused", "completed"],
       "type": "string"
-    },
-    "StoredJsonInteger": {
-      "description": "A JSON Schema integer, preserving integral decimal spellings and large values.",
-      "type": "integer"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": true,
+  "oneOf": [
+    {
+      "properties": {
+        "kind": {
+          "const": "interval",
+          "type": "string"
+        }
+      },
+      "required": ["kind"],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "once",
+          "type": "string"
+        }
+      },
+      "required": ["kind"],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "file",
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": ["kind", "path"],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "kind": {
+          "const": "event",
+          "type": "string"
+        }
+      },
+      "required": ["kind"],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "durationMinutes": {
+          "maximum": 525600,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "kind": {
+          "const": "low_workers",
+          "type": "string"
+        },
+        "minimumWorkers": {
+          "maximum": 255,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": ["kind", "minimumWorkers", "durationMinutes"],
+      "type": "object"
+    }
+  ],
   "properties": {
     "activeWorkers": {
       "maximum": 9007199254740991,
@@ -100,11 +176,6 @@
     },
     "created": {
       "type": "number"
-    },
-    "durationMinutes": {
-      "maximum": 525600,
-      "minimum": 1,
-      "type": "integer"
     },
     "epoch": {
       "maximum": 9007199254740991,
@@ -134,17 +205,16 @@
       "minItems": 3,
       "prefixItems": [
         {
-          "maximum": 9223372036854775807,
-          "minimum": -9223372036854775808,
+          "format": "int64",
           "type": "integer"
         },
         {
-          "maximum": 18446744073709551615,
+          "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
         {
-          "maximum": 18446744073709551615,
+          "format": "uint64",
           "minimum": 0,
           "type": "integer"
         }
@@ -162,9 +232,6 @@
       "minimum": 10,
       "type": "integer"
     },
-    "kind": {
-      "$ref": "#/$defs/RuleKind"
-    },
     "lastAt": {
       "type": "number"
     },
@@ -172,14 +239,8 @@
       "type": "string"
     },
     "lastExitCode": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/StoredJsonInteger"
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "format": "int64",
+      "type": ["integer", "null"]
     },
     "lastFinished": {
       "type": "number"
@@ -192,14 +253,8 @@
       "type": ["string", "null"]
     },
     "lastStallExitCode": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/StoredJsonInteger"
-        },
-        {
-          "type": "null"
-        }
-      ]
+      "format": "int64",
+      "type": ["integer", "null"]
     },
     "lastStallFinished": {
       "type": "number"
@@ -221,11 +276,6 @@
     "lowSince": {
       "type": ["number", "null"]
     },
-    "minimumWorkers": {
-      "maximum": 255,
-      "minimum": 1,
-      "type": "integer"
-    },
     "name": {
       "maxLength": 120,
       "type": "string"
@@ -243,12 +293,15 @@
         }
       ]
     },
-    "path": {
-      "type": ["string", "null"]
-    },
     "restartCheck": {
-      "additionalProperties": true,
-      "type": ["object", "null"]
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RestartCheck"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "rootId": {
       "type": "string"
@@ -284,7 +337,26 @@
       "type": "integer"
     }
   },
-  "required": ["id"],
+  "required": [
+    "agent",
+    "checks",
+    "command",
+    "created",
+    "epoch",
+    "event",
+    "fileGeneration",
+    "id",
+    "inFlight",
+    "intervalSeconds",
+    "livenessCommand",
+    "name",
+    "nextAt",
+    "stallTimeoutSeconds",
+    "stallWakeGeneration",
+    "status",
+    "text",
+    "wakes"
+  ],
   "title": "RuleRecord",
   "type": "object"
 }

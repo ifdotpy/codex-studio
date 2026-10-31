@@ -108,18 +108,10 @@ impl Actor {
         }
         Ok(Self {
             id: record.id.0.clone(),
-            name: record
-                .extra
-                .get("name")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            name: record.name.as_deref().map(str::to_owned),
             root_id: record.root_id.0.clone(),
-            parent_id: record
-                .extra
-                .get("parentId")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            is_lead: record.extra.get("isLead") == Some(&Value::Bool(true)),
+            parent_id: record.parent_id.as_deref().map(str::to_owned),
+            is_lead: record.is_lead == Some(true),
             reviewer: record.extra.get("role").and_then(Value::as_str) == Some("reviewer"),
             provider: record
                 .extra
@@ -998,24 +990,14 @@ pub(crate) fn agent_ancestry(
     sender: &str,
     target: &str,
 ) -> Result<AgentAncestry, Error> {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct ParentEdge {
-        root_id: String,
-        parent_id: Option<String>,
-    }
-
-    fn edge(tx: &Transaction<'_>, id: &str) -> Result<Option<ParentEdge>, Error> {
-        studio_runtime_store::system_reads::get(tx, "runtime_agents", id)?
-            .map(|value| {
-                serde_json::from_value(value).map_err(|_| {
-                    Error::Store(studio_runtime_store::system_reads::invalid(
-                        "runtime_agents",
-                        id,
-                    ))
-                })
-            })
-            .transpose()
+    fn edge(
+        tx: &Transaction<'_>,
+        id: &str,
+    ) -> Result<Option<studio_runtime_store::AgentRecord>, Error> {
+        Ok(studio_runtime_store::AgentRepository::get(
+            tx,
+            &studio_runtime_store::AgentId::from(id),
+        )?)
     }
 
     if !is_agent_target(target) {
@@ -1099,7 +1081,7 @@ mod tests {
 
     #[test]
     fn actor_snapshot_binds_id_and_epoch() {
-        let value = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":3,"status":"running","isLead":true});
+        let value = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":3,"status":"running","isLead":true});
         let actor = Actor::from_record(&value, "lead", 3).unwrap();
         assert_eq!(actor.id, "lead");
         assert_eq!(actor.root_id, "lead");
@@ -1149,7 +1131,7 @@ mod tests {
     #[test]
     fn remote_local_reads_are_allowed_and_cross_server_calls_name_the_dependency() {
         let actor = Actor::from_record(
-            &json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":5,"status":"running","remoteOrigin":true}),
+            &json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":5,"status":"running","remoteOrigin":true}),
             "worker",
             5,
         )

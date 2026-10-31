@@ -224,8 +224,8 @@ if [ ! -x "$release/$binary" ]; then
   pnpm --dir "$staging" install --frozen-lockfile \
     --filter codex-agents-web... --filter studio-claude-bridge...
   pnpm --dir "$staging" --filter codex-agents-web run build
-  cargo build --release --locked \
-    --manifest-path "$staging/Cargo.toml" -p studio-runtime-server
+  (cd "$staging" && cargo build --release --locked \
+    --manifest-path Cargo.toml -p studio-runtime-server)
   cp "$root/target/release/studio-runtime-server" "$staging/$binary"
   mv "$staging" "$release"
 fi

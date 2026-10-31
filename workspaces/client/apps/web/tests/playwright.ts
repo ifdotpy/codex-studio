@@ -682,6 +682,62 @@ const sharedFixtures: import("@playwright/test").Fixtures<
         [rustUiFixture, root, "--workers", "0"],
         {
           stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            // Seed deterministic pricing and usage before fixture agents start.
+            // A closed proxy prevents the startup refresh replacing this catalog.
+            ALL_PROXY: "http://127.0.0.1:9",
+            HTTPS_PROXY: "http://127.0.0.1:9",
+            https_proxy: "http://127.0.0.1:9",
+            NO_PROXY: "127.0.0.1,localhost",
+            no_proxy: "127.0.0.1,localhost",
+            FIXTURE_PRICING_ARTIFACT: JSON.stringify({
+              version: 1,
+              fetchedAtEpoch: Date.now() / 1000,
+              catalog: {
+                providers: {
+                  openai: {
+                    models: {
+                      "gpt-5.6-sol": { cost: { input: 1, output: 1 } },
+                    },
+                  },
+                  anthropic: {
+                    models: {
+                      "claude-test": { cost: { input: 1, output: 1 } },
+                    },
+                  },
+                },
+              },
+            }),
+            FIXTURE_AGENT_STEPS: JSON.stringify(
+              Object.fromEntries(
+                ["Release lead", "Other project"].map((name) => [
+                  name,
+                  [
+                    {
+                      notify: {
+                        method: "thread/tokenUsage/updated",
+                        params: {
+                          studioUsage: {
+                            kind: "response",
+                            responseId: `cost-${name}`,
+                            model: "gpt-5.6-sol",
+                            evidence: "live",
+                            tokens: {
+                              uncachedInput: 100,
+                              cacheReadInput: 0,
+                              cacheWriteInput: 0,
+                              output: 100,
+                            },
+                          },
+                        },
+                      },
+                    },
+                  ],
+                ]),
+              ),
+            ),
+          },
         },
       );
       let diagnostics = "";
@@ -729,6 +785,8 @@ const sharedFixtures: import("@playwright/test").Fixtures<
             return route.fulfill({
               json: { fields: request.postDataJSON().fields },
             });
+          if (path === "/api/costs/interest")
+            return route.fulfill({ json: {} });
           if (path === "/api/organization") {
             const body = request.postDataJSON();
             if (

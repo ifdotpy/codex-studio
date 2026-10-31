@@ -15,7 +15,7 @@ const NATIVE_CHILD: &str = "0c1d2e3f-4a5b-4c6d-9e8f-f6e5d4c3b2a1";
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 fn agent(id: &str, index: usize, root: &str, mode: &str, role: &str) -> Value {
-    json!({
+    json!({"compactions":0,
         "id": id, "rootId": root, "parentId": (root != id).then_some(root),
         "name": format!("agent {index}"), "isLead": root == id, "role": role,
         "accountKey": "default", "provider": "codex", "model": "gpt-6-astra",
@@ -566,7 +566,7 @@ async fn without_its_runtime_the_tool_names_its_dependency() {
 fn read_actions_use_their_parameters_and_wait() {
     let status = guest_request(
         LEAD,
-        Some(&json!("/line")),
+        Some("/line"),
         &json!({"action": "status", "operation_id": "op", "after_seq": 5}),
         "thread:call",
     )
@@ -583,7 +583,7 @@ fn read_actions_use_their_parameters_and_wait() {
     // Without timeout_seconds the default applies; a supplied cwd wins.
     let execute = guest_request(
         LEAD,
-        Some(&json!("/line")),
+        Some("/line"),
         &json!({"command": "make", "cwd": "/line/app"}),
         "thread:call",
     )

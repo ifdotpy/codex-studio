@@ -349,8 +349,7 @@ mod tests {
 fn connected_method(method: &str) -> bool {
     matches!(
         method,
-        "system.info"
-            | "preferences.raw_all"
+        "preferences.raw_all"
             | "preferences.import"
             | "preferences.raw_set"
             | "preferences.raw_remove"
@@ -568,7 +567,7 @@ async fn client_request(
         );
     }
     if request.method == studio_client_core::desktop::SIGN_IN_CANCEL_METHOD {
-        return Ok(studio_client_core::desktop::dispatch(request, None, None).await);
+        return Ok(studio_client_core::desktop::dispatch(request, None).await);
     }
     if needs_gesture {
         let params = request

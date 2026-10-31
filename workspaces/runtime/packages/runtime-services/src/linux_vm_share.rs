@@ -85,15 +85,6 @@ impl Default for MacShareMountTool {
     }
 }
 
-impl MacShareMountTool {
-    /// A tool that runs `program` in place of `mount_smbfs`.
-    pub fn with_program(program: PathBuf) -> Self {
-        Self {
-            mount_smbfs: program,
-        }
-    }
-}
-
 /// The standard output of `program`, or its failure: the standard error text,
 /// empty when the program wrote none.
 fn run(program: &str, args: &[&str]) -> Result<Vec<u8>, String> {

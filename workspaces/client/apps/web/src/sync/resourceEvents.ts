@@ -90,6 +90,8 @@ const authProgressStatuses = {
   ready: true,
   error: true,
   cancelled: true,
+  duplicate: true,
+  uncertain: true,
 } satisfies Record<
   NonNullable<components["schemas"]["AuthProgressEvent"]["value"]>["status"],
   true

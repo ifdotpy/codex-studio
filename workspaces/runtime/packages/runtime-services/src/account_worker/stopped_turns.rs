@@ -303,12 +303,12 @@ async fn request(
             }
             let attempt_id = match &actor.owner {
                 Owner::Disconnect { .. } => agent
-                    .extra
-                    .get("disconnectRecovery")
-                    .and_then(|r| r.pointer("/startAttempt/id")),
-                Owner::Stop { .. } => agent.extra.get("startAttempt").and_then(|a| a.get("id")),
+                    .disconnect_recovery
+                    .as_deref()
+                    .and_then(|r| r.start_attempt.as_deref())
+                    .and_then(|a| a.id.as_deref()),
+                Owner::Stop { .. } => agent.start_attempt.as_ref().and_then(|a| a.id.as_deref()),
             }
-            .and_then(Value::as_str)
             .ok_or(super::WorkerError::CallbackUnknown)?
             .to_owned();
             let (execution_root, source) = super::store::execution_admission(tx, &attempt_id)?;
@@ -317,28 +317,46 @@ async fn request(
             } else {
                 "terminalsAdmission"
             };
-            let pointer = match &actor.owner {
-                Owner::Disconnect { .. } => &mut agent
-                    .extra
-                    .get_mut("disconnectRecovery")
-                    .ok_or(super::WorkerError::CallbackUnknown)?["stopInterrupt"],
-                Owner::Stop { .. } => &mut agent
-                    .extra
-                    .get_mut("startAttempt")
-                    .ok_or(super::WorkerError::CallbackUnknown)?["interrupt"],
+            let (root, already_admitted) = match &actor.owner {
+                Owner::Disconnect { .. } => {
+                    let receipt = agent
+                        .disconnect_recovery
+                        .as_deref()
+                        .ok_or(super::WorkerError::CallbackUnknown)?;
+                    (
+                        execution_root,
+                        receipt
+                            .extra
+                            .get("stopInterrupt")
+                            .and_then(|v| v.get(field))
+                            .is_some(),
+                    )
+                }
+                Owner::Stop { .. } => {
+                    let interrupt = agent
+                        .start_attempt
+                        .as_ref()
+                        .and_then(|a| a.interrupt.as_ref())
+                        .ok_or(super::WorkerError::CallbackUnknown)?;
+                    let root = interrupt
+                        .root_request_id
+                        .as_deref()
+                        .ok_or_else(|| studio_runtime_store::StoreError::InvalidStoredObject {
+                            table: "runtime_agents",
+                            id: actor.agent.clone(),
+                        })?
+                        .to_owned();
+                    (
+                        root,
+                        if field == "admission" {
+                            interrupt.admission.is_some()
+                        } else {
+                            interrupt.terminals_admission.is_some()
+                        },
+                    )
+                }
             };
-            let root = match &actor.owner {
-                Owner::Disconnect { .. } => execution_root,
-                Owner::Stop { .. } => pointer
-                    .get("rootRequestId")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| studio_runtime_store::StoreError::InvalidStoredObject {
-                        table: "runtime_agents",
-                        id: actor.agent.clone(),
-                    })?
-                    .to_owned(),
-            };
-            let admitted = if pointer.get(field).is_some() {
+            let admitted = if already_admitted {
                 stored_admission(&raw, &actor.owner, field, &actor.agent)?
             } else {
                 intent.root_request_id = root.clone();
@@ -367,10 +385,31 @@ async fn request(
                 } else {
                     super::retained::reserve_provider_call(tx, &source, intent)?
                 };
-                if pointer.is_null() {
-                    *pointer = json!({});
+                match &actor.owner {
+                    Owner::Disconnect { .. } => {
+                        let receipt = agent
+                            .disconnect_recovery
+                            .as_deref_mut()
+                            .ok_or(super::WorkerError::CallbackUnknown)?;
+                        let pointer = receipt
+                            .extra
+                            .entry("stopInterrupt".into())
+                            .or_insert_with(|| json!({}));
+                        pointer[field] = studio_runtime_store::projection_value(&admitted);
+                    }
+                    Owner::Stop { .. } => {
+                        let interrupt = agent
+                            .start_attempt
+                            .as_mut()
+                            .and_then(|a| a.interrupt.as_mut())
+                            .ok_or(super::WorkerError::CallbackUnknown)?;
+                        if field == "admission" {
+                            interrupt.admission = Some(admitted.clone());
+                        } else {
+                            interrupt.terminals_admission = Some(admitted.clone());
+                        }
+                    }
                 }
-                pointer[field] = studio_runtime_store::projection_value(&admitted);
                 admitted
             };
             AgentRepository::put(tx, &agent)?;
@@ -401,32 +440,38 @@ async fn request(
 /// request, on this provider generation, and not yet ended by a worker.
 fn stopped_turn(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
     let extra = &agent.extra;
-    let receipt = extra.get("disconnectRecovery")?;
-    let turn = receipt["turnId"].as_str().filter(|turn| !turn.is_empty())?;
-    let thread = receipt["threadId"]
-        .as_str()
+    let receipt = agent.disconnect_recovery.as_deref()?;
+    let turn = receipt.turn_id.as_deref().filter(|turn| !turn.is_empty())?;
+    let thread = receipt
+        .thread_id
+        .as_deref()
         .filter(|thread| !thread.is_empty())?;
-    let epoch = receipt["epoch"].as_i64()?;
+    let epoch = receipt.epoch.as_ref()?.number().as_i64()?;
     // An interrupt that the stop itself staged owns this turn: a lost reply is
     // never answered by a second interrupt. Only a proven unsent one is not.
-    let staged = |attempt: &Value| {
-        let interrupt = &attempt["interrupt"];
-        interrupt["threadId"].as_str() == Some(thread)
-            && interrupt["turnId"].as_str() == Some(turn)
-            && interrupt["outcome"].as_str() != Some("unsent")
+    let staged = |attempt: &studio_runtime_store::StartAttemptView| {
+        attempt.interrupt.as_ref().is_some_and(|interrupt| {
+            interrupt.thread_id.as_deref() == Some(thread)
+                && interrupt.turn_id.as_deref() == Some(turn)
+                && interrupt.outcome != Some(studio_runtime_store::InterruptOutcome::Unsent)
+        })
     };
     let ended = matches!(
-        receipt["stopInterrupt"]["outcome"].as_str(),
+        receipt
+            .extra
+            .get("stopInterrupt")
+            .and_then(|v| v.get("outcome"))
+            .and_then(Value::as_str),
         Some("accepted" | "rejected" | "unknown")
-    ) || staged(&receipt["startAttempt"])
-        || extra.get("startAttempt").is_some_and(staged);
+    ) || receipt.start_attempt.as_deref().is_some_and(staged)
+        || agent.start_attempt.as_deref().is_some_and(staged);
     let stopped = agent.auto_wake == Some(false)
         && agent.in_flight != Some(true)
         && epoch.checked_add(1) == Some(agent.epoch);
     if ended
         || !stopped
-        || receipt["startAttempt"]["connectionGeneration"].as_u64() != Some(generation)
-        || receipt["startAttempt"]["turnId"].as_str() != Some(turn)
+        || receipt.start_attempt.as_deref().and_then(|v| v.connection_generation) != Some(generation)
+        || receipt.start_attempt.as_deref().and_then(|v| v.turn_id.as_deref()) != Some(turn)
         // A delete tombstone clears the turn id; the epoch still names the stop.
         || agent.turn_id.as_deref().is_some_and(|current| current != turn)
         || agent.thread_id.as_deref() != Some(thread)
@@ -457,25 +502,32 @@ fn stopped_turn(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
 /// receipt that already ended this turn owns it instead.
 fn unsettled_stop(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
     let extra = &agent.extra;
-    let attempt = extra.get("startAttempt")?;
-    let interrupt = &attempt["interrupt"];
-    let ticket = interrupt["requestTicket"].as_str()?;
+    let attempt = agent.start_attempt.as_ref()?;
+    let interrupt = attempt.interrupt.as_ref()?;
+    let ticket = interrupt.request_ticket.as_deref()?;
     let terminals_operation = crate::lifecycle_effects::stop_terminals_operation(ticket)?;
-    let thread = interrupt["threadId"]
-        .as_str()
+    let thread = interrupt
+        .thread_id
+        .as_deref()
         .filter(|thread| !thread.is_empty())?;
-    let turn = interrupt["turnId"]
-        .as_str()
+    let turn = interrupt
+        .turn_id
+        .as_deref()
         .filter(|turn| !turn.is_empty())?;
     let epoch = agent.epoch.checked_sub(1)?;
-    let receipt = extra.get("disconnectRecovery").unwrap_or(&Value::Null);
-    let ended_by_receipt = receipt["turnId"].as_str() == Some(turn)
-        && receipt["stopInterrupt"].get("outcome").is_some();
+    let ended_by_receipt = agent.disconnect_recovery.as_deref().is_some_and(|receipt| {
+        receipt.turn_id.as_deref() == Some(turn)
+            && receipt
+                .extra
+                .get("stopInterrupt")
+                .and_then(|v| v.get("outcome"))
+                .is_some()
+    });
     if ended_by_receipt
-        || !matches!(interrupt["outcome"].as_str(), Some("unknown" | "unsent"))
-        || interrupt["generation"].as_u64() != Some(generation)
-        || attempt["connectionGeneration"].as_u64() != Some(generation)
-        || attempt["epoch"].as_i64() != Some(epoch)
+        || !matches!(interrupt.outcome, Some(studio_runtime_store::InterruptOutcome::Unknown | studio_runtime_store::InterruptOutcome::Unsent))
+        || interrupt.generation != Some(generation)
+        || attempt.connection_generation != Some(generation)
+        || attempt.epoch != Some(epoch)
         || agent.auto_wake != Some(false)
         // A delete tombstone clears the turn id; the epoch still names the stop.
         || agent.turn_id.as_deref().is_some_and(|current| current != turn)
@@ -556,15 +608,19 @@ fn record(
         SchedulerRepository::settle_interrupt_result(tx, ticket, generation, outcome, None)?;
         return Ok(true);
     }
-    let Some(receipt) = agent.extra.get_mut("disconnectRecovery") else {
+    let Some(receipt) = agent.disconnect_recovery.as_deref_mut() else {
         return Ok(false);
     };
-    if receipt["stopInterrupt"].is_null() {
-        receipt["stopInterrupt"] = json!({});
+    let interrupt = receipt
+        .extra
+        .entry("stopInterrupt".into())
+        .or_insert_with(|| json!({}));
+    if interrupt.is_null() {
+        *interrupt = json!({});
     }
-    receipt["stopInterrupt"]["operation"] = json!(turn.interrupt_operation());
-    receipt["stopInterrupt"]["generation"] = json!(generation);
-    receipt["stopInterrupt"]["outcome"] = json!(outcome);
+    interrupt["operation"] = json!(turn.interrupt_operation());
+    interrupt["generation"] = json!(generation);
+    interrupt["outcome"] = json!(outcome);
     AgentRepository::put(tx, &agent)?;
     Ok(true)
 }
@@ -573,31 +629,33 @@ fn owner_matches(agent: &AgentRecord, turn: &StoppedTurn, generation: u64) -> bo
     if turn.epoch.checked_add(1) != Some(agent.epoch) {
         return false;
     }
-    let value = match turn.owner {
-        Owner::Disconnect { .. } => agent.extra.get("disconnectRecovery"),
-        Owner::Stop { .. } => agent.extra.get("startAttempt"),
-    }
-    .unwrap_or(&Value::Null);
     match &turn.owner {
         Owner::Disconnect { signature } => {
-            value["epoch"].as_i64() == Some(turn.epoch)
-                && value["threadId"] == turn.thread
-                && value["turnId"] == turn.turn
-                && value["startAttempt"]["connectionGeneration"].as_u64() == Some(generation)
-                && *signature
-                    == studio_runtime_store::sha256_hex(
-                        json!([agent.id.0, turn.epoch, generation, turn.thread, turn.turn])
-                            .to_string()
-                            .as_bytes(),
-                    )
+            agent.disconnect_recovery.as_deref().is_some_and(|value| {
+                value.epoch.as_ref().and_then(|v| v.number().as_i64()) == Some(turn.epoch)
+                    && value.thread_id.as_deref() == Some(turn.thread.as_str())
+                    && value.turn_id.as_deref() == Some(turn.turn.as_str())
+                    && value
+                        .start_attempt
+                        .as_deref()
+                        .and_then(|a| a.connection_generation)
+                        == Some(generation)
+            }) && *signature
+                == studio_runtime_store::sha256_hex(
+                    json!([agent.id.0, turn.epoch, generation, turn.thread, turn.turn])
+                        .to_string()
+                        .as_bytes(),
+                )
         }
-        Owner::Stop { ticket, .. } => {
-            value["epoch"].as_i64() == Some(turn.epoch)
-                && value["connectionGeneration"].as_u64() == Some(generation)
-                && value["interrupt"]["requestTicket"] == *ticket
-                && value["interrupt"]["threadId"] == turn.thread
-                && value["interrupt"]["turnId"] == turn.turn
-        }
+        Owner::Stop { ticket, .. } => agent.start_attempt.as_ref().is_some_and(|value| {
+            value.epoch == Some(turn.epoch)
+                && value.connection_generation == Some(generation)
+                && value.interrupt.as_ref().is_some_and(|interrupt| {
+                    interrupt.request_ticket.as_deref() == Some(ticket.as_str())
+                        && interrupt.thread_id.as_deref() == Some(turn.thread.as_str())
+                        && interrupt.turn_id.as_deref() == Some(turn.turn.as_str())
+                })
+        }),
     }
 }
 
@@ -627,9 +685,11 @@ pub(in crate::account_worker) fn settle_stopped_turn(
             signature: signature.to_owned(),
         }
     } else if agent
-        .extra
-        .get("startAttempt")
-        .is_some_and(|attempt| attempt["interrupt"]["requestTicket"] == call.operation)
+        .start_attempt
+        .as_ref()
+        .and_then(|attempt| attempt.interrupt.as_ref())
+        .and_then(|interrupt| interrupt.request_ticket.as_deref())
+        == Some(call.operation.as_str())
     {
         Owner::Stop {
             ticket: call.operation.clone(),

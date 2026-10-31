@@ -248,8 +248,7 @@ pub(super) fn decide(
                 )
             );
             if params["willRetry"] == true && !policy {
-                agent["nativeStatus"] =
-                    json!({"phase":"retrying","error":error,"turnId":turn,"at":at});
+                agent["nativeStatus"] = json!({"phase":"retrying","error":error_message(error, label),"turnId":turn,"at":at});
                 agent["activity"] = json!({"phase":"retrying","at":at});
             } else if error_kind == Some(KnownCodexErrorKind::ActiveTurnNotSteerable) {
                 decision.item = Some(notice(
@@ -289,8 +288,7 @@ pub(super) fn decide(
         NoticeKind::AuthStarted | NoticeKind::AuthCompleted => {
             let started = kind == NoticeKind::AuthStarted;
             if started {
-                agent["nativeStatus"] =
-                    json!({"phase":"auth","message":params["message"],"turnId":turn,"at":at});
+                agent["nativeStatus"] = json!({"phase":"auth","message":params["message"].as_str(),"turnId":turn,"at":at});
                 agent["activity"] = json!({"phase":"auth","at":at});
             } else if agent["nativeStatus"]["phase"] == "auth" {
                 remove(&mut agent, "nativeStatus");

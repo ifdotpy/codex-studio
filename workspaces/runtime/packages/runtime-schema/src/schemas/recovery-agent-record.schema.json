@@ -246,7 +246,7 @@
         "startAttempt": {
           "anyOf": [
             {
-              "$ref": "#/$defs/RecoveryFields"
+              "$ref": "#/$defs/StartAttemptView"
             },
             {
               "type": "null"
@@ -343,6 +343,744 @@
       },
       "title": "RecoverySupervisorIdentity",
       "type": "object"
+    },
+    "ExecutionStatus": {
+      "type": "string",
+      "enum": [
+        "unsent",
+        "pending",
+        "accepted",
+        "observed",
+        "running",
+        "unknown",
+        "rejected",
+        "completed",
+        "failed",
+        "interrupted",
+        "cancelled"
+      ]
+    },
+    "InterruptOutcome": {
+      "type": "string",
+      "enum": ["unknown", "unsent", "accepted", "rejected"]
+    },
+    "StartAttemptAction": {
+      "type": "string",
+      "enum": ["compact", "review", "capacity", "safety"]
+    },
+    "StartInterruptView": {
+      "type": "object",
+      "properties": {
+        "admission": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdmittedRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "generation": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InterruptOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestTicket": {
+          "type": ["string", "null"]
+        },
+        "responseError": {
+          "type": ["string", "null"]
+        },
+        "rootRequestId": {
+          "type": ["string", "null"]
+        },
+        "terminalsAdmission": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdmittedRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": ["string", "null"]
+        },
+        "turnId": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "StartAttemptView": {
+      "title": "StartAttemptView",
+      "type": "object",
+      "properties": {
+        "accountKey": {
+          "type": ["string", "null"]
+        },
+        "action": {
+          "$ref": "#/$defs/StartAttemptAction"
+        },
+        "actionIdentity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "actionRequestId": {
+          "type": ["string", "null"]
+        },
+        "activeAtReservation": {
+          "type": ["boolean", "null"]
+        },
+        "capacityRetryId": {
+          "type": ["string", "null"]
+        },
+        "claudeInputRequest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClaudeInputRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "connectionGeneration": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "connectionId": {
+          "type": ["string", "null"]
+        },
+        "created": {
+          "type": ["number", "null"],
+          "format": "double"
+        },
+        "epoch": {
+          "type": ["integer", "null"],
+          "format": "int64"
+        },
+        "events": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "executionOutcome": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ExecutionStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": ["string", "null"]
+        },
+        "interrupt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StartInterruptView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "modelSettings": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelSettingsAttempt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "nativeOperationId": {
+          "type": ["string", "null"]
+        },
+        "nativeRequest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "notSubmittedReason": {
+          "type": ["string", "null"]
+        },
+        "observedTurnId": {
+          "type": ["string", "null"]
+        },
+        "prepareError": {
+          "type": ["string", "null"]
+        },
+        "providerRequest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdmittedRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "providerTurn": {
+          "type": ["boolean", "null"]
+        },
+        "requestTicket": {
+          "type": ["string", "null"]
+        },
+        "responseError": {
+          "type": ["string", "null"]
+        },
+        "retiredEvents": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "reviewTarget": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewTarget"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rootRequestId": {
+          "type": ["string", "null"]
+        },
+        "settingsFixed": {
+          "type": ["boolean", "null"]
+        },
+        "submitted": {
+          "type": ["boolean", "null"]
+        },
+        "supervisorIdentity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SupervisorIdentity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": ["string", "null"]
+        },
+        "turnId": {
+          "type": ["string", "null"]
+        },
+        "vmWorkspacePreparation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VmWorkspacePreparation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "claudeRetryOf": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ActionIdentity": {
+      "type": "object",
+      "properties": {
+        "accountKey": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": ["accountKey", "epoch", "threadId"]
+    },
+    "AdmittedRequest": {
+      "description": "A request admitted for durable asynchronous settlement.",
+      "type": "object",
+      "properties": {
+        "created": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "id": {
+          "type": "string"
+        },
+        "signature": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": ["id", "signature", "created"]
+    },
+    "ClaudeInputEvent": {
+      "type": "object",
+      "properties": {
+        "assets": {
+          "type": "array",
+          "items": {}
+        },
+        "created": {
+          "type": "number",
+          "format": "double"
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "textHash": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": ["id", "kind", "created", "assets", "textHash"]
+    },
+    "ClaudeInputRequest": {
+      "type": "object",
+      "properties": {
+        "clientUserMessageId": {
+          "type": "string"
+        },
+        "configuration": {},
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ClaudeInputEvent"
+          }
+        },
+        "input": {
+          "type": "array",
+          "items": {}
+        },
+        "source": {
+          "$ref": "#/$defs/ClaudeInputSource"
+        },
+        "textHash": {
+          "type": "string"
+        },
+        "transcriptItemId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "clientUserMessageId",
+        "configuration",
+        "input",
+        "source",
+        "events",
+        "textHash",
+        "transcriptItemId"
+      ]
+    },
+    "ClaudeInputSource": {
+      "type": "object",
+      "properties": {
+        "compactions": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cwd": {
+          "type": ["string", "null"]
+        },
+        "effort": {
+          "type": ["string", "null"]
+        },
+        "fastMode": {
+          "type": ["boolean", "null"]
+        },
+        "imageWorkspace": {
+          "type": ["boolean", "null"]
+        },
+        "imageWorkspaceReady": {
+          "type": ["boolean", "null"]
+        },
+        "isLead": {
+          "type": ["boolean", "null"]
+        },
+        "model": {
+          "type": ["string", "null"]
+        },
+        "nativeEffort": {
+          "type": ["string", "null"]
+        },
+        "parentId": {
+          "type": ["string", "null"]
+        },
+        "role": {
+          "type": ["string", "null"]
+        },
+        "rootId": {
+          "type": ["string", "null"]
+        },
+        "yoloMode": {
+          "type": ["boolean", "null"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConnectionScope": {
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "connection": {
+          "type": "string"
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": ["account", "connection", "generation"]
+    },
+    "ModelSettingsAttempt": {
+      "type": "object",
+      "properties": {
+        "accountKey": {
+          "type": ["string", "null"]
+        },
+        "connectionId": {
+          "type": ["string", "null"]
+        },
+        "epoch": {
+          "type": ["integer", "null"],
+          "format": "int64"
+        },
+        "id": {
+          "type": ["string", "null"]
+        },
+        "method": {
+          "type": ["string", "null"]
+        },
+        "operation": {
+          "type": ["string", "null"]
+        },
+        "params": {},
+        "providerRequest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdmittedRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestId": {
+          "type": ["string", "null"]
+        },
+        "rootRequestId": {
+          "type": ["string", "null"]
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConnectionScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "settings": {},
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NativeSettingsStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "threadId": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "NativeRequest": {
+      "description": "A provider request; legacy agent snapshots can omit its root request ID.",
+      "type": "object",
+      "properties": {
+        "admitted_request": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdmittedRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {},
+        "root_request_id": {
+          "type": ["string", "null"]
+        },
+        "ticket": {
+          "$ref": "#/$defs/ProviderTicket"
+        }
+      },
+      "additionalProperties": false,
+      "required": ["ticket", "method", "params"]
+    },
+    "NativeSettingsStatus": {
+      "type": "string",
+      "enum": ["submitted", "acknowledged", "not_sent", "unknown", "rejected"]
+    },
+    "ProjectImport": {
+      "type": "object",
+      "properties": {
+        "archiveBytes": {
+          "type": ["integer", "null"],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "archiveSha256": {
+          "type": ["string", "null"]
+        },
+        "operation": {
+          "type": "string"
+        },
+        "phase": {
+          "$ref": "#/$defs/ProjectImportPhase"
+        },
+        "projectId": {
+          "type": "string"
+        },
+        "requestId": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "uploadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "projectId",
+        "source",
+        "requestId",
+        "operation",
+        "uploadId",
+        "root",
+        "phase"
+      ]
+    },
+    "ProjectImportPhase": {
+      "type": "string",
+      "enum": ["planned", "uploading", "imported", "not_sent", "unknown"]
+    },
+    "ProviderTicket": {
+      "description": "Durable transport identity; response contents alone never authorize mutation.",
+      "type": "object",
+      "properties": {
+        "account": {
+          "type": "string"
+        },
+        "agent": {
+          "type": "string"
+        },
+        "connection": {
+          "type": "string"
+        },
+        "epoch": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "operation": {
+          "type": "string"
+        },
+        "request": {
+          "type": "string"
+        },
+        "thread": {
+          "type": ["string", "null"]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "agent",
+        "epoch",
+        "account",
+        "connection",
+        "generation",
+        "request"
+      ]
+    },
+    "ReviewTarget": {
+      "description": "Target of a native review request.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "uncommittedChanges"
+            }
+          },
+          "additionalProperties": false,
+          "required": ["type"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "branch": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "baseBranch"
+            }
+          },
+          "additionalProperties": false,
+          "required": ["type", "branch"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "sha": {
+              "type": "string"
+            },
+            "title": {
+              "type": ["string", "null"]
+            },
+            "type": {
+              "type": "string",
+              "const": "commit"
+            }
+          },
+          "additionalProperties": false,
+          "required": ["type", "sha"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "instructions": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "custom"
+            }
+          },
+          "additionalProperties": false,
+          "required": ["type", "instructions"]
+        }
+      ]
+    },
+    "SupervisorIdentity": {
+      "description": "Identity of the retained supervisor that owns a provider connection.",
+      "type": "object",
+      "properties": {
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "handle": {
+          "type": "string"
+        },
+        "stateDir": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": ["stateDir", "handle", "generation"]
+    },
+    "VmPreparationPhase": {
+      "type": "string",
+      "enum": ["submitted", "not_sent", "unknown", "failed", "completed"]
+    },
+    "VmWorkspacePreparation": {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": ["string", "null"]
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {},
+        "phase": {
+          "$ref": "#/$defs/VmPreparationPhase"
+        },
+        "projectImport": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectImport"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": ["requestId", "method", "params", "phase"]
     }
   },
   "additionalProperties": {
@@ -667,7 +1405,7 @@
     "startAttempt": {
       "anyOf": [
         {
-          "$ref": "#/$defs/RecoveryFields"
+          "$ref": "#/$defs/StartAttemptView"
         },
         {
           "type": "null"

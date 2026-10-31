@@ -49,12 +49,27 @@ pub struct AgentAuthorityRow {
     pub execution_mode: Option<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectAuthorityRow {
-    pub id: Option<String>,
-    pub path: Option<String>,
-    #[serde(default)]
-    pub peer_teams: Vec<PeerTeamRow>,
+#[serde(untagged)]
+pub enum ProjectAuthorityRow {
+    Active {
+        id: Option<String>,
+        path: String,
+        #[serde(default, rename = "peerTeams")]
+        peer_teams: Vec<PeerTeamRow>,
+    },
+    Removed {
+        id: Option<String>,
+        removal: ProjectRemoval,
+    },
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct ProjectRemoval {}
+impl ProjectAuthorityRow {
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Self::Active { id, .. } | Self::Removed { id, .. } => id.as_deref(),
+        }
+    }
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct PeerTeamRow {
@@ -512,9 +527,6 @@ fn optional_string(value: Option<&Value>, location: &str) -> Result<Option<Strin
         _ => Err(invalid(location)),
     }
 }
-fn strings(value: Option<&Value>, location: &str) -> Result<Vec<String>, SnapshotError> {
-    serde_json::from_value(value.cloned().unwrap_or(Value::Null)).map_err(|_| invalid(location))
-}
 impl AuthorizationSnapshot {
     pub fn from_records(rows: &AuthorizationRecords) -> Result<Self, SnapshotError> {
         if rows.recipient_id.is_empty() {
@@ -570,7 +582,8 @@ impl AuthorizationSnapshot {
                     root_id: optional_string(row.get("rootId"), &format!("{location}/rootId"))?,
                 },
                 Some("private") => RoomAuthority::Private {
-                    members: strings(row.get("members"), &format!("{location}/members"))?,
+                    members: Vec::<String>::deserialize(&row["members"])
+                        .map_err(|_| invalid(format!("{location}/members")))?,
                 },
                 _ => RoomAuthority::Other,
             };
@@ -592,18 +605,24 @@ impl AuthorizationSnapshot {
             for (key, row) in &rows.projects {
                 let location = format!("projects/{key}");
                 let row = row.as_ref().map_err(|_| invalid(&location))?;
-                let original = row
-                    .path
-                    .as_ref()
-                    .filter(|path| !path.trim().is_empty())
-                    .ok_or_else(|| invalid(&location))?;
+                let ProjectAuthorityRow::Active {
+                    path: original,
+                    peer_teams,
+                    ..
+                } = row
+                else {
+                    continue;
+                };
+                if original.trim().is_empty() {
+                    return Err(invalid(&location));
+                }
                 let path = rows
                     .resolved_paths
                     .get(original)
                     .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
                     .ok_or_else(|| invalid(format!("{location}/path")))?;
                 let mut teams = Vec::new();
-                for (index, team) in row.peer_teams.iter().enumerate() {
+                for (index, team) in peer_teams.iter().enumerate() {
                     let at = format!("{location}/peerTeams/{index}");
                     for (field, value) in [("id", &team.id), ("name", &team.name)] {
                         if value.is_empty() {
@@ -1045,6 +1064,33 @@ pub fn select_execution(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_room_members_require_a_string_array() {
+        let mut records: AuthorizationRecords = serde_json::from_str(r#"{
+            "recipient_id":"lead", "agents":{"lead":"{\"id\":\"lead\",\"rootId\":\"lead\",\"isLead\":true}"},
+            "rooms":{},"complaints":{},"event_meta":{},"events":[],"projects":{},"resolved_paths":{}
+        }"#).unwrap();
+        for room in [
+            json!({"kind":"private"}),
+            json!({"kind":"private","members":null}),
+            json!({"kind":"private","members":["lead", 1]}),
+        ] {
+            records.rooms.insert("room".into(), room.to_string());
+            assert_eq!(
+                AuthorizationSnapshot::from_records(&records)
+                    .unwrap_err()
+                    .location,
+                "rooms/room/members"
+            );
+        }
+        records.rooms.insert(
+            "room".into(),
+            json!({"kind":"private","members":["lead","worker"]}).to_string(),
+        );
+        assert!(
+            matches!(&AuthorizationSnapshot::from_records(&records).unwrap().rooms["room"], RoomAuthority::Private { members } if members == &["lead", "worker"])
+        );
+    }
     #[test]
     fn scope_names_only_the_rows_the_events_read() {
         let event = |id: &str, kind: &str, text: Value| StoredEvent {

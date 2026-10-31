@@ -3,13 +3,13 @@ use crate::{
     backend::Backend,
     delivery::{StoreSender, state},
     projections::Document,
-    protocol::{CommandError, Request, Response},
+    protocol::{CommandError, Request},
 };
 use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, time::Duration};
 use studio_client_domain::{
-    json_object::JsonObject,
+    json_object::{JsonObject, LenientField},
     sync_entity::{EntityChange, SYNC_ENTITY_PAGE_LIMIT},
 };
 
@@ -82,14 +82,6 @@ pub async fn open(backend: &Backend, sender: &StoreSender) -> Result<Value, Comm
     }
 }
 
-// Historical transcript payloads may contain non-object items and non-string IDs.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum TranscriptField<T> {
-    Value(T),
-    Other(serde::de::IgnoredAny),
-}
-
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum TranscriptPayload {
@@ -100,26 +92,26 @@ enum TranscriptPayload {
 #[derive(Deserialize)]
 struct TranscriptObject {
     #[serde(default)]
-    delta: Option<TranscriptField<bool>>,
+    delta: Option<LenientField<bool>>,
     #[serde(default)]
-    items: Option<TranscriptField<Vec<TranscriptField<JsonObject<TranscriptItem>>>>>,
+    items: Option<LenientField<Vec<LenientField<JsonObject<TranscriptItem>>>>>,
     #[serde(default)]
-    removed: Option<TranscriptField<Vec<TranscriptField<String>>>>,
+    removed: Option<LenientField<Vec<LenientField<String>>>>,
     #[serde(default)]
-    order: Option<TranscriptField<Vec<TranscriptField<String>>>>,
+    order: Option<LenientField<Vec<LenientField<String>>>>,
     #[serde(flatten)]
     fields: serde_json::Map<String, Value>,
 }
 #[derive(Deserialize)]
 struct TranscriptItem {
     // Missing and null identities both leave the item unidentified.
-    id: Option<TranscriptField<String>>,
+    id: Option<LenientField<String>>,
     #[serde(flatten)]
     fields: serde_json::Map<String, Value>,
 }
 impl TranscriptItem {
     fn identified(mut self) -> Option<(String, Value)> {
-        let Some(TranscriptField::Value(id)) = self.id else {
+        let Some(LenientField::Value(id)) = self.id else {
             return None;
         };
         self.fields.insert("id".into(), Value::String(id.clone()));
@@ -128,7 +120,7 @@ impl TranscriptItem {
 }
 impl TranscriptObject {
     fn is_delta(&self) -> bool {
-        matches!(self.delta, Some(TranscriptField::Value(true)))
+        matches!(self.delta, Some(LenientField::Value(true)))
     }
 }
 fn merge_transcript_delta(
@@ -143,7 +135,7 @@ fn merge_transcript_delta(
             "Transcript projection base has no items.",
         ));
     };
-    let Some(TranscriptField::Value(base_items)) = base.items else {
+    let Some(LenientField::Value(base_items)) = base.items else {
         return Err(error(
             "invalid_projection",
             "Transcript projection base has no items.",
@@ -152,23 +144,23 @@ fn merge_transcript_delta(
     let mut items = BTreeMap::new();
     let mut base_order = Vec::new();
     for entry in base_items {
-        if let TranscriptField::Value(JsonObject(item)) = entry
+        if let LenientField::Value(JsonObject(item)) = entry
             && let Some((id, item)) = item.identified()
         {
             base_order.push(id.clone());
             items.insert(id, item);
         }
     }
-    if let Some(TranscriptField::Value(removed)) = incoming.removed {
+    if let Some(LenientField::Value(removed)) = incoming.removed {
         for id in removed {
-            if let TranscriptField::Value(id) = id {
+            if let LenientField::Value(id) = id {
                 items.remove(&id);
             }
         }
     }
-    if let Some(TranscriptField::Value(changed)) = incoming.items {
+    if let Some(LenientField::Value(changed)) = incoming.items {
         for item in changed {
-            let TranscriptField::Value(JsonObject(item)) = item else {
+            let LenientField::Value(JsonObject(item)) = item else {
                 return Err(error(
                     "invalid_projection",
                     "Transcript delta item has no identity.",
@@ -184,11 +176,11 @@ fn merge_transcript_delta(
         }
     }
     let order = match incoming.order {
-        Some(TranscriptField::Value(order)) => order
+        Some(LenientField::Value(order)) => order
             .into_iter()
             .filter_map(|id| match id {
-                TranscriptField::Value(id) => Some(id),
-                TranscriptField::Other(_) => None,
+                LenientField::Value(id) => Some(id),
+                LenientField::Other(_) => None,
             })
             .collect(),
         _ => base_order,
@@ -567,77 +559,22 @@ fn projection_error_with_limit(payload: &str, limit: usize) -> Option<CommandErr
     })
 }
 
-async fn apply_entities(
-    backend: &Backend,
-    sender: &StoreSender,
-    workspace: &str,
-    values: &[Value],
-) -> Result<Value, CommandError> {
-    let current = identity(backend).await?;
-    let workspace = if workspace.is_empty() {
-        current["workspaceId"].as_str().unwrap_or("")
-    } else {
-        if current["workspaceId"] != workspace {
-            return Err(error(
-                "workspace_changed",
-                "The server workspace changed during synchronization.",
-            ));
-        }
-        workspace
-    };
-    if !crate::projections::valid_workspace(workspace) {
-        return Err(error("invalid_workspace", "Invalid workspace identity."));
-    }
-    let changes = Vec::<EntityChange>::deserialize(Value::Array(values.to_vec()))
-        .map_err(|e| error("storage_error", e))?;
-    crate::delivery::apply_entities(sender, workspace, changes, false, None, None)
-        .await
-        .map_err(|e| error("storage_error", e))
-}
-
-pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request) -> Response {
-    let result = match request.method.as_str() {
-        "sync.open" => open(backend, sender).await,
-        "sync.pull" => match (
-            request.params["workspace"].as_str(),
-            request.params["scope"].as_str(),
-        ) {
-            (Some(w), Some(s)) => pull(backend, sender, w, s).await,
-            _ => Err(error(
-                "invalid_params",
-                "Workspace and projection scope are required.",
-            )),
-        },
-        "sync.applyEntities" => match (
-            request.params["workspace"].as_str().unwrap_or(""),
-            request.params["documents"].as_array(),
-        ) {
-            (w, Some(d)) => apply_entities(backend, sender, w, d).await,
-            (_, None) => Err(error(
-                "invalid_params",
-                "Workspace and entity documents are required.",
-            )),
-        },
-        _ => Err(error("unknown_method", "Unknown synchronization command.")),
-    };
-    match result {
-        Ok(value) => Response::success(request.id, value),
-        Err(error) => Response {
-            id: request.id,
-            result: None,
-            error: Some(error),
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::Response;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
     use tokio::{io::AsyncWriteExt, net::TcpListener, sync::mpsc};
+    async fn apply_test(sender: &StoreSender, workspace: &str, documents: Value) -> Response {
+        let changes = serde_json::from_value(documents).unwrap();
+        match crate::delivery::apply_entities(sender, workspace, changes, false, None, None).await {
+            Ok(value) => Response::success("apply".into(), value),
+            Err(error) => Response::failure("apply".into(), "storage_error", error),
+        }
+    }
     #[test]
     fn entity_pull_consumed_fields_track_openapi_owner() {
         let openapi: Value = serde_json::from_str(include_str!(
@@ -771,18 +708,6 @@ mod tests {
     #[tokio::test]
     async fn entity_batches_with_out_of_order_sequences_remain_visible() {
         let workspace = "b".repeat(32);
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let backend = Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
-        let server_workspace = workspace.clone();
-        let server = tokio::spawn(async move {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let (headers, _) = crate::backend::tests::read_http(&mut stream).await;
-                assert!(headers.starts_with("GET /api/sync/identity"));
-                let body = json!({"workspaceId":server_workspace,"chatState":true}).to_string();
-                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
-            }
-        });
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("client.sqlite3");
         let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(32);
@@ -795,11 +720,12 @@ mod tests {
         });
         let mut previous = 0;
         for (id, seq, count) in [("A", 11, 1), ("B", 10, 2)] {
-            let response = dispatch(&backend, &sender, Request {
-                id: format!("apply-{id}"), method: "sync.applyEntities".into(),
-                params: json!({"workspace":workspace,"documents":[{"op":"upsert","collection":"task","id":id,"seq":seq,"value":{"id":id}}]}),
-            }).await;
-            assert_eq!(response.id, format!("apply-{id}"));
+            let response = apply_test(
+                &sender,
+                &workspace,
+                json!([{"op":"upsert","collection":"task","id":id,"seq":seq,"value":{"id":id}}]),
+            )
+            .await;
             assert!(response.error.is_none(), "{:?}", response.error);
             let doc = response.result.unwrap();
             let snapshot: Value = serde_json::from_str(doc["payload"].as_str().unwrap()).unwrap();
@@ -812,7 +738,6 @@ mod tests {
         }
         drop(sender);
         worker.await.unwrap();
-        server.await.unwrap();
         let mut store = crate::store::Store::open(&path).unwrap();
         let doc = store
             .dispatch(Request {
@@ -860,6 +785,45 @@ mod tests {
         for field in ["items", "order", "removed"] {
             assert_eq!(delta["properties"][field]["type"], "array");
         }
+    }
+
+    #[tokio::test]
+    async fn pull_checks_workspace_before_decoding_malformed_documents() {
+        let workspace = "a".repeat(32);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend = Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let expected = workspace.clone();
+        let server = tokio::spawn(async move {
+            for index in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                crate::backend::tests::read_http(&mut stream).await;
+                let body = if index < 2 {
+                    json!({"workspaceId":expected,"unknown":{"preserve":true}})
+                } else {
+                    json!({"workspaceId":"b".repeat(32),"documents":false})
+                }
+                .to_string();
+                crate::backend::tests::reply(&mut stream, &body).await;
+            }
+        });
+        let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(8);
+        let worker = tokio::spawn(async move {
+            let mut store = crate::store::Store::open(std::path::Path::new(":memory:")).unwrap();
+            while let Some(command) = receive.recv().await {
+                command.execute(&mut store);
+            }
+        });
+        let failure = pull(&backend, &sender, &workspace, "transcript:a")
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, "workspace_changed");
+        assert_eq!(
+            failure.message,
+            "The server workspace changed during synchronization."
+        );
+        drop(sender);
+        worker.await.unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -1241,18 +1205,6 @@ mod tests {
     #[tokio::test]
     async fn entity_v4_batch_applies_structured_upserts_and_deletes_once() {
         let workspace = "b".repeat(32);
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let backend = Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
-        let server_workspace = workspace.clone();
-        let server = tokio::spawn(async move {
-            for _ in 0..3 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let (headers, _) = crate::backend::tests::read_http(&mut stream).await;
-                assert!(headers.starts_with("GET /api/sync/identity"));
-                let body = json!({"workspaceId":server_workspace,"chatState":true}).to_string();
-                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
-            }
-        });
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("client.sqlite3");
         let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(32);
@@ -1283,14 +1235,9 @@ mod tests {
             }
             drop(directory);
         });
-        let apply = |documents: Value| Request {
-            id: "apply".into(),
-            method: "sync.applyEntities".into(),
-            params: json!({"workspace":workspace,"documents":documents}),
-        };
         let task = json!({"op":"upsert","collection":"task","id":"one","seq":10,"value":{"id":"one","status":"running"}});
         let other = json!({"op":"upsert","collection":"task","id":"two","seq":11,"value":{"id":"two","status":"running"}});
-        let first = dispatch(&backend, &sender, apply(json!([task, other]))).await;
+        let first = apply_test(&sender, &workspace, json!([task, other])).await;
         assert!(first.error.is_none(), "{:?}", first.error);
         let snapshot: Value =
             serde_json::from_str(first.result.unwrap()["payload"].as_str().unwrap()).unwrap();
@@ -1301,13 +1248,13 @@ mod tests {
             1,
             "one storage command applies and materializes the entire batch"
         );
-        let removed = dispatch(
-            &backend,
+        let removed = apply_test(
             &sender,
-            apply(json!([
+            &workspace,
+            json!([
                 {"op":"delete","collection":"task","id":"one","seq":12},
                 {"op":"delete","collection":"task","id":"two","seq":13}
-            ])),
+            ]),
         )
         .await;
         assert!(removed.error.is_none(), "{:?}", removed.error);
@@ -1316,7 +1263,7 @@ mod tests {
         assert!(snapshot["runtime"]["tasks"].as_array().unwrap().is_empty());
         assert_eq!(state_puts.load(Ordering::SeqCst), 2);
         assert_eq!(commands.load(Ordering::SeqCst), 2);
-        let stale = dispatch(&backend, &sender, apply(json!([task]))).await;
+        let stale = apply_test(&sender, &workspace, json!([task])).await;
         assert_eq!(stale.result, Some(removed));
         assert_eq!(commands.load(Ordering::SeqCst), 3);
         assert_eq!(state_puts.load(Ordering::SeqCst), 2);
@@ -1333,7 +1280,6 @@ mod tests {
         );
         drop(sender);
         worker.await.unwrap();
-        server.await.unwrap();
     }
 
     #[tokio::test]

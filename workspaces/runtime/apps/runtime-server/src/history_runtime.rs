@@ -921,12 +921,11 @@ async fn read_roster_rows(
 /// A deleted agent leaves the roster once nothing is left to import for it: it never
 /// reached a thread, or its final checkpoint already saw this `deletedAt`.
 fn is_retired(agent: &AgentRecord, settled: &BTreeMap<String, Value>) -> bool {
-    let deleted_at = agent.extra.get("deletedAt").unwrap_or(&Value::Null);
-    !deleted_at.is_null()
+    agent.deleted_at.is_some()
         && (agent.thread_id.as_deref().is_none_or(str::is_empty)
             || settled
                 .get(agent.id().as_ref())
-                .is_some_and(|value| value == deleted_at))
+                .is_some_and(|value| value.as_f64() == agent.deleted_at))
 }
 
 /// Final checkpoints of deleted agents, so a restart does not import every tombstone again.
@@ -965,15 +964,12 @@ fn retire_settled(
     let mut index = 0;
     while index < actors.len() {
         let actor = &actors[index];
-        if let Some(deleted_at) = actor
-            .extra
-            .get("deletedAt")
-            .filter(|value| !value.is_null())
+        if let Some(deleted_at) = actor.deleted_at
             && runtime.collector.schedule.settled(actor)
         {
             let id = actor.id().as_ref().to_owned();
             runtime.collector.schedule.remove(&id);
-            runtime.settled.insert(id, deleted_at.clone());
+            runtime.settled.insert(id, serde_json::json!(deleted_at));
             actors.remove(index);
             row_ids.remove(index);
         } else {
@@ -1105,6 +1101,7 @@ mod tests {
         value["rootId"] = value["id"].clone();
         value["epoch"] = json!(0);
         value["status"] = json!("idle");
+        value["compactions"] = json!(0);
         AgentRecord::from_value(value).expect("typed fixture actor")
     }
 
@@ -1115,11 +1112,11 @@ mod tests {
             json!({"id":"a"}),
             json!({"id":"a", "threadId":""}),
             json!({"id":"a", "threadId":"thread"}),
-            json!({"id":"a", "threadId":"thread", "accountKey":"other", "deletedAt":{"at":1}}),
+            json!({"id":"a", "threadId":"thread", "accountKey":"other", "deletedAt":1.0}),
             json!({"id":"a", "threadId":"thread", "deletedAt":42}),
         ] {
             let actor = typed_actor(value.clone());
-            let settled = BTreeMap::from([("a".to_owned(), json!({"at":1}))]);
+            let settled = BTreeMap::from([("a".to_owned(), json!(1.0))]);
             let deleted = &value["deletedAt"];
             let legacy_retired = !deleted.is_null()
                 && (value["threadId"].as_str().is_none_or(str::is_empty)
@@ -1218,7 +1215,7 @@ mod tests {
             "event journal changes must not scan the history agent roster"
         );
 
-        let actor = AgentRecord::from_value(json!({"accountKey":"default",
+        let actor = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
             "id":"history-agent", "rootId":"history-agent", "parentId":null,
             "name":"History fixture", "epoch":0, "status":"running",
             "accountHistory":[], "provider":"codex", "threadId":"history-thread",
@@ -1239,16 +1236,12 @@ mod tests {
 
     #[test]
     fn retired_tombstones_leave_the_roster_until_their_deletion_changes() {
-        let settled = BTreeMap::from([("gone".to_owned(), json!("2026-10-18T00:00:00Z"))]);
+        let settled = BTreeMap::from([("gone".to_owned(), json!(1.0))]);
         let live = typed_actor(json!({"id":"live","threadId":"t","deletedAt":null}));
-        let never_started =
-            typed_actor(json!({"id":"empty","threadId":"","deletedAt":"2026-10-18T00:00:00Z"}));
-        let settled_tombstone =
-            typed_actor(json!({"id":"gone","threadId":"t","deletedAt":"2026-10-18T00:00:00Z"}));
-        let pending_tombstone =
-            typed_actor(json!({"id":"late","threadId":"t","deletedAt":"2026-10-18T00:00:00Z"}));
-        let redeleted =
-            typed_actor(json!({"id":"gone","threadId":"t","deletedAt":"2026-10-19T00:00:00Z"}));
+        let never_started = typed_actor(json!({"id":"empty","threadId":"","deletedAt":1.0}));
+        let settled_tombstone = typed_actor(json!({"id":"gone","threadId":"t","deletedAt":1.0}));
+        let pending_tombstone = typed_actor(json!({"id":"late","threadId":"t","deletedAt":1.0}));
+        let redeleted = typed_actor(json!({"id":"gone","threadId":"t","deletedAt":2.0}));
         assert!(!is_retired(&live, &settled));
         assert!(is_retired(&never_started, &settled));
         assert!(is_retired(&settled_tombstone, &settled));
@@ -1272,7 +1265,7 @@ mod tests {
             ("owed", json!(6.0)),
             ("claude-done", json!(7.0)),
         ] {
-            let actor = AgentRecord::from_value(json!({"accountKey":"default",
+            let actor = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
                 "id":id, "rootId":id, "parentId":null,
                 "name":"Tombstone fixture", "epoch":0, "status":"idle",
                 "accountHistory":[], "provider":if id.starts_with("claude") { "claude" } else { "codex" },
@@ -1363,21 +1356,11 @@ mod tests {
             &mut row_ids,
             vec![
                 (1, None),
-                (
-                    2,
-                    Some(typed_actor(
-                        json!({"id":"b","deletedAt":"2026-10-18T00:00:00Z"}),
-                    )),
-                ),
+                (2, Some(typed_actor(json!({"id":"b","deletedAt":1.0})))),
             ],
         );
         assert_eq!(row_ids, vec![2]);
-        assert_eq!(
-            actors,
-            vec![typed_actor(
-                json!({"id":"b","deletedAt":"2026-10-18T00:00:00Z"})
-            )]
-        );
+        assert_eq!(actors, vec![typed_actor(json!({"id":"b","deletedAt":1.0}))]);
     }
 
     #[test]
@@ -1402,7 +1385,7 @@ mod tests {
         let root = tempdir().expect("temporary store");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         for id in ["row-agent-a", "row-agent-b"] {
-            let actor = AgentRecord::from_value(json!({"accountKey":"default",
+            let actor = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
                 "id":id, "rootId":id, "parentId":null,
                 "name":"Row fixture", "epoch":0, "status":"running",
                 "accountHistory":[], "provider":"codex", "threadId":id,
@@ -1797,7 +1780,7 @@ mod tests {
         }
         let accounts = Arc::new(AccountDriver::open(&account_path).expect("account driver"));
         let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
-        let agent = json!({"accountKey":"default",
+        let agent = json!({"compactions":0,"accountKey":"default",
             "id": "history-agent", "rootId": "history-agent", "parentId": null,
             "name": "History fixture", "epoch": 0, "status": "running",
             "accountHistory": [], "provider": "codex",
@@ -1864,7 +1847,7 @@ mod tests {
         let attempts_before_failure = wake.step_attempts.load(Ordering::Acquire);
         let completions_before_failure = wake.step_completions.load(Ordering::Acquire);
 
-        let second_agent = AgentRecord::from_value(json!({"accountKey":"default",
+        let second_agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
             "id": "history-agent-after-recovery", "rootId": "history-agent-after-recovery",
             "parentId": null, "name": "History recovery fixture", "epoch": 0,
             "status": "running", "accountHistory": [], "provider": "codex",
@@ -1968,7 +1951,7 @@ mod tests {
         .expect("fixture account registry");
         let accounts = Arc::new(AccountDriver::open(&account_path).expect("account driver"));
         let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
-        let agent = json!({
+        let agent = json!({"compactions":0,
             "id": "history-agent", "rootId": "history-agent", "parentId": null,
             "name": "History fixture", "epoch": 0, "status": "running",
             "accountKey": "default", "accountHistory": [], "provider": "codex",
@@ -2085,7 +2068,7 @@ mod tests {
         .expect("fixture account registry");
         let accounts = Arc::new(AccountDriver::open(&account_path).expect("account driver"));
         let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
-        let agent = json!({
+        let agent = json!({"compactions":0,
             "id": "history-agent", "rootId": "history-agent", "parentId": null,
             "name": "History fixture", "epoch": 0, "status": "running",
             "accountKey": "login-removed", "accountHistory": [], "provider": "codex",
