@@ -1,3 +1,6 @@
+#[cfg(test)]
+extern crate studio_test_deps;
+
 pub mod account_registry;
 pub mod agent_columns;
 pub mod agent_volatile;

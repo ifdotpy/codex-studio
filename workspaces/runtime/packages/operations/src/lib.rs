@@ -4,6 +4,9 @@
 //! compare [`Decision::expected_revision`] in the same transaction that stores
 //! [`Decision::next_state`] and its [`EffectIntent`] values.
 
+#[cfg(test)]
+extern crate studio_test_deps;
+
 mod reservation;
 mod settlement;
 

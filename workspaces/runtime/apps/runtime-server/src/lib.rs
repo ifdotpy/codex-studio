@@ -1,5 +1,8 @@
 //! Reusable composition of server account workers and host provider ports.
 
+#[cfg(test)]
+extern crate studio_test_deps;
+
 #[cfg(unix)]
 pub mod account_registry;
 pub mod handover;

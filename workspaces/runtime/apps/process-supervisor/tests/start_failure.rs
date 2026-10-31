@@ -3,8 +3,7 @@
 //! report blocked recovery, and a later open of the same handle proceeds.
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 #![allow(clippy::unwrap_used)]
-#[path = "../../../packages/runtime-process/tests/support/mod.rs"]
-mod support;
+use crate::process_support as support;
 use studio_runtime_process::HealthRequest;
 use studio_runtime_store::supervisor_journal::{START_FAILED_REASON, SupervisorJournal};
 use support::*;

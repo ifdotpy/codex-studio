@@ -55,3 +55,5 @@ pub(crate) mod multi_server_fixtures;
 pub(crate) mod agent_view_fixtures;
 
 mod project_deletion;
+
+extern crate studio_test_deps;
