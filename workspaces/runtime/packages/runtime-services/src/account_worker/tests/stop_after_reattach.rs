@@ -233,7 +233,16 @@ async fn ending_after_worker_reattach_ends_the_turn_work(ending: Ending) {
     stop.await.unwrap().expect("the action commits");
 
     let record = state.record().await;
-    assert_eq!(record["status"], "paused", "{record}");
+    // A stop only interrupts the turn; a delete also pauses the chat.
+    assert_eq!(
+        record["status"],
+        if ending == Ending::Stop {
+            "running"
+        } else {
+            "paused"
+        },
+        "{record}"
+    );
     assert_eq!(
         studio_runtime_store::truthy(record.get("deletedAt")),
         ending == Ending::Delete,
@@ -477,7 +486,7 @@ async fn stop_while_a_retained_provider_has_no_worker_ends_its_turn_once(window:
     ));
     ports
         .execute(
-            &Action::Stop {
+            &Action::Pause {
                 target: state.agent.clone(),
                 descendants: false,
                 reason: None,
@@ -603,7 +612,7 @@ async fn proven_unsent_interrupt_reuses_stop_identity_after_reattach() {
         account_session(&state, first_worker.retained_session()),
         None,
     ));
-    let action = Action::Stop {
+    let action = Action::Pause {
         target: state.agent.clone(),
         descendants: false,
         reason: None,
@@ -674,7 +683,7 @@ async fn stop_interrupt_with_a_lost_reply_is_not_sent_again_after_reattach() {
         account_session(&state, first_worker.retained_session()),
         None,
     ));
-    let action = Action::Stop {
+    let action = Action::Pause {
         target: state.agent.clone(),
         descendants: false,
         reason: None,

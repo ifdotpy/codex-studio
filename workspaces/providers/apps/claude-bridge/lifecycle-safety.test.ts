@@ -1,5 +1,4 @@
 import { messageIndex } from "./history-index.ts";
-import { unusedFileControls } from "./testing/control-fixture.ts";
 import type { ControlDependencies } from "./controls.ts";
 import assert from "node:assert/strict";
 import type { Session, Turn, Item } from "./session-state.ts";
@@ -12,7 +11,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { rollbackBoundary, forkAtTurn, rollbackSession } from "./controls.ts";
+import { forkAtTurn } from "./controls.ts";
 import { nativeInputIds } from "./input-messages.ts";
 import { inputHistoryOutcome } from "./history-index.ts";
 import { readNativeHistory } from "./native-history.ts";
@@ -65,46 +64,6 @@ const messages = () => [
   message("assistant", "a2"),
 ];
 
-test("rollback removes the whole composite input", () => {
-  expect(rollbackBoundary(turns(), messageIndex(messages()), "final2")).toEqual(
-    {
-      index: 1,
-      end: 2,
-      upToMessageId: "a1",
-    },
-  );
-});
-
-test.each([
-  [
-    "missing prefix",
-    [
-      message("user", "u1"),
-      message("assistant", "a1"),
-      message("user", "final2"),
-    ],
-  ],
-  [
-    "reversed parts",
-    [
-      message("user", "u1"),
-      message("user", "final2"),
-      message("user", "prefix2"),
-    ],
-  ],
-  ["duplicate part", [...messages(), message("user", "prefix2")]],
-  [
-    "foreign subagent part",
-    messages().map((row) =>
-      row.uuid === "prefix2" ? { ...row, parent_agent_id: "agent" } : row,
-    ),
-  ],
-])("rollback refuses %s", (_name, rows) => {
-  expect(() => rollbackBoundary(turns(), messageIndex(rows), "final2")).toThrow(
-    /boundary/,
-  );
-});
-
 test("fork stops before the next composite prefix and remaps retained parts", async () => {
   const source: Session = {
     id: "source",
@@ -114,7 +73,6 @@ test("fork stops before the next composite prefix and remaps retained parts", as
   };
   const fork = vi.fn(async () => ({ sessionId: "target" }));
   const deps = {
-    ...unusedFileControls,
     persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
     forkSession: fork,
     getHistoryIndex: vi.fn(async (id: string) =>
@@ -393,56 +351,6 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
   },
 );
 
-test("rollback remaps every retained composite part and preserves checkpoint identity", async () => {
-  const sourceTurns = turns();
-  sourceTurns[0] = {
-    id: "u1",
-    status: "completed",
-    nativeMessageId: "u1",
-    fileCheckpointMessageId: "u1",
-    items: [
-      { type: "userMessage", nativeId: "u1", nativeIds: ["prefix1", "u1"] },
-    ],
-  };
-  const sourceMessages = [message("user", "prefix1"), ...messages()];
-  const session: Session = {
-    id: "source",
-    cwd: "/project",
-    nativeId: "native",
-    started: true,
-    turns: sourceTurns,
-  };
-  const fork = vi.fn(async () => ({ sessionId: "target" }));
-  await rollbackSession(
-    session,
-    { requestId: "rollback", turnId: "final2" },
-    {
-      ...unusedFileControls,
-      persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
-      forkSession: fork,
-      getHistoryIndex: async (id: string) =>
-        messageIndex(
-          id === "native"
-            ? sourceMessages
-            : sourceMessages
-                .slice(0, 3)
-                .map((row, i) => ({ ...row, uuid: `fork${i}` })),
-        ),
-    },
-  );
-  expect(fork).toHaveBeenCalledWith("native", {
-    dir: "/project",
-    upToMessageId: "a1",
-  });
-  expect(session.turns[0]?.nativeMessageId).toBe("fork0");
-  expect(session.turns[0]?.items[0]?.nativeIds).toEqual(["fork0", "fork1"]);
-  expect(session.turns[0]?.items[0]?.nativeId).toBe("fork1");
-  expect(session.turns[0]?.fileCheckpointMessageId).toBeUndefined();
-  expect(session.historyBranches?.[0]?.turns[0]?.fileCheckpointMessageId).toBe(
-    "u1",
-  );
-});
-
 test.each(["direct", "timer", "success"])(
   "real bridge finalization has one outcome: %s",
   async (mode) => {
@@ -536,49 +444,6 @@ test.each(["direct", "timer", "success"])(
   },
 );
 
-test.each(["not_applied", "cancelled"])(
-  "rollback preserves an unapplied steer receipt: %s",
-  async (status) => {
-    const session: Session = {
-      id: "source",
-      cwd: "/project",
-      started: true,
-      turns: turns(),
-    };
-    assert.ok(session.turns[0]);
-    session.turns[0].items = [
-      { type: "userMessage", nativeId: "u1" },
-      {
-        type: "userMessage",
-        nativeId: "unread",
-        delivery: "steer",
-        deliveryStatus: status,
-      },
-    ];
-    const forkSession = vi.fn(async () => ({ sessionId: "target" }));
-    await rollbackSession(
-      session,
-      { requestId: "rollback", turnId: "final2" },
-      {
-        ...unusedFileControls,
-        persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
-        forkSession,
-        getHistoryIndex: async (id: string) =>
-          messageIndex(
-            id === "source"
-              ? messages()
-              : messages()
-                  .slice(0, 2)
-                  .map((row, i) => ({ ...row, uuid: `fork${i}` })),
-          ),
-      },
-    );
-    expect(forkSession).toHaveBeenCalledTimes(1);
-    expect(session.controlRequests?.rollback?.status).toBe("completed");
-    expect(session.turns[0]?.items[1]?.deliveryStatus).toBe(status);
-  },
-);
-
 test("fork accepts the authoritative boundary of a legacy remapped turn", async () => {
   const source: Session = {
     id: "source",
@@ -597,7 +462,6 @@ test("fork accepts the authoritative boundary of a legacy remapped turn", async 
     source,
     {},
     {
-      ...unusedFileControls,
       persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
       forkSession: async () => ({ sessionId: "target" }),
       getHistoryIndex: async (id: string) =>
@@ -670,7 +534,6 @@ test("a legacy delivered steer without provenance fails before native fork submi
       source,
       {},
       {
-        ...unusedFileControls,
         persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
         forkSession,
         getHistoryIndex: async (id: string) =>
@@ -801,13 +664,9 @@ test.each([
   ).toBe("unknown");
 });
 
-test.each(
-  ["fork", "rollback"].flatMap((operation) =>
-    ["delivered", "submitted"].map((status) => [operation, status]),
-  ),
-)(
-  "%s refuses retained %s steer without native provenance before mutation",
-  async (operation, status) => {
+test.each(["delivered", "submitted"])(
+  "fork refuses retained %s steer without native provenance before mutation",
+  async (status) => {
     const source: Session = {
       id: "source",
       cwd: "/project",
@@ -826,7 +685,6 @@ test.each(
     ];
     const forkSession = vi.fn(async () => ({ sessionId: "target" }));
     const deps = {
-      ...unusedFileControls,
       persist: vi.fn<ControlDependencies["persist"]>(async () => {}),
       forkSession,
       getHistoryIndex: async (id: string) =>
@@ -839,13 +697,7 @@ test.each(
         ),
     };
     await expect(
-      operation === "fork"
-        ? forkAtTurn(source, { lastTurnId: "u1" }, deps)
-        : rollbackSession(
-            source,
-            { requestId: "rollback", turnId: "final2" },
-            deps,
-          ),
+      forkAtTurn(source, { lastTurnId: "u1" }, deps),
     ).rejects.toThrow(/mapping.*unavailable/);
     expect(forkSession).not.toHaveBeenCalled();
   },

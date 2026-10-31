@@ -379,7 +379,6 @@ impl ProductionLifecyclePorts {
             // in-memory candidate without contacting the provider.
             let agent_id = AgentId::from(request.agent.as_str());
             let ticket = request.ticket.clone();
-            let epoch = request.epoch;
             let persisted =
                 self.store
                     .read_async("runtime-services/lifecycle_effects", move |tx| {
@@ -393,8 +392,7 @@ impl ProductionLifecyclePorts {
                         Ok(interrupt.and_then(|v| v.request_ticket.as_deref())
                             == Some(ticket.as_str())
                             && interrupt.and_then(|v| v.outcome)
-                                == Some(studio_runtime_store::InterruptOutcome::Unknown)
-                            && agent.epoch == epoch.saturating_add(1))
+                                == Some(studio_runtime_store::InterruptOutcome::Unknown))
                     })
                     .await?;
             if !persisted {

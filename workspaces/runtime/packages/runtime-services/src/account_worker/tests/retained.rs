@@ -4359,59 +4359,6 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
 }
 
 #[tokio::test]
-async fn claude_rewind_negative_proof_requires_both_original_identities() {
-    use crate::claude_controls::{
-        ControlError,
-        service::{ControlInvocation, ControlScope, ControlSession},
-    };
-    for (proof_request, proof_turn, accepted) in [
-        ("original", "turn", true),
-        ("other", "turn", false),
-        ("original", "other", false),
-    ] {
-        let state = State::new().await;
-        retained_schema(&state).await;
-        let mut peer = Peer::new();
-        let mut worker = peer.worker(state.bridge.clone()).await;
-        let session = worker.claude_session().unwrap();
-        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-        let scope = ControlScope {
-            agent: state.agent.clone(),
-            epoch: state.epoch.try_into().unwrap(),
-            request_id: Some(root.clone()),
-        };
-        let task = tokio::spawn(async move {
-            session
-                .call_scoped(
-                    scope,
-                    ControlInvocation::Rollback {
-                        thread_id: "fake-thread-0".into(),
-                        request_id: serde_json::from_value(json!("original")).unwrap(),
-                        turn_id: serde_json::from_value(json!("turn")).unwrap(),
-                        restore_files: true,
-                        transport_request_id: root,
-                    },
-                )
-                .await
-        });
-        let request = peer.write("thread/rollback").await;
-        assert_eq!(
-            request["params"],
-            json!({"threadId":"fake-thread-0","requestId":"original","turnId":"turn","restoreFiles":true})
-        );
-        let cursor = peer.frame(json!({"id":request["id"],"error":{"code":-32000,"message":"not applied","data":{"fileRestoreOutcome":"not_applied","requestId":proof_request,"turnId":proof_turn}}})).await;
-        peer.acknowledged(cursor).await;
-        let result = task.await.unwrap();
-        if accepted {
-            assert!(matches!(result, Err(ControlError::RewindNotApplied(_))));
-        } else {
-            assert!(matches!(result, Err(ControlError::RewindRejected(_))));
-        }
-        worker.shutdown().await.unwrap();
-    }
-}
-
-#[tokio::test]
 async fn retained_claude_mutation_waits_while_lightweight_read_can_progress() {
     let state = State::new().await;
     retained_schema(&state).await;

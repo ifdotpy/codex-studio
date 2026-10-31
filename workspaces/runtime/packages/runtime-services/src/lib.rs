@@ -67,6 +67,7 @@ pub mod costs;
 pub mod device_trust;
 pub mod diagnostics;
 pub mod disk_space;
+pub mod edit_turn;
 pub mod entity_publication;
 pub mod event_write;
 pub mod federation;

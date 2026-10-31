@@ -134,7 +134,6 @@ async function runAccountsUi(
             },
           ],
   };
-  let failClaudeRollback = true;
   let failClaudeCommand = true;
   const transferReceipts = new Map<
     string,
@@ -559,24 +558,6 @@ async function runAccountsUi(
           res.statusCode = 503;
           return json({ error: "The command response was lost." });
         }
-        return json({ ok: true });
-      }
-      if (body.action === "rollback") {
-        const boundary = claudeSession.turns.findIndex(
-          (turn) => turn.id === body.turn_id,
-        );
-        if (boundary >= 0)
-          claudeSession.turns = claudeSession.turns.slice(0, boundary);
-        if (failClaudeRollback) {
-          failClaudeRollback = false;
-          claudeSession.controlOperation = {
-            turnId: body.turn_id,
-            requestId: body.request_id,
-          };
-          res.statusCode = 503;
-          return json({ error: "Rollback receipt is not available yet." });
-        }
-        delete claudeSession.controlOperation;
         return json({ ok: true });
       }
       res.statusCode = 400;
@@ -2022,50 +2003,6 @@ async function runAccountsUi(
       commandsSent[0]!.body.request_id,
       commandsSent[2]!.body.request_id,
     );
-    await claudeSettings
-      .getByText("Conversation history", { exact: true })
-      .click();
-    await claudeSettings
-      .getByLabel("First turn to remove", { exact: true })
-      .selectOption("claude-turn-two");
-    await claudeSettings
-      .getByRole("button", { name: "Roll back context", exact: true })
-      .click();
-    await claudeSettings
-      .getByRole("alert")
-      .filter({ hasText: "Rollback receipt is not available yet." })
-      .waitFor();
-    await claudeSettings
-      .getByRole("button", { name: "Roll back context", exact: true })
-      .click();
-    await claudeSettings
-      .locator('option[value="claude-turn-two"]')
-      .waitFor({ state: "detached" });
-    const rollbacks = bodies.filter(
-      (
-        request,
-      ): request is Extract<FixtureRequest, { path: "/api/claude/session" }> =>
-        request.path === "/api/claude/session" &&
-        request.body.action === "rollback",
-    );
-    assert.equal(rollbacks.length, 2);
-    assert.equal(rollbacks[0]!.body.id, claude.id);
-    assert.equal(rollbacks[0]!.body.turn_id, "claude-turn-two");
-    assert.match(rollbacks[0]!.body.request_id!, /^[0-9a-f-]{36}$/);
-    assert.deepEqual(rollbacks[1]!.body, rollbacks[0]!.body);
-    assert.equal(
-      await claudeSettings
-        .getByLabel("First turn to remove", { exact: true })
-        .inputValue(),
-      "",
-    );
-    assert.equal(
-      await claudeSettings
-        .getByRole("button", { name: "Roll back context", exact: true })
-        .isEnabled(),
-      false,
-    );
-
     await closeSettings();
     if (!(await page.locator('[data-chat="started"]').isVisible()))
       await page.getByLabel("Back to chats").click();
@@ -2215,7 +2152,6 @@ async function runAccountsUi(
           "Claude queue cancel request identity",
           "Claude profile update and reopen",
           "Claude session settings and native commands",
-          "Claude rollback error and exact retry receipt",
           "Codex and Claude transfers with exact confirmation retry",
           "archived Claude chat sign-in with active choices filtered",
         ],

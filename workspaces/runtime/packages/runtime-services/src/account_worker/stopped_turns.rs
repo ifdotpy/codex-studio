@@ -514,7 +514,11 @@ fn unsettled_stop(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
         .turn_id
         .as_deref()
         .filter(|turn| !turn.is_empty())?;
-    let epoch = agent.epoch.checked_sub(1)?;
+    // The epoch that ran the turn: a stop that pauses the chat committed the
+    // next one, a stop that only interrupts left it.
+    let epoch = attempt
+        .epoch
+        .filter(|epoch| turn_epoch_matches(*epoch, agent.epoch))?;
     let ended_by_receipt = agent.disconnect_recovery.as_deref().is_some_and(|receipt| {
         receipt.turn_id.as_deref() == Some(turn)
             && receipt
@@ -527,8 +531,6 @@ fn unsettled_stop(agent: &AgentRecord, generation: u64) -> Option<StoppedTurn> {
         || !matches!(interrupt.outcome, Some(studio_runtime_store::InterruptOutcome::Unknown | studio_runtime_store::InterruptOutcome::Unsent))
         || interrupt.generation != Some(generation)
         || attempt.connection_generation != Some(generation)
-        || attempt.epoch != Some(epoch)
-        || agent.auto_wake != Some(false)
         // A delete tombstone clears the turn id; the epoch still names the stop.
         || agent.turn_id.as_deref().is_some_and(|current| current != turn)
         || agent.thread_id.as_deref() != Some(thread)
@@ -563,7 +565,7 @@ fn stopped_turns(
     generation: u64,
 ) -> Result<Vec<StoppedTurn>, studio_runtime_store::StoreError> {
     let mut statement = tx.prepare_cached(
-        "SELECT id FROM runtime_agents WHERE account_key=?1 AND auto_wake=0 AND ((has_disconnect_recovery=1 AND COALESCE(in_flight,0)=0) OR json_extract(record,'$.startAttempt.interrupt.outcome') IN ('unknown','unsent'))",
+        "SELECT id FROM runtime_agents WHERE account_key=?1 AND ((auto_wake=0 AND has_disconnect_recovery=1 AND COALESCE(in_flight,0)=0) OR json_extract(record,'$.startAttempt.interrupt.outcome') IN ('unknown','unsent'))",
     )?;
     let ids = statement
         .query_map([account], |row| row.get::<_, String>(0))?
@@ -625,30 +627,36 @@ fn record(
     Ok(true)
 }
 
+/// A stopped turn ran in the agent's epoch (stop without pause) or in the one
+/// before it (stop with pause).
+fn turn_epoch_matches(turn_epoch: i64, agent_epoch: i64) -> bool {
+    turn_epoch == agent_epoch || turn_epoch.checked_add(1) == Some(agent_epoch)
+}
+
 fn owner_matches(agent: &AgentRecord, turn: &StoppedTurn, generation: u64) -> bool {
-    if turn.epoch.checked_add(1) != Some(agent.epoch) {
-        return false;
-    }
     match &turn.owner {
         Owner::Disconnect { signature } => {
-            agent.disconnect_recovery.as_deref().is_some_and(|value| {
-                value.epoch.as_ref().and_then(|v| v.number().as_i64()) == Some(turn.epoch)
-                    && value.thread_id.as_deref() == Some(turn.thread.as_str())
-                    && value.turn_id.as_deref() == Some(turn.turn.as_str())
-                    && value
-                        .start_attempt
-                        .as_deref()
-                        .and_then(|a| a.connection_generation)
-                        == Some(generation)
-            }) && *signature
-                == studio_runtime_store::sha256_hex(
-                    json!([agent.id.0, turn.epoch, generation, turn.thread, turn.turn])
-                        .to_string()
-                        .as_bytes(),
-                )
+            turn.epoch.checked_add(1) == Some(agent.epoch)
+                && agent.disconnect_recovery.as_deref().is_some_and(|value| {
+                    value.epoch.as_ref().and_then(|v| v.number().as_i64()) == Some(turn.epoch)
+                        && value.thread_id.as_deref() == Some(turn.thread.as_str())
+                        && value.turn_id.as_deref() == Some(turn.turn.as_str())
+                        && value
+                            .start_attempt
+                            .as_deref()
+                            .and_then(|a| a.connection_generation)
+                            == Some(generation)
+                })
+                && *signature
+                    == studio_runtime_store::sha256_hex(
+                        json!([agent.id.0, turn.epoch, generation, turn.thread, turn.turn])
+                            .to_string()
+                            .as_bytes(),
+                    )
         }
         Owner::Stop { ticket, .. } => agent.start_attempt.as_ref().is_some_and(|value| {
-            value.epoch == Some(turn.epoch)
+            turn_epoch_matches(turn.epoch, agent.epoch)
+                && value.epoch == Some(turn.epoch)
                 && value.connection_generation == Some(generation)
                 && value.interrupt.as_ref().is_some_and(|interrupt| {
                     interrupt.request_ticket.as_deref() == Some(ticket.as_str())
@@ -721,4 +729,32 @@ pub(in crate::account_worker) fn settle_stopped_turn(
         outcome.as_str(),
         response,
     )
+}
+
+#[cfg(test)]
+mod stop_epoch_tests {
+    use super::*;
+
+    fn staged(epoch: i64, attempt_epoch: i64) -> AgentRecord {
+        AgentRecord::from_value(json!({
+            "compactions":0,"accountKey":"default","id":"agent","rootId":"agent",
+            "provider":"codex","epoch":epoch,"status":"running","autoWake":true,
+            "inFlight":true,"turnId":"turn","threadId":"thread",
+            "startAttempt":{"id":"attempt","epoch":attempt_epoch,"submitted":true,
+                "turnId":"turn","threadId":"thread","accountKey":"default",
+                "events":["input"],"connectionGeneration":3,
+                "interrupt":{"requestTicket":"lifecycle-interrupt:abc","generation":3,
+                    "threadId":"thread","turnId":"turn","outcome":"unknown"}}
+        }))
+        .expect("agent")
+    }
+
+    #[test]
+    fn an_unsettled_stop_names_the_epoch_that_ran_the_turn() {
+        // A stop that only interrupts leaves the epoch; a pause committed the next one.
+        for (agent_epoch, attempt_epoch, found) in [(4, 4, true), (5, 4, true), (6, 4, false)] {
+            let turn = unsettled_stop(&staged(agent_epoch, attempt_epoch), 3);
+            assert_eq!(turn.map(|turn| turn.epoch), found.then_some(attempt_epoch));
+        }
+    }
 }

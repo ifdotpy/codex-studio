@@ -417,7 +417,7 @@ fn management_snapshot_imposes_no_row_cap() {
 fn managed_interrupt_requires_current_sender_and_descendant_scope() {
     let records: Records = serde_json::from_value(seed()).expect("lifecycle rows");
     let snapshot = ManagementSnapshot::from_records(records).expect("snapshot");
-    let action = |sender_epoch| Action::Stop {
+    let action = |sender_epoch| Action::Pause {
         target: "worker".to_owned(),
         descendants: true,
         reason: None,
@@ -434,7 +434,7 @@ fn managed_interrupt_requires_current_sender_and_descendant_scope() {
             "event-driver/child-stop-notification"
         ))
     ));
-    let foreign = Action::Stop {
+    let foreign = Action::Pause {
         target: "lead".to_owned(),
         descendants: true,
         reason: None,

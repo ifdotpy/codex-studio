@@ -140,15 +140,10 @@ import {
   prepareIdleSummary,
   type IdleSummaryDeps,
 } from "./idle-summary.ts";
-import {
-  prepareFileRestore,
-  verifyFileRestore,
-  fileBackups,
-} from "./file-restore.ts";
+import { fileBackups } from "./file-restore.ts";
 import {
   fileCheckpointOptions,
   fileRestoreReason,
-  rewindSessionFiles,
 } from "./file-checkpoints.ts";
 import { createAccountCheck } from "./account-identity.ts";
 import { readHistoryIndex, verifiedHistoryIndex } from "./history-index.ts";
@@ -194,7 +189,6 @@ import {
 import {
   commandCatalog,
   explicitNativeCommand,
-  rollbackSession,
   forkAtTurn,
 } from "./controls.ts";
 import { z } from "zod";
@@ -3052,7 +3046,6 @@ async function handle(
       "turn/start",
       "turn/steer",
       "thread/fork",
-      "thread/rollback",
       "thread/compact/start",
     ].includes(method)
   )
@@ -3442,26 +3435,6 @@ async function handle(
         }
       }
       return { settings: s.claude } satisfies HandlerResult<typeof method>;
-    }
-
-    case "thread/rollback": {
-      const { method, params: p } = request;
-      const s = await session(p.threadId),
-        active = queries.get(s.id);
-      if (active && (active.turn || active.tasks.size || queryHasInput(active)))
-        throw new Error("Pause Claude before rollback");
-      discardQuery(s.id, active);
-      return rollbackSession(s, p, {
-        persist,
-        forkSession,
-        getHistoryIndex: (id, options) =>
-          verifiedHistoryIndex({ id, cwd: options?.dir ?? s.cwd }),
-        prepareFileRestore: (session, messages, messageId) =>
-          prepareFileRestore(session, messages, messageId, root),
-        verifyFileRestore,
-        rewindFiles: (nativeId, messageId, options) =>
-          rewindSessionFiles(query, settings(s), nativeId, messageId, options),
-      }) satisfies HandlerResult<typeof method>;
     }
 
     case "thread/start": {

@@ -79,7 +79,7 @@ with such input, the bridge closes the CLI and reconciles its final native
 history. A split input is delivered only if every part is recorded; no recorded
 parts proves it unapplied, while partial or unavailable evidence stays unknown.
 The [history index](history-index.ts) owns input identity for stall recovery,
-restart, fork, and rollback. It reads the current native session through SDK
+restart, and fork. It reads the current native session through SDK
 metadata and conversation APIs, and the SDK's typed transcript-store import.
 The import preserves hidden service parts that the conversation API omits;
 each part keeps its original SDK UUID and prompt framing. A pinned complete
@@ -113,7 +113,7 @@ finalizers through that shared path and cancels turn timers before closing the S
 It also disposes the tool watchdog; recovery already waiting on a save or deadline
 stops without further notices, interrupts or terminal effects.
 
-Rollback and fork boundaries use every native part of a composite input in
+Fork boundaries use every native part of a composite input in
 order, beginning at its earliest part. Forked history remaps every retained input
 UUID. File checkpoints keep their own final-message identity and are not carried
 across an unverified fork. Every retained input mapping is checked before a
@@ -145,12 +145,12 @@ has no native input boundary and cannot be selected for a history operation.
 
 Run `node testing/cli-history-witness.ts` from this directory for the installed
 SDK/CLI witness. It uses disposable configuration below the user's cache and a
-local HTTP provider fixture, verifies both composite orders through fork,
-rollback and recovery, and proves clear/resume with three distinct identities.
+local HTTP provider fixture, verifies both composite orders through fork
+and recovery, and proves clear/resume with three distinct identities.
 It makes no real model request and prints its retained evidence directory.
 `node testing/cli-history-compatibility-witness.ts` also checks a local 503 retry
 and a real ToolSearch session with tool references and deferred-tool attachments;
-both must retain exact input coverage through recovery, fork and rollback.
+both must retain exact input coverage through recovery and fork.
 
 The pinned SDK exposes hidden-part provenance only through the alpha
 `importSessionToStore` API. The ordinary non-alpha conversation API filters it
@@ -233,7 +233,7 @@ seed response accounting after a restart. Background responses retain the
 turn that created their parent tool, even after that turn completes. Shutdown
 waits for the SDK consumer within the short shutdown drain deadline, reports remaining gaps,
 and flushes queued notifications before exiting. Every query removal, including
-resume, rollback, settings changes, move import and unsubscribe, uses the same
+resume, settings changes, move import and unsubscribe, uses the same
 cleanup path to report unfinished responses exactly once, even if SDK close is
 stuck. Intentional shutdown leaves an
 unfinished turn in progress for restart reconciliation rather than publishing a

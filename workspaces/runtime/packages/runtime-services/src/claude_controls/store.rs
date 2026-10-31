@@ -108,11 +108,7 @@ impl ControlStorage for StoredControls {
                     }
                     let ticket =
                         serde_json::to_value(&binding).map_err(|_| ControlError::Changed)?;
-                    let mut writes = match snapshot.reserve(
-                        &request,
-                        Repository::pending(tx, request.id())?,
-                        now(),
-                    ) {
+                    let mut writes = match snapshot.reserve(&request, now()) {
                         Ok(writes) => writes,
                         Err(ControlError::Unknown) => {
                             snapshot.check_owned(
@@ -139,7 +135,7 @@ impl ControlStorage for StoredControls {
                         writes.agent["error"] = json!({
                             "message":"Claude control transport changed; inspect workspace recovery"
                         });
-                        Repository::apply(tx, &writes.agent, &writes.operation, &[])?;
+                        Repository::apply(tx, &writes.agent, &writes.operation)?;
                         return Ok(None);
                     }
                     if snapshot
@@ -151,7 +147,7 @@ impl ControlStorage for StoredControls {
                         writes.operation["controlEpoch"] = json!(snapshot.epoch());
                     }
 
-                    Repository::apply(tx, &writes.agent, &writes.operation, &[])?;
+                    Repository::apply(tx, &writes.agent, &writes.operation)?;
                     ControlSnapshot::from_records(writes.agent, Some(writes.operation)).map(Some)
                 })
                 .await?;
@@ -170,7 +166,7 @@ impl ControlStorage for StoredControls {
                 .transaction_with(move |tx| {
                     let current = current(tx, &expected)?;
                     let operation = current.submitted(&request, &proof, now())?;
-                    Repository::apply(tx, &current.raw, &operation, &[])?;
+                    Repository::apply(tx, &current.raw, &operation)?;
                     ControlSnapshot::from_records(current.raw, Some(operation))
                 })
                 .await
@@ -188,7 +184,7 @@ impl ControlStorage for StoredControls {
                 .transaction_with(move |tx| {
                     let current = current(tx, &expected)?;
                     let operation = current.provider_ready(&request, result, now())?;
-                    Repository::apply(tx, &current.raw, &operation, &[])?;
+                    Repository::apply(tx, &current.raw, &operation)?;
                     ControlSnapshot::from_records(current.raw, Some(operation))
                 })
                 .await
@@ -208,7 +204,7 @@ impl ControlStorage for StoredControls {
                 .transaction_with(move |tx| {
                     let current = current(tx, &expected)?;
                     let writes = current.complete(&request, now())?;
-                    Repository::apply(tx, &writes.agent, &writes.operation, &writes.removed)?;
+                    Repository::apply(tx, &writes.agent, &writes.operation)?;
                     Repository::set_final(tx, &request.operation_id(), &ControlOutcome::Ok)?;
                     Ok::<_, ControlError>(writes.result)
                 })
@@ -266,7 +262,7 @@ impl ControlStorage for StoredControls {
                     operation["error"] = json!(if unknown {
                         "Claude control outcome is unknown; inspect workspace recovery"
                     } else if evidence == FailureEvidence::NotApplied {
-                        "Claude file restore failed before native effects"
+                        "Claude action was not applied"
                     } else {
                         "Claude action was not submitted"
                     });
@@ -287,7 +283,7 @@ impl ControlStorage for StoredControls {
                             .ok_or(ControlError::Changed)?
                             .remove("workspaceReservationId");
                     }
-                    Repository::apply(tx, &agent, &operation, &[])?;
+                    Repository::apply(tx, &agent, &operation)?;
                     if !unknown && !matches!(error, ControlError::Unknown | ControlError::NotSent) {
                         Repository::set_final(tx, &op.id, &ControlOutcome::Err(error))?;
                     }

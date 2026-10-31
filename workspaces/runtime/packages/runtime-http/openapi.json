@@ -20553,40 +20553,6 @@
         ],
         "type": "object"
       },
-      "ClaudeRollbackResponse": {
-        "additionalProperties": false,
-        "properties": {
-          "fileResult": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "filesRestored": {
-            "default": false,
-            "type": "boolean"
-          },
-          "nativeId": {
-            "title": "Nativeid",
-            "type": "string"
-          },
-          "removedTurns": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "title": "Removedturns",
-            "type": "integer"
-          },
-          "threadId": {
-            "title": "Threadid",
-            "type": "string"
-          }
-        },
-        "required": [
-          "threadId",
-          "nativeId",
-          "removedTurns"
-        ],
-        "title": "ClaudeRollbackResponse",
-        "type": "object"
-      },
       "ClaudeSessionCommandRequest": {
         "additionalProperties": false,
         "properties": {
@@ -20616,41 +20582,6 @@
           "request_id"
         ],
         "title": "ClaudeSessionCommandRequest",
-        "type": "object"
-      },
-      "ClaudeSessionRollbackRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "const": "rollback",
-            "type": "string"
-          },
-          "id": {
-            "maxLength": 1024,
-            "minLength": 1,
-            "type": "string"
-          },
-          "request_id": {
-            "maxLength": 1024,
-            "minLength": 1,
-            "type": "string"
-          },
-          "restore_files": {
-            "default": false,
-            "type": "boolean"
-          },
-          "turn_id": {
-            "maxLength": 1024,
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "action",
-          "id",
-          "request_id",
-          "turn_id"
-        ],
         "type": "object"
       },
       "ClaudeSessionSettings": {
@@ -69524,9 +69455,6 @@
                     "$ref": "#/components/schemas/ClaudeSessionCommandRequest"
                   },
                   {
-                    "$ref": "#/components/schemas/ClaudeSessionRollbackRequest"
-                  },
-                  {
                     "$ref": "#/components/schemas/ClaudeSessionSettingsRequest"
                   },
                   {
@@ -69550,9 +69478,6 @@
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/ClaudeDeliveryResponse"
-                    },
-                    {
-                      "$ref": "#/components/schemas/ClaudeRollbackResponse"
                     },
                     {
                       "$ref": "#/components/schemas/ClaudeSessionStateResponse"

@@ -1,2 +1,5 @@
 # Build output that new lines take warm from the state that saved it (layr warm caches).
 /target regenerable
+# Dependencies that pnpm install restores. A cache overlay: status skips it and new lines take it warm.
+# No slash, so it matches at any depth (workspace packages too).
+node_modules regenerable

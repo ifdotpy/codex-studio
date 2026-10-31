@@ -83,8 +83,21 @@ fn template(root: &Path) {
     }
 }
 fn cases() -> Vec<Value> {
-    serde_json::from_str(include_str!("wave7_p10_lifecycle/cases.json"))
-        .expect("frozen lifecycle cases")
+    let mut cases: Vec<Value> =
+        serde_json::from_str(include_str!("wave7_p10_lifecycle/cases.json"))
+            .expect("frozen lifecycle cases");
+    // The frozen corpus names the former stop, which is now the `pause` action.
+    for case in &mut cases {
+        if case["action"]["action"] == "stop" {
+            case["action"]["action"] = json!("pause");
+        }
+        for action in case["actions"].as_array_mut().into_iter().flatten() {
+            if action["action"] == "stop" {
+                action["action"] = json!("pause");
+            }
+        }
+    }
+    cases
 }
 async fn seed(store: &RuntimeStore, records: Records) {
     store.transaction(move |tx| {
@@ -331,7 +344,7 @@ async fn stale_voice_stop_handoff(unknown: bool) {
     );
     ports
         .execute(
-            &Action::Stop {
+            &Action::Pause {
                 target: "lead".to_owned(),
                 descendants: false,
                 reason: None,
@@ -460,7 +473,7 @@ async fn production_stop_cancels_usage_and_capacity_continuations_in_store() {
 
     ports
         .execute(
-            &Action::Stop {
+            &Action::Pause {
                 target: "lead".to_owned(),
                 descendants: false,
                 reason: None,

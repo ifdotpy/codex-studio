@@ -1,9 +1,4 @@
-import type {
-  Options,
-  Query,
-  SDKUserMessage,
-  query as sdkQuery,
-} from "@anthropic-ai/claude-agent-sdk";
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import type { Session, Turn } from "./session-state.ts";
 // Native SDK checkpoints cover edits made through Claude's file tools.
 export function fileCheckpointOptions<T extends Pick<Options, "env">>(
@@ -51,44 +46,4 @@ export function fileRestoreReason(
   if (!checkpointSourceMatches(session, turn))
     return "The file checkpoint belongs to another session or workspace.";
   return null;
-}
-
-// No prompt enters this query. It resumes only to call the SDK control method.
-export async function rewindSessionFiles(
-  query: (
-    ...args: Parameters<typeof sdkQuery>
-  ) => Pick<Query, "rewindFiles" | "close">,
-  options: Options,
-  nativeId: string,
-  messageId: string,
-  rewindOptions: Parameters<Query["rewindFiles"]>[1],
-) {
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => (release = resolve));
-  // eslint-disable-next-line require-yield -- This control-only query intentionally sends no prompt.
-  async function* prompt(): AsyncGenerator<SDKUserMessage> {
-    await held;
-  }
-  const abortController = new AbortController();
-  const timer = setTimeout(() => abortController.abort(), 20_000);
-  let q;
-  try {
-    q = query({
-      prompt: prompt(),
-      options: fileCheckpointOptions({
-        ...options,
-        resume: nativeId,
-        abortController,
-        settings: { disableAllHooks: true },
-        mcpServers: {},
-        strictMcpConfig: true,
-        tools: [],
-      }),
-    });
-    return await q.rewindFiles(messageId, rewindOptions);
-  } finally {
-    clearTimeout(timer);
-    release();
-    q?.close();
-  }
 }

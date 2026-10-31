@@ -60,9 +60,6 @@ impl ClaudeControlRepository {
         ids.sort();
         Ok(ids)
     }
-    pub fn pending(tx: &Transaction<'_>, agent: &str) -> StoreResult<bool> {
-        Ok(tx.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status IN ('pending','reserved','dispatching','uncertain'))",[agent],|r|r.get(0))?)
-    }
     pub fn set_final(
         tx: &Transaction<'_>,
         id: &str,
@@ -75,12 +72,7 @@ impl ClaudeControlRepository {
         )?;
         Ok(())
     }
-    pub fn apply(
-        tx: &Transaction<'_>,
-        agent: &Value,
-        operation: &Value,
-        removed: &[String],
-    ) -> StoreResult<()> {
+    pub fn apply(tx: &Transaction<'_>, agent: &Value, operation: &Value) -> StoreResult<()> {
         validate(operation)?;
         let actor = AgentRecord::from_value(agent.clone())?;
         let id = operation
@@ -89,28 +81,6 @@ impl ClaudeControlRepository {
             .ok_or_else(|| invalid("operation"))?;
         if operation.get("agent") != agent.get("id") {
             return Err(invalid(id));
-        }
-        if !removed.is_empty() {
-            use crate::{RecordOrder, RecordPredicate, Table, TranscriptItemRecord};
-            let turns: std::collections::BTreeSet<_> = removed.iter().map(String::as_str).collect();
-            for item in Table::<TranscriptItemRecord>::new(tx).list_matching(
-                Some(RecordPredicate::PhysicalAgentEquals(&actor.id.0)),
-                RecordOrder::RowId,
-            )? {
-                let mut item = item;
-                if item
-                    .turn_id()
-                    .value()
-                    .map(String::as_str)
-                    .is_some_and(|turn| turns.contains(turn))
-                    && item.after_restore().is_none_or(str::is_empty)
-                {
-                    item.set_after_restore(id.to_owned());
-                    if !Table::<TranscriptItemRecord>::new(tx).update(&item)? {
-                        return Err(invalid("transcript"));
-                    }
-                }
-            }
         }
         AgentRepository::put(tx, &actor)?;
         tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![id,operation.to_string()])?;
