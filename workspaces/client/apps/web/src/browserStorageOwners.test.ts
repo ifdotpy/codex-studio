@@ -16,8 +16,6 @@ const allowed: Record<string, string> = {
     "request identity of a pending MCP action, kept for a lost reply",
   "components/shell/MonitorRestart.tsx":
     "request body of a pending monitor restart, kept for a lost reply",
-  "components/shell/workspacePanelWidth.ts":
-    "workspace panel width of this device",
   "components/sidebar/SidebarFrame.tsx": "sidebar width of this device",
   "native/importBrowserProfile.ts":
     "one-time import of the old browser profile into the desktop app",

@@ -260,18 +260,6 @@
     "callee": "localStorage.getItem"
   },
   {
-    "file": "components/shell/workspacePanelWidth.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "components/shell/workspacePanelWidth.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/shell/workspacePanelWidth.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
     "file": "components/sidebar/FleetIndicator.spec.ts",
     "callee": "localStorage.setItem"
   },
