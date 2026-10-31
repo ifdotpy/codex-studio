@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+repository_root="$(git rev-parse --show-toplevel)"
+subject="$(head -n 1 "$1")"
+exec node "$repository_root/workspaces/tooling/apps/repository-checks/conventional-commit.ts" "$subject"

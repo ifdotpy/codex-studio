@@ -131,6 +131,7 @@ test.describe("legacy schema mismatch", () => {
       {
         hash: string;
         sessionId: string;
+        workspaceId: string;
         body: string;
         pendingChange: PendingChange | undefined;
       }
@@ -157,6 +158,7 @@ test.describe("legacy schema mismatch", () => {
           protocol3SseEvent("session", {
             sessionId: frame.sessionId,
             routes: [],
+            workspaceId: frame.workspaceId,
           } satisfies components["schemas"]["SyncSessionEvent"]) + frame.body,
           { hash: frame.hash },
         ),
@@ -402,6 +404,7 @@ test.describe("legacy schema mismatch", () => {
         streamFrames.set(streamPath, {
           hash: activeHash,
           sessionId: randomUUID(),
+          workspaceId: workspaceId ?? "fixture",
           body,
           pendingChange,
         });

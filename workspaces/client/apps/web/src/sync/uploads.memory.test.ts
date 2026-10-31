@@ -1,0 +1,70 @@
+import { afterEach, expect, it, vi } from "vitest";
+import { createUploads, type UploadOptions } from "./uploads";
+
+afterEach(() => vi.unstubAllGlobals());
+
+it("keeps queued files only for the lifetime of their owner", async () => {
+  const open = vi.fn(() => {
+    throw new Error("unexpected browser persistence");
+  });
+  vi.stubGlobal("indexedDB", { open });
+  vi.stubGlobal("window", new EventTarget());
+  vi.stubGlobal("BroadcastChannel", undefined);
+  const options = {
+    databaseName: "test",
+    storage: { getItem: () => null },
+    syncDatabase: async () => ({ workspaceId: "workspace" }),
+  } as unknown as UploadOptions;
+  const first = createUploads(options);
+  await first.queueUploads(
+    "state",
+    "agent",
+    [new File(["a"], "a.txt")],
+    "workspace",
+  );
+  expect(await first.pendingUploads("state")).toHaveLength(1);
+  expect(await createUploads(options).pendingUploads("state")).toEqual([]);
+  expect(open).not.toHaveBeenCalled();
+});
+
+it("does not restore an upload removed while its request is in flight", async () => {
+  vi.stubGlobal("window", new EventTarget());
+  vi.stubGlobal("BroadcastChannel", undefined);
+  vi.stubGlobal(
+    "FileReader",
+    class {
+      result = "data:text/plain;base64,YQ==";
+      onload?: () => void;
+      readAsDataURL() {
+        this.onload?.();
+      }
+    },
+  );
+  let resolve!: (asset: { id: string; name: string; path: string }) => void;
+  const response = new Promise<{ id: string; name: string; path: string }>(
+    (done) => {
+      resolve = done;
+    },
+  );
+  const post = vi.fn(() => response);
+  const options = {
+    databaseName: "test",
+    syncDatabase: async () => ({ workspaceId: "workspace" }),
+    syncGet: async () => ({ workspaceId: "workspace" }),
+    refreshSession: async () => ({ token: "token" }),
+    syncPost: post,
+  } as unknown as UploadOptions;
+  const uploads = createUploads(options);
+  const [row] = await uploads.queueUploads(
+    "state",
+    "agent",
+    [new File(["a"], "a.txt")],
+    "workspace",
+  );
+  const delivery = uploads.deliverUpload(row!);
+  await vi.waitFor(() => expect(post).toHaveBeenCalled());
+  await uploads.removeUpload(row!.id);
+  resolve({ id: row!.id, name: row!.name, path: "path" });
+  expect(await delivery).toBeNull();
+  expect(await uploads.pendingUploads("state")).toEqual([]);
+});

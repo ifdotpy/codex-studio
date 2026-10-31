@@ -101,7 +101,7 @@ const PROVIDER_COLUMN: AgentColumn =
 
 /// The indexed agent fields; see the module documentation. Changing this list
 /// changes the table and needs a new dated migration.
-pub const AGENT_COLUMNS: [AgentColumn; 37] = [
+pub const AGENT_COLUMNS: [AgentColumn; 35] = [
     column("root_id", "TEXT", "record->>'$.rootId'", ""),
     column("parent_id", "TEXT", "record->>'$.parentId'", ""),
     column("status", "TEXT", "record->>'$.status'", ""),
@@ -124,7 +124,6 @@ pub const AGENT_COLUMNS: [AgentColumn; 37] = [
         "",
     ),
     column("in_flight", "INTEGER", "record->>'$.inFlight'", ""),
-    column("auto_wake", "INTEGER", "record->>'$.autoWake'", ""),
     column("remote_worker", "", "record->>'$.remoteWorker'", ""),
     column("remote_anchor", "", "record->>'$.remoteAnchor'", ""),
     column(
@@ -139,7 +138,6 @@ pub const AGENT_COLUMNS: [AgentColumn; 37] = [
         "record->>'$.steerRejectedTurnId'",
         "",
     ),
-    column("execution_mode", "TEXT", "record->>'$.executionMode'", ""),
     column(
         "native_tool_refresh_id",
         "TEXT",
@@ -517,23 +515,15 @@ mod tests {
                 Some(agent.clone())
             );
         }
-        let lead: (String, String, i64, i64, String) = reader
+        let lead: (String, String, i64, String) = reader
             .query_row(
-                "SELECT account_key,provider,in_flight,auto_wake,cwd \
+                "SELECT account_key,provider,in_flight,cwd \
                  FROM runtime_agents WHERE id='lead'",
                 [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .expect("lead columns");
-        assert_eq!(lead, ("acct".into(), "claude".into(), 1, 1, "/w".into()));
+        assert_eq!(lead, ("acct".into(), "claude".into(), 1, "/w".into()));
         let generation: i64 = reader
             .query_row(
                 "SELECT attempt_connection_generation FROM turns WHERE chat='lead' AND attempt IS NOT NULL",
@@ -721,7 +711,8 @@ mod tests {
                 .query_map([], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
             let old_table = table_sql("runtime_agents_legacy_start_fixture").replace(
                 "record TEXT NOT NULL",
-                "start_attempt_submitted AS (record->>'$.startAttempt.submitted') STORED,\
+                "auto_wake AS (record->>'$.autoWake') STORED,\
+                 start_attempt_submitted AS (record->>'$.startAttempt.submitted') STORED,\
                  start_attempt_connection_generation AS (record->>'$.startAttempt.connectionGeneration') STORED,\
                  start_attempt_active_at_reservation AS (record->>'$.startAttempt.activeAtReservation') STORED,record TEXT NOT NULL",
             );
@@ -798,16 +789,14 @@ mod tests {
             .expect("agent inserts");
         connection
             .execute(
-                "UPDATE runtime_agents SET record=json_set(record,'$.status','queued','$.autoWake',json('true')) WHERE id='a'",
+                "UPDATE runtime_agents SET record=json_set(record,'$.status','queued') WHERE id='a'",
                 [],
             )
             .expect("agent updates");
-        let columns: (String, i64) = connection
-            .query_row("SELECT status,auto_wake FROM runtime_agents", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+        let status: String = connection
+            .query_row("SELECT status FROM runtime_agents", [], |row| row.get(0))
             .expect("columns");
-        assert_eq!(columns, ("queued".into(), 1));
+        assert_eq!(status, "queued");
         connection
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES('b','{bad json')",

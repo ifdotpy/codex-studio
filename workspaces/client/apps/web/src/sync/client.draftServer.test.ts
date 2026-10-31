@@ -1,3 +1,4 @@
+import { EventHistory } from "./eventHistory.testHelper";
 import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import { DRAFT_SERVER_READY_TIMEOUT_MS, until } from "./draftServerFixture";
@@ -10,7 +11,6 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import fixture from "../../../../contracts/draft-replication.json";
-import { firstValueFrom, ReplaySubject, filter, skip } from "rxjs";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 import type {
   ResourceChangeEvent,
@@ -213,7 +213,7 @@ it.each(fixture.orders)(
     expect(response.ok).toBe(true);
     const reader = response.body!.getReader();
     const frames: ResourceChangeEvent[] = [];
-    const received = new ReplaySubject<ResourceChangeEvent>();
+    const received = new EventHistory<ResourceChangeEvent>();
     let forwardFrames = false;
     const pump = (async () => {
       let buffer = "";
@@ -252,7 +252,7 @@ it.each(fixture.orders)(
       });
     }
     try {
-      deliver(await firstValueFrom(received));
+      deliver(await received.wait());
       await pulled.promise;
       assert.ok(mocks.replications[0] != null);
       await mocks.replications[0].awaitInSync();
@@ -279,18 +279,14 @@ it.each(fixture.orders)(
       await edit(2); // A local edit arrives while the first HTTP result is held.
       const echo = async () =>
         deliver(
-          await firstValueFrom(
-            received.pipe(
-              filter(
-                (frame) =>
-                  !!required(
-                    frame.resourceVersions[0],
-                  ).draftChanges?.documents.some((doc) => doc.id === id),
-              ),
-            ),
+          await received.wait(
+            (frame) =>
+              !!required(
+                frame.resourceVersions[0],
+              ).draftChanges?.documents.some((doc) => doc.id === id),
           ),
         );
-      await firstValueFrom(received.pipe(skip(1)));
+      await received.wait(() => true, 1);
       const acknowledged = barrier<void>();
       const subscription = mocks.replications[0].sent$.subscribe(() =>
         acknowledged.resolve(),
@@ -339,23 +335,19 @@ it.each(fixture.orders)(
       for (const frame of frames.slice(1)) deliver(frame);
       const expectedText =
         order === "second-writer" ? "other writer" : "edit-3";
-      await firstValueFrom(
-        received.pipe(
-          filter(
-            (frame) =>
-              !!required(
-                frame.resourceVersions[0],
-              ).draftChanges?.documents.some((doc) => {
-                if (doc.id !== id) return false;
-                const payload = JSON.parse(doc.payload);
-                return (
-                  payload.text === expectedText &&
-                  (order !== "second-writer" ||
-                    payload.alternatives?.includes("edit-3"))
-                );
-              }),
+      await received.wait(
+        (frame) =>
+          !!required(frame.resourceVersions[0]).draftChanges?.documents.some(
+            (doc) => {
+              if (doc.id !== id) return false;
+              const payload = JSON.parse(doc.payload);
+              return (
+                payload.text === expectedText &&
+                (order !== "second-writer" ||
+                  payload.alternatives?.includes("edit-3"))
+              );
+            },
           ),
-        ),
       );
       await mocks.replications[0].awaitInSync();
       const page = await request("/api/sync/pull?scope=drafts");

@@ -400,7 +400,9 @@ pub fn tick(s: &Snapshot, limits: &LimitsObservation, now: f64) -> Result<Decisi
         r.update(U::DueAt(Some(due)));
         r.update(U::PlannedAt(reset.filter(|t| *t > now)));
         r.update(U::ResetAt(reset));
-        r.update(U::LastCheckedAt(limits.raw.get("at").cloned()));
+        r.update(U::LastCheckedAt(
+            limits.raw.get("at").and_then(Value::as_number).cloned(),
+        ));
         r.update(U::WaitingForAuth(auth));
         r.update(U::Reason(
             if auth {

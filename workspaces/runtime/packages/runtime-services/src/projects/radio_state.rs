@@ -23,7 +23,7 @@ pub(super) struct Active {
     pub(super) extra: Map<String, Value>,
 }
 #[derive(Clone, Deserialize, Serialize, PartialEq)]
-pub(super) struct Radio {
+pub(crate) struct Radio {
     #[serde(rename = "teamId")]
     pub(super) team_id: String,
     pub(super) revision: u64,

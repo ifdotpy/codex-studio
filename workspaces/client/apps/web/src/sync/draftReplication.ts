@@ -1,5 +1,4 @@
 import { LocalCollection, type Row } from "./localCollection";
-import type { UnsentStore } from "./thinCache";
 
 /**
  * Drafts follow the server. The page keeps a draft only while the server has
@@ -39,20 +38,12 @@ const sameState = (a: Row, b: Row) =>
   a.payload === b.payload && (a._deleted === true) === (b._deleted === true);
 
 /** The drafts collection with its server state and its unsent rows. */
-export function createDraftStore(
-  name: string,
-  unsent: UnsentStore,
-  handler: ConflictHandler,
-) {
+export function createDraftStore(name: string, handler: ConflictHandler) {
   const masters = new Map<string, Row>();
   const pending = new Map<string, Row>();
   const collection = new LocalCollection(name, {
     durable: {
       async put(row) {
-        await unsent.put("drafts", {
-          row,
-          assumed: masters.get(row.id) ?? null,
-        });
         pending.set(row.id, row);
       },
     },
@@ -75,7 +66,6 @@ export function createDraftStore(
 
   async function settle(id: string) {
     pending.delete(id);
-    await unsent.remove("drafts", id);
   }
 
   /** Take a row from the server, keeping an unsent local edit on top of it. */
@@ -98,24 +88,12 @@ export function createDraftStore(
       return writeMaster(master);
     }
     pending.set(master.id, resolved);
-    await unsent.put("drafts", { row: resolved, assumed: master });
     await writeMaster(resolved);
-  }
-
-  /** Put back the unsent drafts that an earlier page left on this device. */
-  async function restore() {
-    const saved = await unsent.load("drafts");
-    await collection.hydrate(saved.map(({ row }) => row));
-    for (const { row, assumed } of saved) {
-      pending.set(row.id, row);
-      if (assumed) masters.set(row.id, assumed);
-    }
   }
 
   return {
     collection,
     applyMaster,
-    restore,
     pendingRows(): PushRow[] {
       return [...pending.values()].map((row) => {
         const assumed = masters.get(row.id);
@@ -219,6 +197,7 @@ export function createDraftReplication(
   const push = (): Promise<void> => {
     if (pushing) {
       pushAgain = true;
+      void options.push.waitBeforePersist?.();
       return pushing;
     }
     clearTimeout(pushRetry);

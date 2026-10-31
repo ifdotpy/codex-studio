@@ -3,7 +3,7 @@ import { SubscriptionReplyKind } from "../generated/api";
 import { mergeTerminalOutput } from "./subscriptions/terminalOutput";
 import { SUBSCRIPTION_ENTITY_SCOPES } from "../generated/subscriptionEntities";
 import { cursorDocumentId, parseAppliedCursor } from "./subscriptions/cursors";
-import { serverDatabaseSuffix, serverViewId } from "../servers/environment";
+import { serverDatabaseSuffix } from "../servers/environment";
 
 import {
   SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
@@ -21,17 +21,11 @@ import {
 } from "./draftReplication";
 
 import {
-  createProjectionCache,
   createUnsentStore,
   indexedDbKeyValue,
   outboxSettled,
-  pruneOtherSchemas,
   type KeyValue,
 } from "./thinCache";
-
-import { migrateLegacyStores } from "./legacyStores";
-
-import { frontendIsLocal } from "./localFrontend";
 
 import {
   applyEntityRows,
@@ -50,7 +44,6 @@ import {
   save,
   setWorkspace,
   isApiSchemaMismatch,
-  onMatchingApiSchemaResponse,
 } from "../api";
 
 import type { SyncEntityPayload } from "../generated/api";
@@ -108,7 +101,7 @@ export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 
 export type SyncDocument = EntityRow;
 
-/** Derive the local primary key once; entities remain structured in IndexedDB. */
+/** Derive the local primary key once; entities remain structured in memory. */
 export function entityCacheRow(
   change: components["schemas"]["SyncEntity"],
 ): EntityRow {
@@ -169,7 +162,6 @@ export type SyncClientOptions = {
     | "save"
     | "setWorkspace"
     | "isApiSchemaMismatch"
-    | "onMatchingApiSchemaResponse"
   >;
   resources: Pick<
     typeof import("./subscriptions/events"),
@@ -183,21 +175,12 @@ export type SyncClientOptions = {
     typeof import("./transcriptCache").createTranscriptCache
   >;
   databaseSuffix: string;
-  /** The IndexedDB behind the cache and the unsent input; none keeps both in memory only. */
+  /** Local storage for unresolved outbox and draft input. */
   keyValue?: () => KeyValue | undefined;
-  /** Whether projections are cached on this device. A frontend on its server's machine keeps no cache. */
-  cacheProjections?: () => boolean;
 };
 export function createSyncClient(options: SyncClientOptions) {
-  const {
-    syncGet,
-    syncPost,
-    saved,
-    save,
-    setWorkspace,
-    isApiSchemaMismatch,
-    onMatchingApiSchemaResponse,
-  } = options.api;
+  const { syncGet, syncPost, saved, save, setWorkspace, isApiSchemaMismatch } =
+    options.api;
   const { watchResourceChanges, watchResourceConnection } = options.resources;
   const { getEntitySequenceCheckpoint, setEntitySequenceProjection } =
     options.sequences;
@@ -231,7 +214,6 @@ export function createSyncClient(options: SyncClientOptions) {
   /** Drafts and the outbox hold unsent input: in memory, and on disk at once. */
   async function openWorkspaceDatabase(workspaceId: string) {
     const kv = options.keyValue?.();
-    await migrateLegacyStores(kv);
     const unsent = createUnsentStore(
       kv,
       `${workspaceId}${serverDatabaseSuffix}`,
@@ -240,10 +222,8 @@ export function createSyncClient(options: SyncClientOptions) {
     const draftConflicts = createDraftConflictHandler();
     const drafts = createDraftStore(
       `${name}:drafts`,
-      unsent,
       draftConflicts.conflictHandler,
     );
-    await drafts.restore();
     const outbox = new LocalCollection(`${name}:outbox`, {
       durable: {
         put: (row) =>
@@ -261,7 +241,6 @@ export function createSyncClient(options: SyncClientOptions) {
   }
 
   async function open() {
-    const cacheProjections = options.cacheProjections?.() ?? false;
     const cached = saved<string>("codex-sync-workspace", "");
     const hasCache = /^[a-f0-9]{32}$/.test(cached);
     const identify = async () => {
@@ -275,8 +254,6 @@ export function createSyncClient(options: SyncClientOptions) {
     const initialIdentity = identify();
     let grace: ReturnType<typeof setTimeout> | undefined;
     let identity: Awaited<ReturnType<typeof identify>> | null = null;
-    let cleanupScheduled = false;
-    let stopSchemaMatchCleanup = () => {};
     try {
       identity = await (hasCache
         ? Promise.race([
@@ -295,18 +272,6 @@ export function createSyncClient(options: SyncClientOptions) {
     const workspaceId = identity?.workspaceId || cached;
     setEntitySequenceProjection(workspaceId, API_SCHEMA_HASH);
     if (identity) save("codex-sync-workspace", workspaceId);
-    const cleanupOtherSchemaCaches = () => {
-      if (cleanupScheduled || isApiSchemaMismatch()) return;
-      cleanupScheduled = true;
-      stopSchemaMatchCleanup();
-      const kv = options.keyValue?.();
-      if (kv && cacheProjections)
-        void pruneOtherSchemas(
-          kv,
-          `${workspaceId}${serverDatabaseSuffix}`,
-          API_SCHEMA_HASH,
-        ).catch(() => {});
-    };
     // Cached display does not authorize reads or draft writes against another computer.
     // Retain the original request after the grace period, and retry failed checks.
     let verified = !!identity;
@@ -335,25 +300,16 @@ export function createSyncClient(options: SyncClientOptions) {
       draftStore,
       draftConflicts,
     } = await openWorkspaceDatabase(workspaceId);
-    // The UI reads memory. A remote frontend also loads its cache record by
-    // record and writes it after render; a local one keeps no cache.
-    const cache = createProjectionCache(
-      entityProjectionDatabaseName(
-        workspaceId,
-        API_SCHEMA_HASH,
-        serverDatabaseSuffix,
+    const db = {
+      ...workspaceDb,
+      projections: new LocalCollection(
+        entityProjectionDatabaseName(
+          workspaceId,
+          API_SCHEMA_HASH,
+          serverDatabaseSuffix,
+        ),
       ),
-      `${workspaceId}${serverDatabaseSuffix}|${API_SCHEMA_HASH}`,
-      cacheProjections ? options.keyValue?.() : undefined,
-    );
-    const db = { ...workspaceDb, projections: cache.collection };
-    if (isApiSchemaMismatch()) stopSchemaMatchCleanup();
-    else {
-      stopSchemaMatchCleanup = onMatchingApiSchemaResponse(
-        cleanupOtherSchemaCaches,
-      );
-      if (cleanupScheduled) stopSchemaMatchCleanup();
-    }
+    };
     db.projections.$.subscribe((event) => {
       const doc = event.documentData;
       if (doc.id.startsWith("transcript:") && doc.id.split(":").length === 2)
@@ -3129,7 +3085,6 @@ const defaultSyncClient = createSyncClient({
     save,
     setWorkspace,
     isApiSchemaMismatch,
-    onMatchingApiSchemaResponse,
   },
   resources: {
     watchResourceChanges: (...args: Parameters<typeof watchResourceChanges>) =>
@@ -3148,7 +3103,6 @@ const defaultSyncClient = createSyncClient({
   },
   databaseSuffix: serverDatabaseSuffix,
   keyValue: () => indexedDbKeyValue(),
-  cacheProjections: () => !frontendIsLocal(serverViewId ?? "local"),
 });
 export const {
   syncDatabase,

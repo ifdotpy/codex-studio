@@ -1,3 +1,6 @@
+#[cfg(test)]
+extern crate studio_test_deps;
+
 #[cfg(unix)]
 use studio_runtime_server::account_registry;
 #[cfg(unix)]

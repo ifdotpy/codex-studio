@@ -1,5 +1,8 @@
 //! Asynchronous provider adapters, process ports and the supervisor v2 client.
 
+#[cfg(test)]
+extern crate studio_test_deps;
+
 pub use studio_runtime_store::blocking_pool;
 pub mod child_priority;
 mod client;

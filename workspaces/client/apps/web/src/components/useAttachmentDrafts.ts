@@ -1,10 +1,5 @@
-import {
-  useServerApi,
-  useServerUploads,
-  useServerLocalDrafts,
-  useServerStorageEventKey,
-} from "../servers/ServerServicesContext";
-import { useEffect, useRef, useState, type SetStateAction } from "react";
+import { useServerUploads } from "../servers/ServerServicesContext";
+import { useRef, useState, type SetStateAction } from "react";
 import { errorText } from "../api";
 import type { Attachment } from "./ComposerAttachments";
 
@@ -14,8 +9,8 @@ export function useAttachmentDrafts(
   notify: (message: string) => void,
 ) {
   const { attachmentCancelled } = useServerUploads();
-  const { updateLocalDraft } = useServerLocalDrafts();
-  const storageEventKey = useServerStorageEventKey();
+  const scopes = useRef(new Map<string, Attachments>());
+  const [, render] = useState(0);
   const retained = (stored: Attachments) =>
     Object.fromEntries(
       Object.entries(stored).map(([id, files]) => [
@@ -23,43 +18,14 @@ export function useAttachmentDrafts(
         files.filter((asset) => !attachmentCancelled(asset.id)),
       ]),
     );
-  const { saved } = useServerApi();
-
-  const scopes = useRef(new Map<string, Attachments>());
-  const [, render] = useState(0);
-  if (!scopes.current.has(key))
-    scopes.current.set(key, retained(saved<Attachments>(key, {})));
-  useEffect(() => {
-    const refresh = (event: StorageEvent) => {
-      const changed = storageEventKey(event);
-      if (
-        event.key === null ||
-        changed === key ||
-        changed?.startsWith("studio-upload-cancelled:")
-      ) {
-        scopes.current.set(key, retained(saved<Attachments>(key, {})));
-        render((version) => version + 1);
-      }
-    };
-    window.addEventListener("storage", refresh);
-    return () => window.removeEventListener("storage", refresh);
-  }, [key, saved, attachmentCancelled, storageEventKey]);
+  const current = retained(scopes.current.get(key) ?? {});
   const setAttachments = async (
     change: SetStateAction<Attachments>,
   ): Promise<boolean> => {
     try {
-      // Read the latest shared draft only after taking the cross-tab write lock.
-      const next = await updateLocalDraft<Attachments>(key, {}, (current) => {
-        const value =
-          typeof change === "function" ? change(retained(current)) : change;
-        return Object.fromEntries(
-          Object.entries(retained(value)).map(([id, files]) => [
-            id,
-            files.map(({ preview: _preview, ...asset }) => asset),
-          ]),
-        );
-      });
-      scopes.current.set(key, retained(saved<Attachments>(key, next)));
+      const previous = retained(scopes.current.get(key) ?? {});
+      const next = typeof change === "function" ? change(previous) : change;
+      scopes.current.set(key, retained(next));
       render((version) => version + 1);
       return true;
     } catch (error) {
@@ -67,5 +33,5 @@ export function useAttachmentDrafts(
       return false;
     }
   };
-  return [scopes.current.get(key)!, setAttachments] as const;
+  return [current, setAttachments] as const;
 }

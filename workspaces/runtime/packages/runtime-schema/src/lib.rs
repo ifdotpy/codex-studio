@@ -184,6 +184,10 @@ const TOOL_ALIAS: &[u8] = include_bytes!("schemas/persisted-tool-alias.schema.js
 const CONTINUATION_URI: &str =
     "https://codex-studio.invalid/persisted-continuation-snapshot.schema.json";
 const CONTINUATION: &[u8] = include_bytes!("schemas/persisted-continuation-snapshot.schema.json");
+const CAPACITY_CONTINUATION_URI: &str =
+    "https://codex-studio.invalid/persisted-capacity-continuation.schema.json";
+const CAPACITY_CONTINUATION: &[u8] =
+    include_bytes!("schemas/persisted-capacity-continuation.schema.json");
 const ACCESS_RECEIPT_URI: &str =
     "https://codex-studio.invalid/persisted-access-receipt.schema.json";
 const ACCESS_RECEIPT: &[u8] = include_bytes!("schemas/persisted-access-receipt.schema.json");
@@ -310,6 +314,7 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     ),
     (COMPLAINT_RECORD_URI, COMPLAINT_RECORD),
     (CONTINUATION_URI, CONTINUATION),
+    (CAPACITY_CONTINUATION_URI, CAPACITY_CONTINUATION),
     (EVENT_METADATA_URI, EVENT_METADATA),
     (EXECUTION_RECORD_URI, EXECUTION_RECORD),
     (EXECUTION_RUN_RECORD_URI, EXECUTION_RUN_RECORD),
@@ -933,6 +938,11 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedClaudeControlRecord", CLAUDE_CONTROL_URI),
         ("PersistedClaudeLoginRecord", CLAUDE_LOGIN_URI),
         ("PersistedComplaintRecord", COMPLAINT_RECORD_URI),
+        (
+            "continuation/CapacityContinuation",
+            CAPACITY_CONTINUATION_URI,
+        ),
+        ("continuation/Snapshot", CONTINUATION_URI),
         ("PersistedExecutionRecord", EXECUTION_RECORD_URI),
         ("PersistedExecutionRunRecord", EXECUTION_RUN_RECORD_URI),
         ("PersistedFederationInbox", FEDERATION_INBOX_URI),

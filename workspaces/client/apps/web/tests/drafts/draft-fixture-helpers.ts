@@ -8,13 +8,9 @@ declare global {
 }
 import type { TranscriptPageData } from "../../src/apiTypes.ts";
 import type { DraftVersion } from "../../src/sync/drafts.ts";
-import type { LocalDraftRecord } from "../../src/sync/draftStorage.ts";
 import type { OutboxEntry } from "../../src/sync/send.ts";
 // These records are written by this renderer and read back by its fixture.
 export function readDraft(payload: string): DraftVersion {
-  return JSON.parse(payload);
-}
-export function readLocalDraft(payload: string): LocalDraftRecord {
   return JSON.parse(payload);
 }
 export function readOutbox(payload: string): Omit<OutboxEntry, "id"> {

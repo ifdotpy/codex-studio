@@ -74,8 +74,9 @@ in the pull request. This short local tier selects deterministic request,
 recovery, schema, and boundary witnesses. Hosted CI continues to run the full
 server, Rust, web, tooling, and browser-smoke checks in parallel jobs.
 
-Run `just test-comprehensive` locally on the exact commit before every push
-to `main`. A successful short tier does not replace this publication gate.
+Run `just test-comprehensive` locally once per release, on the exact commit of the
+release pull request, before it merges. A successful short tier does not replace
+this release gate. A nightly run of it is optional.
 The comprehensive command preserves the
 previous broad local gate, including provider bridge tests, workspace Rust
 tests, web type and unit checks, tooling tests, and browser smoke. Run
@@ -84,6 +85,22 @@ Each heavy run has a Just command. A test that needs repeated runs to be trusted
 is defective and must be rewritten or moved to the heavy tier. New tests must
 fit the short tier. See [docs/testing.md](docs/testing.md) for the tier commands
 and selection owner.
+
+## Commits and releases
+
+Commit subjects and pull request titles follow Conventional Commits:
+`type(scope): summary` or `type: summary`. Types: `feat`, `fix`, `perf`, `revert`,
+`docs`, `test`, `refactor`, `build`, `ci`, `chore`, `style`. Optional scopes:
+`runtime`, `client`, `native`, `web`, `desktop`, `providers`, `tooling`, `vm`, `layr`,
+`release`, `deps`.
+Pull requests merge by squash, so the title becomes the commit on main.
+[`conventional-commit.ts`](workspaces/tooling/apps/repository-checks/conventional-commit.ts)
+owns the rule; the `pr-title` workflow and the `commit-msg` hook run it.
+
+release-please keeps a release pull request from the commits on main. The product has one
+version, kept in `.release-please-manifest.json` and written to the workspace `Cargo.toml`,
+`Cargo.lock`, the native `tauri.conf.json`, and the native and desktop `package.json`.
+A release builds and installs nothing.
 
 ## Load testing
 
@@ -105,8 +122,8 @@ Server data reaches the client only as SSE events; the client never polls. See
 ## Code checks
 
 The repository root owns Oxlint and Oxfmt. Install their pinned dependencies with
-`pnpm install --frozen-lockfile`. Activate the required pre-commit hook once per clone with
-`git config --local core.hooksPath .githooks`. The hook checks staged JavaScript,
+`pnpm install --frozen-lockfile`. Activate the required hooks once per clone with
+`git config --local core.hooksPath .githooks`. The `commit-msg` hook checks the subject. The `pre-commit` hook checks staged JavaScript,
 TypeScript, CSS, HTML, Markdown, YAML, and JSON from the Git index, including
 files outside `workspaces/client/apps/web/`; it must not rewrite the index or working files. Run
 `pnpm run test:pre-commit` to verify the hook's staged-content behavior.

@@ -1114,6 +1114,7 @@ export default function App({ active = true }: { active?: boolean }) {
   });
   const open = useCommittedCallback((id: string, messageId?: string) => {
     if (projectDeleteScope.has(id)) return;
+    readState.select(id);
     prepareChat(id);
     navigationIntent.current++;
     setJumpTarget(
@@ -1229,6 +1230,7 @@ export default function App({ active = true }: { active?: boolean }) {
       notify("This chat is no longer available.");
     } else {
       navigationIntent.current++;
+      readState.select(navigationTarget.agentId);
       setOpened(navigationTarget.agentId);
       setSidebar(false);
       setWorkspaceSection("messages");

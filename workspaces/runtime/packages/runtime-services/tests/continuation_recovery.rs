@@ -115,6 +115,7 @@ async fn oversized_proposed_reason_is_rejected_only_during_apply_without_writes(
                 snapshot,
                 studio_runtime_services::capacity_retry::Action::Wait(&reason),
                 1000.0,
+                None,
             )?;
             assert!(
                 decision.record.is_some(),
@@ -137,10 +138,10 @@ async fn oversized_proposed_reason_is_rejected_only_during_apply_without_writes(
 }
 
 #[tokio::test]
-async fn checked_decision_write_preserves_opaque_evidence_and_number_kinds() {
+async fn checked_decision_write_preserves_number_kinds() {
     let (_dir, store) = seeded("capacity").await;
     store.transaction_with(|tx| {
-        tx.execute("UPDATE runtime_capacity_retries SET record=json_set(record,'$.attempt',json('1.0'),'$.claimedAt',null,'$.future',json('{\"v\":[1,null]}')) WHERE id='retry'", [])?;
+        tx.execute("UPDATE runtime_capacity_retries SET record=json_set(record,'$.attempt',json('1.0'),'$.claimedAt',null) WHERE id='retry'", [])?;
         Ok::<_, studio_runtime_store::StoreError>(())
     }).await.unwrap();
     continuation_driver::drive(
@@ -154,6 +155,7 @@ async fn checked_decision_write_preserves_opaque_evidence_and_number_kinds() {
                 snapshot,
                 studio_runtime_services::capacity_retry::Action::Wait("wait"),
                 1000.0,
+                None,
             )
         },
     )
@@ -170,7 +172,51 @@ async fn checked_decision_write_preserves_opaque_evidence_and_number_kinds() {
     let row: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(row["attempt"], json!(1.0));
     assert!(row.get("claimedAt").is_none());
-    assert_eq!(row["future"], json!({"v":[1,null]}));
+}
+
+#[tokio::test]
+async fn capacity_unknown_fields_are_refused_without_writing() {
+    let (_dir, store) = seeded("capacity").await;
+    store.transaction_with(|tx| {
+        tx.execute("UPDATE runtime_capacity_retries SET record=json_set(record,'$.future',json('{\"v\":[1,null]}')) WHERE id='retry'", [])?;
+        Ok::<_, studio_runtime_store::StoreError>(())
+    }).await.unwrap();
+    let before: String = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT record FROM runtime_capacity_retries WHERE id='retry'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let result = continuation_driver::drive(
+        &store,
+        "a",
+        ContinuationTable::Capacity,
+        Some("retry"),
+        1000.0,
+        |snapshot| {
+            studio_runtime_services::capacity_retry::transition(
+                snapshot,
+                studio_runtime_services::capacity_retry::Action::Wait("wait"),
+                1000.0,
+                None,
+            )
+        },
+    )
+    .await;
+    assert!(result.is_err());
+    let after: String = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT record FROM runtime_capacity_retries WHERE id='retry'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(after, before);
 }
 #[test]
 fn stored_limits_observation_accepts_legacy_mutation_envelope_keys() {
@@ -421,10 +467,12 @@ async fn capacity_claim_commits_record_agent_and_followup_together() {
         capacity_retry::transition(
             s,
             Action::Claim {
-                settings: &json!({}),
+                settings:
+                    &studio_runtime_schema::continuation_snapshot::PreparationSettings::default(),
                 automatic: true,
             },
             1000.0,
+            None,
         )
     };
     for boundary in [

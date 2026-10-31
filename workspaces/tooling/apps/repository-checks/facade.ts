@@ -1083,6 +1083,9 @@ export function gateSteps(root: string, name: string): GateStep[] {
       nodeTest("recovery-helpers", "Rust desktop recovery witnesses", [
         "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",
       ]),
+      nodeTest("sse-policy", "SSE and browser persistence ratchet", [
+        "workspaces/tooling/apps/repository-checks/tests/sse-policy.test.ts",
+      ]),
       nodeTest("retired-server", "retired server action witness", [
         "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.ts",
       ]),

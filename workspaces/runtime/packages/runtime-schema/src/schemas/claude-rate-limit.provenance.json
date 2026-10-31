@@ -4,7 +4,7 @@
     "workspaces/providers/apps/claude-bridge/rate-limit-input.ts": "827b083cc735e93e622b840874ccf31a5e4d2259902ad06d6a0dacc0137853af",
     "workspaces/providers/apps/claude-bridge/usage-policy.ts": "14a8801a4e371cf576bfcdf78a8341f29f101f6cc5c98f3c640d0abfd886fb72",
     "workspaces/providers/apps/claude-bridge/package.json": "f9a1b2c9100b4a5d4ca699a309bcf1a43919dad3dd0b0df1423a11b1739c9780",
-    "pnpm-lock.yaml": "cac6dbaf1fd3d299fae86bc2e8e015f03f98b6f27015a1dfff0d88565ad2a3f2",
+    "pnpm-lock.yaml": "58679ebf6f048ade25d13a03ae16b6dc45345d6b9cdd505a3122e968fb4e7805",
     "workspaces/tooling/apps/repository-checks/generate-provider-contracts.ts": "c68c268970eeb3da38393d17b3c9772bf4f3b2dfc30d9499fa83413443a7d100"
   },
   "sdk": {

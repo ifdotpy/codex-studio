@@ -1,25 +1,15 @@
 //! Persisted project metadata and its renderer sync projection.
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use studio_runtime_schema::persistence::ProjectRemovalReason;
+use studio_runtime_schema::project_record::{ProjectLive, ProjectRecord, ProjectRemoval};
 
 use crate::request_results::AdmittedRequest;
 
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult, SyncDocumentsRepository};
-
-/// Durable destructive-removal fence. Sequence belongs to the project sync tombstone;
-/// deleted_at is Unix milliseconds, independent of transport reply retention.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectRemoval {
-    pub reason: ProjectRemovalReason,
-    pub sequence: i64,
-    pub request_id: String,
-    pub deleted_at: i64,
-}
 
 const PROJECT_TABLE: &[TableRequirement] = &[TableRequirement {
     name: "runtime_projects",
@@ -90,7 +80,7 @@ impl ProjectsRepository {
             deleted_at,
         };
         tx.execute("INSERT INTO runtime_projects(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
-            params![id, json!({"id":id,"removal":removal,"peerTeams":[]}).to_string()])?;
+            params![id, json!({"recordKind":"removal","id":id,"removal":removal,"peerTeams":[]}).to_string()])?;
         Ok(())
     }
     pub fn is_destructive_removal(
@@ -163,10 +153,7 @@ impl ProjectsRepository {
         .transpose()
     }
 
-    pub fn get_record(
-        connection: &Connection,
-        id: &str,
-    ) -> StoreResult<Option<studio_runtime_schema::project_record::ProjectRecord>> {
+    pub fn get_record(connection: &Connection, id: &str) -> StoreResult<Option<ProjectLive>> {
         let raw: Option<String> = connection
             .query_row(
                 "SELECT record FROM runtime_projects WHERE id=?1 AND json_extract(record,'$.removal') IS NULL",
@@ -175,17 +162,25 @@ impl ProjectsRepository {
             )
             .optional()?;
         raw.map(|raw| {
-            serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredRecord {
-                object: "runtime_projects",
-                id: id.to_owned(),
-            })
+            let record: ProjectRecord =
+                serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredRecord {
+                    object: "runtime_projects",
+                    id: id.to_owned(),
+                })?;
+            match record {
+                ProjectRecord::Live(project) if project.id == id => Ok(*project),
+                ProjectRecord::Live(_) | ProjectRecord::Removal(_) => {
+                    Err(StoreError::InvalidStoredRecord {
+                        object: "runtime_projects",
+                        id: id.to_owned(),
+                    })
+                }
+            }
         })
         .transpose()
     }
 
-    pub fn list_records(
-        connection: &Connection,
-    ) -> StoreResult<Vec<(String, studio_runtime_schema::project_record::ProjectRecord)>> {
+    pub fn list_records(connection: &Connection) -> StoreResult<Vec<(String, ProjectLive)>> {
         let mut statement = connection.prepare_cached(
             "SELECT id,record FROM runtime_projects WHERE json_extract(record,'$.removal') IS NULL AND COALESCE(json_type(record,'$.sidebarHidden'),'')!='true' ORDER BY json_extract(record,'$.created'),id",
         )?;
@@ -195,12 +190,20 @@ impl ProjectsRepository {
             })?
             .map(|row| {
                 let (id, raw) = row?;
-                let project =
+                let project: ProjectRecord =
                     serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredRecord {
                         object: "runtime_projects",
                         id: id.clone(),
                     })?;
-                Ok((id, project))
+                match project {
+                    ProjectRecord::Live(project) if project.id == id => Ok((id, *project)),
+                    ProjectRecord::Live(_) | ProjectRecord::Removal(_) => {
+                        Err(StoreError::InvalidStoredRecord {
+                            object: "runtime_projects",
+                            id,
+                        })
+                    }
+                }
             })
             .collect()
     }
@@ -291,7 +294,7 @@ impl ProjectsRepository {
             .ok_or_else(|| StoreError::SchemaMismatch("project id is invalid".to_owned()))?;
         let record = serde_json::to_string(project)?;
         transaction.execute(
-            "INSERT INTO runtime_projects(id,record) VALUES (?1,?2) \
+            "INSERT INTO runtime_projects(id,record) VALUES (?1,json_set(?2,'$.recordKind','live')) \
              ON CONFLICT(id) DO UPDATE SET record=excluded.record",
             params![id, record],
         )?;

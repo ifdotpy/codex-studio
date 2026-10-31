@@ -2,10 +2,7 @@ import { watchServerName } from "./serverNames";
 import { createSessionCostCache } from "../usage/sessionCostCache";
 import { createUploads, UPLOAD_DATABASE_NAME } from "../sync/uploads";
 import { createServerAudio } from "../native/serverAudio";
-import {
-  createRecordingStorage,
-  DICTATION_DATABASE_NAME,
-} from "../dictation/storage";
+import { createRecordingStorage } from "../dictation/storage";
 import {
   createLocalDraftStorage,
   LOCAL_DRAFT_DATABASE_NAME,
@@ -18,11 +15,8 @@ import { createFileDialogs } from "../native/fileDialogs";
 import { watchResourceReads } from "../sync/subscriptions/reads";
 import { createAccountLimitsCache } from "../usage/accountUsage";
 import { createBrowserDrafts } from "../sync/drafts";
-import { createDraftJournal } from "../sync/draftJournal";
-import { createDraftStorage } from "../sync/draftStorage";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
-import { frontendIsLocal } from "../sync/localFrontend";
 import { indexedDbKeyValue } from "../sync/thinCache";
 import { createServerSubscriptions } from "../sync/subscriptions/server";
 import { createTranscriptCache } from "../sync/transcriptCache";
@@ -72,7 +66,7 @@ export function createServerServices(server: StudioServer) {
     api.pending.observeClientSeq(sequence);
   });
   const audio = createServerAudio();
-  const sessionCosts = createSessionCostCache(storage);
+  const sessionCosts = createSessionCostCache();
   const transcripts = createTranscriptCache();
   const tokenRates = createTokenRateCache();
   let runtime:
@@ -98,7 +92,6 @@ export function createServerServices(server: StudioServer) {
       sequences,
       transcripts,
       keyValue: () => indexedDbKeyValue(),
-      cacheProjections: () => !frontendIsLocal(transport.owner.id),
       databaseSuffix:
         transport.owner.id === "local"
           ? ""
@@ -126,8 +119,6 @@ export function createServerServices(server: StudioServer) {
         startDraftReplication: (...args) =>
           synchronization().sync.startDraftReplication(...args),
       },
-      journal: createDraftJournal(storage),
-      storage: createDraftStorage(storage),
     }));
   };
   const localDrafts = createLocalDraftStorage(
@@ -139,11 +130,9 @@ export function createServerServices(server: StudioServer) {
       transport.owner.id,
       UPLOAD_DATABASE_NAME,
     ),
-    storage,
     syncGet: api.syncGet,
     syncPost: api.syncPost,
     refreshSession: api.refreshSession,
-    writeLocalDraft: localDrafts.writeLocalDraft,
     syncDatabase: () => synchronization().sync.syncDatabase(),
   });
   let initialization: Promise<void> | undefined;
@@ -168,9 +157,7 @@ export function createServerServices(server: StudioServer) {
     audio,
     sessionCosts,
     chatCreations: createChatCreationStore(storage),
-    recordings: createRecordingStorage(
-      storageNameForServer(transport.owner.id, DICTATION_DATABASE_NAME),
-    ),
+    recordings: createRecordingStorage(),
     localDrafts,
     uploads,
     storageEventKey: createStorageEventKey(

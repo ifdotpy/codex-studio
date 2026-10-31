@@ -19,59 +19,42 @@ use studio_runtime_schema::provider_errors::{
 };
 use studio_runtime_store::{ContinuationRepository, ContinuationTable, Transaction};
 
-/// The exact settings copied by Python's `preparation_settings` helper.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PreparationSettings {
-    model: Value,
-    effort: Value,
-    native_effort: Value,
-    fast_mode: Value,
-    yolo_mode: Value,
-    profile_instructions: Value,
-    role: Value,
-    daybreak_enabled: Option<Value>,
-    cyber_access_program: Option<Value>,
-}
+use studio_runtime_schema::continuation_snapshot::PreparationSettings;
+use studio_runtime_schema::queue_command::Field;
 
-impl PreparationSettings {
-    pub fn from_agent(agent: &Value) -> Result<Self> {
-        if !agent.is_object() {
-            return Err(ContinuationError::Invalid("/agent".into()));
+fn preparation_settings(agent: &Value) -> Result<PreparationSettings> {
+    let object = agent
+        .as_object()
+        .ok_or_else(|| ContinuationError::Invalid("/agent".into()))?;
+    let string = |key: &str, required: bool| -> Result<Field<String>> {
+        match object.get(key) {
+            None if required => Ok(Field::Null),
+            None => Ok(Field::Missing),
+            Some(Value::Null) => Ok(Field::Null),
+            Some(Value::String(value)) => Ok(Field::Value(value.clone())),
+            _ => Err(ContinuationError::Invalid(format!("/agent/{key}"))),
         }
-        Ok(Self {
-            model: agent.get("model").cloned().unwrap_or(Value::Null),
-            effort: agent.get("effort").cloned().unwrap_or(Value::Null),
-            native_effort: agent.get("nativeEffort").cloned().unwrap_or(Value::Null),
-            fast_mode: agent.get("fastMode").cloned().unwrap_or(Value::Null),
-            yolo_mode: agent.get("yoloMode").cloned().unwrap_or(Value::Null),
-            profile_instructions: agent
-                .get("profileInstructions")
-                .cloned()
-                .unwrap_or(Value::Null),
-            role: agent.get("role").cloned().unwrap_or(Value::Null),
-            daybreak_enabled: agent.get("daybreakEnabled").cloned(),
-            cyber_access_program: agent.get("cyberAccessProgram").cloned(),
-        })
-    }
-
-    fn value(&self) -> Value {
-        let mut value = json!({
-            "model": self.model.clone(),
-            "effort": self.effort.clone(),
-            "nativeEffort": self.native_effort.clone(),
-            "fastMode": self.fast_mode.clone(),
-            "yoloMode": self.yolo_mode.clone(),
-            "profileInstructions": self.profile_instructions.clone(),
-            "role": self.role.clone(),
-        });
-        if let Some(enabled) = &self.daybreak_enabled {
-            value["daybreakEnabled"] = enabled.clone();
+    };
+    let boolean = |key: &str, required: bool| -> Result<Field<bool>> {
+        match object.get(key) {
+            None if required => Ok(Field::Null),
+            None => Ok(Field::Missing),
+            Some(Value::Null) => Ok(Field::Null),
+            Some(Value::Bool(value)) => Ok(Field::Value(*value)),
+            _ => Err(ContinuationError::Invalid(format!("/agent/{key}"))),
         }
-        if let Some(program) = &self.cyber_access_program {
-            value["cyberAccessProgram"] = program.clone();
-        }
-        value
-    }
+    };
+    Ok(PreparationSettings {
+        model: string("model", true)?,
+        effort: string("effort", true)?,
+        native_effort: string("nativeEffort", true)?,
+        fast_mode: boolean("fastMode", true)?,
+        yolo_mode: boolean("yoloMode", true)?,
+        profile_instructions: string("profileInstructions", true)?,
+        role: string("role", true)?,
+        daybreak_enabled: boolean("daybreakEnabled", false)?,
+        cyber_access_program: string("cyberAccessProgram", false)?,
+    })
 }
 
 pub enum Completion<'a> {
@@ -163,7 +146,7 @@ pub fn stage_capacity_retry_observed(
         }
         let reason = crate::disk_space::held_reason(Some(free));
         let decision =
-            capacity_retry::transition(&snapshot, CapacityAction::DiskWait(&reason), now)?;
+            capacity_retry::transition(&snapshot, CapacityAction::DiskWait(&reason), now, None)?;
         let mut staged = empty_stage(tx, agent_id)?;
         collect_apply(
             tx,
@@ -207,26 +190,27 @@ pub fn stage_capacity_retry_observed(
         agent.remove("pendingSettings");
         agent.remove("pendingSettingsAccountKey");
     }
-    let settings = PreparationSettings::from_agent(&snapshot.agent)?.value();
-    if let Some(record) = snapshot.record.as_mut()
-        && snapshot.agent.get("pendingSettings").is_none()
-    {
-        record["settings"] = settings.clone();
-    }
+    let settings = preparation_settings(&snapshot.agent)?;
     let exclusion = capacity_exclusion_reason(&snapshot);
     let decision = match exclusion {
-        Some(reason) if automatic => {
-            capacity_retry::transition(&snapshot, CapacityAction::Excluded(&reason), now)?
-        }
+        Some(reason) if automatic => capacity_retry::transition(
+            &snapshot,
+            CapacityAction::Excluded(&reason),
+            now,
+            Some(&settings),
+        )?,
         Some(_) => {
             return Err(ContinuationError::Unavailable(
                 "turn-driver/capacity-account-excluded",
             ));
         }
         None => match capacity_claim_wait(&snapshot) {
-            Some(reason) => {
-                capacity_retry::transition(&snapshot, CapacityAction::Wait(reason), now)?
-            }
+            Some(reason) => capacity_retry::transition(
+                &snapshot,
+                CapacityAction::Wait(reason),
+                now,
+                Some(&settings),
+            )?,
             None => capacity_retry::transition(
                 &snapshot,
                 CapacityAction::Claim {
@@ -234,6 +218,7 @@ pub fn stage_capacity_retry_observed(
                     automatic,
                 },
                 now,
+                Some(&settings),
             )?,
         },
     };
@@ -258,7 +243,7 @@ pub fn stage_capacity_cancel(
     now: f64,
 ) -> Result<Value> {
     let snapshot = load(tx, agent_id, ContinuationTable::Capacity, Some(retry_id))?;
-    let decision = capacity_retry::transition(&snapshot, CapacityAction::Cancel, now)?;
+    let decision = capacity_retry::transition(&snapshot, CapacityAction::Cancel, now, None)?;
     let value = decision
         .record
         .as_ref()
@@ -322,7 +307,7 @@ pub fn stage_capacity_start<'a>(
             CapacityAction::Error { reason, unknown }
         }
     };
-    let decision = capacity_retry::transition(&snapshot, action, now)?;
+    let decision = capacity_retry::transition(&snapshot, action, now, None)?;
     let mut staged = empty_stage(tx, agent_id)?;
     collect_apply(
         tx,
@@ -466,6 +451,7 @@ fn stage_terminal(
                 completed: status == "completed",
             },
             now,
+            None,
         )?;
         collect_apply(
             tx,
@@ -486,7 +472,7 @@ fn stage_terminal(
         .unwrap_or(&Value::Null);
     if let Some(kind) = capacity_failure(error) {
         let snapshot = load(tx, agent_id, ContinuationTable::Capacity, None)?;
-        let settings = PreparationSettings::from_agent(&snapshot.agent)?.value();
+        let settings = preparation_settings(&snapshot.agent)?;
         let reason = matches!(kind, CapacityFailure::DiskFull).then(|| {
             // Check free space at once; the tick waits while the disk is still full.
             crate::disk_space::observe_full();

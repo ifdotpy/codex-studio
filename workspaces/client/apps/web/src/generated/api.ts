@@ -23661,6 +23661,8 @@ export interface components {
       /** Routes */
       routes: string[];
       sessionId: string;
+      token?: string | undefined;
+      workspaceId: string;
     };
     /** SyncStudioErrorEntityPayload */
     SyncStudioErrorEntityPayload: {

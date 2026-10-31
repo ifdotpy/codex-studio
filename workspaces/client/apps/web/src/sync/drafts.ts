@@ -7,7 +7,7 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import { isApiSchemaMismatch, onApiSchemaMismatch, saved, save } from "../api";
+import { isApiSchemaMismatch, onApiSchemaMismatch, saved } from "../api";
 import { startDraftReplication, syncDatabase } from "./client";
 import {
   draftSyncNoticeText,
@@ -17,23 +17,12 @@ import {
 
 import { encodeDraftPayload } from "./draftPayload";
 import { decodeDraftVersion } from "./draftDecoder";
-import {
-  readDraftJournal,
-  writeDraftJournal,
-  forgetDraftJournal,
-  journalPrefix,
-  type PendingDraft,
-} from "./draftJournal";
+type PendingDraft = { key: string; version: DraftVersion };
+const journalPrefix = (scope: string) => `${scope}:pending:`;
 import { onResume } from "./resume";
 import { createFrameBatch } from "./frameBatch";
 import { draftVersionId } from "./draftIdentity";
 import { activeDraftVersions } from "./draftVersions";
-import {
-  copyLocalDraftScope,
-  readLocalDraftRecord,
-  readLocalDrafts,
-  writeLocalDraftRecord,
-} from "./draftStorage";
 
 type Drafts = Record<string, string>;
 import type { DraftVersion } from "../generated/rustOwned";
@@ -42,74 +31,23 @@ export type { DraftVersion } from "../generated/rustOwned";
 export function createBrowserDrafts(options: {
   api: Pick<
     import("../api").ServerApi,
-    "isApiSchemaMismatch" | "onApiSchemaMismatch" | "saved" | "save"
+    "isApiSchemaMismatch" | "onApiSchemaMismatch" | "saved"
   >;
   sync: Pick<
     ReturnType<typeof import("./client").createSyncClient>,
     "startDraftReplication" | "syncDatabase"
   >;
-  journal: ReturnType<typeof import("./draftJournal").createDraftJournal>;
-  storage: ReturnType<typeof import("./draftStorage").createDraftStorage>;
 }) {
-  const { isApiSchemaMismatch, onApiSchemaMismatch, saved, save } = options.api;
+  const { isApiSchemaMismatch, onApiSchemaMismatch, saved } = options.api;
   const { startDraftReplication, syncDatabase } = options.sync;
-  const { readDraftJournal, writeDraftJournal, forgetDraftJournal } =
-    options.journal;
-  const {
-    copyLocalDraftScope,
-    readLocalDraftRecord,
-    readLocalDrafts,
-    writeLocalDraftRecord,
-  } = options.storage;
-  let device = saved<string>("codex-draft-device", "");
-  if (!device) {
-    device = randomUUID();
-    save("codex-draft-device", device);
-  }
+  const device = randomUUID();
   function useBrowserDrafts() {
     const storageKey = useRef(
       `codex-drafts:${saved("codex-sync-workspace", "unassigned")}`,
     );
-    const localRecovery = useState(() => {
-      let error = "";
-      const drafts = readLocalDrafts(storageKey.current, () => {
-        error = "Some saved drafts could not be read. Keep this chat open.";
-      });
-      return { drafts, error };
-    })[0];
     const [writer] = useState(() => randomUUID());
-    const [recovery] = useState(() => {
-      try {
-        let error = "";
-        const entries = readDraftJournal(storageKey.current, () => {
-          error = "Some saved drafts could not be read. Keep this chat open.";
-        });
-        return { entries, error };
-      } catch {
-        return {
-          entries: [] as PendingDraft[],
-          error: "Saved drafts could not be read. Keep this chat open.",
-        };
-      }
-    });
-    const journal = useRef(
-      new Map(recovery.entries.map((entry) => [entry.key, entry])),
-    );
-    const [drafts, update] = useState<Drafts>(() => {
-      const next: Drafts = { ...localRecovery.drafts };
-      for (const entry of recovery.entries) {
-        if (entry.version.id === `${device}:${entry.version.session}`) {
-          try {
-            if (readLocalDraftRecord(storageKey.current, entry.version.session))
-              continue;
-          } catch {
-            // The pending journal remains a recovery source if this record is corrupt.
-          }
-        }
-        next[entry.version.session] = entry.version.text;
-      }
-      return next;
-    });
+    const journal = useRef(new Map<string, PendingDraft>());
+    const [drafts, update] = useState<Drafts>({});
     const importUnassigned = useRef(storageKey.current.endsWith(":unassigned"));
     const current = useRef(drafts);
     const draftListeners = useRef(new Map<string, Set<() => void>>());
@@ -137,7 +75,7 @@ export function createBrowserDrafts(options: {
     };
     const [conflicts, setConflicts] = useState<DraftVersion[]>([]);
     const conflictValues = useRef<DraftVersion[]>([]);
-    const initialLocalError = recovery.error || localRecovery.error;
+    const initialLocalError = "";
     const [localError, setLocalError] = useState(initialLocalError);
     const [syncFailureDirection, setSyncFailureDirection] = useState<
       "pull" | "push" | "replication" | null
@@ -187,9 +125,7 @@ export function createBrowserDrafts(options: {
         }),
       [],
     );
-    const dismissed = useRef<string[]>(
-      saved(`${storageKey.current}:dismissed`, []),
-    );
+    const dismissed = useRef<string[]>([]);
     const versionKey = (version: DraftVersion) =>
       JSON.stringify([version.id, version.text]);
     const reconcile = useCallback(
@@ -242,22 +178,6 @@ export function createBrowserDrafts(options: {
           current.current = next;
           update(next);
           publishDraftChanges(previous, next);
-          for (const [session, text] of Object.entries(next)) {
-            if (previous[session] === text) continue;
-            try {
-              writeLocalDraftRecord(
-                storageKey.current,
-                session,
-                text === "" ? null : text,
-                "remote",
-                { updated: Date.now() },
-              );
-            } catch {
-              reportLocalError(
-                "Draft changes could not be saved on this device. Keep this chat open.",
-              );
-            }
-          }
         }
         const unique = new Set<string>();
         const nextConflicts = alternatives.filter((version) => {
@@ -277,27 +197,19 @@ export function createBrowserDrafts(options: {
           setConflicts(nextConflicts);
         }
       },
-      [reportLocalError, writer],
+      [writer],
     );
     const dismissDraft = useCallback(
       (version: DraftVersion) => {
         dismissed.current = [
           ...new Set([...dismissed.current, versionKey(version)]),
         ];
-        save(`${storageKey.current}:dismissed`, dismissed.current);
         reconcile(versions.current);
       },
       [reconcile],
     );
     const flushing = useRef<Promise<void> | null>(null);
-    const pendingEdits = useRef(
-      new Map(
-        recovery.entries.map(({ version }) => [
-          version.session,
-          version.updated,
-        ]),
-      ),
-    );
+    const pendingEdits = useRef(new Map<string, number>());
     const editSequence = useRef(0);
     const localHeads = useRef(new Map<string, number>());
     const entries = () =>
@@ -314,135 +226,86 @@ export function createBrowserDrafts(options: {
         entries().map(({ version }) => [version.session, version.updated]),
       );
     };
-    const adoptScope = useCallback(
-      (workspaceId: string) => {
-        const targetKey = `codex-drafts:${workspaceId}`;
-        if (storageKey.current === targetKey) return;
-        const previousKey = storageKey.current;
-        const unassigned = previousKey.endsWith(":unassigned");
-        if (unassigned) {
-          try {
-            copyLocalDraftScope(previousKey, targetKey, () =>
-              reportLocalError(
-                "Some saved drafts could not be moved to this workspace. Keep this chat open.",
-              ),
-            );
-          } catch (error) {
-            reportLocalError(
-              "Draft changes could not be moved to this workspace. Keep this chat open.",
-            );
-            throw error;
-          }
-        }
-        let next: Drafts = readLocalDrafts(targetKey, () =>
-          reportLocalError(
-            "Some saved drafts could not be read. Keep this chat open.",
-          ),
-        );
-        if (unassigned) next = { ...current.current, ...next };
-        if (unassigned) {
-          for (const entry of entries()) {
-            const moved = {
-              ...entry,
-              key: targetKey + entry.key.slice(previousKey.length),
-            };
-            writeDraftJournal(moved);
-            forgetDraftJournal(entry);
-            journal.current.delete(entry.key);
-            journal.current.set(moved.key, moved);
-          }
-        }
-        const previous = current.current;
-        storageKey.current = targetKey;
-        for (const entry of readDraftJournal(targetKey, () =>
-          reportLocalError(
-            "Some saved drafts could not be read. Keep this chat open.",
-          ),
-        ))
-          journal.current.set(entry.key, entry);
-        markPending();
+    const adoptScope = useCallback((workspaceId: string) => {
+      const targetKey = `codex-drafts:${workspaceId}`;
+      if (storageKey.current === targetKey) return;
+      const previousKey = storageKey.current;
+      const unassigned = previousKey.endsWith(":unassigned");
+      const next: Drafts = unassigned ? current.current : {};
+      if (unassigned) {
         for (const entry of entries()) {
-          if (
-            entry.version.id === `${device}:${entry.version.session}` &&
-            readLocalDraftRecord(targetKey, entry.version.session)
-          )
-            continue;
-          next[entry.version.session] = entry.version.text;
+          const moved = {
+            ...entry,
+            key: targetKey + entry.key.slice(previousKey.length),
+          };
+          journal.current.delete(entry.key);
+          journal.current.set(moved.key, moved);
         }
-        dismissed.current = saved(`${targetKey}:dismissed`, []);
-        current.current = next;
-        update(next);
-        publishDraftChanges(previous, next);
-      },
-      [reportLocalError],
-    );
+      } else journal.current.clear();
+      const previous = current.current;
+      storageKey.current = targetKey;
+      markPending();
+      dismissed.current = [];
+      current.current = next;
+      update(next);
+      publishDraftChanges(previous, next);
+    }, []);
     const flushDrafts = useCallback(() => {
       if (isApiSchemaMismatch()) return Promise.resolve();
       if (flushing.current) return flushing.current;
       flushing.current = (async () => {
         let connecting = false;
         try {
-          for (const entry of readDraftJournal(storageKey.current, () =>
-            reportLocalError(
-              "Some saved drafts could not be read. Keep this chat open.",
-            ),
-          )) {
-            const old = journal.current.get(entry.key);
-            if (!old || entry.version.updated > old.version.updated)
-              journal.current.set(entry.key, entry);
-          }
           markPending();
           if (!entries().length) return;
           connecting = true;
           const { db, workspaceId } = await syncDatabase();
           connecting = false;
           adoptScope(workspaceId);
-          for (;;) {
-            const batch = entries();
-            if (!batch.length) break;
-            for (const entry of batch) {
-              const item = entry.version;
-              const old = await db.drafts.findOne(item.id).exec();
-              const previous: DraftVersion | undefined = old
-                ? decodeDraftVersion(JSON.parse(old.payload))
-                : undefined;
-              // A recovered older edit must not replace a newer branch from another tab.
-              const newer = previous && previous.updated > item.updated;
-              const chosen = newer ? previous : item;
-              const other = newer ? item : previous;
-              const alternatives = [
-                ...new Set([
-                  ...(previous?.alternatives || []),
-                  ...(item.alternatives || []),
-                  ...(other &&
-                  other.text !== chosen.text &&
-                  other.text &&
-                  (chosen.seen?.[other.id] ?? -1) < other.updated
-                    ? [other.text]
-                    : []),
-                ]),
-              ].filter((text) => text !== chosen.text);
-              const payload = encodeDraftPayload({ ...chosen, alternatives });
-              if (!old || old.payload !== payload)
-                await db.drafts.incrementalUpsert({
-                  id: item.id,
-                  payload,
-                  seq: 0,
-                });
-              forgetDraftJournal(entry);
-              if (
-                journal.current.get(entry.key)?.version.updated === item.updated
-              )
-                journal.current.delete(entry.key);
-              markPending();
+          do {
+            for (;;) {
+              const batch = entries();
+              if (!batch.length) break;
+              for (const entry of batch) {
+                const item = entry.version;
+                const old = await db.drafts.findOne(item.id).exec();
+                const previous: DraftVersion | undefined = old
+                  ? decodeDraftVersion(JSON.parse(old.payload))
+                  : undefined;
+                // A recovered older edit must not replace a newer branch from another tab.
+                const newer = previous && previous.updated > item.updated;
+                const chosen = newer ? previous : item;
+                const other = newer ? item : previous;
+                const alternatives = [
+                  ...new Set([
+                    ...(previous?.alternatives || []),
+                    ...(item.alternatives || []),
+                    ...(other &&
+                    other.text !== chosen.text &&
+                    other.text &&
+                    (chosen.seen?.[other.id] ?? -1) < other.updated
+                      ? [other.text]
+                      : []),
+                  ]),
+                ].filter((text) => text !== chosen.text);
+                const payload = encodeDraftPayload({ ...chosen, alternatives });
+                if (!old || old.payload !== payload)
+                  await db.drafts.incrementalUpsert({
+                    id: item.id,
+                    payload,
+                    seq: 0,
+                  });
+                if (
+                  journal.current.get(entry.key)?.version.updated ===
+                  item.updated
+                )
+                  journal.current.delete(entry.key);
+                markPending();
+              }
             }
-          }
-          let invalid = false;
-          readDraftJournal(storageKey.current, () => {
-            invalid = true;
-          });
-          if (!invalid) reportLocalError("");
-          reconcile(decodeDrafts(await db.drafts.find().exec()));
+            reportLocalError("");
+            reconcile(decodeDrafts(await db.drafts.find().exec()));
+          } while (entries().length);
         } catch {
           if (connecting) reportSyncFailure("replication");
           else
@@ -512,32 +375,6 @@ export function createBrowserDrafts(options: {
           };
           journal.current.set(entry.key, entry);
           pendingEdits.current.set(session, updated);
-          try {
-            writeDraftJournal(entry);
-          } catch {
-            reportLocalError(
-              "Draft changes are not saved yet. Keep this chat open.",
-            );
-          }
-        }
-        for (const session of new Set([
-          ...Object.keys(previous),
-          ...Object.keys(next),
-        ])) {
-          if (previous[session] === next[session]) continue;
-          try {
-            writeLocalDraftRecord(
-              storageKey.current,
-              session,
-              next[session] === undefined ? null : next[session],
-              "local",
-              { updated },
-            );
-          } catch {
-            reportLocalError(
-              "Draft changes are not saved yet. Keep this chat open.",
-            );
-          }
         }
         void flushDrafts();
       },
@@ -656,27 +493,20 @@ export function createBrowserDrafts(options: {
       start();
       const stopResume = onResume(() => {
         recoverBootstrap();
-        void flushDrafts();
       });
       const onOnline = () => {
         recoverBootstrap();
       };
       window.addEventListener("online", onOnline);
-      const writeTimer = setInterval(() => {
-        if (isApiSchemaMismatch()) return;
-        void flushDrafts();
-      }, 3000);
       const stopForSchemaMismatch = onApiSchemaMismatch(() => {
         stopped = true;
         clearTimeout(retry);
-        clearInterval(writeTimer);
         unsubscribe();
         cancel();
       });
       return () => {
         stopped = true;
         clearTimeout(retry);
-        clearInterval(writeTimer);
         stopResume();
         stopForSchemaMismatch();
         window.removeEventListener("online", onOnline);
@@ -709,13 +539,6 @@ export function createBrowserDrafts(options: {
   return useBrowserDrafts;
 }
 export const useSyncedDrafts = createBrowserDrafts({
-  api: { isApiSchemaMismatch, onApiSchemaMismatch, saved, save },
+  api: { isApiSchemaMismatch, onApiSchemaMismatch, saved },
   sync: { startDraftReplication, syncDatabase },
-  journal: { readDraftJournal, writeDraftJournal, forgetDraftJournal },
-  storage: {
-    copyLocalDraftScope,
-    readLocalDraftRecord,
-    readLocalDrafts,
-    writeLocalDraftRecord,
-  },
 });

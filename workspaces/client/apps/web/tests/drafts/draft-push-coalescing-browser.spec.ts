@@ -97,16 +97,6 @@ test("draft pushes coalesce at the production replication boundary", async ({
           ...old,
           lead: text,
         }));
-        window.lastRecoverySnapshot = {
-          journal: Object.entries(localStorage)
-            .filter(([key]) =>
-              key.startsWith(`codex-drafts:${"f".repeat(32)}:pending:`),
-            )
-            .map(([, value]) => window.coalescingDraft_readDraft(value).text),
-          local: window.coalescingDraft_readLocalDraft(
-            localStorage.getItem(`codex-chat-draft:${"f".repeat(32)}:lead`)!,
-          )?.text,
-        };
       }, text);
       await page.waitForFunction(
         async (text: string) =>
@@ -124,12 +114,6 @@ test("draft pushes coalesce at the production replication boundary", async ({
       await edit(`typing ${index}`);
       if (index + 1 < burstSize) await page.clock.runFor(35);
     }
-    const recovery = await page.evaluate(() => window.lastRecoverySnapshot);
-    assert.ok(
-      recovery.journal.includes(`typing ${burstSize - 1}`) ||
-        recovery.local === `typing ${burstSize - 1}`,
-      "The latest recovery value is written synchronously before replication settles",
-    );
     await page.clock.runFor(700);
     await expect.poll(() => pushes.length).toBe(before + 1);
     const burst = pushes.slice(before);

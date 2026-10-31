@@ -1,0 +1,53 @@
+[package]
+name = "studio-test-deps"
+version.workspace = true
+edition.workspace = true
+description = "Dynamic library of heavy third-party dependencies for test binaries"
+license.workspace = true
+publish.workspace = true
+
+# Only dev-dependencies use this crate. A test binary then links these dependencies
+# from one shared library instead of embedding a copy (docs/testing.md, "Test binary size").
+# Crates that bundle C libraries (rusqlite, ring, zstd-safe) and link-time registries
+# (inventory) must stay out of this list.
+[lib]
+crate-type = ["dylib"]
+test = false
+doctest = false
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+brotli.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+data-encoding.workspace = true
+flate2 = "=1.1.10"
+futures-util.workspace = true
+http-body-util = "=0.1.5"
+hyper = { version = "=1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "=0.1.21", features = ["tokio"] }
+jsonschema.workspace = true
+mime_guess.workspace = true
+notify.workspace = true
+process-wrap.workspace = true
+regex = "=1.13.1"
+rustix.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_path_to_error.workspace = true
+sha2.workspace = true
+sysinfo.workspace = true
+tar = { version = "=0.4.46", default-features = false }
+tempfile.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+toml = { version = "=1.1.8", default-features = false, features = ["parse", "serde", "std"] }
+tower.workspace = true
+tower-http = { workspace = true, features = ["compression-br"] }
+url = "=2.5.8"
+uuid = { workspace = true, features = ["v4", "v5"] }
+
+[lints]
+workspace = true

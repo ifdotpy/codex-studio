@@ -2,7 +2,7 @@
 use crate::{StoreError, StoreResult};
 use rusqlite::{OptionalExtension, Transaction};
 
-pub(super) const RETIRED: [&str; 7] = [
+pub(super) const RETIRED: [&str; 9] = [
     "native_reset_pending",
     "capacity_retry_id",
     "capacity_retry_status",
@@ -12,6 +12,9 @@ pub(super) const RETIRED: [&str; 7] = [
     "start_attempt_submitted",
     "start_attempt_connection_generation",
     "start_attempt_active_at_reservation",
+    // Auto-wake and execution mode live on the chat row (`domain`).
+    "auto_wake",
+    "execution_mode",
 ];
 
 pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {

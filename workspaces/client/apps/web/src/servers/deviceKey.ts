@@ -1,4 +1,9 @@
 import { publicKeyPem } from "./pairing";
+import {
+  browserDatabases,
+  browserIndexedDB,
+  browserStores,
+} from "../browserPersistence";
 
 /**
  * The one key of this device (a browser profile or a desktop window). It signs for every
@@ -14,8 +19,7 @@ export type DeviceKey = {
 };
 
 const SLOT = "device";
-const DATABASE = "studio-device-key-v1";
-const STORE = "key";
+const STORE = browserStores.deviceKey;
 
 /** `dev-` and the SHA-256 of the SPKI public key in hex: 68 characters. */
 export async function deviceIdOf(spki: ArrayBuffer): Promise<string> {
@@ -40,7 +44,7 @@ export async function createDeviceKey(): Promise<DeviceKey> {
 
 function database() {
   return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(DATABASE, 1);
+    const request = browserIndexedDB()!.open(browserDatabases.deviceKey, 1);
     request.onupgradeneeded = () =>
       request.result.createObjectStore(STORE, { keyPath: "slot" });
     request.onsuccess = () => resolve(request.result);

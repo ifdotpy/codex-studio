@@ -2523,17 +2523,21 @@ fn project_for_cwd(
         };
         let record: studio_runtime_schema::project_record::ProjectRecord =
             serde_json::from_str(&raw).map_err(|_| invalid())?;
+        let studio_runtime_schema::project_record::ProjectRecord::Live(record) = record else {
+            continue;
+        };
         if record.id != id {
             return Err(invalid().into());
         }
         let path = PathBuf::from(&record.path);
-        if PathBuf::from(cwd).starts_with(&path) && filter(&record.preference) {
+        let preference = record.preference();
+        if PathBuf::from(cwd).starts_with(&path) && filter(&preference) {
             let depth = path.components().count();
             if selected
                 .as_ref()
                 .is_none_or(|(old_depth, _)| depth > *old_depth)
             {
-                selected = Some((depth, record.preference));
+                selected = Some((depth, preference));
             }
         }
     }
@@ -4372,6 +4376,7 @@ mod tests {
                     rusqlite::params![
                         project_path_for_write,
                         json!({
+                            "recordKind": "live",
                             "id": project_path_for_write,
                             "path": project_path_for_write,
                             "accountKey": "project-account",
@@ -4447,6 +4452,7 @@ mod tests {
                     rusqlite::params![
                         write_path,
                         json!({
+                            "recordKind": "live",
                             "id": write_path,
                             "path": write_path,
                             "accountKey": "codex-work",

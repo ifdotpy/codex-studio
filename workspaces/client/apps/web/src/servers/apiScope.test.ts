@@ -56,6 +56,39 @@ const response = (value: unknown, hash = API_SCHEMA_HASH) =>
   });
 
 describe("concurrent servers in one interface", () => {
+  it("adopts the stream session without a bootstrap request and rejects workspace changes", async () => {
+    const requests: Request[] = [];
+    const api = scope(
+      "a",
+      async (request) => {
+        requests.push(request);
+        return response({});
+      },
+      memory(),
+    );
+    const waiting = api.waitForStreamSession();
+    api.receiveStreamSession({
+      routes: [],
+      sessionId: "one",
+      workspaceId: "a".repeat(32),
+      token: "owner",
+    });
+    await expect(waiting).resolves.toMatchObject({
+      workspaceId: "a".repeat(32),
+      token: "owner",
+    });
+    await api.post("/api/organization", { id: "chat" });
+    expect(requests[0]?.headers.get("X-Canvas-Token")).toBe("owner");
+    expect(requests[0]?.headers.get("X-Canvas-Workspace")).toBe("a".repeat(32));
+    expect(() =>
+      api.receiveStreamSession({
+        routes: [],
+        sessionId: "two",
+        workspaceId: "b".repeat(32),
+      }),
+    ).toThrow();
+    expect(requests).toHaveLength(1);
+  });
   it("versions disposable caches without changing request identity storage", () => {
     const disk = memory();
     const api = scope("a", async () => response({}), disk);
@@ -247,38 +280,6 @@ it("separates transcript and sequence caches even when server object IDs collide
   second.assign(1);
   first.reset();
   expect(second.value).toBe(1);
-});
-
-it("keeps draft records and interrupted draft journals with their server", async () => {
-  const { createDraftStorage } = await import("../sync/draftStorage");
-  const { createDraftJournal } = await import("../sync/draftJournal");
-  const disk = memory();
-  const storageA = scopedStorage(() => disk, "a:");
-  const storageB = scopedStorage(() => disk, "b:");
-  const a = createDraftStorage(storageA),
-    b = createDraftStorage(storageB);
-  const journalA = createDraftJournal(storageA),
-    journalB = createDraftJournal(storageB);
-  const scope = "codex-drafts:identical-workspace";
-  a.writeLocalDraftRecord(scope, "identical-chat", "A", "local");
-  b.writeLocalDraftRecord(scope, "identical-chat", "B", "local");
-  const entry = {
-    key: scope + ":pending:edit",
-    version: {
-      id: "device:identical-chat",
-      session: "identical-chat",
-      device: "device",
-      text: "pending A",
-      updated: 1,
-    },
-  };
-  journalA.writeDraftJournal(entry);
-  expect(journalA.readDraftJournal(scope)).toEqual([entry]);
-  expect(journalB.readDraftJournal(scope)).toEqual([]);
-  expect(a.readLocalDraftRecord(scope, "identical-chat")?.text).toBe("A");
-  expect(b.readLocalDraftRecord(scope, "identical-chat")?.text).toBe("B");
-  journalB.forgetDraftJournal(entry);
-  expect(journalA.readDraftJournal(scope)).toEqual([entry]);
 });
 
 it("uses the generated access transport with scoped headers and exact management body", async () => {

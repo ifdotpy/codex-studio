@@ -131,8 +131,8 @@ pub async fn location_query(store: &RuntimeStore, query: Value) -> Result<Value,
 fn location_from_rows(
     query: &Value,
     server_id: &str,
-    project: &studio_runtime_schema::project_record::ProjectRecord,
-    projects: Vec<(String, studio_runtime_schema::project_record::ProjectRecord)>,
+    project: &studio_runtime_schema::project_record::ProjectLive,
+    projects: Vec<(String, studio_runtime_schema::project_record::ProjectLive)>,
 ) -> Result<Value, ProjectsError> {
     if query.get("action").and_then(Value::as_str) == Some("matches") {
         let origin = project
@@ -420,7 +420,7 @@ mod peer_location_tests {
         store
             .transaction(|tx| {
                 tx.execute("INSERT INTO runtime_projects(id,record) VALUES('p',?1)",
-                [r#"{"id":"p","path":"/project","peerTeams":[],"locations":[{"serverId":42}]}"#])?;
+                [r#"{"recordKind":"live","id":"p","path":"/project","peerTeams":[],"locations":[{"serverId":42}]}"#])?;
                 Ok(())
             })
             .await
@@ -431,7 +431,7 @@ mod peer_location_tests {
             .transaction(|tx| {
                 tx.execute(
                     "UPDATE runtime_projects SET record=?1 WHERE id='p'",
-                    [r#"{"id":"p","path":"/project","peerTeams":[],"locations":[]}"#],
+                    [r#"{"recordKind":"live","id":"p","path":"/project","peerTeams":[],"locations":[]}"#],
                 )?;
                 Ok(())
             })
@@ -1336,7 +1336,7 @@ mod account_order_tests {
     use super::*;
 
     #[test]
-    fn persisted_projects_require_canonical_peer_teams() {
+    fn persisted_projects_require_typed_peer_teams() {
         assert!(
             !studio_runtime_schema::validate("PersistedProjectRecord", &json!({"id":"p"}))
                 .expect("project schema")
@@ -1344,7 +1344,7 @@ mod account_order_tests {
         assert!(
             studio_runtime_schema::validate(
                 "PersistedProjectRecord",
-                &json!({"id":"p","peerTeams":[]})
+                &json!({"recordKind":"live","id":"p","path":"/work/p","peerTeams":[]})
             )
             .expect("project schema")
         );

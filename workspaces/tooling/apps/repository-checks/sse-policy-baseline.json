@@ -1,0 +1,874 @@
+[
+  {
+    "file": "App.tsx",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "App.tsx",
+    "callee": "globalThis.localStorage"
+  },
+  {
+    "file": "App.tsx",
+    "callee": "globalThis.localStorage"
+  },
+  {
+    "file": "api.test.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "api.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "api.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "api.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "api.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "api.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "api.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "apiSchema.test.ts",
+    "callee": "api.syncGet"
+  },
+  {
+    "file": "apiSchema.test.ts",
+    "callee": "api.syncGet"
+  },
+  {
+    "file": "apiSchema.test.ts",
+    "callee": "api.syncGet"
+  },
+  {
+    "file": "chatCreation.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "chatCreation.ts",
+    "callee": "localStorage.length"
+  },
+  {
+    "file": "chatCreation.ts",
+    "callee": "localStorage.key"
+  },
+  {
+    "file": "chatCreation.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "chatCreation.ts",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "chatCreation.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "chatCreation.ts",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "chatCreation.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/BrowserDictation.tsx",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/BrowserDictation.tsx",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "components/MessageQueue.tsx",
+    "callee": "localStorage.length"
+  },
+  {
+    "file": "components/MessageQueue.tsx",
+    "callee": "localStorage.key"
+  },
+  {
+    "file": "components/MessageQueue.tsx",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/MessageQueue.tsx",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/MessageQueue.tsx",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/PromptNavigator.tsx",
+    "callee": "syncGet"
+  },
+  {
+    "file": "components/Sidebar.tsx",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/TerminalDock.tsx",
+    "callee": "syncPost"
+  },
+  {
+    "file": "components/agents/SubagentConcurrencyControl.tsx",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "components/agents/SubagentConcurrencyControl.tsx",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "components/agents/SubagentConcurrencyControl.tsx",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/agents/SubagentConcurrencyControl.tsx",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/agents/SubagentConcurrencyControl.tsx",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/agents/SubagentConcurrencyControl.tsx",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/agents/SubagentConcurrencyControl.tsx",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "components/newChatSettings.ts",
+    "callee": "serverCredentialAdapter().fetch"
+  },
+  {
+    "file": "components/questions/Requests.tsx",
+    "callee": "apiPost"
+  },
+  {
+    "file": "components/questions/Requests.tsx",
+    "callee": "apiPost"
+  },
+  {
+    "file": "components/questions/Requests.tsx",
+    "callee": "apiPost"
+  },
+  {
+    "file": "components/removeSendingMessages.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/removeSendingMessages.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/removeSendingMessages.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "components/removeSendingMessages.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/removeSendingMessages.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/removeSendingMessages.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/removedMessages.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/removedMessages.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/removedMessages.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/removedMessages.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "components/removedMessages.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/removedMessages.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "components/removedMessages.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/removedMessages.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/removedMessages.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "components/removedMessages.ts",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "components/removedMessages.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/resourceReadRecovery.test.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "components/resourceReadRecovery.test.ts",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "components/resourceReadRecovery.test.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/resourceReadRecovery.test.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/resourceReadRecovery.test.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "components/resourceReadRecovery.test.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "components/sidebar/FleetIndicator.spec.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/sidebar/FleetServerBadge.spec.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "components/sidebar/FleetServerBadge.spec.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/sidebar/PhoneFleetHome.spec.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/sidebar/PhoneFleetHome.spec.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/sidebar/PhoneFleetHome.spec.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/sidebar/PhoneFleetHome.spec.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/sidebar/SidebarFocus.spec.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/useMessageQueue.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "components/useMessageQueue.ts",
+    "callee": "syncPost"
+  },
+  {
+    "file": "components/useProjectSave.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/useProjectSave.ts",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "components/useProjectSave.ts",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "components/useSendingMessageRemoval.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/useSendingMessageRemoval.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "components/useSidebarOrder.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "components/useSidebarOrder.ts",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "hooks.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "hooks.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "hooks.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "hooks.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "hooks.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "hooks.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "hooks.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "hooks.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "native/importBrowserProfile.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "native/importBrowserProfile.ts",
+    "callee": "indexedDB.databases"
+  },
+  {
+    "file": "native/importBrowserProfile.ts",
+    "callee": "localStorage.length"
+  },
+  {
+    "file": "native/importBrowserProfile.ts",
+    "callee": "localStorage.length"
+  },
+  {
+    "file": "native/importBrowserProfile.ts",
+    "callee": "localStorage.key"
+  },
+  {
+    "file": "native/importBrowserProfile.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "native/importBrowserProfile.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "native/importBrowserProfile.ts",
+    "callee": "indexedDB.deleteDatabase"
+  },
+  {
+    "file": "native/importBrowserProfile.ts",
+    "callee": "indexedDB.open"
+  },
+  {
+    "file": "native/importBrowserProfile.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "native/importBrowserProfile.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "native/preferences.ts",
+    "callee": "window.localStorage"
+  },
+  {
+    "file": "native/serverCredentials.test.ts",
+    "callee": "new NativeServerCredentials().fetch"
+  },
+  {
+    "file": "native/serverCredentials.test.ts",
+    "callee": "new NativeServerCredentials().fetch"
+  },
+  {
+    "file": "native/serverCredentials.test.ts",
+    "callee": "new NativeServerCredentials().fetch"
+  },
+  {
+    "file": "push/signInPush.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "push/signInPush.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "push/signInPush.ts",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "servers/MultiServerApp.tsx",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/MultiServerApp.tsx",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/MultiServerApp.tsx",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/MultiServerApp.tsx",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/ServerAccessSettings.tsx",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/ServerAccessSettings.tsx",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/ServerAccessSettings.tsx",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "servers/ServerManager.tsx",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/ServerManager.tsx",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/ServerManager.tsx",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/ServerManager.tsx",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "servers/automaticAccessStore.ts",
+    "callee": "indexedDB.open"
+  },
+  {
+    "file": "servers/automaticAccessStore.ts",
+    "callee": "globalThis.localStorage"
+  },
+  {
+    "file": "servers/automaticAccessStore.ts",
+    "callee": "globalThis.localStorage"
+  },
+  {
+    "file": "servers/browserCredentials.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "servers/desktopCredentials.test.ts",
+    "callee": "adapter.fetch"
+  },
+  {
+    "file": "servers/desktopCredentials.test.ts",
+    "callee": "adapter.fetch"
+  },
+  {
+    "file": "servers/desktopCredentials.test.ts",
+    "callee": "adapter.fetch"
+  },
+  {
+    "file": "servers/frameBridge.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/frameBridge.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/mutationIdentity.test.ts",
+    "callee": "globalThis.fetch"
+  },
+  {
+    "file": "servers/preferenceServerOrder.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/projectLocations.ts",
+    "callee": "globalThis.localStorage"
+  },
+  {
+    "file": "servers/registry.ts",
+    "callee": "globalThis.localStorage"
+  },
+  {
+    "file": "servers/registry.ts",
+    "callee": "globalThis.localStorage"
+  },
+  {
+    "file": "servers/registry.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/registry.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/routes.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "servers/routes.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "servers/routes.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/routes.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/serverNames.ts",
+    "callee": "serverCredentialAdapter().fetch"
+  },
+  {
+    "file": "servers/serverServices.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "servers/serverServices.ts",
+    "callee": "serverCredentialAdapter().fetch"
+  },
+  {
+    "file": "servers/serverTransport.test.ts",
+    "callee": "first.fetch"
+  },
+  {
+    "file": "servers/serverTransport.test.ts",
+    "callee": "second.fetch"
+  },
+  {
+    "file": "servers/serverTransport.test.ts",
+    "callee": "transport.fetch"
+  },
+  {
+    "file": "servers/serverTransport.test.ts",
+    "callee": "transport.fetch"
+  },
+  {
+    "file": "servers/shellTransport.test.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "servers/shellTransport.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "servers/shellTransport.ts",
+    "callee": "serverCredentialAdapter().fetch"
+  },
+  {
+    "file": "servers/storage.ts",
+    "callee": "globalThis.localStorage"
+  },
+  {
+    "file": "servers/summary.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "servers/summary.ts",
+    "callee": "createServerTransport(server, (owner, request) =>\n            serverCredentialAdapter().fetch(owner, request),\n          ).fetch"
+  },
+  {
+    "file": "servers/summary.ts",
+    "callee": "serverCredentialAdapter().fetch"
+  },
+  {
+    "file": "servers/transport.ts",
+    "callee": "globalThis.fetch"
+  },
+  {
+    "file": "servers/transport.ts",
+    "callee": "globalThis.fetch"
+  },
+  {
+    "file": "servers/transport.ts",
+    "callee": "serverCredentialAdapter().fetch"
+  },
+  {
+    "file": "servers/useServerDiscovery.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "servers/useServerDiscovery.ts",
+    "callee": "serverCredentialAdapter().fetch"
+  },
+  {
+    "file": "servers/useServerDiscovery.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/useServerDiscovery.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/useServerDiscovery.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/useServerDiscovery.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/useServerDiscovery.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/useServerDiscovery.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/useUiPreferenceSync.test.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/useUiPreferenceSync.test.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/useUiPreferenceSync.test.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/useUiPreferenceSync.test.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/useUiPreferenceSync.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/useUiPreferenceSync.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/useUiPreferenceSync.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/useUiPreferenceSync.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/useUiPreferenceSync.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/useUiPreferenceSync.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "servers/useUiPreferenceSync.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "servers/useUiPreferenceSync.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "sync/client.draftServer.test.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "sync/client.draftServer.test.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "sync/client.entityServer.test.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "sync/client.entityServer.test.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "sync/client.entityServer.test.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "sync/client.entityServer.test.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "sync/client.entityServer.test.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "sync/client.terminalServer.test.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "sync/client.terminalServer.test.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "sync/client.terminalServer.test.ts",
+    "callee": "fetch"
+  },
+  {
+    "file": "sync/client.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "sync/client.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "sync/client.ts",
+    "callee": "syncPost"
+  },
+  {
+    "file": "sync/localDraft.ts",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "sync/localDraft.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "sync/localDraft.ts",
+    "callee": "indexedDB.open"
+  },
+  {
+    "file": "sync/localDraft.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "sync/outboxWriteFailure.test.ts",
+    "callee": "syncPost"
+  },
+  {
+    "file": "sync/send.test.ts",
+    "callee": "syncPost"
+  },
+  {
+    "file": "sync/send.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "sync/send.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "sync/send.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "sync/send.ts",
+    "callee": "localStorage.removeItem"
+  },
+  {
+    "file": "sync/send.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "sync/send.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "sync/thinCache.ts",
+    "callee": "globalThis.indexedDB"
+  },
+  {
+    "file": "sync/uiPreferenceStore.test.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "sync/uiPreferenceStore.test.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "sync/uiPreferenceStore.test.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "sync/uiPreferenceStore.test.ts",
+    "callee": "localStorage.clear"
+  },
+  {
+    "file": "sync/uiPreferenceStore.test.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "sync/uiPreferenceStore.test.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "sync/uiPreferenceStore.test.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "sync/uiPreferenceStore.ts",
+    "callee": "globalThis.localStorage"
+  },
+  {
+    "file": "sync/uiPreferenceStore.ts",
+    "callee": "globalThis.localStorage"
+  },
+  {
+    "file": "sync/uploads.ts",
+    "callee": "syncGet"
+  },
+  {
+    "file": "sync/uploads.ts",
+    "callee": "syncPost"
+  },
+  {
+    "file": "sync/useOutbox.test.ts",
+    "callee": "mocks.syncPost"
+  },
+  {
+    "file": "usage/accountUsage.test.ts",
+    "callee": "localStorage"
+  },
+  {
+    "file": "useNativeAction.ts",
+    "callee": "localStorage.getItem"
+  },
+  {
+    "file": "useNativeAction.ts",
+    "callee": "localStorage.setItem"
+  },
+  {
+    "file": "useNativeAction.ts",
+    "callee": "localStorage.removeItem"
+  }
+]

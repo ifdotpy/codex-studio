@@ -795,7 +795,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
                 .collect::<Vec<_>>();
             tx.execute(
                 "INSERT INTO runtime_projects(id,record) VALUES('project',?1)",
-                [json!({"id":"project","name":"Project","path":cwd,
+                [json!({"recordKind":"live","id":"project","name":"Project","path":cwd,
                     "peerTeams":[{"id":"team","name":"Team","members":leads_only}]})
                 .to_string()],
             )?;

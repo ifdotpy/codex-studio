@@ -13,3 +13,5 @@ mod wave7_p01_registry;
 pub(crate) use studio_runtime_server::host_runtime;
 
 mod fixture_support;
+
+extern crate studio_test_deps;

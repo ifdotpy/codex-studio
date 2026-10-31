@@ -6,26 +6,40 @@ use crate::{
 };
 use serde::{Deserialize, Deserializer, Serialize, de::Error};
 use serde_json::{Number, Value};
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
 /// A JSON string limited in Unicode code points.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct BoundedString<const MIN: usize, const MAX: usize>(String);
 impl<const MIN: usize, const MAX: usize> BoundedString<MIN, MAX> {
+    pub fn new(value: String) -> Option<Self> {
+        (MIN..=MAX)
+            .contains(&value.chars().count())
+            .then_some(Self(value))
+    }
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+    pub fn as_string(&self) -> &String {
+        &self.0
+    }
+}
+impl<const MIN: usize, const MAX: usize> schemars::JsonSchema for BoundedString<MIN, MAX> {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        format!("ContinuationString{MIN}_{MAX}").into()
+    }
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        <crate::bounded_text::BoundedText<MIN, MAX> as schemars::JsonSchema>::json_schema(generator)
     }
 }
 impl<'de, const MIN: usize, const MAX: usize> Deserialize<'de> for BoundedString<MIN, MAX> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        let n = s.chars().count();
-        if (MIN..=MAX).contains(&n) {
-            Ok(Self(s))
-        } else {
-            Err(D::Error::custom("string length out of range"))
-        }
+        Self::new(String::deserialize(d)?)
+            .ok_or_else(|| D::Error::custom("string length out of range"))
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -34,6 +48,17 @@ pub struct BoundedVec<T, const MAX: usize>(Vec<T>);
 impl<T, const MAX: usize> BoundedVec<T, MAX> {
     pub fn as_slice(&self) -> &[T] {
         &self.0
+    }
+}
+impl<T: schemars::JsonSchema, const MAX: usize> schemars::JsonSchema for BoundedVec<T, MAX> {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        format!("ContinuationVec{MAX}_{}", T::schema_name()).into()
+    }
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({"type":"array","maxItems":MAX,"items":generator.subschema_for::<T>()})
     }
 }
 impl<'de, T: Deserialize<'de>, const MAX: usize> Deserialize<'de> for BoundedVec<T, MAX> {
@@ -54,24 +79,42 @@ impl BoundedNumber {
     pub fn get(&self) -> f64 {
         self.0.as_f64().expect("bounded JSON number")
     }
+
+    pub fn from_number(number: Number) -> Option<Self> {
+        number
+            .as_f64()
+            .filter(|n| (0.0..=MAX_SAFE_INTEGER as f64).contains(n))
+            .map(|_| Self(number))
+    }
+
+    pub fn from_f64(value: f64) -> Option<Self> {
+        Self::from_number(Number::from_f64(value)?)
+    }
+}
+impl schemars::JsonSchema for BoundedNumber {
+    fn inline_schema() -> bool {
+        true
+    }
+    fn schema_name() -> Cow<'static, str> {
+        "ContinuationNumber".into()
+    }
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({"type":"number","minimum":0,"maximum":MAX_SAFE_INTEGER})
+    }
 }
 impl<'de> Deserialize<'de> for BoundedNumber {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let number = Number::deserialize(d)?;
-        if number
-            .as_f64()
-            .is_some_and(|n| (0.0..=MAX_SAFE_INTEGER as f64).contains(&n))
-        {
-            Ok(Self(number))
-        } else {
-            Err(D::Error::custom("number out of range"))
-        }
+        Self::from_number(Number::deserialize(d)?)
+            .ok_or_else(|| D::Error::custom("number out of range"))
     }
 }
 fn optional_nonnull<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
 ) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
+}
+fn object<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<T, D::Error> {
+    JsonObject::<T>::deserialize(d).map(|value| value.0)
 }
 fn optional_string_enum<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
@@ -86,12 +129,6 @@ pub enum ContinuationRecord {
     Capacity(CapacityContinuation),
 }
 impl ContinuationRecord {
-    pub fn extra_mut(&mut self) -> &mut BTreeMap<String, Value> {
-        match self {
-            Self::Usage(record) => &mut record.extra,
-            Self::Capacity(record) => &mut record.extra,
-        }
-    }
     pub fn id(&self) -> &str {
         match self {
             Self::Usage(record) => record.id.as_str(),
@@ -111,26 +148,34 @@ pub struct ContinuationSnapshot {
     pub record: Option<ContinuationRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CapacityContinuation {
     #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<BoundedString<1, 4096>>")]
     pub accepted_turn_id: Field<BoundedString<1, 4096>>,
     pub account_key: BoundedString<1, 4096>,
+    #[schemars(with = "crate::rule_record::RuleInteger<0, 9007199254740991>")]
     pub attempt: SafeInteger,
     #[serde(deserialize_with = "crate::string_enum::deserialize")]
     pub cause: CapacityContinuationCause,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<BoundedNumber>")]
     pub claimed_at: Field<BoundedNumber>,
     pub cwd: BoundedString<0, 1048576>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<BoundedNumber>")]
     pub due_at: Field<BoundedNumber>,
+    #[schemars(with = "crate::rule_record::RuleInteger<0, 9007199254740991>")]
     pub epoch: SafeInteger,
     pub id: BoundedString<1, 4096>,
+    #[schemars(with = "crate::rule_record::RuleInteger<0, 9007199254740991>")]
     pub max_attempts: SafeInteger,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<BoundedString<0, 1048576>>")]
     pub reason: Field<BoundedString<0, 1048576>>,
-    pub settings: BTreeMap<String, Value>,
+    #[serde(deserialize_with = "object")]
+    pub settings: PreparationSettings,
     #[serde(deserialize_with = "crate::string_enum::deserialize")]
     pub status: CapacityContinuationStatus,
     #[serde(
@@ -138,6 +183,7 @@ pub struct CapacityContinuation {
         deserialize_with = "optional_nonnull",
         skip_serializing_if = "Option::is_none"
     )]
+    #[schemars(with = "BoundedVec<BoundedString<1, 4096>, 4096>")]
     pub task_claims: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
     pub thread_id: BoundedString<1, 4096>,
     pub turn_id: BoundedString<1, 4096>,
@@ -146,9 +192,44 @@ pub struct CapacityContinuation {
         deserialize_with = "optional_nonnull",
         skip_serializing_if = "Option::is_none"
     )]
+    #[schemars(with = "crate::rule_record::RuleInteger<0, 9007199254740991>")]
     pub waits: Option<SafeInteger>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<BoundedNumber>")]
+    pub updated_at: Field<BoundedNumber>,
+}
+
+/// Exact settings captured for a capacity retry.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreparationSettings {
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    pub model: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    pub effort: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    pub native_effort: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<bool>")]
+    pub fast_mode: Field<bool>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<bool>")]
+    pub yolo_mode: Field<bool>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    pub profile_instructions: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    pub role: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<bool>")]
+    pub daybreak_enabled: Field<bool>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    #[schemars(with = "Option<String>")]
+    pub cyber_access_program: Field<String>,
 }
 
 #[derive(Deserialize)]
@@ -230,11 +311,27 @@ pub struct UsageContinuation {
     pub task_claims: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
     pub thread_id: BoundedString<1, 4096>,
     pub turn_id: BoundedString<1, 4096>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub claimed_at: Field<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub accepted_turn_id: Field<BoundedString<1, 4096>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waits: Option<SafeInteger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<PreparationSettings>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub started_at: Field<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub updated_at: Field<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub last_checked_at: Field<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for_auth: Option<bool>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum CapacityContinuationCause {
     #[serde(rename = "serverOverloaded")]
     ServerOverloaded,
@@ -252,7 +349,7 @@ pub enum CapacityContinuationCause {
     DiskFull,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum CapacityContinuationStatus {
     #[serde(rename = "scheduled")]
     Scheduled,
@@ -292,30 +389,50 @@ pub enum UsageContinuationStatus {
     Unknown,
 }
 
+pub(crate) fn capacity_schema() -> Value {
+    schemars::schema_for!(CapacityContinuation).to_value()
+}
+pub(crate) fn check_capacity_schema_parity() -> Result<(), String> {
+    let stored: Value = serde_json::from_slice(include_bytes!(
+        "schemas/persisted-capacity-continuation.schema.json"
+    ))
+    .map_err(|e| e.to_string())?;
+    if stored != capacity_schema() {
+        return Err("capacity schema must be generated from CapacityContinuation".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-    use sha2::{Digest, Sha256};
 
     #[test]
-    fn continuation_record_owners_preserve_numbers_presence_and_extensions() {
+    fn continuation_record_owners_preserve_numbers_and_refuse_capacity_extensions() {
         let usage = json!({"id":"u","accountKey":"a","threadId":"t","epoch":1.0,"turnId":"v","status":"scheduled","cause":"auth","failedAt":100,"dueAt":null,"proofAt":3.0,"extension":{"a":[1,null]}});
-        let capacity = json!({"id":"c","accountKey":"a","threadId":"t","epoch":1.0,"turnId":"v","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":1.0,"maxAttempts":3,"claimedAt":null,"extension":{"a":[1,null]}});
+        let capacity = json!({"id":"c","accountKey":"a","threadId":"t","epoch":1.0,"turnId":"v","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{"model":"example","fastMode":false},"attempt":1.0,"maxAttempts":3,"claimedAt":null});
         let u = UsageContinuation::deserialize(usage.clone()).unwrap();
         let c = CapacityContinuation::deserialize(capacity.clone()).unwrap();
         assert_eq!(json!(u), usage);
         assert_eq!(json!(c), capacity);
+        let mut invalid = capacity;
+        invalid["extension"] = json!({"a":[1,null]});
+        assert!(CapacityContinuation::deserialize(invalid).is_err());
     }
 
     #[test]
     fn continuation_schema_parity() {
         let text = include_str!("schemas/persisted-continuation-snapshot.schema.json");
         assert_eq!(
-            data_encoding::HEXLOWER.encode(&Sha256::digest(text.as_bytes())),
-            "02286c794c76f2018c329f6dcc0a49c3509493d7e2f6582d624187efceb723f6",
-            "schema changed: review continuation_snapshot typed owner"
+            capacity_schema(),
+            serde_json::from_str::<Value>(include_str!(
+                "schemas/persisted-capacity-continuation.schema.json"
+            ))
+            .expect("capacity schema")
         );
+        let openapi: Value = serde_json::from_slice(crate::OPENAPI).expect("openapi");
+        let registry = crate::registry_for_document(&openapi).expect("schema registry");
         let schema: Value = serde_json::from_str(text).expect("schema");
         let samples = [
             json!(null),
@@ -363,10 +480,15 @@ mod tests {
         for (name, base, parse) in cases {
             let target = if name == "ROOT" {
                 schema.clone()
+            } else if name == "CapacityContinuation" {
+                capacity_schema()
             } else {
                 json!({"$defs":schema["$defs"], "$ref":format!("#/$defs/{name}")})
             };
-            let validator = jsonschema::validator_for(&target).expect("validator");
+            let validator = jsonschema::options()
+                .with_registry(&registry)
+                .build(&target)
+                .expect("validator");
             assert!(
                 validator.is_valid(&base),
                 "invalid test baseline {name}: {base}"
@@ -377,6 +499,8 @@ mod tests {
             );
             let props = if name == "ROOT" {
                 &schema["properties"]
+            } else if name == "CapacityContinuation" {
+                &target["properties"]
             } else {
                 &schema["$defs"][name]["properties"]
             };

@@ -1,3 +1,4 @@
+import { EventHistory } from "./eventHistory.testHelper";
 import { SubscriptionReplyKind, TerminalState } from "../generated/api";
 import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
@@ -9,7 +10,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import { ReplaySubject, filter, firstValueFrom, timeout } from "rxjs";
 import type { ResourceVersion } from "./resourceEvents";
 import { createDataObserver } from "./subscriptions/data";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
@@ -190,7 +190,7 @@ it("streams terminal intervals through the projection store and the screen consu
     undefined,
     { "terminal-output": recover },
   )(resource, accept, failed);
-  const applied = new ReplaySubject<ResourceChangeEvent>();
+  const applied = new EventHistory<ResourceChangeEvent>();
   const delivery = new ResourceEntityDelivery(
     client.persistResourceEntityChanges,
     (event) => {
@@ -225,7 +225,7 @@ it("streams terminal intervals through the projection store and the screen consu
     signal: controller.signal,
   });
   expect(response.ok).toBe(true);
-  const raw = new ReplaySubject<ResourceChangeEvent>();
+  const raw = new EventHistory<ResourceChangeEvent>();
   let sessionId = "";
   const pump = (async () => {
     for await (const event of resourceFrames(response, (id) => {
@@ -238,26 +238,16 @@ it("streams terminal intervals through the projection store and the screen consu
     if (!controller.signal.aborted) throw error;
   });
   const waitApplied = (seq: number, text: string) =>
-    firstValueFrom(
-      applied.pipe(
-        filter((event) =>
-          event.resourceVersions.some(
-            (entry) =>
-              entry.cursor?.seq === seq &&
-              entry.viewSnapshot?.terminalOutput?.text === text,
-          ),
-        ),
-        timeout(5000),
+    applied.wait((event) =>
+      event.resourceVersions.some(
+        (entry) =>
+          entry.cursor?.seq === seq &&
+          entry.viewSnapshot?.terminalOutput?.text === text,
       ),
     );
   const waitRaw = (seq: number) =>
-    firstValueFrom(
-      raw.pipe(
-        filter((event) =>
-          event.resourceVersions.some((entry) => entry.cursor?.seq === seq),
-        ),
-        timeout(5000),
-      ),
+    raw.wait((event) =>
+      event.resourceVersions.some((entry) => entry.cursor?.seq === seq),
     );
   try {
     await waitApplied(2, "a🙂");
@@ -323,15 +313,10 @@ it("streams terminal intervals through the projection store and the screen consu
     await write("new");
     await waitApplied(3, "new");
     await write("new", 0, "exited");
-    await firstValueFrom(
-      applied.pipe(
-        filter(
-          (event) =>
-            required(event.resourceVersions[0]).viewSnapshot?.terminalOutput
-              ?.status === TerminalState.exited,
-        ),
-        timeout(5000),
-      ),
+    await applied.wait(
+      (event) =>
+        required(event.resourceVersions[0]).viewSnapshot?.terminalOutput
+          ?.status === TerminalState.exited,
     );
     await vi.waitFor(() =>
       expect(accept).toHaveBeenLastCalledWith(
@@ -396,18 +381,12 @@ it("streams terminal intervals through the projection store and the screen consu
         remove: [remove],
       });
     await change(1, other, resource);
-    const otherInitial = await firstValueFrom(
-      raw.pipe(
-        filter(
-          (event) =>
-            event.reason === "initial" &&
-            event.resources.some(
-              (ref) =>
-                ref.kind === "terminal-output" && ref.terminalId === "other",
-            ),
+    const otherInitial = await raw.wait(
+      (event) =>
+        event.reason === "initial" &&
+        event.resources.some(
+          (ref) => ref.kind === "terminal-output" && ref.terminalId === "other",
         ),
-        timeout(5000),
-      ),
     );
     expect(otherInitial.resourceVersions[0]).toMatchObject({
       replyKind: "snapshot",
@@ -415,19 +394,13 @@ it("streams terminal intervals through the projection store and the screen consu
     });
     await write("changed while away");
     await change(2, resource, other);
-    const reopened = await firstValueFrom(
-      raw.pipe(
-        filter(
-          (event) =>
-            event.reason === "initial" &&
-            event.resourceVersions.some(
-              (entry) =>
-                entry.viewSnapshot?.terminalOutput?.text ===
-                "changed while away",
-            ),
+    const reopened = await raw.wait(
+      (event) =>
+        event.reason === "initial" &&
+        event.resourceVersions.some(
+          (entry) =>
+            entry.viewSnapshot?.terminalOutput?.text === "changed while away",
         ),
-        timeout(5000),
-      ),
     );
     assert.ok(reopened.resourceVersions[0] != null);
     expect(reopened.resourceVersions[0].replyKind).toBe("snapshot");

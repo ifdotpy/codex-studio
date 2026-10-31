@@ -807,6 +807,9 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
                     _ => format!("runtime_{table}"),
                 };
                 db.execute(&format!("DELETE FROM {table_name}"), [])?;
+                if table == "agents" {
+                    db.execute("DELETE FROM chats", [])?;
+                }
                 for row in rows.as_array().unwrap() {
                     let mut row = row.clone();
                     if table == "projects" {
@@ -863,6 +866,15 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
                         &format!("INSERT INTO {table_name}({names}) VALUES({placeholders})"),
                         rusqlite::params_from_iter(values),
                     )?;
+                    if table == "agents" {
+                        // The state was opened once, so the chat row follows the record.
+                        db.execute(
+                            "INSERT OR REPLACE INTO chats(id,state,status,auto_wake,execution_mode) \
+                             SELECT id,'active',record->>'$.status',record->>'$.autoWake',record->>'$.executionMode' \
+                             FROM runtime_agents WHERE id=?1",
+                            [row["id"].as_str().unwrap()],
+                        )?;
+                    }
                 }
             }
             Ok(())
@@ -2112,6 +2124,16 @@ fn seed_backlog_rows(
                 FROM seq CROSS JOIN source"),
             (count as i64, source, each_account, record),
         )?;
+    tx.execute(
+        &format!(
+            "{sequence}
+                INSERT INTO chats(id,state,status,auto_wake,usage_resume_enabled,execution_mode,turn_epoch)
+                SELECT printf('00000000-0000-4000-8000-%012d', seq.i),
+                       state,status,auto_wake,usage_resume_enabled,execution_mode,turn_epoch
+                FROM seq CROSS JOIN chats WHERE chats.id=?2"
+        ),
+        (count as i64, source),
+    )?;
     let columns = studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
         .map(|field| format!("\"{field}\""))
         .join(",");
@@ -2231,6 +2253,7 @@ async fn account_backlog_rejects_invalid_stored_account() {
     fixture.store.transaction(move |tx| {
         let raw: String = tx.query_row("SELECT record FROM runtime_agents WHERE id=?1", [&source], |row| row.get(0))?;
         tx.execute("INSERT INTO runtime_agents(id,record) VALUES('bad-account-key',json_set(?1,'$.id','bad-account-key','$.accountKey',7))", [raw])?;
+        tx.execute("INSERT INTO chats(id,state,status,auto_wake,usage_resume_enabled,execution_mode,turn_epoch) SELECT 'bad-account-key',state,status,auto_wake,usage_resume_enabled,execution_mode,turn_epoch FROM chats WHERE id=?1", [&source])?;
         tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('bad-account-key-event','bad-account-key','user','fixture','pending',0,json_extract((SELECT record FROM runtime_agents WHERE id='bad-account-key'),'$.epoch'))", [])?;
         Ok(())
     }).await.unwrap();

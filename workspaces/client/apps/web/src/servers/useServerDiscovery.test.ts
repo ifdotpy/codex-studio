@@ -64,7 +64,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("applies a discovery stream snapshot without HTTP and retains explicit recovery", async () => {
+it("uses stream snapshots without a fallback HTTP read", async () => {
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("location", { origin: "http://owner.invalid" });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: vi.fn() });
@@ -98,19 +98,7 @@ it("applies a discovery stream snapshot without HTTP and retains explicit recove
     expect.objectContaining({ localServerId: "owner" }),
   );
   await mocks.read?.();
-  expect(mocks.access).toHaveBeenCalledWith("GET");
-  let finishRecovery!: (snapshot: ServerAccessState) => void;
-  const entered = Promise.withResolvers<void>();
-  mocks.access.mockImplementation(
-    () =>
-      new Promise<ServerAccessState>((resolve) => {
-        finishRecovery = resolve;
-        entered.resolve();
-      }),
-  );
-  const recovering = mocks.read?.();
-  await entered.promise;
-  expect(mocks.access).toHaveBeenCalledTimes(2);
+  expect(mocks.access).not.toHaveBeenCalled();
   const newer = {
     ...snapshot,
     identity: { ...snapshot.identity, label: "New name" },
@@ -120,8 +108,6 @@ it("applies a discovery stream snapshot without HTTP and retains explicit recove
     revision: 2,
     discoverySnapshot: newer,
   } as ResourceVersion);
-  finishRecovery(snapshot);
-  await recovering;
   const snapshots = mocks.snapshots.filter(
     (value): value is { localLabel: string } =>
       !!value && typeof value === "object" && "localLabel" in value,

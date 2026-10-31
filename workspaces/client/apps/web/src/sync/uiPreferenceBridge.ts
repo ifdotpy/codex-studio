@@ -4,7 +4,6 @@ import {
   setPreferenceWriteStatus,
 } from "./uiPreferenceStatus";
 import type { syncPost } from "../api";
-import { onResume } from "./resume";
 import {
   acknowledgePreferenceFields,
   initializePreferenceMigration,
@@ -33,7 +32,11 @@ export function createUiPreferenceBridge(
 
   const send = async (explicitRetry = false) => {
     if (explicitRetry) retryGeneration++;
-    if (!active || !ready) return;
+    if (!active) return;
+    if (!ready) {
+      sendAgain = true;
+      return;
+    }
     if (sending) {
       sendAgain = true;
       return;
@@ -108,7 +111,8 @@ export function createUiPreferenceBridge(
 
   const receiveProjection = (preferences: UiPreferenceProjection) => {
     if (!active) return;
-    ready = true;
+    const pending = sendAgain;
+    ready = false;
     for (const scope of ["user", "server"] as const) {
       const fields = preferences[scope]?.fields as PreferenceFields | undefined;
       if (!fields) continue;
@@ -117,7 +121,9 @@ export function createUiPreferenceBridge(
       confirmed[scope] = serialized;
       receivePreferenceFields(scope, fields, storage);
     }
-    void send();
+    sendAgain = pending;
+    ready = true;
+    if (sendAgain) void send();
   };
 
   return {
@@ -128,16 +134,10 @@ export function createUiPreferenceBridge(
       active = true;
       initializePreferenceMigration("user", storage);
       initializePreferenceMigration("server", storage);
-      for (const scope of ["user", "server"] as const) {
-        if (Object.keys(readPreferenceFields(scope, storage)).length)
-          setPreferenceWriteStatus(storage, scope, { state: "saving" });
-      }
       const stopRetry = registerPreferenceRetry(storage, () => void send(true));
       const stopWrites = watchPreferenceWrites(() => void send());
-      const stopResume = onResume(() => void send(true));
       return () => {
         active = false;
-        stopResume();
         stopWrites();
         stopRetry();
       };

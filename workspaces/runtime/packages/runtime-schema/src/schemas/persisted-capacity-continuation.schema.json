@@ -1,0 +1,167 @@
+{
+  "$defs": {
+    "CapacityContinuationCause": {
+      "enum": [
+        "serverOverloaded",
+        "internalServerError",
+        "httpConnectionFailed",
+        "responseStreamConnectionFailed",
+        "responseStreamDisconnected",
+        "responseTooManyFailedAttempts",
+        "diskFull"
+      ],
+      "type": "string"
+    },
+    "CapacityContinuationStatus": {
+      "enum": [
+        "scheduled",
+        "starting",
+        "finished",
+        "cancelled",
+        "unknown",
+        "exhausted",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "PreparationSettings": {
+      "additionalProperties": false,
+      "description": "Exact settings captured for a capacity retry.",
+      "properties": {
+        "cyberAccessProgram": {
+          "type": ["string", "null"]
+        },
+        "daybreakEnabled": {
+          "type": ["boolean", "null"]
+        },
+        "effort": {
+          "type": ["string", "null"]
+        },
+        "fastMode": {
+          "type": ["boolean", "null"]
+        },
+        "model": {
+          "type": ["string", "null"]
+        },
+        "nativeEffort": {
+          "type": ["string", "null"]
+        },
+        "profileInstructions": {
+          "type": ["string", "null"]
+        },
+        "role": {
+          "type": ["string", "null"]
+        },
+        "yoloMode": {
+          "type": ["boolean", "null"]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "acceptedTurnId": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": ["string", "null"]
+    },
+    "accountKey": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "attempt": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "cause": {
+      "$ref": "#/$defs/CapacityContinuationCause"
+    },
+    "claimedAt": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": ["number", "null"]
+    },
+    "cwd": {
+      "maxLength": 1048576,
+      "type": "string"
+    },
+    "dueAt": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": ["number", "null"]
+    },
+    "epoch": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "id": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "maxAttempts": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "reason": {
+      "maxLength": 1048576,
+      "type": ["string", "null"]
+    },
+    "settings": {
+      "$ref": "#/$defs/PreparationSettings"
+    },
+    "status": {
+      "$ref": "#/$defs/CapacityContinuationStatus"
+    },
+    "taskClaims": {
+      "items": {
+        "maxLength": 4096,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 4096,
+      "type": "array"
+    },
+    "threadId": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "turnId": {
+      "maxLength": 4096,
+      "minLength": 1,
+      "type": "string"
+    },
+    "updatedAt": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": ["number", "null"]
+    },
+    "waits": {
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "accountKey",
+    "attempt",
+    "cause",
+    "cwd",
+    "epoch",
+    "id",
+    "maxAttempts",
+    "settings",
+    "status",
+    "threadId",
+    "turnId"
+  ],
+  "title": "CapacityContinuation",
+  "type": "object"
+}

@@ -13,7 +13,6 @@
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
 use studio_runtime_store::{
     AgentRecord, AgentRepository, JsonRecord, RecordKeyMode, RecordQueryShape, RuntimeStore,
     StoreResult, SyncDocumentsRepository, Table,
@@ -52,10 +51,23 @@ fn remove_review_assignments_in_transaction(
         }
     }
     if table_exists(transaction, "runtime_rooms")? {
-        let rows = records_with_field(transaction, "runtime_rooms", "reviewTargets")?;
-        for (_, value) in rows {
-            let mut record: MaintenanceRoomRecord = serde_json::from_value(value)?;
-            record.fields.remove("reviewTargets");
+        let mut statement = transaction.prepare(
+            "SELECT id,record FROM runtime_rooms WHERE CASE WHEN json_valid(record) THEN json_type(record,'$.reviewTargets') IS NOT NULL ELSE 0 END ORDER BY id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        for (id, raw) in rows {
+            let record: MaintenanceRoomRecord = match serde_json::from_str(&raw) {
+                Ok(record) if record_id_matches(&record, &id) => record,
+                _ => {
+                    eprintln!("Skipping invalid room {id} in retired review cleanup");
+                    continue;
+                }
+            };
             Table::<MaintenanceRoomRecord>::new(transaction).put(&record)?;
             remove_projection_field(transaction, "room", record.id.as_ref(), "reviewTargets")?;
             counts.rooms += 1;
@@ -70,6 +82,10 @@ fn remove_review_assignments_in_transaction(
         )? as u64;
     }
     Ok(counts)
+}
+
+fn record_id_matches(record: &MaintenanceRoomRecord, id: &str) -> bool {
+    record.id.as_ref() == id
 }
 
 fn remove_projection_field(
@@ -145,11 +161,37 @@ impl From<String> for MaintenanceRoomId {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MaintenanceRoomRecord {
     id: MaintenanceRoomId,
-    #[serde(flatten)]
-    fields: BTreeMap<String, Value>,
+    kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    custom_name: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    members: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    project_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    radio: Option<crate::radio_runtime::state::Radio>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    updated: Option<serde_json::Number>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    user_hidden: Option<bool>,
+    #[serde(default, rename = "reviewTargets", skip_serializing)]
+    _review_targets: Option<serde::de::IgnoredAny>,
+}
+
+fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 impl JsonRecord for MaintenanceRoomRecord {
@@ -159,13 +201,10 @@ impl JsonRecord for MaintenanceRoomRecord {
     const SCHEMA: &'static str = "PersistedRoomRecord";
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
+    const TYPED_SHAPE: bool = true;
 
     fn record_key(&self) -> Option<&Self::Id> {
         Some(&self.id)
-    }
-    // Remove this override once the record is closed and typed.
-    fn encode_stored(&self, _: &Connection, row_id: &str) -> StoreResult<String> {
-        studio_runtime_store::encode_open_record(self, row_id)
     }
 }
 
@@ -184,14 +223,56 @@ mod tests {
     use serde_json::{Value, json};
 
     #[test]
+    fn room_record_rejects_unknown_and_malformed_fields() {
+        assert!(
+            serde_json::from_str::<MaintenanceRoomRecord>(
+                r#"{"id":"room","kind":"private","unexpected":1}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<MaintenanceRoomRecord>(
+                r#"{"id":"room","kind":"private","members":false}"#
+            )
+            .is_err()
+        );
+        assert!(serde_json::from_str::<MaintenanceRoomRecord>(r#"{"id":"room","kind":"private","members":["agent"],"updated":1,"userHidden":false}"#).is_ok());
+    }
+
+    #[test]
     fn open_room_encoder_still_validates_schema() {
         let connection = Connection::open_in_memory().unwrap();
-        let invalid: MaintenanceRoomRecord =
-            serde_json::from_str(r#"{"id":"r","kind":false}"#).unwrap();
-        assert!(invalid.encode_stored(&connection, "r").is_err());
+        assert!(
+            serde_json::from_str::<MaintenanceRoomRecord>(r#"{"id":"r","kind":false}"#).is_err()
+        );
         let valid: MaintenanceRoomRecord =
             serde_json::from_str(r#"{"id":"r","kind":"private"}"#).unwrap();
         assert!(valid.encode_stored(&connection, "r").is_ok());
+    }
+
+    #[test]
+    fn cleanup_leaves_unknown_room_unchanged_and_processes_other_rooms() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        seed(&connection);
+        let raw = r#"{"id":"room-unknown","kind":"private","reviewTargets":[],"unknown":1}"#;
+        connection
+            .execute(
+                "INSERT INTO runtime_rooms(id,record) VALUES (?1,?2)",
+                ("room-unknown", raw),
+            )
+            .unwrap();
+        let transaction = connection.transaction().unwrap();
+        let counts = remove_review_assignments_in_transaction(&transaction).unwrap();
+        transaction.commit().unwrap();
+        assert_eq!(counts.rooms, 1);
+        let stored: String = connection
+            .query_row(
+                "SELECT record FROM runtime_rooms WHERE id='room-unknown'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, raw);
     }
 
     fn seed(connection: &Connection) {
@@ -240,7 +321,7 @@ mod tests {
                 "INSERT INTO runtime_rooms(id,record) VALUES (?1,?2)",
                 (
                     "room-a",
-                    json!({"id":"room-a","kind":"private","members":["agent-a"],"updated":1,"userHidden":false,"reviewTargets":null,"extra":3}).to_string(),
+                    json!({"id":"room-a","kind":"private","members":["agent-a"],"updated":1,"userHidden":false,"reviewTargets":null,"customName":"example"}).to_string(),
                 ),
             )
             .expect("Python-shaped room record inserts");

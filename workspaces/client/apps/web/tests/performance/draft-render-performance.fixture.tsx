@@ -1,4 +1,3 @@
-import type { LocalDraftRecord } from "../../src/sync/draftStorage.ts";
 import type { useSyncedDrafts } from "../../src/sync/drafts.ts";
 import type { syncDatabase } from "../../src/sync/client.ts";
 import type PromptComposer from "../../src/components/prompt-composer/PromptComposer.tsx";
@@ -30,18 +29,6 @@ export async function mountDraftFixture({
     const session = "chat-" + i;
     const text = "x".repeat(2000);
     drafts[session] = text;
-    localStorage.setItem(
-      `codex-chat-draft:${workspaceId}:${session}`,
-      JSON.stringify({
-        version: 1,
-        workspace: workspaceId,
-        session,
-        text,
-        deleted: false,
-        source: "local",
-        updated: 1,
-      } satisfies LocalDraftRecord),
-    );
   }
   const { useSyncedDrafts } = await importWithRetry(
     () => import("../../src/sync/drafts.ts"),

@@ -681,7 +681,6 @@ async fn local_project_registration(
                         server_id: local_server_for_write.clone(),
                         project_id: project_id_for_write.clone(),
                         name: name_for_write,
-                        extensions: Default::default(),
                     },
                 );
                 studio_runtime_store::ProjectsRepository::patch_project(
@@ -710,7 +709,6 @@ async fn local_project_registration(
                         project_id: physical_id_for_write,
                         git_origin: git_origin_for_write,
                         requested_path: None,
-                        extensions: Default::default(),
                     });
             }
             studio_runtime_store::ProjectsRepository::patch_project(
@@ -718,7 +716,7 @@ async fn local_project_registration(
                 &project_id_for_write,
                 &ProjectLocationsPatch {
                     locations: &logical.locations,
-                    locations_revision: logical.locations_revision.saturating_add(1),
+                    locations_revision: logical.locations_revision.unwrap_or(0).saturating_add(1),
                 },
             )?;
             studio_runtime_store::ProjectsRepository::patch_project(
@@ -1210,7 +1208,7 @@ async fn remote_location_request(
 /// checkout's Git origin, so it runs on a blocking thread.
 fn remote_location_action(
     query: &Value,
-    project: &studio_runtime_schema::project_record::ProjectRecord,
+    project: &studio_runtime_schema::project_record::ProjectLive,
     server: String,
 ) -> Result<(String, String, Value), ApiError> {
     let action = if query.get("action").and_then(Value::as_str) == Some("matches") {
@@ -1362,7 +1360,7 @@ inventory::submit! {
 mod local_registration_tests {
     #[test]
     fn remote_location_uses_typed_project_location() {
-        let project = serde_json::from_str::<studio_runtime_schema::project_record::ProjectRecord>(
+        let project = serde_json::from_str::<studio_runtime_schema::project_record::ProjectLive>(
             r#"{"id":"project","path":"project:id","peerTeams":[],"locations":[{"serverId":"server","path":"/folder","projectId":"id","gitOrigin":"origin"}]}"#,
         ).unwrap();
         let (_, action, payload) =
@@ -1378,8 +1376,7 @@ mod local_registration_tests {
 
     #[test]
     fn project_record_refuses_malformed_locations() {
-        let raw =
-            r#"{"id":"project","path":"/project","peerTeams":[],"locations":[{"serverId":42}]}"#;
+        let raw = r#"{"recordKind":"live","id":"project","path":"/project","peerTeams":[],"locations":[{"serverId":42}]}"#;
         assert!(
             serde_json::from_str::<studio_runtime_schema::project_record::ProjectRecord>(raw)
                 .is_err()
@@ -1393,7 +1390,12 @@ mod local_registration_tests {
         db.execute("INSERT INTO runtime_projects VALUES('project', ?1)", [raw])
             .unwrap();
         assert!(studio_runtime_store::ProjectsRepository::get_record(&db, "project").is_err());
-        let valid = r#"{"id":"project","path":"/project","peerTeams":[],"locations":[{"serverId":"server","path":"/folder","projectId":"id","vendor":{"n":  1}}]}"#;
+        let unknown = r#"{"recordKind":"live","id":"project","path":"/project","peerTeams":[],"locations":[{"serverId":"server","path":"/folder","projectId":"id","vendor":{"n":1}}]}"#;
+        assert!(
+            serde_json::from_str::<studio_runtime_schema::project_record::ProjectRecord>(unknown)
+                .is_err()
+        );
+        let valid = r#"{"recordKind":"live","id":"project","path":"/project","peerTeams":[],"locations":[{"serverId":"server","path":"/folder","projectId":"id"}]}"#;
         db.execute(
             "UPDATE runtime_projects SET record=?1 WHERE id='project'",
             [valid],
@@ -1404,19 +1406,13 @@ mod local_registration_tests {
             .unwrap();
         let location = &project.locations[0];
         assert_eq!(location.server_id, "server");
-        assert_eq!(location.extensions["vendor"].get(), r#"{"n":  1}"#);
-        assert!(
-            serde_json::to_string(location)
-                .unwrap()
-                .contains(r#""vendor":{"n":  1}"#)
-        );
     }
 
     #[test]
     fn project_record_refuses_malformed_aliases_and_revision() {
         for raw in [
-            r#"{"id":"project","path":"/project","peerTeams":[],"projectAliases":[{"serverId":42}]}"#,
-            r#"{"id":"project","path":"/project","peerTeams":[],"locationsRevision":"bad"}"#,
+            r#"{"recordKind":"live","id":"project","path":"/project","peerTeams":[],"projectAliases":[{"serverId":42}]}"#,
+            r#"{"recordKind":"live","id":"project","path":"/project","peerTeams":[],"locationsRevision":"bad"}"#,
         ] {
             assert!(
                 serde_json::from_str::<studio_runtime_schema::project_record::ProjectRecord>(raw)

@@ -42,7 +42,7 @@ use studio_runtime_services::token_rate::TokenRateSnapshot as TokenRates;
 use studio_runtime_store::{Connection, RuntimeStore, SyncDocumentsRepository};
 use tokio::time::{Instant, Interval, interval_at};
 
-use super::extractors::{ApiHeaders, ApiJson, QueryParams};
+use super::extractors::{ApiHeaders, ApiJson, Caller, QueryParams};
 use super::manifest::{OperationStatus, RouteGroup, get, post};
 use crate::error::ApiError;
 use crate::router::HttpState;
@@ -279,6 +279,7 @@ async fn sync_stream(
     query: QueryParams,
     ApiHeaders(headers): ApiHeaders,
     request_headers: HeaderMap,
+    Caller(principal): Caller,
     State(state): State<HttpState>,
 ) -> Response {
     let protocol = query.typed_value("protocol").and_then(Value::as_str);
@@ -476,6 +477,12 @@ async fn sync_stream(
         crate::generated::SyncSessionEvent {
             session_id,
             routes: state.serve_origin().into_iter().collect(),
+            workspace_id: state.workspace_id.clone(),
+            token: matches!(
+                principal,
+                studio_runtime_services::principal::Principal::Owner
+            )
+            .then(|| state.token.clone()),
         },
     ));
     if renderer_hash.is_some() {
@@ -3101,6 +3108,65 @@ mod tests {
                 .await
                 .expect("stream response");
             assert_eq!(response.status(), expected, "typed since cursor {seq}");
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_bootstrap_only_exposes_owner_token_to_owner() {
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use studio_runtime_services::principal::{Grant, Principal};
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "owner-secret".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router(state).expect("router");
+        for principal in [
+            Principal::Owner,
+            Principal::Device {
+                id: "device".into(),
+                grant: Grant::Observe,
+            },
+            Principal::Peer {
+                server: "peer".into(),
+            },
+        ] {
+            let is_owner = principal == Principal::Owner;
+            let response = app.clone().oneshot(Request::builder()
+                .uri(format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%5D&tokenRates=false"))
+                .header("host", "127.0.0.1:4321")
+                .extension(ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 12345))))
+                .extension(principal)
+                .body(Body::empty()).expect("request")).await.expect("stream");
+            assert_eq!(response.status(), StatusCode::OK);
+            let frame = response
+                .into_body()
+                .into_data_stream()
+                .next()
+                .await
+                .expect("session")
+                .expect("bytes");
+            let text = String::from_utf8_lossy(&frame);
+            let session: Value = serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("session");
+            assert_eq!(session["workspaceId"], "workspace");
+            assert_eq!(
+                session.get("token").and_then(Value::as_str),
+                is_owner.then_some("owner-secret")
+            );
         }
     }
 
