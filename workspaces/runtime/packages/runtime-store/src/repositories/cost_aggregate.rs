@@ -430,7 +430,7 @@ fn partition_journal_receipts_cached<'a>(
         cache.facts.clear();
         cache.final_counts.clear();
         cache.entry.partition = JournalPartition {
-            accepted: added.clone(),
+            accepted: added,
             superseded: BTreeSet::new(),
         };
     } else {

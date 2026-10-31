@@ -293,6 +293,10 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/src/managed_child_create.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/src/managed_host_tools.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
@@ -322,6 +326,10 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/payload_blobs.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/peer_backup.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
@@ -1013,6 +1021,14 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:9"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-store/src/domain.rs",
+      "fingerprint": "2247a123101ce24c8cf1b24d5d6c4ca21ab58d83fe90c6162d7e63f98c17c83c:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/domain.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_22_analytics.rs",
       "fingerprint": "b83fbdc5af2110fa1e99b9b255ed438f594b833a1df72af2a05e0e84cdbdd9cb:0"
     },
@@ -1050,6 +1066,14 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-store/src/repositories/cost_aggregate.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/repositories/federation.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/repositories/remote_outbox.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
@@ -1728,8 +1752,16 @@
       "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/src/text_blob_sweep.rs",
+      "fingerprint": "05ed782712b957e83aaf934a7100767448f72978163367db2cfb46544d921dad:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/src/token_rate.rs",
       "fingerprint": "1a1c6b6c818b43203a784f210476d501baa0501e86d868cac70f5de352d6a881:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/transcript.rs",
+      "fingerprint": "139bd0b3a122af5d05130eaf829c224f00bb2a02fcf82143a45e56e755c4f044:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/usage_resume.rs",
@@ -1860,12 +1892,20 @@
       "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:1"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/tests/wave7_p03_gate_tests/http.rs",
+      "fingerprint": "be25342d8cda999ec81b7a210c8f5987e07dafe738ee4191cbba579970876fd4:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/tests/wave7_p14_resources.rs",
       "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/workspace_ready/effects.rs",
       "fingerprint": "834b0b0ae879fcdb4e860e4782b5574ab66db8c60f642f2e499fb9317c2b2724:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/domain.rs",
+      "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-store/src/lib.rs",
@@ -2004,10 +2044,6 @@
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-http/src/routes/agents_create.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-http/src/routes/branches.rs",
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
     },
@@ -2137,10 +2173,6 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/agent_progress.rs",
-      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/agents_create.rs",
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
     },
     {
@@ -3244,6 +3276,10 @@
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-store/src/repositories/remote_outbox.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-store/src/repositories/voice.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
@@ -3316,6 +3352,10 @@
       "fingerprint": "ef061af224e61e360270c9b8d4fac594582783958e7c0f1d5f54cad5da2f8860:0"
     },
     {
+      "file": "workspaces/client/apps/web/src/components/SidebarWarnings.test.ts",
+      "fingerprint": "b67a32f1b7da5f70d42e609275fdf152fc0c350881bb33fcb97ae9524a6376d3:0"
+    },
+    {
       "file": "workspaces/client/apps/web/src/components/liveRequestConsumers.test.ts",
       "fingerprint": "5dd99924262143a5b700fbe1c54170c3fc0bd6acd8975886361c7ade130adbb2:0"
     },
@@ -3350,10 +3390,6 @@
     {
       "file": "workspaces/client/apps/web/src/components/sidebarOrder.migration.test.ts",
       "fingerprint": "c6487191939083ff97210a7759a52e86b7d6062414f1dd85390b015410faf8f5:0"
-    },
-    {
-      "file": "workspaces/client/apps/web/src/components/SidebarWarnings.test.ts",
-      "fingerprint": "b67a32f1b7da5f70d42e609275fdf152fc0c350881bb33fcb97ae9524a6376d3:0"
     },
     {
       "file": "workspaces/client/apps/web/src/hooks/mobileViewport.test.ts",
@@ -3444,18 +3480,6 @@
       "fingerprint": "ffdcc476d3524ddd05da41b8d43d84a5fd917ea20ac0a9747a8d49b029dea353:0"
     },
     {
-      "file": "workspaces/client/apps/web/src/servers/eventSource.test.ts",
-      "fingerprint": "03d24bdba8c9e272d6948e30c32dbe670cbac161425bf16fe401ee51cdd0a4f1:0"
-    },
-    {
-      "file": "workspaces/client/apps/web/src/servers/eventSource.test.ts",
-      "fingerprint": "03d24bdba8c9e272d6948e30c32dbe670cbac161425bf16fe401ee51cdd0a4f1:1"
-    },
-    {
-      "file": "workspaces/client/apps/web/src/servers/logicalProjects.test.ts",
-      "fingerprint": "9d5d88e384ff762325254c34a39eef2ef92cc361f3e028d9b7cf2bad6f4b860d:0"
-    },
-    {
       "file": "workspaces/client/apps/web/src/servers/ServerAccountLimits.reads.test.ts",
       "fingerprint": "6f2ad7f8927616383aab613be24417028b53d81f30e621f998c3f14f58bb734a:0"
     },
@@ -3466,6 +3490,18 @@
     {
       "file": "workspaces/client/apps/web/src/servers/ServerAccountLimits.test.ts",
       "fingerprint": "946d8fdd234323eb48d8998a3d6abe322a8ba492a3d067861b72c01903361fe3:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/eventSource.test.ts",
+      "fingerprint": "03d24bdba8c9e272d6948e30c32dbe670cbac161425bf16fe401ee51cdd0a4f1:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/eventSource.test.ts",
+      "fingerprint": "03d24bdba8c9e272d6948e30c32dbe670cbac161425bf16fe401ee51cdd0a4f1:1"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/logicalProjects.test.ts",
+      "fingerprint": "9d5d88e384ff762325254c34a39eef2ef92cc361f3e028d9b7cf2bad6f4b860d:0"
     },
     {
       "file": "workspaces/client/apps/web/src/servers/shellTransport.test.ts",

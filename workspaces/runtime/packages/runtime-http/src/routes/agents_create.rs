@@ -439,7 +439,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationAccountRead
             .collect();
         Ok(ManagedCreationAccountListing {
             accounts,
-            default_account_groups: snapshot.default_account_groups.clone(),
+            default_account_groups: snapshot.default_account_groups,
         })
     }
 
@@ -2283,7 +2283,7 @@ mod conversation_catalog_admission_tests {
             }
         });
         assert!(!conversation_settings_need_conversation_account(
-            &parse_request(request.clone())
+            &parse_request(request)
         ));
         assert_eq!(
             worker_settings_catalog_account(&typed_defaults(Field::Value("worker-account".into())))

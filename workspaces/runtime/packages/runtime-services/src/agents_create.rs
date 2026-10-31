@@ -962,7 +962,7 @@ mod tests {
             },
             CreationIntent {
                 parent: Field::Missing,
-                ..intent.clone()
+                ..intent
             },
         ] {
             assert!(
@@ -1000,15 +1000,8 @@ mod tests {
             "accountKey":"default", "serverId":"server-a", "isLead":true, "needsTitle":false, "autoWake":true,
             "creationIntent":{"name":"Agent A","prompt":"Start the task"}
         });
-        let created = create_agent(
-            &tx,
-            "agent-a",
-            "Start the task",
-            record.clone(),
-            10.0,
-            |_, _| true,
-        )
-        .expect("record and initial event persist");
+        let created = create_agent(&tx, "agent-a", "Start the task", record, 10.0, |_, _| true)
+            .expect("record and initial event persist");
         assert_eq!(created["id"], "agent-a");
         tx.commit().expect("transaction commits");
 

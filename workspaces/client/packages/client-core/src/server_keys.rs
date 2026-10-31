@@ -629,7 +629,7 @@ mod tests {
             .into_value();
         signs_for(&vault, &fresh, &public_bytes(&device.public_key));
         // A key-less credential of another client id is refused.
-        let mut other = fresh.clone();
+        let mut other = fresh;
         other["clientId"] = json!("other");
         assert!(
             signature(
