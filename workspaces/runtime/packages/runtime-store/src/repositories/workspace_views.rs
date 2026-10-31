@@ -456,7 +456,7 @@ mod bulk_read_tests {
                     "INSERT INTO runtime_tasks VALUES(?1,?2)",
                     (
                         id,
-                        json!({"id":id,"agent":"agent","created":created,"status":"completed"})
+                        json!({"id":id,"agent":"agent","created":created,"itemId":id,"turnId":"turn","kind":"command","status":"completed","type":"commandExecution","name":"commandExecution"})
                             .to_string(),
                     ),
                 )
@@ -493,7 +493,7 @@ mod bulk_read_tests {
         for (id, created, finished) in [("a", 1, 1), ("b", 2, 5), ("c", 2, 4), ("foreign", 9, 9)] {
             let agent = if id == "foreign" { "other" } else { "agent" };
             let payload_id = if id == "a" { "wrong" } else { id };
-            connection.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":payload_id,"agent":agent,"created":created,"finished":finished}).to_string())).expect("task");
+            connection.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":payload_id,"agent":agent,"created":created,"finished":finished,"itemId":id,"turnId":"turn","kind":"command","status":"completed","type":"commandExecution","name":"commandExecution"}).to_string())).expect("task");
         }
         let agents = ["agent".to_owned()];
         let page =
