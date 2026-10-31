@@ -61,8 +61,8 @@ Rust compiler policy witnesses run in the Rust lane after workspace dependencies
 are available; hosted CI runs them after Clippy. The standalone `test:tooling`
 script still includes them, while the prepared non-Rust gate selects
 `test:tooling:js` from the [root scripts](../package.json).
-Run it on the exact commit before every push to `main` and before packaging for
-installation. Run `just test-fast` before every PR and merge and state its result
+Run it once per release, on the exact commit of the release pull request, before
+it merges. A nightly run is optional. Run it also before packaging for installation. Run `just test-fast` before every PR and merge and state its result
 in the PR. Workers run focused witnesses; the lead runs these gates on the
 integrated batch.
 
@@ -226,8 +226,8 @@ Use the root [`justfile`](../justfile) for the three independent scopes:
 2. **One change:** `just check <package>` runs that package's local checks;
    `just check <package> --dry-run` prints the planned commands.
 3. **Pre-PR gate:** run `just test-fast` and report its result. A focused
-   hypothesis does not replace this gate. Every push to `main` also requires
-   a local `just test-comprehensive` pass on the exact commit.
+   hypothesis does not replace this gate. Each release also requires
+   a local `just test-comprehensive` pass on the exact commit of the release pull request.
 
 The repository checks add three focused commands: `just contracts-check` runs
 the generated API and persisted-state checks in read-only mode; `just boundaries-check`
