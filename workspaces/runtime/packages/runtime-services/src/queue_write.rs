@@ -133,10 +133,6 @@ pub fn action(
         QueueCommand::Reorder(reorder_body) => {
             reorder(transaction, &agent, &reorder_body.ordered_ids, rows)?
         }
-        QueueCommand::Cancel(_) => {
-            let (target_id, _) = target_row(body, rows)?;
-            QueueWriteRepository::update_status(transaction, target_id, "cancelled")?;
-        }
         QueueCommand::Edit(edit) => {
             let (target_id, row) = target_row(body, rows)?;
             let text = event_write::python_strip(edit.text.as_str());

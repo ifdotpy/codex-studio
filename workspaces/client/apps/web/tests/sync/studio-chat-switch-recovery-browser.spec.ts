@@ -85,12 +85,7 @@ test("selected Studio chat recovers after slow cursor preparation without reload
     root: fileURLToPath(new URL("../../", import.meta.url)),
     optimizeDeps: {
       noDiscovery: true,
-      include: [
-        "rxdb",
-        "rxdb/plugins/storage-dexie",
-        "rxdb/plugins/leader-election",
-        "rxdb/plugins/replication",
-      ],
+      include: [],
     },
     plugins: [
       {

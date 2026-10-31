@@ -14,6 +14,26 @@ pub const API_SCHEMA_MISMATCH_HEADER: &str = "X-Studio-API-Schema-Mismatch";
 /// Field of the `api-schema` stream event that reports a hash mismatch.
 pub const API_SCHEMA_MISMATCH_FIELD: &str = "mismatch";
 
+/// How many earlier contract hashes a server keeps and accepts from its peers. Installs
+/// are less frequent than contract changes, so a peer one install behind can be several
+/// contract changes behind. Unit: hashes.
+pub const PEER_HASH_HISTORY_LEN: usize = 20;
+
+/// Earlier contract hashes, newest first. The committed file `previous-api-schema-hashes.txt`
+/// owns the list: `studio-contracts --write` adds the old current hash to it when the
+/// current hash changes, and keeps `PEER_HASH_HISTORY_LEN` entries.
+pub fn previous_api_schema_hashes() -> impl Iterator<Item = &'static str> {
+    include_str!("../previous-api-schema-hashes.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+}
+
+/// A peer server is accepted when its hash is the current hash or one of the earlier hashes.
+pub fn peer_hash_accepted(current: &str, offered: &str) -> bool {
+    offered == current || previous_api_schema_hashes().any(|hash| hash == offered)
+}
+
 const DOCUMENTATION_KEYS: [&str; 4] = ["description", "summary", "examples", "externalDocs"];
 const NAME_KEYED_MAPS: [&str; 18] = [
     "properties",
@@ -109,4 +129,40 @@ pub fn canonical_bytes(document: &Value) -> Vec<u8> {
 /// renderers and the server compare.
 pub fn schema_hash(document: &Value) -> String {
     data_encoding::HEXLOWER.encode(&Sha256::digest(canonical_bytes(document)))
+}
+
+#[cfg(test)]
+mod peer_version_tests {
+    use super::*;
+
+    const CURRENT: &str = "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0";
+
+    #[test]
+    fn the_history_file_holds_sha256_hex_hashes_up_to_the_limit() {
+        let hashes = previous_api_schema_hashes().collect::<Vec<_>>();
+        assert!(!hashes.is_empty() && hashes.len() <= PEER_HASH_HISTORY_LEN);
+        for hash in hashes {
+            assert_eq!(hash.len(), 64, "{hash}");
+            assert!(
+                hash.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            );
+        }
+    }
+
+    #[test]
+    fn a_peer_with_the_current_or_an_earlier_hash_is_accepted() {
+        assert!(peer_hash_accepted(CURRENT, CURRENT));
+        for hash in previous_api_schema_hashes() {
+            assert!(peer_hash_accepted(CURRENT, hash));
+        }
+    }
+
+    #[test]
+    fn a_peer_with_an_unknown_hash_is_refused() {
+        let unknown = "9aa282663c082a75fc10906d145769eec177755035b36b8611d96c949b56fa11";
+        assert!(!previous_api_schema_hashes().any(|hash| hash == unknown));
+        assert!(!peer_hash_accepted(CURRENT, unknown));
+        assert!(!peer_hash_accepted(CURRENT, ""));
+    }
 }

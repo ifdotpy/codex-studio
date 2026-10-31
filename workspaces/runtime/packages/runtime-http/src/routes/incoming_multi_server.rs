@@ -10,7 +10,8 @@ use axum::response::{IntoResponse, Response};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{net::SocketAddr, sync::Arc};
 use studio_runtime_services::multi_server_auth::{self, AccessError, SignedRequest};
-use studio_runtime_services::multi_server_pairing::MultiServerBoundary;
+use studio_runtime_services::multi_server_pairing::{LINK_CONNECTION, MultiServerBoundary};
+use subtle::ConstantTimeEq;
 
 use crate::error::error_response;
 use crate::router::HttpState;
@@ -22,6 +23,20 @@ inventory::submit! {
         dependencies: &[],
     }
 }
+
+/// Routes that another paired server calls with a signed request: the pairing handshake,
+/// identity and status, invites, and orchestration actions (update.*, backup.put, project
+/// and host actions). This boundary authenticates them itself, so the permission table
+/// never sees them and `Peer` keeps each one.
+pub(crate) const SIGNED_BOUNDARY: [(&str, &str); 7] = [
+    ("GET", multi_server_auth::IDENTITY_PATH),
+    ("GET", multi_server_auth::STATUS_PATH),
+    ("POST", multi_server_auth::PAIR_PATH),
+    ("POST", multi_server_auth::AUTO_PAIR_PATH),
+    ("POST", multi_server_auth::NAME_PATH),
+    ("POST", "/api/multi-server"),
+    ("POST", "/api/servers/orchestration"),
+];
 
 pub(crate) fn needed(headers: &HeaderMap, path: &str) -> bool {
     // Ordinary authenticated browser writes carry request IDs too; signed
@@ -40,8 +55,26 @@ pub(crate) fn needed(headers: &HeaderMap, path: &str) -> bool {
             .iter()
             .any(|key| headers.contains_key(*key)))
 }
+/// The QUIC connection that carried the request, when the peer link vouches for it with the
+/// secret that the backend gave it. The link removes both headers from a peer's own request.
+fn link_connection(state: &HttpState, headers: &HeaderMap) -> Option<String> {
+    let token = state.peer_link_token.as_deref()?;
+    let supplied = headers.get("x-studio-link-token")?;
+    let connection = headers.get("x-studio-link-connection")?.to_str().ok()?;
+    (bool::from(supplied.as_bytes().ct_eq(token.as_bytes()))
+        && (1..=64).contains(&connection.len())
+        && connection.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+    .then(|| connection.to_owned())
+}
 pub(crate) async fn serve(state: HttpState, request: Request<Body>, next: Next) -> Response {
-    let mut response = serve_inner(state, request, next).await;
+    let mut response = match link_connection(&state, request.headers()) {
+        Some(connection) => {
+            LINK_CONNECTION
+                .scope(connection, serve_inner(state, request, next))
+                .await
+        }
+        None => serve_inner(state, request, next).await,
+    };
     response.headers_mut().insert(
         "access-control-allow-origin",
         axum::http::HeaderValue::from_static("*"),
@@ -146,23 +179,48 @@ async fn serve_inner(state: HttpState, request: Request<Body>, next: Next) -> Re
             .iter()
             .filter_map(|v| v.to_str().ok().map(str::to_owned))
             .collect::<Vec<_>>();
+        // A client that sends a nonce gets the server's signature over it, so a route
+        // can prove it holds the server identity key before the client sends credentials.
+        let nonce = request.uri().query().and_then(|query| {
+            form_urlencoded::parse(query.as_bytes())
+                .find(|(name, _)| name == "nonce")
+                .map(|(_, value)| value.into_owned())
+        });
+        let proof_store = store.clone();
         return match boundary.discovery_identity(store, &address, &logins).await {
-            Ok(v) => match super::generated_json::<crate::generated::DiscoveryIdentity>(v) {
-                Ok(v) => Json(v).into_response(),
-                Err(e) => e.into_response(),
-            },
+            Ok(mut v) => {
+                if let Some(nonce) = nonce {
+                    let server_id = v["serverId"].as_str().unwrap_or_default();
+                    let Some(message) =
+                        studio_runtime_schema::multi_server_protocol::identity_proof_message(
+                            server_id, &nonce,
+                        )
+                    else {
+                        return error_response(
+                            StatusCode::BAD_REQUEST,
+                            "The identity nonce is invalid",
+                        );
+                    };
+                    match credentials.sign(proof_store, message).await {
+                        Ok(proof) => v["proof"] = serde_json::Value::String(proof),
+                        Err(_) => {
+                            return error_response(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "The server identity is unavailable",
+                            );
+                        }
+                    }
+                }
+                match super::generated_json::<crate::generated::DiscoveryIdentity>(v) {
+                    Ok(v) => Json(v).into_response(),
+                    Err(e) => e.into_response(),
+                }
+            }
             Err(e) => failure(e),
         };
     }
-    let supported = matches!(
-        (request.method().as_str(), request.uri().path()),
-        ("GET", multi_server_auth::STATUS_PATH)
-            | ("POST", multi_server_auth::PAIR_PATH)
-            | ("POST", multi_server_auth::AUTO_PAIR_PATH)
-            | ("POST", multi_server_auth::NAME_PATH)
-            | ("POST", "/api/multi-server")
-            | ("POST", "/api/servers/orchestration")
-    );
+    let supported = SIGNED_BOUNDARY.contains(&(request.method().as_str(), request.uri().path()))
+        && request.uri().path() != multi_server_auth::IDENTITY_PATH;
     if !supported {
         return dispatch(state, request, boundary, peer_link_advert, next).await;
     }
@@ -649,6 +707,33 @@ async fn dispatch(
         Ok(principal) => principal,
         Err(e) => return failure(e),
     };
+    if principal.kind == "server" {
+        // A peer server states its contract version: the current or the previous one.
+        let offered = parts
+            .headers
+            .get(crate::schema::API_SCHEMA_HASH_HEADER)
+            .and_then(|value| value.to_str().ok());
+        // A build from before this check sends no hash. Treat it as the previous version.
+        // Remove this case one release later.
+        if !offered.is_none_or(|hash| {
+            studio_runtime_schema::api_schema::peer_hash_accepted(
+                crate::schema::api_schema_hash(),
+                hash,
+            )
+        }) {
+            let mut response = error_response(
+                StatusCode::UPGRADE_REQUIRED,
+                "The peer server runs an unsupported API version",
+            );
+            response.headers_mut().insert(
+                crate::schema::API_SCHEMA_MISMATCH_HEADER,
+                HeaderValue::from_static("1"),
+            );
+            return response;
+        }
+        // The ordinary boundary accepts only the exact current hash. This peer is accepted.
+        parts.headers.remove(crate::schema::API_SCHEMA_HASH_HEADER);
+    }
     for name in SIGNATURE_HEADERS.into_iter().chain([
         "origin",
         "sec-fetch-site",
@@ -665,6 +750,8 @@ async fn dispatch(
         parts.headers.insert("x-canvas-token", token);
     }
     // The rewritten request carries no signature, so it takes the ordinary route.
+    // The principal comes from the server's own trust list and rides in the extensions.
+    parts.extensions.insert(principal.principal());
     let request = Request::from_parts(parts, Body::from(bytes));
     let mut response = Box::pin(crate::middleware::boundary(State(state), request, next)).await;
     if let Ok(value) = HeaderValue::from_str(&principal.local_server) {
@@ -753,6 +840,22 @@ fn credential_error(
 
 #[cfg(test)]
 mod tests {
+    /// Every route that a paired server calls reaches the signed boundary before the
+    /// permission table, and exists in the API document.
+    #[test]
+    fn every_peer_route_reaches_the_signed_boundary() {
+        let operations = crate::schema::operations().expect("OpenAPI operations load");
+        for (method, path) in super::SIGNED_BOUNDARY {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("x-studio-client", axum::http::HeaderValue::from_static("c"));
+            assert!(super::needed(&headers, path), "{method} {path}");
+            assert!(
+                operations.contains(&(method.to_owned(), path.to_owned())),
+                "{method} {path} is not in the API document"
+            );
+        }
+    }
+
     use super::{IncomingMultiServerResponse, validate_response};
     use serde_json::json;
 

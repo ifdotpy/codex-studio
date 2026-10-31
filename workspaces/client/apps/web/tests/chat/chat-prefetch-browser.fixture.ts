@@ -1,6 +1,5 @@
 import * as client from "../../src/sync/client";
 import * as cache from "../../src/sync/transcriptCache";
-import type { Subscription } from "rxjs";
 import type { ResourceVersion } from "../../src/sync/subscriptions/events";
 
 type Payload = Parameters<
@@ -20,7 +19,7 @@ type Harness = {
   filterRead: boolean;
   releaseFilter: () => void;
   filteredWrites: number[];
-  stopFilteredWrites?: Subscription;
+  stopFilteredWrites?: { unsubscribe(): void };
   absentRead: boolean;
   releaseAbsent: () => void;
   staleInsert?: ReturnType<typeof client.persistProjection>;

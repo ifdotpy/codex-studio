@@ -271,7 +271,9 @@ async fn connection_completion_matches_python_full_records_and_results() {
             .expect("rows");
         assert_eq!(json!(full), case["fulltext"]);
         let completed: Vec<String> = read
-            .prepare("SELECT id FROM runtime_completed_turns")
+            .prepare(
+                "SELECT chat||':'||provider_turn FROM turns WHERE state='completed' ORDER BY rowid",
+            )
             .expect("prepare")
             .query_map([], |r| r.get(0))
             .expect("query")
@@ -328,7 +330,7 @@ async fn unresolved_operations_match_python_including_legacy_scope() {
 async fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
     let case = &corpus()["connection"][0];
     for (table, op) in [
-        ("runtime_completed_turns", "INSERT"),
+        ("turns", "INSERT"),
         ("runtime_items", "INSERT"),
         ("runtime_agents", "UPDATE"),
         ("sync_entities", "INSERT"),
@@ -338,6 +340,12 @@ async fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
             let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
             seed(&store, &case["before"]).await;
             let before = agent(&store);
+            // The seed can hold an unfinished turn; a rollback keeps exactly these rows.
+            let turns_before: i64 = store
+                .test_reader()
+                .expect("read")
+                .query_row("SELECT count(*) FROM turns", [], |r| r.get(0))
+                .expect("count");
             let sql = format!(
                 "CREATE TRIGGER p07_fail {timing} {op} ON {table} BEGIN SELECT RAISE(ABORT,'p07 injected crash'); END;"
             );
@@ -366,10 +374,9 @@ async fn completion_failpoints_roll_back_all_rows_and_restart_is_replay_safe() {
                 store
                     .test_reader()
                     .expect("read")
-                    .query_row("SELECT count(*) FROM runtime_completed_turns", [], |r| r
-                        .get::<_, i64>(0))
+                    .query_row("SELECT count(*) FROM turns", [], |r| r.get::<_, i64>(0))
                     .expect("count"),
-                0
+                turns_before
             );
             store
                 .transaction(|tx| {
@@ -1340,7 +1347,7 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
             "runtime_execution_inputs",
             "request_results",
             "runtime_outbox",
-            "runtime_completed_turns",
+            "turns",
             "sync_entities",
             "sync_documents",
             "sync_generation",

@@ -38,6 +38,14 @@ const FULLTEXT_MENTIONS: &[(&str, &str)] = &[
         "reader and writer of body: TranscriptRepository::full_text and put_*",
     ),
     (
+        "packages/runtime-store/src/migrations/m2026_10_30_text_blobs.rs",
+        "migration doc: moves the table's bodies to blobs",
+    ),
+    (
+        "packages/runtime-store/src/text_blobs.rs",
+        "reads bodies through StoredText to move them to blobs and to check the move",
+    ),
+    (
         "packages/runtime-store/src/stored_text_compaction.rs",
         "compaction pass: converts plain values with compare and set and read-back checks",
     ),

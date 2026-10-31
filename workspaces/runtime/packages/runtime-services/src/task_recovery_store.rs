@@ -8,7 +8,6 @@ use crate::{
     scheduler::lifecycle_transaction_with,
     task_recovery::{TaskRecoveryEffects, TaskRecoverySnapshot},
 };
-use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::sync::Arc;
 use studio_runtime_store::{
@@ -104,13 +103,12 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
                 "{agent}:{}",
                 t.turn_id()
             );
-            current.completed_turn = tx
-                .query_row(
-                    "SELECT id FROM runtime_completed_turns WHERE id=?1",
-                    [&completed],
-                    |r| r.get(0),
-                )
-                .optional()?;
+            current.completed_turn = studio_runtime_store::domain::turn_completed(
+                tx,
+                &agent,
+                t.turn_id(),
+            )?
+            .then_some(completed);
             let decision = match decision {
                 TaskAbsenceDecision::Lost => expected.absence_decision(&current, observation.quiet),
                 hold @ TaskAbsenceDecision::Hold { .. } => hold,

@@ -1603,11 +1603,11 @@ describe("scale verifier retained-input audit", () => {
           "CREATE TABLE runtime_execution_inputs(event TEXT,run TEXT);" +
           "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT);" +
           "CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT,record TEXT);" +
-          "CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);" +
+          "CREATE TABLE turns(id TEXT PRIMARY KEY,chat TEXT,state TEXT);" +
           "INSERT INTO runtime_events VALUES ('event','owned','user','delivered',NULL);" +
           "INSERT INTO runtime_execution_inputs VALUES ('event','run');" +
           "INSERT INTO runtime_execution_runs VALUES ('run','owned','account');" +
-          "INSERT INTO runtime_completed_turns VALUES ('owned:one'),('owned:two'),('other:one');",
+          "INSERT INTO turns VALUES ('owned:one','owned','completed'),('owned:two','owned','completed'),('other:one','other','completed'),('owned:live','owned','running');",
       );
       canvas.prepare("INSERT INTO runtime_event_meta VALUES (?,?)").run(
         "event",

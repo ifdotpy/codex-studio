@@ -14,6 +14,7 @@ use crate::remote_transport::{self, MultiServerSigningInput};
 
 pub const PAIR_PATH: &str = "/api/multi-server/v1/pair";
 pub const AUTO_PAIR_PATH: &str = "/api/multi-server/v1/auto-pair";
+pub const IDENTITY_PATH: &str = "/api/multi-server/v1/identity";
 pub const STATUS_PATH: &str = "/api/multi-server/v1/status";
 pub const NAME_PATH: &str = "/api/multi-server/v1/name";
 pub const MAX_OBSERVATION_BYTES: usize = 1024 * 1024;

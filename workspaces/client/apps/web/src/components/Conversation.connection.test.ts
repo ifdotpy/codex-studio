@@ -18,6 +18,7 @@ const h = vi.hoisted(() => ({
   effects: [] as Array<() => unknown>,
   dirty: false,
 }));
+vi.mock("../usePendingCommands", () => ({ usePendingCommands: () => [] }));
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
   useState: (initial: unknown) => {
@@ -329,7 +330,16 @@ it("keeps queued feedback through a real in-flight send and clears it only after
   });
   const outbox = createOutbox({
     api: {
-      syncPost: post,
+      command: {
+        send: async (body: unknown) => ({
+          rows: [
+            {
+              collection: "messageReceipt",
+              payload: await post("/api/commands", body),
+            },
+          ],
+        }),
+      },
       syncGet: vi.fn(async () => ({ workspaceId: "workspace" })),
       refreshSession: vi.fn(async () => ({ token: "token" })),
       isApiSchemaMismatch: () => false,

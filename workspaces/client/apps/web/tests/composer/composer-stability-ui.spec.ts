@@ -1,9 +1,11 @@
 import { cacheFixture, readCachedStorage } from "../cacheFixture.ts";
 import { required } from "../teams/helpers.ts";
-import type { GetResult, PostResult } from "../../src/apiTypes.ts";
+import type { GetResult } from "../../src/apiTypes.ts";
+import type { MessageDelivery } from "../../src/commands.ts";
+import { sendReply, sentMessage } from "../messages/send-command.ts";
 import type { Page, Route } from "@playwright/test";
 import type { TestAgent } from "../playwright.ts";
-import { fixtureGetResult, fixturePostBody } from "../chat/http.ts";
+import { fixtureGetResult } from "../chat/http.ts";
 import {
   waitForFixturePort,
   readTestState,
@@ -128,11 +130,11 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         if (queueResponseGate) await queueResponseGate;
         await route.fulfill({ json: { items: queue } });
       });
-      await page.route("**/api/messages", (route) => {
-        sendCaptured.resolve(route);
-      });
-      await page.route("**/api/stop", (route) => {
-        stopCaptured.resolve(route);
+      await page.route("**/api/commands", (route) => {
+        const kind = route.request().postDataJSON()?.kind;
+        if (kind === "send") sendCaptured.resolve(route);
+        else if (kind === "stop") stopCaptured.resolve(route);
+        else void route.fallback();
       });
       await page.setViewportSize({ width, height: 960 });
       await page.goto(origin);
@@ -425,17 +427,14 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           baseline = latest.boxes;
         }
       }
-      const firstMessage = fixturePostBody(
-        "/api/messages",
-        firstSend.request().postDataJSON(),
-      );
+      const firstMessage = sentMessage(firstSend.request())!;
       assert.ok(firstMessage.id);
 
       await firstSend.fulfill({
-        json: {
+        json: sendReply({
           id: firstMessage.id,
           status: "sent",
-        } satisfies PostResult<"/api/messages">,
+        } satisfies MessageDelivery),
       });
       await page.waitForFunction(
         () => !document.querySelector<HTMLTextAreaElement>("#message")!.value,
@@ -462,8 +461,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
             `390px subsequent non-empty send preserves composer ${key}`,
           );
       assert.equal(
-        fixturePostBody("/api/messages", secondSend.request().postDataJSON())
-          .delivery,
+        sentMessage(secondSend.request())?.delivery,
         "current_turn",
         "An ordinary Send action keeps the current after-tool delivery mode",
       );

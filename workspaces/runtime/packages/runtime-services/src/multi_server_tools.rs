@@ -3,7 +3,7 @@
 //! Python `MultiServerService.tools` in codex_multi_server_orchestration.py
 //! owns these rules, with `codex_project_locations.request` and `suggestions`.
 //! Every remote action queues one durable envelope with a stable identity in
-//! `runtime_server_outbox` before it crosses the transport. A refusal before
+//! the shared outbox before it crosses the transport. A refusal before
 //! that write is a not-applied tool result; the receipt of a sent envelope is
 //! the tool result, whatever its outcome.
 
@@ -17,8 +17,9 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use studio_runtime_schema::persistence::{ServerDeliveryState, ServerFetchState};
+use studio_runtime_schema::persistence::{OutboxStatus, ServerDeliveryState, ServerFetchState};
 use studio_runtime_store::multi_server_delivery::{SavedRemoteReply, remote_operation_key};
+use studio_runtime_store::remote_outbox::{RemoteEffect, RemoteEntry, RemoteOutbox};
 use studio_runtime_store::request_results::{AdmittedRequest, RequestResultError};
 use studio_runtime_store::{
     AgentId, AgentRepository, ProjectsRepository, RuntimeStore, StoreError,
@@ -177,6 +178,25 @@ struct ExportRequest {
     known: Vec<String>,
 }
 
+/// The record of a local Git fetch in the shared outbox (effect `server_fetch`).
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FetchEntry {
+    state: ServerFetchState,
+    /// The saved fetch inputs as JSON text.
+    export: Option<String>,
+    admission: AdmittedRequest,
+}
+
+/// An unknown entry (after an unclean stop) counts as a fetch that may have started.
+fn fetch_state(entry: &RemoteEntry<FetchEntry>) -> ServerFetchState {
+    if entry.status == OutboxStatus::Unknown {
+        ServerFetchState::Fetching
+    } else {
+        entry.record.state
+    }
+}
+
 enum FetchPayload {
     Preparing(ExportRequest),
     Fetching(ExportRequest),
@@ -210,6 +230,15 @@ fn task_admission(
     crate::tool_requests::resolve_admission(tx, actor, key)
         .map_err(|error| Step::Refused(error.to_string()))?
         .ok_or_else(|| Step::Refused("The admitted tool request is unavailable".into()))
+}
+
+/// A failure of the shared outbox as a tool step.
+fn access_step(error: AccessError) -> Step {
+    match error {
+        AccessError::Store(error) => Step::Store(error),
+        AccessError::Sqlite(error) => Step::Store(error.into()),
+        other => Step::Refused(other.to_string()),
+    }
 }
 
 fn refuse<T>(message: impl Into<String>) -> Result<T, Step> {
@@ -467,12 +496,7 @@ impl ServerTools {
         let (servers, pending) = self
             .read(|tx| {
                 let servers = crate::multi_server::paired_servers(tx)?;
-                let mut statement = tx.prepare(
-                    "SELECT DISTINCT server FROM runtime_server_outbox WHERE state='queued' AND error IS NOT NULL",
-                )?;
-                let pending = statement
-                    .query_map([], |row| row.get::<_, String>(0))?
-                    .collect::<Result<Vec<_>, _>>()?;
+                let pending = crate::server_outbox::offline_servers(tx)?;
                 Ok((servers, pending))
             })
             .await?;
@@ -515,7 +539,7 @@ impl ServerTools {
                     if saved.reply.server!=server {return refuse("The receipt belongs to another server");}
                     return Ok(json!({"state":ServerFetchState::Complete,"result":saved.reply,"error":null}));
                 }
-                let state:Option<ServerFetchState>=tx.query_row("SELECT state FROM runtime_server_fetch WHERE id=?1 AND server=?2",params![root,server],|row|row.get(0)).optional()?;
+                let state:Option<ServerFetchState>=RemoteOutbox::get::<FetchEntry>(tx,RemoteEffect::ServerFetch,&server,root).map_err(StoreError::from)?.map(|entry|fetch_state(&entry));
                 return state.map(|state|json!({"state":state,"result":null,"error":null})).ok_or_else(||Step::Refused("The request ID expired".into()));
             }
             let canonical=remote_operation_key("server-outbox",&[&server],root,&[action]);
@@ -524,7 +548,10 @@ impl ServerTools {
                 if saved.reply.server.as_deref()!=Some(&server) || (action.starts_with("exec") && saved.reply.actor.as_deref()!=Some(&actor_id)) {return refuse("The receipt belongs to another actor or server");}
                 return Ok(json!({"state":ServerDeliveryState::Complete,"result":saved.reply.response,"error":null}));
             }
-            let pending:Option<(ServerDeliveryState,Option<String>,String)>=tx.query_row("SELECT state,error,body FROM runtime_server_outbox WHERE id IN (?1,?2) AND server=?3",params![root,canonical,server],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
+            let pending:Option<(ServerDeliveryState,Option<String>,String)>=match crate::server_outbox::find_for(tx,&server,root).map_err(access_step)? {
+                Some(entry)=>Some(entry),
+                None=>crate::server_outbox::find_for(tx,&server,&canonical).map_err(access_step)?,
+            }.map(|entry|(crate::server_outbox::state(entry.status),entry.record.error,entry.record.body));
             if let Some((state,error,body))=pending {
                 let envelope:Value=serde_json::from_str(&body).map_err(StoreError::from)?;
                 if action.starts_with("exec") && envelope.pointer("/payload/actor").and_then(Value::as_str)!=Some(&actor_id) {return refuse("The receipt belongs to another lead");}
@@ -574,41 +601,65 @@ impl ServerTools {
                 if current.is_lead != Some(true) || current.epoch != epoch {
                     return refuse("Only the active lead can change project locations");
                 }
-                let parent=task_admission(tx,&key_for_write,&actor_id)?;
-                let admitted=parent.derive_result("project-location",&["location"],&signature);
-                if let Some(saved)=crate::event_write::replay_request::<Box<serde_json::value::RawValue>>(tx,admitted.id(),admitted.signature(),(crate::event_write::unix_time().map_err(|_|Step::Refused("The system clock is unavailable".into()))?*1000.0) as i64)? {
-                    let _: crate::project_locations::LocationResult = serde_json::from_str(saved.reply.get()).map_err(StoreError::from)?;
-                    return Ok(Err(serde_json::from_str(saved.reply.get()).map_err(StoreError::from)?));
+                let parent = task_admission(tx, &key_for_write, &actor_id)?;
+                let admitted = parent.derive_result("project-location", &["location"], &signature);
+                if let Some(saved) =
+                    crate::event_write::replay_request::<Box<serde_json::value::RawValue>>(
+                        tx,
+                        admitted.id(),
+                        admitted.signature(),
+                        (crate::event_write::unix_time()
+                            .map_err(|_| Step::Refused("The system clock is unavailable".into()))?
+                            * 1000.0) as i64,
+                    )?
+                {
+                    let _: crate::project_locations::LocationResult =
+                        serde_json::from_str(saved.reply.get()).map_err(StoreError::from)?;
+                    return Ok(Err(
+                        serde_json::from_str(saved.reply.get()).map_err(StoreError::from)?
+                    ));
                 }
                 let Some((_, mut project)) = ProjectsRepository::get(tx, &project_id)? else {
                     return refuse("Select an existing project");
                 };
                 crate::project_locations::normalize_project(&mut project, &local_for_write)?;
-                let old: Option<(String, String)> = tx
-                    .query_row(
-                        "SELECT server,body FROM runtime_server_outbox WHERE id IN (?1,?2)",
-                        params![key_for_write,remote_operation_key("server-outbox",&[&server_for_write],&key_for_write,&[&action_for_write])],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()?;
+                let scoped_key = remote_operation_key(
+                    "server-outbox",
+                    &[&server_for_write],
+                    &key_for_write,
+                    &[&action_for_write],
+                );
+                let old: Option<(String, String)> =
+                    match crate::server_outbox::find(tx, &key_for_write).map_err(access_step)? {
+                        Some(entry) => Some(entry),
+                        None => crate::server_outbox::find(tx, &scoped_key).map_err(access_step)?,
+                    }
+                    .map(|entry| (entry.target, entry.record.body));
                 if let Some((old_server, body)) = old {
                     #[derive(Deserialize)]
-                    struct SavedEnvelope { payload: Box<serde_json::value::RawValue> }
-                    let envelope: SavedEnvelope = serde_json::from_str(&body)
-                        .map_err(|_| Step::Refused("Stored cross-server envelope is invalid".into()))?;
-                    if old_server != server_for_write || ProjectsRepository::location_request(tx, &project_id, &key_for_write)?.as_ref() != Some(&admitted) {
+                    struct SavedEnvelope {
+                        payload: Box<serde_json::value::RawValue>,
+                    }
+                    let envelope: SavedEnvelope = serde_json::from_str(&body).map_err(|_| {
+                        Step::Refused("Stored cross-server envelope is invalid".into())
+                    })?;
+                    if old_server != server_for_write
+                        || ProjectsRepository::location_request(tx, &project_id, &key_for_write)?
+                            .as_ref()
+                            != Some(&admitted)
+                    {
                         return refuse("This request ID has different content");
                     }
-                    return Ok(Ok(serde_json::from_str(envelope.payload.get()).map_err(StoreError::from)?));
+                    return Ok(Ok(
+                        serde_json::from_str(envelope.payload.get()).map_err(StoreError::from)?
+                    ));
                 }
-                let busy: Option<i64> = tx
-                    .query_row(
-                        "SELECT 1 FROM runtime_server_outbox WHERE state!='complete' AND json_extract(body,'$.action') IN ('add_location','remove_location') AND json_extract(body,'$.payload.project')=?1 LIMIT 1",
-                        [&project_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
-                if busy.is_some() {
+                let busy = crate::server_outbox::project_action_pending(
+                    tx,
+                    "'add_location','remove_location'",
+                    &project_id,
+                )?;
+                if busy {
                     return refuse("A location change is pending. Read its existing receipt");
                 }
                 let locations = project["locations"].as_array().cloned().unwrap_or_default();
@@ -622,7 +673,10 @@ impl ServerTools {
                 {
                     return refuse("This project already has a location on that server");
                 }
-                if action_for_write == "remove_location" && location.is_some() && locations.len() == 1 {
+                if action_for_write == "remove_location"
+                    && location.is_some()
+                    && locations.len() == 1
+                {
                     return refuse("Keep at least one project location");
                 }
                 let mut payload = json!({
@@ -634,8 +688,18 @@ impl ServerTools {
                 if let Some(location) = location {
                     payload["location"] = location;
                 }
-                ProjectsRepository::put_location_request(tx,&project_id,&key_for_write,&admitted)?;
-                payload[crate::project_locations::LOCATION_ADMISSION_FIELD]=crate::project_locations::location_admission(tx,&project_id,Some((&actor_id,epoch)))?;
+                ProjectsRepository::put_location_request(
+                    tx,
+                    &project_id,
+                    &key_for_write,
+                    &admitted,
+                )?;
+                payload[crate::project_locations::LOCATION_ADMISSION_FIELD] =
+                    crate::project_locations::location_admission(
+                        tx,
+                        &project_id,
+                        Some((&actor_id, epoch)),
+                    )?;
                 Ok(Ok(payload))
             })
             .await?;
@@ -864,16 +928,16 @@ impl ServerTools {
                     let _: FetchReply = serde_json::from_str(saved.reply.get()).map_err(StoreError::from)?;
                     return Ok(Err(serde_json::from_str(saved.reply.get()).map_err(StoreError::from)?));
                 }
-                let prior:Option<(String,ServerFetchState,Option<String>)>=tx.query_row("SELECT signature,state,result FROM runtime_server_fetch WHERE id=?1",[&key_owned],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
-                if let Some((signature,state,raw))=prior {
-                    if signature!=signature_for_claim {return refuse("This request id has different content");}
-                    return Ok(match FetchPayload::decode(state,raw.as_deref())? {
+                if let Some(prior)=RemoteOutbox::find::<FetchEntry>(tx,RemoteEffect::ServerFetch,&key_owned).map_err(StoreError::from)? {
+                    if prior.signature!=signature_for_claim {return refuse("This request id has different content");}
+                    let state=fetch_state(&prior);
+                    return Ok(match FetchPayload::decode(state,prior.record.export.as_deref())? {
                         Some(saved)=>Ok(saved),
                         None=>Err(json!({"requestId":key_owned,"outcome":"unknown","detail":"The original fetch inputs are unavailable. The operation will not be sent again."})),
                     });
                 }
                 let export=ExportRequest{cwd:worker_cwd,branch:branch_for_claim,known:known_sorted};
-                tx.execute("INSERT INTO runtime_server_fetch(id,server,signature,state,result,admission) VALUES(?1,?2,?3,?4,?5,?6)",params![key_owned,server_owned,signature_for_claim,ServerFetchState::Preparing,serde_json::to_string(&export).map_err(StoreError::from)?,serde_json::to_string(&admitted).map_err(StoreError::from)?])?;
+                RemoteOutbox::put(tx,RemoteEffect::ServerFetch,&server_owned,&key_owned,&signature_for_claim,OutboxStatus::Pending,None,FetchEntry{state:ServerFetchState::Preparing,export:Some(serde_json::to_string(&export).map_err(StoreError::from)?),admission:admitted},now).map_err(StoreError::from)?;
                 Ok(Ok(FetchPayload::Preparing(export)))
             })
             .await?;
@@ -997,10 +1061,32 @@ impl ServerTools {
         let claimed = self
             .store
             .transaction_with(move |tx| -> Result<usize, Step> {
-                Ok(tx.execute(
-                    "UPDATE runtime_server_fetch SET state='fetching' WHERE id=?1 AND state='preparing'",
-                    [&key_owned],
-                )?)
+                let Some(entry) =
+                    RemoteOutbox::find::<FetchEntry>(tx, RemoteEffect::ServerFetch, &key_owned)
+                        .map_err(StoreError::from)?
+                        .filter(|entry| {
+                            entry.status == OutboxStatus::Pending
+                                && entry.record.state == ServerFetchState::Preparing
+                        })
+                else {
+                    return Ok(0);
+                };
+                let record = FetchEntry {
+                    state: ServerFetchState::Fetching,
+                    ..entry.record
+                };
+                let changed = RemoteOutbox::update(
+                    tx,
+                    RemoteEffect::ServerFetch,
+                    &entry.target,
+                    &key_owned,
+                    &entry.signature,
+                    OutboxStatus::Submitted,
+                    None,
+                    record,
+                )
+                .map_err(StoreError::from)?;
+                Ok(usize::from(changed))
             })
             .await?;
         if claimed == 0 {
@@ -1065,15 +1151,19 @@ impl ServerTools {
         let now = crate::event_write::unix_time().unwrap_or_default() as i64;
         self.store
             .transaction_with(move |tx| -> Result<(), Step> {
-                let token: String = tx.query_row(
-                    "SELECT admission FROM runtime_server_fetch WHERE id=?1",
-                    [&key_owned],
-                    |row| row.get(0),
-                )?;
-                let admitted: AdmittedRequest =
-                    serde_json::from_str(&token).map_err(StoreError::from)?;
-                crate::event_write::settle_request(tx, &admitted, None, &reply)?;
-                tx.execute("DELETE FROM runtime_server_fetch WHERE id=?1", [&key_owned])?;
+                let entry =
+                    RemoteOutbox::find::<FetchEntry>(tx, RemoteEffect::ServerFetch, &key_owned)
+                        .map_err(StoreError::from)?
+                        .ok_or_else(|| Step::Refused("The fetch reservation is missing".into()))?;
+                crate::event_write::settle_request(tx, &entry.record.admission, None, &reply)?;
+                RemoteOutbox::delete(
+                    tx,
+                    RemoteEffect::ServerFetch,
+                    &entry.target,
+                    &key_owned,
+                    &entry.signature,
+                )
+                .map_err(StoreError::from)?;
                 if let Some(release) = &release_for_write {
                     crate::multi_server_orchestration::enqueue_in_transaction(
                         tx,

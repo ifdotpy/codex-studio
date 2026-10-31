@@ -170,10 +170,10 @@ pub fn rows(store: &RuntimeStore) -> Value {
         let sql=match table {
             "runtime_access_nonces"=>"SELECT json_array(client,nonce,created) FROM runtime_access_nonces ORDER BY client,nonce".to_owned(),
             "request_results"=>"SELECT json_array(id,signature,result,created) FROM request_results ORDER BY id".to_owned(),
-            "runtime_outbox"=>"SELECT json_array(id,kind,status,payload) FROM runtime_outbox ORDER BY id".to_owned(),
+            "runtime_outbox"=>"SELECT json_array(id,kind,status,payload) FROM runtime_outbox WHERE json_extract(payload,'$.effect') IS NOT 'server_request' ORDER BY id".to_owned(),
             "runtime_access_audit"=>"SELECT json_array(seq,client,actor,action,created) FROM runtime_access_audit ORDER BY seq".to_owned(),
             "runtime_server_inbox"=>"SELECT json_array(id,signature,state,result,created_at,completed_at,principal,actor) FROM runtime_server_inbox ORDER BY id".to_owned(),
-            "runtime_server_outbox"=>"SELECT json_array(id,server,body,state,result,fingerprint,attempts,created_at,completed_at) FROM runtime_server_outbox ORDER BY id".to_owned(),
+            "runtime_server_outbox"=>"SELECT json_array(request_id,target,json_extract(payload,'$.record.body'),CASE status WHEN 'pending' THEN 'queued' ELSE 'running' END,NULL,signature,json_extract(payload,'$.record.attempts'),created/1000.0,0.0) FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='server_request' ORDER BY request_id".to_owned(),
             _=>format!("SELECT json_array(id,record) FROM {table} ORDER BY id"),
         };
         let mut statement = db.prepare(&sql).expect("prepare");

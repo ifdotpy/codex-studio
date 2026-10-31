@@ -41,11 +41,15 @@ mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
 mod m2026_10_30_branch_phase;
 mod m2026_10_30_capture_errors;
+mod m2026_10_30_command_path;
 mod m2026_10_30_complaint_record;
+mod m2026_10_30_domain_model;
 pub(crate) mod m2026_10_30_monitor_errors;
 mod m2026_10_30_monitor_generated;
 pub(crate) mod m2026_10_30_monitor_queue;
 pub(crate) mod m2026_10_30_monitor_status;
+mod m2026_10_30_one_nonce_table;
+mod m2026_10_30_one_outbox;
 mod m2026_10_30_project_teams;
 mod m2026_10_30_radio_room;
 mod m2026_10_30_request_record;
@@ -53,6 +57,7 @@ mod m2026_10_30_retire_graph_agents;
 mod m2026_10_30_rule_monitor_records;
 mod m2026_10_30_start_wait;
 mod m2026_10_30_task_records;
+mod m2026_10_30_text_blobs;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
@@ -753,6 +758,36 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
+            id: "2026-10-30-command-path",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Databases without command watermarks and event revisions",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_command_path::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-durable-seq",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Main tables without a change number and tombstones",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::durable_seq::install(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-one-outbox",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Pending rows of the four transport outboxes",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_one_outbox::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-30-rule-monitor-records",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
@@ -804,6 +839,50 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_request_record::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-transcript-read",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Transcript copies in sync_entities and items without a change number entry",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| {
+            crate::durable_seq::install(c.transaction)?;
+            // Old items are numbered by the online backfill (transcript_seq_backfill),
+            // which also runs the copy check and ends the copies. Without items there is
+            // nothing to number, so the check runs here. The old rows stay either way.
+            let items: bool = c.transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_items)",
+                [],
+                |row| row.get(0),
+            )?;
+            if !items {
+                crate::durable_seq::retire_transcript_copies(c.transaction)?;
+            }
+            Ok(())
+        },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-text-blobs",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "State without runtime_item_blobs",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_text_blobs::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-one-nonce-table",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Federation nonces in runtime_federation_nonces",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_one_nonce_table::apply(c.transaction),
     },
     &RegistryMigration,
     &SqlMigration {
@@ -865,6 +944,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| crate::StartupRecoveryRepository::prepare_monitor_index(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-domain-model",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records that hold chat, run and scheduling state, and the completed-turn table",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_domain_model::apply(c.transaction),
     },
 ];
 
@@ -1108,6 +1197,10 @@ fn run_receipt_migrations(
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     m2026_10_29_request_results_v2::convert_annotations(&tx)?;
     tx.commit()?;
+    // The receipt families keep the pending transport rows in their old tables. Move them.
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    m2026_10_30_one_outbox::apply(&tx)?;
+    tx.commit()?;
     m2026_10_28_receipts_drop_old_tables::verify_absent(db)
         .map_err(|error| receipt_error(&error))?;
     crate::schema::verify_bootstrap(db)?;
@@ -1343,6 +1436,11 @@ pub(crate) fn supervisor(db: &mut Connection) -> StoreResult<()> {
         &Accounts::new(),
         SourceDatabase::Independent,
     )
+}
+
+#[cfg(test)]
+pub(crate) fn m2026_10_30_domain_model_for_tests(tx: &Transaction<'_>) -> StoreResult<()> {
+    crate::domain::backfill(tx)
 }
 
 #[cfg(any(test, feature = "test-support"))]

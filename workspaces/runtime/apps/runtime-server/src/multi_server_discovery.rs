@@ -921,7 +921,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
         store.transaction(|tx| {
-            tx.execute_batch("CREATE TRIGGER no_refresh_network BEFORE INSERT ON runtime_access_outbound BEGIN SELECT RAISE(ABORT,'fixture'); END;")?;
+            tx.execute_batch("CREATE TRIGGER no_refresh_network BEFORE INSERT ON runtime_outbox WHEN NEW.kind='remote_delivery' BEGIN SELECT RAISE(ABORT,'fixture'); END;")?;
             Ok(())
         }).await.unwrap();
         let discovery = TailscaleServerDiscovery::with_executable(
@@ -954,9 +954,11 @@ mod tests {
         let count: i64 = store
             .test_reader()
             .unwrap()
-            .query_row("SELECT count(*) FROM runtime_access_outbound", [], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0);
     }

@@ -28,28 +28,9 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::Implemented,
             delete,
         ),
-        post("/api/stop", OperationStatus::Implemented, stop),
     ])
 }
 
-async fn stop(
-    State(state): State<HttpState>,
-    ports: Option<Extension<Arc<dyn LifecyclePorts>>>,
-    ApiJson(body): ApiJson<generated::StopRequest>,
-) -> Result<Json<generated::StopResponse>, ApiError> {
-    dispatch::<generated::StopResponse>(
-        state,
-        Action::Stop {
-            target: body.id,
-            descendants: body.descendants.unwrap_or(true),
-            reason: None,
-            sender: None,
-            sender_epoch: None,
-        },
-        ports.map(|Extension(ports)| ports),
-    )
-    .await
-}
 async fn delete(
     State(state): State<HttpState>,
     ports: Option<Extension<Arc<dyn LifecyclePorts>>>,
@@ -688,7 +669,7 @@ fn unix_time() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
 }
-async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static>(
+pub(super) async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static>(
     state: HttpState,
     action: Action,
     ports: Option<Arc<dyn LifecyclePorts>>,
@@ -704,7 +685,12 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
         }
         None => agent_management_store::execute(Arc::clone(&store), &action, now, None).await,
     }
-    .map_err(|error| match error {
+    .map_err(management_error)?;
+    super::generated_json::<T>(result).map(Json)
+}
+
+pub(super) fn management_error(error: ManagementError) -> ApiError {
+    match error {
         ManagementError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         ManagementError::Unavailable(_) => {
             ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
@@ -712,8 +698,7 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
         ManagementError::Invalid(_) => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
         ManagementError::Stored { table, id } => ApiError::invalid_stored(&table, &id),
         ManagementError::Store(error) => ApiError::stored(error),
-    })?;
-    super::generated_json::<T>(result).map(Json)
+    }
 }
 
 inventory::submit! {

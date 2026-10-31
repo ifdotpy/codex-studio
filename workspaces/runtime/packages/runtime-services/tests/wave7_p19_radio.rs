@@ -267,7 +267,16 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
 
     store
         .transaction(move |db| {
+            let mut completed_turns = Vec::new();
             for (table, rows) in snapshot.as_object().expect("snapshot") {
+                if table == "completed_turns" {
+                    // A completed turn is a row of the `turns` table; the old table is a
+                    // read-only view. Record them after the chats exist.
+                    for row in rows.as_array().expect("rows") {
+                        completed_turns.push(row["id"].as_str().expect("turn id").to_owned());
+                    }
+                    continue;
+                }
                 if table == "operation_receipts" {
                     db.execute("DELETE FROM request_results", [])?;
                     let receipts: Vec<LegacyReceipt> = serde_json::from_value(rows.clone()).expect("receipts");
@@ -316,6 +325,10 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
             db.execute("INSERT OR IGNORE INTO runtime_agent_volatile(id) SELECT id FROM runtime_agents", [])?;
             studio_runtime_store::migrations::migrate_radio_room(db)?;
             studio_runtime_store::migrations::migrate_project_teams(db)?;
+            for id in completed_turns {
+                let (chat, turn) = id.split_once(':').expect("completed turn id");
+                studio_runtime_store::domain::complete_turn(db, chat, turn)?;
+            }
             Ok(())
         })
         .await

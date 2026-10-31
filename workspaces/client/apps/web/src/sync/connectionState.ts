@@ -8,6 +8,9 @@ export type ReconnectCause =
   | "invalid-frame"
   | "local-state-error"
   | "network-online"
+  | "probe-timeout"
+  | "route-change"
+  | "auth-rejected"
   | "server-restart"
   | "unknown";
 
@@ -20,6 +23,10 @@ export const reconnectReasons: Record<ReconnectCause, string> = {
   "invalid-frame": "Received invalid server updates.",
   "local-state-error": "Could not prepare or apply local sync data.",
   "network-online": "The device is online again.",
+  "probe-timeout": "The server did not answer a connection check.",
+  "route-change": "A faster route to the server is available.",
+  "auth-rejected":
+    "The server refused this device. Retry after you check access.",
   "server-restart": "The server restarted.",
   unknown: "Reason unknown.",
 };

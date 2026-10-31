@@ -97,6 +97,7 @@ export const ServerOperationKindValues = [
   "update.export",
   "update.chunk",
   "update.release",
+  "backup.put",
   "task",
   "complaint",
   "context",
@@ -112,6 +113,7 @@ export const ServerOperationKindValues = [
   "remove_location",
   "move_validate",
   "move_begin",
+  "device_trust",
 ] as const;
 export type ServerOperationKind = (typeof ServerOperationKindValues)[number];
 export const RecoveryReceiptStatusValues = [

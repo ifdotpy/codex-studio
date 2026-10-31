@@ -1,8 +1,8 @@
 import { AgentSource as GeneratedApiAgentSource } from "../generated/api.ts";
-import { randomUUID } from "../uuid";
 import { DeliveryMoment } from "../generated/deliveryMoment";
 import { serverLocalStorage as localStorage } from "../servers/storage";
-import { get, syncPost, ApiError } from "../api";
+import { get, command, ApiError } from "../api";
+import type { CommandRequest } from "../commands";
 import type { Message, Snapshot } from "../types";
 import { transcriptMessages } from "../hooks";
 import { stopRemovedMessage, type OutgoingMessage } from "../sync/send";
@@ -19,8 +19,7 @@ export const isSendingMessage = (message: Message) =>
 
 type Queue =
   paths["/api/queue"]["get"]["responses"][200]["content"]["application/json"];
-type QueueMutation =
-  paths["/api/queue"]["post"]["requestBody"]["content"]["application/json"];
+type WithdrawCommand = Extract<CommandRequest, { kind: "withdraw" }>;
 type Target = {
   chat: string;
   message: Message;
@@ -37,28 +36,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isQueueCancellation(value: unknown): value is QueueMutation {
+/** A saved withdraw command is kept until it is answered, so a retry repeats the same command. */
+function isWithdrawOf(
+  value: unknown,
+  chat: string,
+  message: string,
+): value is WithdrawCommand {
   return (
     isRecord(value) &&
-    !("message_id" in value) &&
-    value.action === "cancel" &&
-    typeof value.agent === "string" &&
+    value.kind === "withdraw" &&
+    value.target === chat &&
+    isRecord(value.body) &&
+    value.body.message === message &&
     typeof value.id === "string" &&
-    typeof value.expectedText === "string" &&
-    typeof value.expected_revision === "string" &&
-    typeof value.request_id === "string"
+    typeof value.client === "string" &&
+    typeof value.number === "number"
   );
 }
 
 export function createSendingMessageRemoval(
-  dependencies = {
+  dependencies: {
+    get: typeof get;
+    command: Pick<typeof command, "make" | "run">;
+    stopRemovedMessage: typeof stopRemovedMessage;
+    localStorage: Storage;
+  } = {
     get,
-    syncPost,
+    command,
     stopRemovedMessage,
     localStorage,
   },
 ) {
-  const { get, syncPost, stopRemovedMessage, localStorage } = dependencies;
+  const { get, command, stopRemovedMessage, localStorage } = dependencies;
   async function removeSendingMessage(scope: Scope, target: Target) {
     const { chat, message } = target;
     const kind = target.kind || scope.kind || "agent";
@@ -71,9 +80,9 @@ export function createSendingMessageRemoval(
       const key = `studio-remove-sending:${JSON.stringify([scope.stateDir, scope.workspaceId, chat, clientId])}`;
       const saved = localStorage.getItem(key);
       const parsed: unknown = saved ? JSON.parse(saved) : null;
-      if (parsed !== null && !isQueueCancellation(parsed))
+      if (parsed !== null && !isWithdrawOf(parsed, chat, clientId))
         throw new Error("The saved message cancellation cannot be verified.");
-      let request: QueueMutation | null = parsed;
+      let request: WithdrawCommand | null = parsed;
       if (!request) {
         const queue =
           target.queue ||
@@ -88,27 +97,23 @@ export function createSendingMessageRemoval(
           queue.revision &&
           queue.capabilities?.receipts
         ) {
-          request = {
-            action: "cancel",
-            agent: chat,
-            id: clientId,
-            expectedText: row.text,
-            expected_revision: queue.revision,
-            request_id: randomUUID(),
-          } satisfies QueueMutation;
+          request = command.make("withdraw", chat, { message: clientId });
           localStorage.setItem(key, JSON.stringify(request));
         }
       }
       if (request) {
         try {
-          await syncPost("/api/queue", request, {
-            workspaceId: scope.workspaceId,
-          });
+          await command.run(request, { workspaceId: scope.workspaceId });
           cancelled = true;
         } catch (error) {
           // Never repeat an unknown mutation with a new identity. A race with
-          // native dispatch cannot turn removal into an agent interruption.
-          if (!(error instanceof ApiError) || error.status !== 400) throw error;
+          // native dispatch cannot turn removal into an agent interruption: the
+          // message already left the queue (409), or the request was refused (400).
+          if (
+            !(error instanceof ApiError) ||
+            (error.status !== 400 && error.status !== 409)
+          )
+            throw error;
         }
       }
     }

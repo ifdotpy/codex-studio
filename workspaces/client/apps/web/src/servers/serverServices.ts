@@ -23,7 +23,8 @@ import { createDraftStorage } from "../sync/draftStorage";
 import { useNativeDrafts } from "../native/useNativeDrafts";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
-import { nativeProjectionStore } from "../sync/nativeProjections";
+import { frontendIsLocal } from "../sync/localFrontend";
+import { indexedDbKeyValue } from "../sync/thinCache";
 import { createServerSubscriptions } from "../sync/subscriptions/server";
 import { createTranscriptCache } from "../sync/transcriptCache";
 import { createTokenRateCache } from "../usage/tokenRate";
@@ -66,6 +67,11 @@ export function createServerServices(server: StudioServer) {
     beginMutation: createMutationJournal(transport.owner.id, storage),
     beginActivity: activity.beginServerActivity,
   });
+  // The pending layer of this server ends when its own stream checkpoint reaches the response.
+  sequences.onEntitySequenceAdvance((sequence, reset) => {
+    if (reset) api.pending.resetClientSeq();
+    api.pending.observeClientSeq(sequence);
+  });
   const audio = createServerAudio();
   const sessionCosts = createSessionCostCache(storage);
   const transcripts = createTranscriptCache();
@@ -92,8 +98,8 @@ export function createServerServices(server: StudioServer) {
       resources,
       sequences,
       transcripts,
-      projectionStore: () =>
-        localNativeClient() ? nativeProjectionStore : undefined,
+      keyValue: () => indexedDbKeyValue(),
+      cacheProjections: () => !frontendIsLocal(transport.owner.id),
       databaseSuffix:
         transport.owner.id === "local"
           ? ""

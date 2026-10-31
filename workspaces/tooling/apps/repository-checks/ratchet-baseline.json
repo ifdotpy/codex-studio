@@ -2577,6 +2577,10 @@
       "fingerprint": "c561134022751e5032b017f28ce8ce13cf637826a234d7119c8baab02fb0a488:0"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-schema/src/command.rs",
+      "fingerprint": "2bd70344c5c99098351126ec4b5ce6b94e385d52a20fc8e9f3627ad0ae7ec87d:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-schema/src/complaints.rs",
       "fingerprint": "0f89f9483053f6b324fcaf680ef12f2dcf5eb4b0280839063cdd7f3e290207b4:0"
     },
@@ -3309,7 +3313,7 @@
     },
     {
       "file": "workspaces/client/apps/web/src/components/Conversation.connection.test.ts",
-      "fingerprint": "9d020cf46284832b6f0b7a48a81444921767e4f54515a4c1eb2e5f73a07acb8f:0"
+      "fingerprint": "c4aacfdf9e425ff35d9fa6458097530b96df5f06832429cf5d6006f71bf61828:0"
     },
     {
       "file": "workspaces/client/apps/web/src/components/Conversation.connection.test.ts",
@@ -3508,12 +3512,8 @@
       "fingerprint": "dd1d8d394612269617aceac79f1f00410d3ce10200c6ef7cd57c309815151a73:0"
     },
     {
-      "file": "workspaces/client/apps/web/src/sync/entityCacheStorage.test.ts",
-      "fingerprint": "bf0b6d16f3c25f33e3fd0ccd18db74085a2d5ca02d3f48067a9e0bae1aa4d696:0"
-    },
-    {
       "file": "workspaces/client/apps/web/src/sync/entityProjectionObserver.test.ts",
-      "fingerprint": "07681657de419f1cb9016ce24b9d71325f4ec541af10e2378cd4765b855b4308:0"
+      "fingerprint": "550ac06d3398d0d7cac3adb12ba747a74c5214b0b13e2b289340e2d025c23806:0"
     },
     {
       "file": "workspaces/client/apps/web/src/sync/resourceEvents.test.ts",
@@ -3540,12 +3540,20 @@
       "fingerprint": "357bddd01f01e74983563c621bc0013cfefb49c854302174df21068711f0abdb:0"
     },
     {
+      "file": "workspaces/client/apps/web/src/sync/thinCache.test.ts",
+      "fingerprint": "d8b7e8690084a50b657476ce09c22cf7aa88438157c5f099945d9c6cafe17d7d:0"
+    },
+    {
       "file": "workspaces/client/apps/web/src/useProjectDelete.test.ts",
       "fingerprint": "2ebfd9d24e18773172e185fca4d5ccb63c9d81261f036418544170bb7aafaa11:0"
     },
     {
       "file": "workspaces/client/apps/web/src/useProjectDelete.test.ts",
       "fingerprint": "dc87706f322cf57b84a43bd4f1cacf737238e2c2923378e614991ea687e41b6f:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/messages/send-command.ts",
+      "fingerprint": "1084e24ca9c2672ea112c09ed6af840ab22578084e01fe9bca36f096e63ff2f8:0"
     },
     {
       "file": "workspaces/client/apps/web/tests/servers/accounts-settings-browser.spec.ts",
@@ -3584,6 +3592,10 @@
       "fingerprint": "d7e9596b2ae88cedff51d8a44caa7b3743580356d3936b02beb70b0f5304c2ef:6"
     },
     {
+      "file": "workspaces/client/apps/web/tests/servers/multi-server-fixture.ts",
+      "fingerprint": "6801d3aa864c79655aa03b4457261c1029e1f4e7b20d6b37e6c740d3cd4436d7:0"
+    },
+    {
       "file": "workspaces/providers/apps/claude-bridge/file-signals.test.ts",
       "fingerprint": "d04d4e2da88a000a246881d3159c28eb4760baf7dcebcc57303be02fc3af187a:0"
     }
@@ -3602,10 +3614,6 @@
     {
       "file": "workspaces/client/apps/desktop/layr-binary.ts",
       "fingerprint": "30c951a519de8b24758a9f9c2d334f4eb0fcda25e2c2f29d17ea27b8cd71f73a:0"
-    },
-    {
-      "file": "workspaces/client/apps/desktop/profile-export-test.ts",
-      "fingerprint": "f64c9b2d1735796952bb4bbc68d35f3586cf16328cec8bb452e1e226dc4dc7b1:0"
     },
     {
       "file": "workspaces/client/apps/desktop/restart-environment.ts",
@@ -3714,6 +3722,10 @@
     {
       "file": "workspaces/client/apps/web/tests/sync/helpers.ts",
       "fingerprint": "30de5745928ab453010299a0c2788edce45ce2c3a80013b2169ffa0698ccf387:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/sync/sync-http-connection-budget-browser.spec.ts",
+      "fingerprint": "4e73404d5b2101e4f7425f5b91ecfc0109a5753638567a6264c626fb94171ba6:0"
     },
     {
       "file": "workspaces/client/apps/web/tests/workspace/rewind-api.ts",
