@@ -16,7 +16,7 @@ export const PROVIDER_CAPABILITIES = ["steer", "rewind", "fork", "model_change",
 export type ProviderCapability = (typeof PROVIDER_CAPABILITIES)[number];
 
 export const PROVIDER_CAPABILITY_LISTS: Record<ProviderKind, readonly ProviderCapability[]> = {
-  codex: ["steer", "fork", "model_change", "effort", "compaction", "approvals"],
+  codex: ["steer", "rewind", "fork", "model_change", "effort", "compaction", "approvals"],
   claude: ["steer", "rewind", "fork", "model_change", "effort", "compaction", "approvals"],
 };
 

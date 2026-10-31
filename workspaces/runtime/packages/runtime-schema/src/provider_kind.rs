@@ -132,9 +132,8 @@ impl ProviderKind {
     pub const fn capabilities(self) -> &'static [ProviderCapability] {
         use ProviderCapability::{Approvals, Compaction, Effort, Fork, ModelChange, Rewind, Steer};
         match self {
-            // No file rewind until `edit(turn)` serves every provider.
-            Self::Codex => &[Steer, Fork, ModelChange, Effort, Compaction, Approvals],
-            Self::Claude => &[
+            // `edit(turn)` serves every provider, so both support rewind.
+            Self::Codex | Self::Claude => &[
                 Steer,
                 Rewind,
                 Fork,
@@ -217,24 +216,22 @@ mod tests {
     #[test]
     fn capability_lists_are_declared_per_provider() {
         use ProviderCapability::*;
-        assert_eq!(
-            ProviderKind::Codex.capabilities(),
-            [Steer, Fork, ModelChange, Effort, Compaction, Approvals]
-        );
-        assert_eq!(
-            ProviderKind::Claude.capabilities(),
-            [
-                Steer,
-                Rewind,
-                Fork,
-                ModelChange,
-                Effort,
-                Compaction,
-                Approvals
-            ]
-        );
-        assert!(!ProviderKind::Codex.supports(Rewind));
-        assert!(ProviderKind::Claude.supports(Rewind));
+        for kind in ProviderKind::ALL {
+            assert_eq!(
+                kind.capabilities(),
+                [
+                    Steer,
+                    Rewind,
+                    Fork,
+                    ModelChange,
+                    Effort,
+                    Compaction,
+                    Approvals
+                ],
+                "{kind}"
+            );
+            assert!(kind.supports(Rewind), "{kind}");
+        }
         for kind in ProviderKind::ALL {
             let list = kind.capabilities();
             assert!(

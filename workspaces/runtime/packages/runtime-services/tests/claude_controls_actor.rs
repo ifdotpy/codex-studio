@@ -159,18 +159,6 @@ fn control_wire_roundtrips_presence_numbers_extensions_and_original_ids() {
         serde_json::to_value(parsed).expect("reply serialization"),
         reply
     );
-    let call = ControlInvocation::Rollback {
-        thread_id: "thread".into(),
-        request_id: serde_json::from_value(json!("original")).expect("request"),
-        turn_id: serde_json::from_value(json!("turn")).expect("turn"),
-        restore_files: false,
-        transport_request_id: "retry-transport".into(),
-    };
-    assert_eq!(
-        call.params(),
-        json!({"threadId":"thread","requestId":"original","turnId":"turn","restoreFiles":false})
-    );
-    assert_eq!(call.request_id(), Some("retry-transport"));
 }
 impl ControlSession for Native {
     fn binding(&self) -> ControlBinding {
@@ -191,7 +179,7 @@ impl ControlSession for Native {
     }
 }
 impl Native {
-    fn call(&self, method: &str, _params: Value) -> ControlFuture<'_, Value> {
+    fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
         let method = method.to_owned();
         Box::pin(async move {
             self.calls
@@ -202,12 +190,11 @@ impl Native {
                 "claude/state" => {
                     json!({"tasks":[],"turns":[{"id":"one","status":"completed"},{"id":"two","status":"completed"},{"id":"three","status":"completed"}]})
                 }
-                "thread/queue/list" => json!({"data":[]}),
-                "thread/rollback" => {
+                "claude/settings" => {
                     if self.unknown {
                         return Err(ControlError::Unknown);
                     }
-                    json!({"threadId":"thread","nativeId":"restored"})
+                    json!({"settings":params["settings"]})
                 }
                 "claude/commands" => json!({"commands":["/fixture"]}),
                 "claude/stopTask" => json!({"stopped":true}),
@@ -336,11 +323,11 @@ async fn extra_known_settings_in_reply_remain_unknown_and_are_not_replayed() {
     }
 }
 
-struct MalformedRollback {
+struct MalformedSettings {
     inner: Native,
     attempts: std::sync::atomic::AtomicUsize,
 }
-impl ControlSession for MalformedRollback {
+impl ControlSession for MalformedSettings {
     fn binding(&self) -> ControlBinding {
         self.inner.binding()
     }
@@ -349,11 +336,11 @@ impl ControlSession for MalformedRollback {
         scope: ControlScope,
         invocation: ControlInvocation,
     ) -> ControlFuture<'_, ControlReply> {
-        if matches!(invocation, ControlInvocation::Rollback { .. }) {
+        if matches!(invocation, ControlInvocation::Settings { .. }) {
             self.attempts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             return Box::pin(async move {
-                ControlReply::from_wire(&invocation, json!({"nativeId":"restored"}))
+                ControlReply::from_wire(&invocation, json!({"extension":"restored"}))
             });
         }
         self.inner.call_scoped(scope, invocation)
@@ -369,7 +356,7 @@ async fn malformed_mutation_reply_is_unknown_and_never_replayed() {
     std::fs::create_dir(&state).expect("state");
     seed_state(&state, &cwd).await;
     let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
-    let native = Arc::new(MalformedRollback {
+    let native = Arc::new(MalformedSettings {
         inner: Native {
             calls: Mutex::new(vec![]),
             unknown: false,
@@ -382,7 +369,7 @@ async fn malformed_mutation_reply_is_unknown_and_never_replayed() {
         native.clone(),
     );
     let request: ControlRequest = serde_json::from_value(
-        json!({"action":"rollback","id":"agent","request_id":"malformed-reply","turn_id":"two"}),
+        json!({"action":"settings","id":"agent","request_id":"malformed-reply","settings":{"thinking":false}}),
     )
     .expect("request");
     assert!(matches!(
@@ -441,7 +428,7 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
         let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let request = || {
             serde_json::from_value::<ControlRequest>(
-                json!({"id":"agent","action":"rollback","request_id":request_id,"turn_id":"two"}),
+                json!({"id":"agent","action":"settings","request_id":request_id,"settings":{"thinking":false}}),
             )
             .expect("valid fixture")
         };
@@ -462,7 +449,7 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
                 .lock()
                 .expect("valid fixture")
                 .iter()
-                .filter(|m| m.as_str() == "thread/rollback")
+                .filter(|m| m.as_str() == "claude/settings")
                 .count(),
             1
         );
@@ -481,20 +468,6 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
             } else {
                 Value::Null
             }
-        );
-        let item: String = store
-            .test_reader()
-            .expect("valid fixture")
-            .query_row("SELECT record FROM runtime_items WHERE id='two'", [], |r| {
-                r.get(0)
-            })
-            .expect("valid fixture");
-        assert_eq!(
-            serde_json::from_str::<Value>(&item)
-                .expect("valid fixture")
-                .get("afterRestore")
-                .is_some(),
-            !unknown
         );
     }
 }
@@ -617,7 +590,7 @@ async fn durable_control_store_boundaries_resume_or_hold_without_duplicate_write
             });
             let service = Controls::new(cut.clone(), native.clone());
             let request = || {
-                serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","request_id":"control-one","turn_id":"two"})).expect("valid fixture")
+                serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"settings","request_id":"control-one","settings":{"thinking":false}})).expect("valid fixture")
             };
             tokio::select! { _=cut.reached.notified()=>{}, result=service.execute(request())=>panic!("{step}/{after}: unexpected completion {}",result.is_ok()) }
             drop(service);
@@ -649,7 +622,7 @@ async fn durable_control_store_boundaries_resume_or_hold_without_duplicate_write
                     .lock()
                     .expect("valid fixture")
                     .iter()
-                    .filter(|m| m.as_str() == "thread/rollback")
+                    .filter(|m| m.as_str() == "claude/settings")
                     .count()
                     <= 1,
                 "{step}/{after}"
@@ -674,8 +647,8 @@ async fn durable_control_store_boundaries_resume_or_hold_without_duplicate_write
     }
 }
 
-struct RewindNative(Mutex<Vec<Value>>, bool);
-impl ControlSession for RewindNative {
+struct SettingsNative(Mutex<Vec<Value>>);
+impl ControlSession for SettingsNative {
     fn binding(&self) -> ControlBinding {
         ControlBinding::new("account".into(), "connection".into(), 1)
             .expect("control binding validates")
@@ -689,250 +662,21 @@ impl ControlSession for RewindNative {
         Box::pin(async move { ControlReply::from_wire(&invocation, result.await?) })
     }
 }
-impl RewindNative {
+impl SettingsNative {
     fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
-        if method == "thread/rollback" && self.1 {
-            return Box::pin(async { Err(ControlError::Request) });
-        }
         self.0
             .lock()
             .expect("native call log lock is not poisoned")
             .push(json!({"method":method,"params":params}));
         let result = match method {
             "claude/state" => {
-                json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true},{"id":"three","status":"completed","canRestoreFiles":true}]})
+                json!({"tasks":[],"turns":[{"id":"one","status":"completed"},{"id":"two","status":"completed"},{"id":"three","status":"completed"}]})
             }
-            "thread/queue/list" => json!({"data":[]}),
-            "thread/rollback" => {
-                assert_eq!(params["restoreFiles"], true);
-                assert_eq!(params["turnId"], "two");
-                json!({"threadId":"thread","nativeId":"restored","filesRestored":true})
-            }
+            "claude/settings" => json!({"settings":params["settings"]}),
             _ => panic!("unexpected method {method}"),
         };
         Box::pin(async move { Ok(result) })
     }
-}
-
-#[tokio::test]
-async fn combined_rewind_for_shared_workspace_settles_history_and_replays_once() {
-    let root = tempfile::tempdir().expect("temporary workspace creates");
-    let cwd = root.path().join("shared");
-    let state = root.path().join("state");
-    std::fs::create_dir(&cwd).expect("shared directory creates");
-    std::fs::create_dir(&state).expect("state directory creates");
-    seed_state(&state, &cwd).await;
-    let store = Arc::new(
-        RuntimeStore::open(Some(&state))
-            .await
-            .expect("runtime store opens"),
-    );
-    store.transaction(|tx| {
-        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode','shared','$.worktreeReady',json('false')) WHERE id='agent'",[])?;
-        Ok(())
-    }).await.expect("shared workspace fixture writes");
-    let native = Arc::new(RewindNative(Mutex::new(vec![]), false));
-    let controls = Controls::new(
-        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
-        native.clone(),
-    );
-    let body = json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"combined","restore_files":true});
-    let result = controls
-        .execute(
-            serde_json::from_value::<ControlRequest>(body.clone())
-                .expect("rollback request parses"),
-        )
-        .await
-        .expect("combined rewind succeeds");
-    assert_eq!(result["filesRestored"], true);
-    assert_eq!(
-        controls
-            .execute(
-                serde_json::from_value::<ControlRequest>(body.clone())
-                    .expect("replay request parses")
-            )
-            .await
-            .expect("combined rewind replay succeeds"),
-        result
-    );
-    {
-        let calls = native
-            .0
-            .lock()
-            .expect("native call log lock is not poisoned");
-        assert_eq!(
-            calls
-                .iter()
-                .filter(|call| call["method"] == "thread/rollback")
-                .count(),
-            1
-        );
-    }
-    let db = store.test_reader().expect("test reader opens");
-    let agent = AgentRepository::get(&db, &AgentId("agent".into()))
-        .expect("agent query succeeds")
-        .expect("agent exists")
-        .value();
-    assert_eq!(agent["lastCompletedTurn"], "one");
-    assert_eq!(agent["status"], "paused");
-    assert!(agent["workspaceOperation"].is_null());
-    let removed: i64 = db.query_row("SELECT count(*) FROM runtime_items WHERE json_extract(record,'$.afterRestore') IS NOT NULL",[],|row|row.get(0)).expect("restored item count loads");
-    assert_eq!(removed, 2);
-    let mut changed = body;
-    changed["restore_files"] = json!(false);
-    assert!(matches!(
-        controls
-            .execute(
-                serde_json::from_value::<ControlRequest>(changed.clone())
-                    .expect("changed request parses")
-            )
-            .await,
-        Err(ControlError::Conflict)
-    ));
-}
-
-#[tokio::test]
-async fn combined_rewind_rejection_holds_the_workspace_for_recovery() {
-    let root = tempfile::tempdir().expect("temporary workspace creates");
-    let cwd = root.path().join("shared");
-    let state = root.path().join("state");
-    std::fs::create_dir(&cwd).expect("shared directory creates");
-    std::fs::create_dir(&state).expect("state directory creates");
-    seed_state(&state, &cwd).await;
-    let store = Arc::new(
-        RuntimeStore::open(Some(&state))
-            .await
-            .expect("runtime store opens"),
-    );
-    let controls = Controls::new(
-        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
-        Arc::new(RewindNative(Mutex::new(vec![]), true)),
-    );
-    let request = || {
-        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"combined","restore_files":true})).expect("rollback request parses")
-    };
-    assert!(matches!(
-        controls.execute(request()).await,
-        Err(ControlError::Unknown)
-    ));
-    let db = store.test_reader().expect("test reader opens");
-    let agent = AgentRepository::get(&db, &AgentId("agent".into()))
-        .expect("agent query succeeds")
-        .expect("agent exists")
-        .value();
-    assert_eq!(agent["workspaceOperation"], "branch_recovery");
-    assert_eq!(agent["status"], "paused");
-    let visible: i64 = db.query_row("SELECT count(*) FROM runtime_items WHERE json_extract(record,'$.afterRestore') IS NULL",[],|row|row.get(0)).expect("visible item count loads");
-    assert_eq!(visible, 3);
-    assert!(matches!(
-        controls.execute(request()).await,
-        Err(ControlError::Unknown)
-    ));
-}
-
-struct HeldRewind {
-    inner: RewindNative,
-    entered: tokio::sync::Notify,
-    release: tokio::sync::Notify,
-}
-impl ControlSession for HeldRewind {
-    fn binding(&self) -> ControlBinding {
-        self.inner.binding()
-    }
-    fn call_scoped(
-        &self,
-        _scope: ControlScope,
-        invocation: ControlInvocation,
-    ) -> ControlFuture<'_, ControlReply> {
-        let result = self.call(invocation.method().as_str(), invocation.params());
-        Box::pin(async move { ControlReply::from_wire(&invocation, result.await?) })
-    }
-}
-impl HeldRewind {
-    fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
-        let result = self.inner.call(method, params);
-        let hold = method == "thread/rollback";
-        Box::pin(async move {
-            if hold {
-                self.entered.notify_one();
-                self.release.notified().await;
-            }
-            result.await
-        })
-    }
-}
-#[tokio::test]
-async fn separate_control_instances_cannot_release_an_in_progress_rewind() {
-    let root = tempfile::tempdir().expect("temporary workspace creates");
-    let cwd = root.path().join("workspace");
-    let state = root.path().join("state");
-    std::fs::create_dir(&cwd).expect("workspace directory creates");
-    std::fs::create_dir(&state).expect("state directory creates");
-    seed_state(&state, &cwd).await;
-    let store = Arc::new(
-        RuntimeStore::open(Some(&state))
-            .await
-            .expect("runtime store opens"),
-    );
-    let native = Arc::new(HeldRewind {
-        inner: RewindNative(Mutex::new(vec![]), false),
-        entered: tokio::sync::Notify::new(),
-        release: tokio::sync::Notify::new(),
-    });
-    let first = Controls::new(
-        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
-        native.clone(),
-    );
-    let second = Controls::new(
-        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
-        native.clone(),
-    );
-    let request = || {
-        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"race","restore_files":true})).expect("rollback request parses")
-    };
-    let first_request = request();
-    let task = tokio::spawn(async move { first.execute(first_request).await });
-    tokio::time::timeout(std::time::Duration::from_secs(5), native.entered.notified())
-        .await
-        .expect("native rewind starts before timeout");
-    assert!(matches!(
-        second.execute(request()).await,
-        Err(ControlError::Busy)
-    ));
-    let agent = AgentRepository::get(
-        &store.test_reader().expect("test reader opens"),
-        &AgentId("agent".into()),
-    )
-    .expect("agent query succeeds")
-    .expect("agent exists")
-    .value();
-    assert!(!agent["workspaceReservationId"].is_null());
-    assert_eq!(agent["workspaceOperation"], "branch");
-    native.release.notify_one();
-    assert_eq!(
-        task.await
-            .expect("rewind task joins")
-            .expect("rewind task succeeds")["filesRestored"],
-        true
-    );
-    assert_eq!(
-        second
-            .execute(request())
-            .await
-            .expect("second rewind replay succeeds")["filesRestored"],
-        true
-    );
-    assert_eq!(
-        native
-            .inner
-            .0
-            .lock()
-            .expect("native call log lock is not poisoned")
-            .iter()
-            .filter(|call| call["method"] == "thread/rollback")
-            .count(),
-        1
-    );
 }
 
 #[tokio::test]
@@ -949,14 +693,17 @@ async fn stale_failure_cannot_clear_a_newer_durable_submission() {
             .expect("runtime store opens"),
     );
     let adapter = StoredControls::new(store.clone(), Arc::new(|_| {}));
-    let request=serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"race","restore_files":true})).expect("rollback request parses");
+    let request = serde_json::from_value::<ControlRequest>(
+        json!({"id":"agent","action":"settings","settings":{"thinking":false},"request_id":"race"}),
+    )
+    .expect("settings request parses");
     let binding = ControlBinding::new("account".into(), "connection".into(), 1)
         .expect("control binding validates");
     let stale = adapter
         .reserve(request.clone(), binding)
         .await
-        .expect("stale rewind reserves");
-    let submitted=adapter.submitted(stale.clone(),request,NativeProof::Rollback { state: serde_json::from_value(json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true},{"id":"three","status":"completed","canRestoreFiles":true}]})).expect("state"), queue: serde_json::from_value(json!({"data":[]})).expect("queue") }).await.expect("rewind submission persists");
+        .expect("stale settings reserves");
+    let submitted=adapter.submitted(stale.clone(),request,NativeProof::Settings(serde_json::from_value(json!({"tasks":[],"turns":[{"id":"one","status":"completed"},{"id":"two","status":"completed"},{"id":"three","status":"completed"}]})).expect("state"))).await.expect("settings submission persists");
     assert!(matches!(
         adapter
             .failed(
@@ -1004,7 +751,7 @@ async fn stale_failure_cannot_clear_a_newer_durable_submission() {
 
 struct NotSentOnce {
     pre_effect: bool,
-    inner: RewindNative,
+    inner: SettingsNative,
     attempts: std::sync::atomic::AtomicUsize,
 }
 impl ControlSession for NotSentOnce {
@@ -1022,7 +769,7 @@ impl ControlSession for NotSentOnce {
 }
 impl NotSentOnce {
     fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
-        if method == "thread/rollback"
+        if method == "claude/settings"
             && self
                 .attempts
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -1031,8 +778,8 @@ impl NotSentOnce {
             let pre_effect = self.pre_effect;
             return Box::pin(async move {
                 Err(if pre_effect {
-                    ControlError::RewindNotApplied(
-                        "The before-restore backup limit is reached.".into(),
+                    ControlError::SettingsNotApplied(
+                        "The permission change was not applied.".into(),
                     )
                 } else {
                     ControlError::NotSent
@@ -1057,7 +804,7 @@ async fn definite_not_sent_releases_and_retries_the_same_request_after_fresh_idl
     );
     let native = Arc::new(NotSentOnce {
         pre_effect: false,
-        inner: RewindNative(Mutex::new(vec![]), false),
+        inner: SettingsNative(Mutex::new(vec![])),
         attempts: std::sync::atomic::AtomicUsize::new(0),
     });
     let controls = Controls::new(
@@ -1065,7 +812,7 @@ async fn definite_not_sent_releases_and_retries_the_same_request_after_fresh_idl
         native.clone(),
     );
     let request = || {
-        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"not-sent","restore_files":true})).expect("rollback request parses")
+        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"settings","settings":{"thinking":false},"request_id":"not-sent"})).expect("settings request parses")
     };
     assert!(matches!(
         controls.execute(request()).await,
@@ -1090,7 +837,7 @@ async fn definite_not_sent_releases_and_retries_the_same_request_after_fresh_idl
             Ok(())
         })
         .await
-        .expect("rewind retry fixture writes");
+        .expect("settings retry fixture writes");
     assert!(matches!(
         controls.execute(request()).await,
         Err(ControlError::Busy)
@@ -1107,15 +854,15 @@ async fn definite_not_sent_releases_and_retries_the_same_request_after_fresh_idl
         controls
             .execute(request())
             .await
-            .expect("rewind retry succeeds")["filesRestored"],
-        true
+            .expect("settings retry succeeds")["settings"]["thinking"],
+        false
     );
     assert_eq!(
         controls
             .execute(request())
             .await
-            .expect("rewind replay succeeds")["filesRestored"],
-        true
+            .expect("settings replay succeeds")["settings"]["thinking"],
+        false
     );
     assert_eq!(native.attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(
@@ -1125,7 +872,7 @@ async fn definite_not_sent_releases_and_retries_the_same_request_after_fresh_idl
             .lock()
             .expect("native call log lock is not poisoned")
             .iter()
-            .filter(|call| call["method"] == "thread/rollback")
+            .filter(|call| call["method"] == "claude/settings")
             .count(),
         1
     );
@@ -1146,7 +893,7 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
     );
     let native = Arc::new(NotSentOnce {
         pre_effect: true,
-        inner: RewindNative(Mutex::new(vec![]), false),
+        inner: SettingsNative(Mutex::new(vec![])),
         attempts: std::sync::atomic::AtomicUsize::new(0),
     });
     let controls = Controls::new(
@@ -1154,11 +901,14 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
         native.clone(),
     );
     let request = |id: &str| {
-        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":id,"restore_files":true})).expect("rollback request parses")
+        serde_json::from_value::<ControlRequest>(
+            json!({"id":"agent","action":"settings","settings":{"thinking":false},"request_id":id}),
+        )
+        .expect("settings request parses")
     };
     assert!(matches!(
         controls.execute(request("quota-refusal")).await,
-        Err(ControlError::RewindNotApplied(_))
+        Err(ControlError::SettingsNotApplied(_))
     ));
     let agent = AgentRepository::get(
         &store.test_reader().expect("test reader opens"),
@@ -1182,7 +932,7 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
         .expect("quota retry fixture writes");
     assert!(matches!(
         controls.execute(request("quota-refusal")).await,
-        Err(ControlError::RewindNotApplied(_))
+        Err(ControlError::SettingsNotApplied(_))
     ));
     assert!(matches!(
         controls.execute(request("quota-retry")).await,
@@ -1200,15 +950,15 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
         controls
             .execute(request("quota-retry"))
             .await
-            .expect("rewind retry succeeds")["filesRestored"],
-        true
+            .expect("settings retry succeeds")["settings"]["thinking"],
+        false
     );
     assert_eq!(
         controls
             .execute(request("quota-retry"))
             .await
-            .expect("rewind replay succeeds")["filesRestored"],
-        true
+            .expect("settings replay succeeds")["settings"]["thinking"],
+        false
     );
     assert_eq!(native.attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
     assert_eq!(
@@ -1218,69 +968,10 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
             .lock()
             .expect("native call log lock is not poisoned")
             .iter()
-            .filter(|call| call["method"] == "thread/rollback")
+            .filter(|call| call["method"] == "claude/settings")
             .count(),
         1
     );
-}
-
-struct RejectedRewind(RewindNative);
-impl ControlSession for RejectedRewind {
-    fn binding(&self) -> ControlBinding {
-        self.0.binding()
-    }
-    fn call_scoped(
-        &self,
-        _scope: ControlScope,
-        invocation: ControlInvocation,
-    ) -> ControlFuture<'_, ControlReply> {
-        let result = self.call(invocation.method().as_str(), invocation.params());
-        Box::pin(async move { ControlReply::from_wire(&invocation, result.await?) })
-    }
-}
-impl RejectedRewind {
-    fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
-        if method == "thread/rollback" {
-            return Box::pin(async {
-                Err(ControlError::RewindRejected(
-                    "Claude restored only one file.".into(),
-                ))
-            });
-        }
-        self.0.call(method, params)
-    }
-}
-#[tokio::test]
-async fn rewind_rejection_preserves_the_reason_without_claiming_no_file_effects() {
-    let root = tempfile::tempdir().expect("temporary workspace creates");
-    let cwd = root.path().join("workspace");
-    let state = root.path().join("state");
-    std::fs::create_dir(&cwd).expect("workspace directory creates");
-    std::fs::create_dir(&state).expect("state directory creates");
-    seed_state(&state, &cwd).await;
-    let store = Arc::new(
-        RuntimeStore::open(Some(&state))
-            .await
-            .expect("runtime store opens"),
-    );
-    let controls = Controls::new(
-        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
-        Arc::new(RejectedRewind(RewindNative(Mutex::new(vec![]), false))),
-    );
-    let request = serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"quota","restore_files":true})).expect("rollback request parses");
-    let result = controls.execute(request).await;
-    assert!(
-        matches!(&result, Err(ControlError::RewindRejected(message)) if message.contains("only one file"))
-    );
-    let agent = AgentRepository::get(
-        &store.test_reader().expect("test reader opens"),
-        &AgentId("agent".into()),
-    )
-    .expect("agent query succeeds")
-    .expect("agent exists")
-    .value();
-    assert_eq!(agent["workspaceOperation"], "branch_recovery");
-    assert!(!agent["workspaceReservationId"].is_null());
 }
 
 struct LivePermissionsNative {

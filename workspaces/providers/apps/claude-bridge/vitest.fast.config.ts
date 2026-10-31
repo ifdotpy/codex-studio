@@ -20,7 +20,6 @@ export default {
       "rate-limit-input.test.ts",
       "features.test.ts",
       "command-background.test.ts",
-      "file-restore.test.ts",
       "move.test.ts",
       "move-external.test.ts",
       // A resume in a new workspace folder carries Claude's cwd-keyed native history.

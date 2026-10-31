@@ -7,20 +7,14 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import * as sdk from "@anthropic-ai/claude-agent-sdk";
 import { readHistoryIndex, verifiedHistoryIndex } from "./history-index.ts";
-import { forkAtTurn, rollbackSession } from "./controls.ts";
+import { forkAtTurn } from "./controls.ts";
 
-const noRestore = async () => {
-  throw new Error("No file restore expected");
-};
 function controls(): ControlDependencies {
   return {
     ...sdk,
     persist: async () => {},
     getHistoryIndex: (id, options) =>
       verifiedHistoryIndex({ id, cwd: options!.dir! }),
-    rewindFiles: noRestore,
-    prepareFileRestore: noRestore,
-    verifyFileRestore: noRestore,
   };
 }
 const roots: string[] = [];
@@ -147,7 +141,7 @@ for (const damage of ["malformed uuid", "unknown record"])
     expect(await readHistoryIndex(f.session)).toBeNull();
   });
 for (const serviceFirst of [true, false])
-  test(`SDK composite ${serviceFirst ? "service/human" : "human/service"} survives fork and rollback`, async () => {
+  test(`SDK composite ${serviceFirst ? "service/human" : "human/service"} survives fork`, async () => {
     const f = await fixture(serviceFirst);
     const visible = await sdk.getSessionMessages(f.session.nativeId, {
       dir: f.cwd,
@@ -157,13 +151,6 @@ for (const serviceFirst of [true, false])
     const fork = await forkAtTurn(f.session, { lastTurnId: "turn0" }, deps);
     expect(fork.turns).toHaveLength(1);
     expect(fork.turns[0]?.items[0]?.nativeIds).toHaveLength(2);
-    await rollbackSession(
-      f.session,
-      { requestId: randomUUID(), turnId: "turn3" },
-      deps,
-    );
-    expect(f.session.turns).toHaveLength(1);
-    expect(f.session.turns[0]?.items[0]?.nativeIds).toHaveLength(2);
   });
 
 for (const damage of ["malformed uuid", "unknown record"])
@@ -234,13 +221,6 @@ test("post-clear controls use current native turns while preserving earlier mirr
     "turn0",
   ]);
   expect(fork.turns[0]).toEqual(earlier);
-  await rollbackSession(
-    f.session,
-    { requestId: randomUUID(), turnId: "turn0" },
-    deps,
-  );
-  expect(f.session.turns).toEqual([earlier, clear]);
-  expect(f.session.started).toBe(false);
 });
 
 for (const [kind, change] of [

@@ -33,8 +33,6 @@ impl ClaudeSessionPort for RetainedOwner {
                 Method::ClaudeState => {
                     json!({"tasks":[],"turns":[{"id":"one","status":"completed"},{"id":"two","status":"completed"},{"id":"three","status":"completed"}]})
                 }
-                Method::ThreadQueueList => json!({"data":[]}),
-                Method::ThreadRollback => json!({"threadId":"thread","nativeId":"restored"}),
                 Method::ClaudeSettings => json!({"settings":{"permissionMode":"plan"}}),
                 Method::Initialize
                 | Method::Initialized
@@ -43,6 +41,8 @@ impl ClaudeSessionPort for RetainedOwner {
                 | Method::AccountLoginStart
                 | Method::AccountRateLimitResetCreditConsume
                 | Method::ThreadLoadedList
+                | Method::ThreadQueueList
+                | Method::ThreadRollback
                 | Method::ConfigRead
                 | Method::SkillsExtraRootsSet
                 | Method::ModelList
@@ -195,15 +195,8 @@ async fn restart_at_each_control_transport_boundary_never_resends_an_uncertain_m
         std::str::from_utf8(include_bytes!("wave7_p08_controls.json")).expect("fixture UTF8");
     let captured = captured.replace("/fixture", &cwd.to_string_lossy());
     crate::turn_fixtures::write_state(captured.as_bytes(), &template);
-    for (action, mutation) in [
-        ("settings", Method::ClaudeSettings),
-        ("rollback", Method::ThreadRollback),
-    ] {
-        let methods = if action == "rollback" {
-            vec![Method::ClaudeState, Method::ThreadQueueList, mutation]
-        } else {
-            vec![Method::ClaudeState, mutation]
-        };
+    for (action, mutation) in [("settings", Method::ClaudeSettings)] {
+        let methods = vec![Method::ClaudeState, mutation];
         for (index, cut) in methods.into_iter().enumerate() {
             for after in [false, true] {
                 let state = root.path().join(format!("{action}-{index}-{after}"));
@@ -223,11 +216,7 @@ async fn restart_at_each_control_transport_boundary_never_resends_an_uncertain_m
                     Arc::new(RetainedClaudeSession::new(owner.clone())),
                 );
                 let request = || {
-                    let body = if action == "rollback" {
-                        json!({"id":"agent","action":action,"request_id":"control-one","turn_id":"two"})
-                    } else {
-                        json!({"id":"agent","action":action,"request_id":"control-one","settings":{"permissionMode":"plan"}})
-                    };
+                    let body = json!({"id":"agent","action":action,"request_id":"control-one","settings":{"permissionMode":"plan"}});
                     serde_json::from_value::<ControlRequest>(body).expect("request")
                 };
                 tokio::select! {
