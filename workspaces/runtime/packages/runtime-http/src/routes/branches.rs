@@ -1404,6 +1404,15 @@ mod tests {
             let wire = serde_json::to_string(&views)?;
             assert!(!wire.contains("private"));
             assert!(wire.contains(r#""vendor":{"x":  1}"#));
+            let selected = studio_runtime_store::TranscriptItem {
+                id: "source:message".into(),
+                agent: "source".into(),
+                record: serde_json::from_str(r#"{"id":"source:message","role":"user","text":"hello","assets":[{"id":"asset"}]}"#)?,
+            };
+            let draft = branch_draft_payload(tx, "source", "child", &selected, "source:message", &mut copied)?;
+            assert_eq!(draft["assets"][0]["id"], views[0].id());
+            assert!(draft["assets"][0].get("path").is_none());
+            assert_eq!(draft["assets"][0]["vendor"]["x"], 1);
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.unwrap();
     }
