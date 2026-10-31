@@ -37,13 +37,9 @@ mod m2026_10_28_usage_revision;
 mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
-<<<<<<< head
-mod m2026_10_30_domain_model;
-||||||| base
-=======
 mod m2026_10_30_agent_volatile;
+mod m2026_10_30_domain_model;
 mod m2026_10_30_rule_monitor_records;
->>>>>>> b55d8c49dbc47682afb201a18cd97cc4
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -615,16 +611,6 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
-<<<<<<< head
-            id: "2026-10-30-domain-model",
-            introduced: OCTOBER_30,
-            target: MigrationTarget::Canvas,
-            supported_source: "Agent records that hold chat, run and scheduling state, and the completed-turn table",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_30_domain_model::apply(c.transaction),
-||||||| base
-=======
             id: "2026-10-30-rule-monitor-records",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
@@ -632,7 +618,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_rule_monitor_records::apply(c.transaction),
->>>>>>> b55d8c49dbc47682afb201a18cd97cc4
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-domain-model",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records that hold chat, run and scheduling state, and the completed-turn table",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_domain_model::apply(c.transaction),
     },
     &RegistryMigration,
 ];
