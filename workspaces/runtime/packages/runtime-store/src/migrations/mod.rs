@@ -39,10 +39,7 @@ mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
-<<<<<<< head
 mod m2026_10_30_domain_model;
-||||||| base
-=======
 mod m2026_10_30_branch_phase;
 mod m2026_10_30_capture_errors;
 mod m2026_10_30_complaint_record;
@@ -54,7 +51,6 @@ mod m2026_10_30_project_teams;
 mod m2026_10_30_radio_room;
 mod m2026_10_30_request_record;
 mod m2026_10_30_retire_graph_agents;
->>>>>>> cb4c0d644d10f271303b0a0657d3622170c4c7e1
 mod m2026_10_30_rule_monitor_records;
 mod m2026_10_30_start_wait;
 mod m2026_10_30_task_records;
@@ -768,16 +764,6 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
-<<<<<<< head
-            id: "2026-10-30-domain-model",
-            introduced: OCTOBER_30,
-            target: MigrationTarget::Canvas,
-            supported_source: "Agent records that hold chat, run and scheduling state, and the completed-turn table",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_30_domain_model::apply(c.transaction),
-||||||| base
-=======
             id: "2026-10-30-unused-monitor-stall-index",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
@@ -819,7 +805,6 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_request_record::apply(c.transaction),
->>>>>>> cb4c0d644d10f271303b0a0657d3622170c4c7e1
     },
     &RegistryMigration,
     &SqlMigration {
@@ -881,6 +866,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| crate::StartupRecoveryRepository::prepare_monitor_index(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-domain-model",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records that hold chat, run and scheduling state, and the completed-turn table",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_domain_model::apply(c.transaction),
     },
 ];
 
