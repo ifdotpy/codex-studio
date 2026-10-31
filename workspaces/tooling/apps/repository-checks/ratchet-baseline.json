@@ -189,6 +189,10 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:1"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/src/browser_cards.rs",
+      "fingerprint": "3d8360ab0f3b45d9db5138c709d5ee0d85795b677ad89cc0be416ca61bd0dccd:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/src/browser_policy.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
@@ -297,6 +301,10 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/src/monitor_runtime.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/src/native_actions.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
@@ -321,14 +329,6 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/cards.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:1"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/cards.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:2"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/model.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
@@ -339,6 +339,10 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/runtime_dispatch.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/questions_write.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/recovery_history.rs",
@@ -957,6 +961,14 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:9"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-store/src/approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:1"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-store/src/domain.rs",
       "fingerprint": "2247a123101ce24c8cf1b24d5d6c4ca21ab58d83fe90c6162d7e63f98c17c83c:0"
     },
@@ -969,8 +981,44 @@
       "fingerprint": "b83fbdc5af2110fa1e99b9b255ed438f594b833a1df72af2a05e0e84cdbdd9cb:0"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "3d8360ab0f3b45d9db5138c709d5ee0d85795b677ad89cc0be416ca61bd0dccd:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "eef1a49005de15dc8b62b240413d697ea6cf01f9333938bfd5f4ca039432fc70:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:2"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:3"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:4"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:5"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-store/src/repositories/agent_management.rs",
       "fingerprint": "01ae30bd1740c78b00f58e55ca38e4d5da5cf83f7ba9803c66ff7715f71d4f88:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/repositories/agent_management.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-store/src/repositories/agent_move.rs",
@@ -1812,6 +1860,18 @@
       "fingerprint": "834b0b0ae879fcdb4e860e4782b5574ab66db8c60f642f2e499fb9317c2b2724:0"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-store/src/approvals.rs",
+      "fingerprint": "05ed782712b957e83aaf934a7100767448f72978163367db2cfb46544d921dad:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/approvals.rs",
+      "fingerprint": "09016a58e4d1c8268883e97334ab160d911bfa0dd414114b41218c3823470e72:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/approvals.rs",
+      "fingerprint": "7cc2161f5d4aafe5ea8d8f94a7be15974faed36344037cf5c533f4b48138148f:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-store/src/domain.rs",
       "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
     },
@@ -2162,6 +2222,14 @@
     {
       "file": "workspaces/runtime/packages/runtime-services/src/projects/radio_lifecycle.rs",
       "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/cards.rs",
+      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/cards.rs",
+      "fingerprint": "a8a2929f25fa5a52e86b1aaa53c30a886d25438e0ca884d8e019bc756c5bfd99:1"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/src/provider_session_task.rs",
@@ -2796,6 +2864,10 @@
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/src/approval_sync.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/src/browser.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
@@ -2940,6 +3012,18 @@
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/cards.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/legacy_view.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/legacy_view.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:1"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/runtime_dispatch.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
@@ -3032,6 +3116,14 @@
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:3"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/src/voice.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/voice/provider.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/src/workspace_cleanup_runtime.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
@@ -3064,12 +3156,24 @@
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/tests/agent_management_corpus.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/agent_management_store.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/monitor_wake_guarantees.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/portable_history_python_parity.rs",
@@ -3124,7 +3228,27 @@
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:2"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:2"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:3"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/tests/wave7_p03_message_ingress.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/wave7_p10_lifecycle.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
@@ -3141,6 +3265,14 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-store/src/lib.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/repositories/agent_management.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
