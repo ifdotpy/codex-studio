@@ -1,10 +1,12 @@
-import { AgentSource as GeneratedApiAgentSource } from "../../generated/api.ts";
+import {
+  AgentSource as GeneratedApiAgentSource,
+  WorkspaceMode as GeneratedApiWorkspaceMode,
+} from "../../generated/api.ts";
 import { randomUUID } from "../../uuid";
 import { McpInventory } from "./McpInventory";
 import { isModelEnabled, useModelChoices } from "../models/modelChoices";
 import Tasks from "./Tasks";
-import ClaudeCheckpointRestore from "../ClaudeCheckpointRestore";
-import { showsFileRewind } from "./fileRewind";
+import { providerSupports } from "../../generated/providerKind.ts";
 import {
   useServerApi,
   useServerSync,
@@ -738,26 +740,19 @@ function Plan(c: Context) {
 }
 
 function Checkpoints(c: Context) {
-  if (c.selected && showsFileRewind(c.selected)) {
-    return (
-      <ClaudeCheckpointRestore
-        key={c.selected.id}
-        agent={c.selected}
-        revision={c.revision}
-        onRestored={c.reload}
-      />
-    );
-  }
-  return <GitCheckpoints {...c} />;
-}
-
-function GitCheckpoints(c: Context) {
   const state = useResource("/api/checkpoints", c.revision, {
       query: c.selected ? { agent: c.selected.id } : {},
     }),
     [label, setLabel] = useState(""),
     [preview, setPreview] = useState<CheckpointPreview | null>(null),
-    [busy, setBusy] = useState(false);
+    [busy, setBusy] = useState(false),
+    // A shared folder has no snapshot to restore from, so rewind is off for that chat.
+    sharedFolder =
+      c.selected?.workspaceMode === GeneratedApiWorkspaceMode.shared ||
+      (!c.selected?.worktree &&
+        c.selected?.workspaceMode !== GeneratedApiWorkspaceMode.worktree),
+    canRewind =
+      providerSupports(c.selected?.provider, "rewind") && !sharedFolder;
   return (
     <>
       <ResourceState state={state} />
@@ -802,36 +797,44 @@ function GitCheckpoints(c: Context) {
         <div className="workspace-row" key={checkpoint.id}>
           <div className="workspace-row-head">
             <strong>{checkpoint.label}</strong>
-            <Button
-              size="compact-xs"
-              variant="light"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  const value = await c.run("/api/checkpoint/preview", {
-                    agent: c.selected!.id,
-                    checkpoint: checkpoint.id,
-                  });
-                  setPreview({
-                    ...value,
-                    checkpoint: checkpoint.id,
-                    label: checkpoint.label ?? "Checkpoint",
-                  });
-                } catch {
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              Preview restore
-            </Button>
+            {canRewind && (
+              <Button
+                size="compact-xs"
+                variant="light"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    const value = await c.run("/api/checkpoint/preview", {
+                      agent: c.selected!.id,
+                      checkpoint: checkpoint.id,
+                    });
+                    setPreview({
+                      ...value,
+                      checkpoint: checkpoint.id,
+                      label: checkpoint.label ?? "Checkpoint",
+                    });
+                  } catch {
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Preview restore
+              </Button>
+            )}
           </div>
           <small>
             {date(checkpoint.created)} · {checkpoint.commit?.slice(0, 12)}
           </small>
         </div>
       ))}
+      {!canRewind && (
+        <p className="workspace-muted">
+          Restore is not available for this chat. It needs an isolated project
+          folder.
+        </p>
+      )}
       {!state.data?.checkpoints?.length && state.data !== null && (
         <Empty>No checkpoints yet.</Empty>
       )}

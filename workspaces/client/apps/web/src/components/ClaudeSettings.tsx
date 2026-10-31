@@ -74,7 +74,7 @@ type ClaudeSessionState = Extract<ClaudeSessionResponse, { turns: unknown[] }>;
 type ClaudeCommandsResponse = Extract<ClaudeSessionResponse, unknown[]>;
 type ClaudeSessionMutation = ClaudeSessionRequest extends infer Request
   ? Request extends {
-      action: "settings" | "command" | "rollback" | "stop_task";
+      action: "settings" | "command" | "stop_task";
     }
     ? Omit<Request, "request_id">
     : never
@@ -147,7 +147,6 @@ export function ClaudeSettings({
   const savedRef = useRef(values);
   const [window, setWindow] = useState("");
   const [command, setCommand] = useState("");
-  const [turn, setTurn] = useState("");
   const [error, setError] = useState("");
   const [busyAction, setBusyAction] = useState(false);
   const [savingField, setSavingField] = useState("");
@@ -161,10 +160,7 @@ export function ClaudeSettings({
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const windowSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const call = (body: ClaudeSessionRequest) =>
-    post("/api/claude/session", body, {
-      timeoutMs:
-        body.action === "rollback" && body.restore_files ? 120000 : 15000,
-    });
+    post("/api/claude/session", body, { timeoutMs: 15000 });
   const mutate = async (body: ClaudeSessionMutation) => {
     const storageKey = `claude-control:${agent.accountKey}:${agent.id}`;
     const requestId = settingsRequestId(
@@ -296,18 +292,6 @@ export function ClaudeSettings({
     }
     void saveSetting("Auto-compact limit", { autoCompactWindow: limit });
   };
-  const historyTurns = [...state.turns];
-  const selectedHistoryTurn = historyTurns.find((item) => item.id === turn);
-  const recoveryTurn = state.controlOperation?.turnId;
-  if (recoveryTurn && !historyTurns.some((item) => item.id === recoveryTurn))
-    historyTurns.push({
-      id: recoveryTurn,
-      status: "interrupted",
-      text: "Recover pending rollback",
-    });
-  useEffect(() => {
-    if (turn && !historyTurns.some((item) => item.id === turn)) setTurn("");
-  }, [state, turn]);
   const permissionsLocked =
     !stateLoaded ||
     (!!account && !accountCanStart(account)) ||
@@ -527,82 +511,6 @@ export function ClaudeSettings({
               }
             >
               Compact conversation
-            </Button>
-          </ClaudeDisclosure>
-          <ClaudeDisclosure title="Conversation history">
-            <p className="claude-setting-help">
-              Remove a turn and later turns from Claude’s context. Saved history
-              remains.
-            </p>
-            <NativeSelect
-              label="First turn to remove"
-              value={turn}
-              onChange={(event) => setTurn(event.currentTarget.value)}
-              data={[
-                { value: "", label: "Select a turn" },
-                ...historyTurns.map((item, index) => ({
-                  value: item.id,
-                  label: `${index + 1}. ${item.text || item.status}`,
-                })),
-              ]}
-            />
-            <Button
-              color="red"
-              disabled={
-                locked ||
-                !turn ||
-                !historyTurns.some((item) => item.id === turn)
-              }
-              onClick={() =>
-                void run(
-                  () =>
-                    state.controlOperation?.turnId === turn
-                      ? call({
-                          id: agent.id,
-                          action: "rollback",
-                          turn_id: turn,
-                          request_id: state.controlOperation.requestId,
-                          restore_files:
-                            state.controlOperation.restoreFiles === true,
-                        })
-                      : mutate({
-                          id: agent.id,
-                          action: "rollback",
-                          turn_id: turn,
-                        }),
-                  true,
-                )
-              }
-            >
-              Roll back context
-            </Button>
-            <p className="claude-setting-help">
-              Restore files and context together to before this message. SDK
-              checkpoints cover Claude file tools, not shell commands.
-            </p>
-            {!selectedHistoryTurn?.canRestoreFiles && (
-              <p className="claude-setting-help">
-                {selectedHistoryTurn?.restoreFilesUnavailableReason ||
-                  "Select a message with an SDK file checkpoint."}
-              </p>
-            )}
-            <Button
-              color="orange"
-              disabled={locked || !selectedHistoryTurn?.canRestoreFiles}
-              onClick={() =>
-                void run(
-                  () =>
-                    mutate({
-                      id: agent.id,
-                      action: "rollback",
-                      turn_id: turn,
-                      restore_files: true,
-                    }),
-                  true,
-                )
-              }
-            >
-              Restore files and conversation
             </Button>
           </ClaudeDisclosure>
           <p className="claude-version">

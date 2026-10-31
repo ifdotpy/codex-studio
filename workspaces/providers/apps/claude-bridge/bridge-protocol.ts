@@ -22,7 +22,6 @@ import type {
   FreshItem,
   FreshTurn,
   CompletedTurn,
-  ControlReceipt,
   JournalRepairReport,
 } from "./session-state.ts";
 import type { UsageObservation } from "./usage-contract.generated.ts";
@@ -337,15 +336,6 @@ export interface BridgeMethods {
   "claude/settings": [
     BridgeThreadParams & { settings: NonNullable<Session["claude"]> },
     { settings: NonNullable<Session["claude"]> },
-  ];
-  "thread/rollback": [
-    BridgeThreadParams & {
-      requestId: string;
-      turnId: string;
-      restoreFiles?: boolean | undefined;
-      fileMessageId?: string | undefined;
-    },
-    NonNullable<ControlReceipt["result"]>,
   ];
   "thread/start": [
     BridgeSessionParams & { cwd: string },

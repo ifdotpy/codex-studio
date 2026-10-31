@@ -1,4 +1,4 @@
-//! Claude session reads and durable settings/rollback controls.
+//! Claude session reads and durable settings controls.
 use super::{
     extractors::{ApiJson, QueryParams},
     manifest::{OperationStatus, RouteGroup, get, post},
@@ -109,8 +109,7 @@ async fn session(
         ClaudeSessionApiClaudeSessionPostRequest as SessionRequest, ClaudeSessionStateRequestAction,
     };
     let id = match &body {
-        SessionRequest::ClaudeSessionSettingsRequest(request)
-        | SessionRequest::ClaudeSessionRollbackRequest(request) => request.id(),
+        SessionRequest::ClaudeSessionSettingsRequest(request) => request.id(),
         SessionRequest::ClaudeSessionCommandRequest(request) => &request.id,
         SessionRequest::ClaudeSessionStateRequest(request) => &request.id,
         SessionRequest::ClaudeSessionStopTaskRequest(request) => &request.id,
@@ -121,12 +120,11 @@ async fn session(
     let id = id.to_owned();
     let is_state = matches!(&body, SessionRequest::ClaudeSessionStateRequest(request) if request.action == ClaudeSessionStateRequestAction::State);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let (agent, operation) = load_agent(store.clone(), id.clone()).await?;
+    let (agent, operation) = load_agent(store.clone(), id).await?;
     require_claude_account(&state, &agent).await?;
     let snapshot_operation = match &body {
         SessionRequest::ClaudeSessionCommandRequest(_) => None,
         SessionRequest::ClaudeSessionSettingsRequest(_)
-        | SessionRequest::ClaudeSessionRollbackRequest(_)
         | SessionRequest::ClaudeSessionStateRequest(_)
         | SessionRequest::ClaudeSessionStopTaskRequest(_) => operation.clone(),
     };
@@ -148,12 +146,7 @@ async fn session(
     let no_thread = agent.thread_id.as_deref().is_none_or(str::is_empty);
     let local_only = (is_state && state_thread(&agent).is_none())
         || (matches!(&body, SessionRequest::ClaudeSessionSettingsRequest(_)) && no_thread);
-    if matches!(
-        &body,
-        SessionRequest::ClaudeSessionRollbackRequest(_)
-            | SessionRequest::ClaudeSessionStopTaskRequest(_)
-    ) && no_thread
-    {
+    if matches!(&body, SessionRequest::ClaudeSessionStopTaskRequest(_)) && no_thread {
         return Err(control_error(ControlError::Request));
     }
     // Native commands use the message service and need no provider control session.
@@ -181,10 +174,7 @@ async fn session(
         SessionRequest::ClaudeSessionCommandRequest(request) => {
             return command(state, request).await;
         }
-        SessionRequest::ClaudeSessionSettingsRequest(request)
-        | SessionRequest::ClaudeSessionRollbackRequest(request) => {
-            controls()?.execute(request).await
-        }
+        SessionRequest::ClaudeSessionSettingsRequest(request) => controls()?.execute(request).await,
         request @ (SessionRequest::ClaudeSessionStateRequest(_)
         | SessionRequest::ClaudeSessionStopTaskRequest(_)) => {
             let body = serde_json::to_value(request).map_err(|_| ApiError::internal())?;
@@ -192,30 +182,7 @@ async fn session(
         }
     };
     state.event_wake.notify_one();
-    let mut result = result.map_err(control_error)?;
-    if is_state {
-        let workspace = studio_runtime_services::checkpoints::capture_context(&store, &id)
-            .await
-            .map_err(|_| ApiError::internal())?;
-        let reason = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-http/claude-controls/restore-availability",
-            move || {
-                studio_runtime_services::checkpoints::ensure_workspace_idle(&workspace, None)
-                    .err()
-                    .map(|error| error.to_string())
-            },
-        )
-        .await
-        .map_err(|_| ApiError::internal())?;
-        if let Some(reason) = reason
-            && let Some(turns) = result.get_mut("turns").and_then(Value::as_array_mut)
-        {
-            for turn in turns {
-                turn["canRestoreFiles"] = json!(false);
-                turn["restoreFilesUnavailableReason"] = json!(reason);
-            }
-        }
-    }
+    let result = result.map_err(control_error)?;
     Ok(Json(result))
 }
 

@@ -148,14 +148,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                     | "CommandRow"
             )
     });
-    // Claude mutations deserialize through their validated tagged command owner.
+    // Claude settings deserialize through their validated tagged command owner.
     for (name, owner) in [
         (
             "ClaudeSessionSettingsRequest",
-            "studio_runtime_schema::claude_controls::ClaudeControlCommand",
-        ),
-        (
-            "ClaudeSessionRollbackRequest",
             "studio_runtime_schema::claude_controls::ClaudeControlCommand",
         ),
         (
@@ -174,7 +170,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     for name in [
         "ClaudeSessionSettingsRequestAction",
-        "ClaudeSessionRollbackRequestAction",
         "ClaudeSettingsPermissionMode",
     ] {
         analysis
