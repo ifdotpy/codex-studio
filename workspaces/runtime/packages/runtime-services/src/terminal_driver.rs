@@ -12,7 +12,8 @@ use base64::Engine as _;
 use serde_json::{Value, json};
 use studio_runtime_schema::persistence::TerminalActionFailure;
 use studio_runtime_store::{
-    AgentId, AgentRepository, RuntimeStore, StoreError, TerminalRecord, TerminalsRepository,
+    AgentId, AgentRepository, ArchiveAppend, RuntimeStore, StoreError, TerminalRecord,
+    TerminalsRepository,
 };
 use thiserror::Error;
 
@@ -229,23 +230,17 @@ pub async fn history_output(
         .await?;
     let record = current.record.clone();
     let row = current;
-    let terminal_id = id.to_owned();
-    let (start, available, cursor, chunks) = store
-        .read_async("runtime-services/terminal_driver", move |connection| {
-            let start =
-                TerminalsRepository::archive_start(connection, &terminal_id)?.unwrap_or(row.offset);
-            let available = row.offset + row.output.chars().count() as i64;
-            let cursor = requested_offset.clamp(start, available);
-            let end = (cursor + limit).min(available);
-            let chunks = TerminalsRepository::archive_chunks(
-                connection,
-                &terminal_id,
-                cursor,
-                end,
-                limit / OUTPUT_CHUNK as i64 + 2,
-            )?;
-            Ok::<_, TerminalError>((start, available, cursor, chunks))
-        })
+    let available = row.offset + row.output.chars().count() as i64;
+    let archive_start = store.terminal_output_start(id).await?.unwrap_or(row.offset);
+    let start = archive_start;
+    let cursor = requested_offset.clamp(start, available);
+    let chunks = store
+        .terminal_output_chunks(
+            id,
+            cursor,
+            (cursor + limit).min(available),
+            limit / OUTPUT_CHUNK as i64 + 2,
+        )
         .await?;
     let end = (cursor + limit).min(available);
     let mut text = String::new();
@@ -465,6 +460,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
                         )
                     })
                     .await?;
+                self.store.terminal_output_delete(&id).await?;
                 Err(TerminalError::Session(SessionError::Rejected))
             }
             Err(TerminalError::Session(error)) => {
@@ -677,13 +673,14 @@ impl<S: TerminalSession> TerminalDriver<S> {
             TerminalEvent::Exit(code) => {
                 let transaction_id = id.clone();
                 let updated_at = self.now();
-                self.store
+                let archived = self
+                    .store
                     .transaction(move |transaction| {
                         if TerminalsRepository::event_cursor(transaction, &transaction_id)?
                             .unwrap_or(0)
                             >= sequence
                         {
-                            return Ok(());
+                            return Ok(None);
                         }
                         let row = TerminalsRepository::get(transaction, &transaction_id)?
                             .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?;
@@ -692,13 +689,8 @@ impl<S: TerminalSession> TerminalDriver<S> {
                             TerminalsRepository::decoder_pending(transaction, &transaction_id)?
                                 .unwrap_or_default();
                         let (text, _) = decode_utf8(&pending, true);
-                        let (output, offset) = TerminalsRepository::append_and_retain(
-                            transaction,
-                            &transaction_id,
-                            &row,
-                            &text,
-                            OUTPUT_LIMIT,
-                        )?;
+                        let (output, offset, archived) =
+                            TerminalsRepository::append_and_retain(&row, &text, OUTPUT_LIMIT);
                         if record.status() != Some("closed") {
                             record.set_status("exited");
                         }
@@ -725,10 +717,10 @@ impl<S: TerminalSession> TerminalDriver<S> {
                             &transaction_id,
                             sequence,
                         )?;
-                        Ok(())
+                        Ok(archived)
                     })
                     .await?;
-                Ok(())
+                self.archive_output(&id, archived).await
             }
             TerminalEvent::CleanupFailed(message) => {
                 let transaction_id = id.clone();
@@ -767,7 +759,8 @@ impl<S: TerminalSession> TerminalDriver<S> {
         bytes: Vec<u8>,
     ) -> Result<(), TerminalError> {
         let terminal_id = id.to_owned();
-        self.store
+        let archived = self
+            .store
             .transaction(move |transaction| {
                 let row = TerminalsRepository::get(transaction, &terminal_id)?
                     .ok_or_else(|| StoreError::SchemaMismatch("unknown terminal".into()))?;
@@ -778,25 +771,35 @@ impl<S: TerminalSession> TerminalDriver<S> {
                 })?;
                 if TerminalsRepository::event_cursor(transaction, &terminal_id)?.unwrap_or(0) >= seq
                 {
-                    return Ok(());
+                    return Ok(None);
                 }
                 let mut combined = TerminalsRepository::decoder_pending(transaction, &terminal_id)?
                     .unwrap_or_default();
                 combined.extend_from_slice(&bytes);
                 let (text, pending) = decode_utf8(&combined, false);
-                let (output, offset) = TerminalsRepository::append_and_retain(
-                    transaction,
-                    &terminal_id,
-                    &row,
-                    &text,
-                    OUTPUT_LIMIT,
-                )?;
+                let (output, offset, archived) =
+                    TerminalsRepository::append_and_retain(&row, &text, OUTPUT_LIMIT);
                 TerminalsRepository::put(transaction, &terminal_id, &row.record, &output, offset)?;
                 TerminalsRepository::save_decoder_pending(transaction, &terminal_id, &pending)?;
                 TerminalsRepository::save_event_cursor(transaction, &terminal_id, seq)?;
-                Ok(())
+                Ok(archived)
             })
             .await?;
+        self.archive_output(id, archived).await
+    }
+
+    /// Append to the output archive after the row committed. The archive has its own
+    /// database and writer. A crash between the two commits loses this chunk of history.
+    async fn archive_output(
+        &self,
+        id: &str,
+        archived: Option<ArchiveAppend>,
+    ) -> Result<(), TerminalError> {
+        if let Some(chunk) = archived {
+            self.store
+                .terminal_output_append(id, chunk.start, chunk.text)
+                .await?;
+        }
         Ok(())
     }
 
@@ -3118,14 +3121,14 @@ mod tests {
                 .await
                 .is_err()
         );
-        let connection = state
-            .store
-            .as_ref()
-            .expect("store")
-            .test_reader()
-            .expect("read");
         assert_eq!(
-            TerminalsRepository::archive_start(&connection, bad).expect("archive query"),
+            state
+                .store
+                .as_ref()
+                .expect("store")
+                .terminal_output_start(bad)
+                .await
+                .expect("archive query"),
             None
         );
     }
