@@ -124,42 +124,74 @@ struct SettingsReply {
 }
 
 fn next_turn_signature(request: &Conversation, request_id: &str) -> String {
-    let mut body = json!({
-        "operation":AgentMutation::NextTurn.operation(), "agent":request.id, "id":request.id,
-        "next_turn":true, "request_id":request_id,
-    });
-    for (field, value) in [
-        ("model", request.model.as_ref().map(|value| json!(value))),
-        ("effort", request.effort.wire_value()),
-        (
-            "fast_mode",
-            request.fast_mode.as_ref().map(|value| json!(value)),
-        ),
-        (
-            "daybreak_enabled",
-            request.daybreak_enabled.value().map(|value| json!(value)),
-        ),
-        (
-            "expected_account_key",
-            request.expected_account.as_ref().map(|value| json!(value)),
-        ),
-    ] {
-        if let Some(value) = value {
-            body[field] = value;
-        }
+    #[derive(Serialize)]
+    struct Signature<'a> {
+        operation: &'static str,
+        agent: &'a str,
+        id: &'a str,
+        next_turn: bool,
+        request_id: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<&'a str>,
+        #[serde(skip_serializing_if = "NullableSetting::is_missing")]
+        effort: &'a NullableSetting<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fast_mode: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        daybreak_enabled: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_account_key: Option<&'a str>,
     }
-    crate::event_write::request_signature(&body)
+    typed_signature(&Signature {
+        operation: AgentMutation::NextTurn.operation(),
+        agent: &request.id,
+        id: &request.id,
+        next_turn: true,
+        request_id,
+        model: request.model.as_deref(),
+        effort: &request.effort,
+        fast_mode: request.fast_mode,
+        daybreak_enabled: request.daybreak_enabled.value().copied(),
+        expected_account_key: request.expected_account.as_deref(),
+    })
 }
 
 fn permissions_signature(request: &Conversation) -> String {
-    crate::event_write::request_signature(&json!({
-        "operation":AgentMutation::Permissions.operation(), "agent":request.id,
-        "yolo":request.yolo_mode, "account":request.expected_account,
-        "cwd":request.cwd, "model":request.model,
-        "effort":[request.effort.is_present(), request.effort.wire_value()],
-        "fastMode":request.fast_mode, "daybreak":request.daybreak_enabled.value(),
-        "excluded":request.excluded,
-    }))
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Signature<'a> {
+        operation: &'static str,
+        agent: &'a str,
+        yolo: Option<bool>,
+        account: Option<&'a str>,
+        cwd: Option<&'a str>,
+        model: Option<&'a str>,
+        effort: (bool, Option<&'a str>),
+        fast_mode: Option<bool>,
+        daybreak: Option<bool>,
+        excluded: Option<&'a [String]>,
+    }
+    typed_signature(&Signature {
+        operation: AgentMutation::Permissions.operation(),
+        agent: &request.id,
+        yolo: request.yolo_mode,
+        account: request.expected_account.as_deref(),
+        cwd: request.cwd.as_deref(),
+        model: request.model.as_deref(),
+        effort: (
+            request.effort.is_present(),
+            request.effort.value().map(String::as_str),
+        ),
+        fast_mode: request.fast_mode,
+        daybreak: request.daybreak_enabled.value().copied(),
+        excluded: request.excluded.as_deref(),
+    })
+}
+
+fn typed_signature(body: &impl Serialize) -> String {
+    let body = studio_runtime_schema::json_compat::python_json_serialized(body)
+        .expect("signature fields are serializable");
+    data_encoding::HEXLOWER.encode(&Sha256::digest(body.as_bytes()))
 }
 
 /// A nullable setting retains wire presence without permitting contradictory flags.
@@ -181,8 +213,11 @@ impl<T> From<Option<Option<T>>> for NullableSetting<T> {
 }
 
 impl<T> NullableSetting<T> {
+    fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
     fn is_present(&self) -> bool {
-        !matches!(self, Self::Missing)
+        !self.is_missing()
     }
     fn value(&self) -> Option<&T> {
         match self {
@@ -190,15 +225,11 @@ impl<T> NullableSetting<T> {
             Self::Missing | Self::Null => None,
         }
     }
-    fn wire_value(&self) -> Option<Value>
-    where
-        T: Serialize,
-    {
-        match self {
-            Self::Missing => None,
-            Self::Null => Some(Value::Null),
-            Self::Value(value) => Some(json!(value)),
-        }
+}
+
+impl<T: Serialize> Serialize for NullableSetting<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.value().serialize(serializer)
     }
 }
 
@@ -2427,10 +2458,17 @@ pub async fn rename_operation(
     })
 }
 fn rename_signature(id: &str, name: Option<&str>) -> String {
-    let body = python_json(
-        &json!({"chat": id, "name": name, "operation": AgentMutation::Rename.operation()}),
-    );
-    data_encoding::HEXLOWER.encode(&Sha256::digest(body.as_bytes()))
+    #[derive(Serialize)]
+    struct Signature<'a> {
+        chat: &'a str,
+        name: Option<&'a str>,
+        operation: &'static str,
+    }
+    typed_signature(&Signature {
+        chat: id,
+        name,
+        operation: AgentMutation::Rename.operation(),
+    })
 }
 
 fn previous_lead(
@@ -3172,50 +3210,67 @@ mod tests {
     use crate::host_worker_create::CreationCatalog as _;
 
     #[test]
+    fn rename_signature_preserves_legacy_json_hash() {
+        for name in [None, Some(""), Some("Zażółć \"chat\"")] {
+            let expected = json!({"chat":"会話", "name":name, "operation":"rename"});
+            assert_eq!(
+                rename_signature("会話", name),
+                crate::event_write::request_signature(&expected)
+            );
+        }
+    }
+
+    #[test]
     fn conversation_signatures_preserve_nullable_setting_identity() {
         for effort in [None, Some(None), Some(Some("high".to_owned()))] {
             for daybreak in [None, Some(None), Some(Some(true))] {
-                let request = Conversation {
-                    id: "agent".into(),
-                    expected_account: Some("account".into()),
-                    excluded: None,
-                    cwd: None,
-                    yolo_mode: Some(true),
-                    model: None,
-                    effort: effort.clone().into(),
-                    fast_mode: None,
-                    daybreak_enabled: daybreak.into(),
-                    next_turn: Some(Some(true)),
-                    request_id: Some(Some("request".into())),
-                    mode_settings: false,
-                    mode_limit: None,
-                    mode_revision: None,
-                    mode_request_id: None,
-                    worker_settings: false,
-                    worker_defaults: None,
-                    review_defaults: None,
-                    non_defaults: true,
-                };
-                let expected_permissions = json!({
-                    "operation": AgentMutation::Permissions.operation(), "agent":"agent",
-                    "yolo":true, "account":"account", "cwd":null, "model":null,
-                    "effort":[effort.is_some(), effort], "fastMode":null, "daybreak":daybreak.flatten(), "excluded":null,
-                });
-                assert_eq!(
-                    permissions_signature(&request),
-                    crate::event_write::request_signature(&expected_permissions)
-                );
-                let mut expected_next = json!({"operation":AgentMutation::NextTurn.operation(), "agent":"agent", "id":"agent", "next_turn":true, "request_id":"request", "expected_account_key":"account"});
-                if let Some(value) = effort.as_ref() {
-                    expected_next["effort"] = json!(value);
+                for filled in [false, true] {
+                    let request = Conversation {
+                        id: "agent-会話".into(),
+                        expected_account: Some("account".into()),
+                        excluded: filled.then(|| vec!["excluded".into()]),
+                        cwd: filled.then(|| "/project".into()),
+                        yolo_mode: Some(true),
+                        model: filled.then(|| "model".into()),
+                        effort: effort.clone().into(),
+                        fast_mode: filled.then_some(false),
+                        daybreak_enabled: daybreak.into(),
+                        next_turn: Some(Some(true)),
+                        request_id: Some(Some("request".into())),
+                        mode_settings: false,
+                        mode_limit: None,
+                        mode_revision: None,
+                        mode_request_id: None,
+                        worker_settings: false,
+                        worker_defaults: None,
+                        review_defaults: None,
+                        non_defaults: true,
+                    };
+                    let expected_permissions = json!({
+                        "operation": AgentMutation::Permissions.operation(), "agent":request.id,
+                        "yolo":true, "account":"account", "cwd":request.cwd, "model":request.model,
+                        "effort":[effort.is_some(), effort], "fastMode":request.fast_mode, "daybreak":daybreak.flatten(), "excluded":request.excluded,
+                    });
+                    assert_eq!(
+                        permissions_signature(&request),
+                        crate::event_write::request_signature(&expected_permissions)
+                    );
+                    let mut expected_next = json!({"operation":AgentMutation::NextTurn.operation(), "agent":request.id, "id":request.id, "next_turn":true, "request_id":"request", "expected_account_key":"account"});
+                    if filled {
+                        expected_next["model"] = json!("model");
+                        expected_next["fast_mode"] = json!(false);
+                    }
+                    if let Some(value) = effort.as_ref() {
+                        expected_next["effort"] = json!(value);
+                    }
+                    if let Some(value) = daybreak.flatten() {
+                        expected_next["daybreak_enabled"] = json!(value);
+                    }
+                    assert_eq!(
+                        next_turn_signature(&request, "request"),
+                        crate::event_write::request_signature(&expected_next)
+                    );
                 }
-                if let Some(value) = daybreak.flatten() {
-                    expected_next["daybreak_enabled"] = json!(value);
-                }
-                assert_eq!(
-                    next_turn_signature(&request, "request"),
-                    crate::event_write::request_signature(&expected_next)
-                );
             }
         }
     }
