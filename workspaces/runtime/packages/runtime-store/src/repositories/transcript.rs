@@ -864,15 +864,22 @@ fn enrich_persisted_items(
             }
             let metadata = raw_metadata
                 .map(|raw| {
-                    serde_json::from_str::<Value>(&raw)
+                    serde_json::from_str::<Option<crate::EventMetadataRecord>>(&raw)
                         .map_err(|_| invalid_record("runtime_event_meta", &event))
                 })
                 .transpose()?
-                .unwrap_or(Value::Null);
-            let delivery_metadata = json!({"delivery": metadata.get("requestedDelivery")
-                .or_else(|| metadata.get("delivery"))});
-            let delivery = DeliveryMoment::for_event("user", "", Some(&delivery_metadata))
-                .map_err(|_| invalid_record("runtime_event_meta", &event))?;
+                .flatten();
+            let delivery = metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    let field = if metadata.requested_delivery.is_missing() {
+                        &metadata.delivery
+                    } else {
+                        &metadata.requested_delivery
+                    };
+                    field.value().map(|delivery| delivery.moment())
+                })
+                .unwrap_or_default();
             for (item_index, input_index) in &represented[&event] {
                 let target = match input_index {
                     Some(input) => &mut items[*item_index]["inputs"][*input],
@@ -1199,6 +1206,7 @@ fn transcript_pull_write(
     Ok(json!({"workspaceId":workspace_id,"documents":documents,"checkpoint":{"seq":checkpoint}}))
 }
 
+// Sync-hash debt: retain Value's canonical projection until a replacement proves identical hashes.
 fn canonical_hash(value: &Value) -> String {
     crate::sha256_hex(value.to_string().as_bytes())
 }
@@ -1521,6 +1529,22 @@ mod tests {
                 "per-event metadata statements are removed"
             );
         });
+    }
+
+    #[test]
+    fn delivery_metadata_rejects_duplicate_known_fields() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE runtime_events(id TEXT,agent TEXT,kind TEXT,status TEXT,error TEXT);
+             CREATE TABLE runtime_event_meta(id TEXT,record TEXT);
+             INSERT INTO runtime_events VALUES ('e1','agent','user','sent',NULL);
+             INSERT INTO runtime_event_meta VALUES ('e1','{\"requestedDelivery\":\"after_turn\",\"requestedDelivery\":\"steer\"}');",
+        ).unwrap();
+        let mut items = vec![json!({"role":"user","id":"agent:e1"})];
+        assert!(matches!(
+            enrich_persisted_items(&connection, "agent", &json!({"status":"idle"}), &mut items),
+            Err(TranscriptStoreError::InvalidStoredObject { table: "runtime_event_meta", id }) if id == "e1"
+        ));
     }
 
     #[test]

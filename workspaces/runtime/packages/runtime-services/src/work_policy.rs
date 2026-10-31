@@ -124,7 +124,7 @@ pub fn queue_items(
                 "requestedDelivery": requested,
             });
             if let Some(accepted) = metadata.extensions.get("acceptedAt") {
-                item["acceptedAt"] = accepted.clone();
+                item["acceptedAt"] = json!(accepted);
             }
             Ok(item)
         })
