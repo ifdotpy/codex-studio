@@ -17,6 +17,50 @@ export function browserIndexedDB(): IDBFactory | undefined {
   return globalThis.indexedDB;
 }
 
+const outboxPrefixes = {
+  nativeAction: "studio-native-action:",
+  projectSave: "studio-peer-convert:",
+  queueChange: "studio-queue-change:",
+  serverAccess: "studio-server-access-pending",
+  pairing: "studio-pairing-attempt-v1",
+  serverManagement: "studio-server-management-v1:",
+  legacyServerManagement: "studio-server-discovery-pending-v1",
+} as const;
+export type OutboxRequestKind = keyof typeof outboxPrefixes;
+
+/** One logical outbox, retaining existing keys and exact request bytes. */
+export function outboxRequests(
+  storage: Pick<
+    Storage,
+    "getItem" | "setItem" | "removeItem"
+  > = globalThis.localStorage,
+) {
+  const key = (kind: OutboxRequestKind, suffix: string) =>
+    outboxPrefixes[kind] + suffix;
+  return {
+    key,
+    get: (kind: OutboxRequestKind, suffix: string) =>
+      storage.getItem(key(kind, suffix)),
+    set: (kind: OutboxRequestKind, suffix: string, value: string) =>
+      storage.setItem(key(kind, suffix), value),
+    remove: (kind: OutboxRequestKind, suffix: string) =>
+      storage.removeItem(key(kind, suffix)),
+  };
+}
+
+export function outboxRequestKeys(
+  storage: Storage,
+  kind: OutboxRequestKind,
+  suffix: string,
+) {
+  const prefix = outboxPrefixes[kind] + suffix;
+  return Array.from({ length: storage.length }, (_, index) =>
+    storage.key(index),
+  )
+    .filter((name): name is string => !!name?.startsWith(prefix))
+    .map((name) => name.slice(outboxPrefixes[kind].length));
+}
+
 /** Remove retired local copies without touching credentials or request fences. */
 export async function cleanupLegacyPersistence(
   storage: Storage = globalThis.localStorage,

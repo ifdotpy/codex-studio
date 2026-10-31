@@ -1,3 +1,4 @@
+import { outboxRequests } from "./browserPersistence";
 import { randomUUID } from "./uuid";
 import {
   useServerApi,
@@ -53,14 +54,14 @@ export function useNativeAction(
   notify: (text: string) => void,
 ) {
   const { post } = useServerApi();
-  const localStorage = useServerStorage();
+  const outbox = outboxRequests(useServerStorage());
 
   const [, changed] = useState(0);
   const [active, setActive] = useState(false);
-  const key = (id: string) => `studio-native-action:${workspace}:${id}`;
+  const key = (id: string) => `${workspace}:${id}`;
   const read = (id: string): Request | null => {
     if (!workspace) return null;
-    const raw = localStorage.getItem(key(id));
+    const raw = outbox.get("nativeAction", key(id));
     if (!raw) return null;
     const request: unknown = JSON.parse(raw);
     if (!isActionRequest(request) || request.id !== id)
@@ -85,12 +86,12 @@ export function useNativeAction(
       },
     };
     // Storage must succeed before HTTP. Keep the exact account, thread and epoch on retry.
-    localStorage.setItem(key(agent.id), JSON.stringify(request));
+    outbox.set("nativeAction", key(agent.id), JSON.stringify(request));
     changed((value) => value + 1);
     setActive(true);
     const acknowledge = () => {
       if (read(agent.id)?.request_id === request.request_id)
-        localStorage.removeItem(key(agent.id));
+        outbox.remove("nativeAction", key(agent.id));
       changed((value) => value + 1);
     };
     try {

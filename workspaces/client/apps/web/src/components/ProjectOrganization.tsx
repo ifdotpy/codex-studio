@@ -170,7 +170,7 @@ export function ConvertChatForm({
     "/api/peer-teams",
     saved,
     undefined,
-    `studio-peer-convert:${scope}:${source.id}:${target.id}`,
+    `${scope}:${source.id}:${target.id}`,
   );
   return (
     <form

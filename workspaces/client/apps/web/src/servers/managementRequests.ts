@@ -1,6 +1,5 @@
+import { outboxRequestKeys, outboxRequests } from "../browserPersistence";
 import type { ServerAccessRequest } from "./accessContract";
-const prefix = "studio-server-management-v1:";
-const legacyKey = "studio-server-discovery-pending-v1";
 function readLegacy(raw: string): ServerAccessRequest {
   const value: ServerAccessRequest = JSON.parse(raw);
   if (
@@ -17,6 +16,7 @@ function readLegacy(raw: string): ServerAccessRequest {
 }
 export class ServerManagementRequests {
   private scope: string;
+  private outbox: ReturnType<typeof outboxRequests>;
   private storage: Storage;
   private lock: (name: string, run: () => Promise<void>) => Promise<void>;
   private send: (request: ServerAccessRequest) => Promise<void>;
@@ -27,22 +27,24 @@ export class ServerManagementRequests {
     send: (request: ServerAccessRequest) => Promise<void>,
   ) {
     this.scope = scope;
+    this.outbox = outboxRequests(storage);
     this.storage = storage;
     this.lock = lock;
     this.send = send;
   }
   private key(id: string) {
-    return prefix + encodeURIComponent(this.scope) + ":" + id;
+    return encodeURIComponent(this.scope) + ":" + id;
   }
   pending(): ServerAccessRequest[] {
     const records: ServerAccessRequest[] = [];
     const start = this.key("");
-    for (let i = 0; i < this.storage.length; i++) {
-      const key = this.storage.key(i);
-      if (key?.startsWith(start))
-        records.push(JSON.parse(this.storage.getItem(key)!));
-    }
-    const legacy = this.storage.getItem(legacyKey);
+    for (const key of outboxRequestKeys(
+      this.storage,
+      "serverManagement",
+      start,
+    ))
+      records.push(JSON.parse(this.outbox.get("serverManagement", key)!));
+    const legacy = this.outbox.get("legacyServerManagement", "");
     if (legacy) {
       const previous = readLegacy(legacy);
       if (!records.some((value) => value.requestId === previous.requestId))
@@ -52,11 +54,15 @@ export class ServerManagementRequests {
   }
   async run(request: ServerAccessRequest) {
     await this.lock("studio-server-management:" + this.scope, async () => {
-      const legacy = this.storage.getItem(legacyKey);
+      const legacy = this.outbox.get("legacyServerManagement", "");
       if (legacy) {
         const previous = readLegacy(legacy);
-        this.storage.setItem(this.key(previous.requestId), legacy);
-        this.storage.removeItem(legacyKey);
+        this.outbox.set(
+          "serverManagement",
+          this.key(previous.requestId),
+          legacy,
+        );
+        this.outbox.remove("legacyServerManagement", "");
       }
       const pending = this.pending();
       const fingerprint = (value: ServerAccessRequest) =>
@@ -69,10 +75,14 @@ export class ServerManagementRequests {
           "Retry the saved server request before you start another request.",
         );
       const body = same || request;
-      this.storage.setItem(this.key(body.requestId), JSON.stringify(body));
+      this.outbox.set(
+        "serverManagement",
+        this.key(body.requestId),
+        JSON.stringify(body),
+      );
       await this.send(body);
       // Remove only this operation, after its own response proves completion.
-      this.storage.removeItem(this.key(body.requestId));
+      this.outbox.remove("serverManagement", this.key(body.requestId));
     });
   }
 }

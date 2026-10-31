@@ -1,3 +1,4 @@
+import { outboxRequests } from "../browserPersistence";
 import { randomUUID } from "../uuid";
 import { useServerStorage } from "./ServerServicesContext";
 import { useServerApi } from "./ServerServicesContext";
@@ -7,7 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { errorText } from "../api";
 import type { ServerAccessState, ServerAccessRequest } from "./accessContract";
 export default function ServerAccessSettings({ active }: { active: boolean }) {
-  const localStorage = useServerStorage();
+  const outbox = outboxRequests(useServerStorage());
   const { serverAccess, refreshSession } = useServerApi();
 
   const [state, setState] = useState<ServerAccessState | null>(null);
@@ -24,9 +25,7 @@ export default function ServerAccessSettings({ active }: { active: boolean }) {
     if (!active) return;
     void load().catch((failure: unknown) => setError(errorText(failure)));
     try {
-      pending.current = JSON.parse(
-        localStorage.getItem("studio-server-access-pending") || "null",
-      );
+      pending.current = JSON.parse(outbox.get("serverAccess", "") || "null");
     } catch {}
   }, [active]);
   if (!active) return null;
@@ -44,10 +43,7 @@ export default function ServerAccessSettings({ active }: { active: boolean }) {
     }
     const body = pending.current || next;
     try {
-      localStorage.setItem(
-        "studio-server-access-pending",
-        JSON.stringify(body),
-      );
+      outbox.set("serverAccess", "", JSON.stringify(body));
       pending.current = body;
     } catch {
       setError("The request could not be saved. No server access changed.");
@@ -61,7 +57,7 @@ export default function ServerAccessSettings({ active }: { active: boolean }) {
         if ("invitation" in result)
           setInvitation(JSON.stringify(result.invitation, null, 2));
         pending.current = null;
-        localStorage.removeItem("studio-server-access-pending");
+        outbox.remove("serverAccess", "");
         await load();
       })
       .catch((failure: unknown) => setError(errorText(failure)))

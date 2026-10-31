@@ -1,5 +1,35 @@
 import { expect, it } from "vitest";
-import { cleanupLegacyPersistence } from "./browserPersistence";
+import {
+  cleanupLegacyPersistence,
+  outboxRequestKeys,
+  outboxRequests,
+} from "./browserPersistence";
+
+it("keeps typed outbox operations at their existing keys", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    get length() {
+      return values.size;
+    },
+    key: (index: number) => [...values.keys()][index] ?? null,
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+    removeItem: (key: string) => {
+      values.delete(key);
+    },
+  } as Storage;
+  const outbox = outboxRequests(storage);
+  outbox.set("nativeAction", "workspace:agent", "body");
+  expect(values.get("studio-native-action:workspace:agent")).toBe("body");
+  expect(outbox.get("nativeAction", "workspace:agent")).toBe("body");
+  expect(outboxRequestKeys(storage, "nativeAction", "workspace:")).toEqual([
+    "workspace:agent",
+  ]);
+  outbox.remove("nativeAction", "workspace:agent");
+  expect(values.size).toBe(0);
+});
 
 it("removes retired draft and upload data without touching identities", async () => {
   const values = new Map([

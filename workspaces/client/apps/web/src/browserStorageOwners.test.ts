@@ -10,6 +10,7 @@ import { expect, it } from "vitest";
 // matches the source.
 const allowed: Record<string, string> = {
   "App.tsx": "workspace id of each server view, read by the server list",
+  "browserPersistence.ts": "allowed browser persistence and legacy cleanup",
   "components/shell/BackgroundTasks.tsx":
     "request identity of a pending background task control, kept for a lost reply",
   "components/shell/McpInventory.tsx":

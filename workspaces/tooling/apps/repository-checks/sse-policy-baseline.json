@@ -285,23 +285,7 @@
   },
   {
     "file": "components/useMessageQueue.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "components/useMessageQueue.ts",
     "callee": "syncPost"
-  },
-  {
-    "file": "components/useProjectSave.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/useProjectSave.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "components/useProjectSave.ts",
-    "callee": "localStorage.removeItem"
   },
   {
     "file": "components/useSendingMessageRemoval.ts",
@@ -440,32 +424,8 @@
     "callee": "localStorage.getItem"
   },
   {
-    "file": "servers/ServerAccessSettings.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/ServerAccessSettings.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/ServerAccessSettings.tsx",
-    "callee": "localStorage.removeItem"
-  },
-  {
     "file": "servers/ServerManager.tsx",
     "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/ServerManager.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/ServerManager.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/ServerManager.tsx",
-    "callee": "localStorage.removeItem"
   },
   {
     "file": "servers/automaticAccessStore.ts",
@@ -850,17 +810,5 @@
   {
     "file": "usage/accountUsage.test.ts",
     "callee": "localStorage"
-  },
-  {
-    "file": "useNativeAction.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "useNativeAction.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "useNativeAction.ts",
-    "callee": "localStorage.removeItem"
   }
 ]
