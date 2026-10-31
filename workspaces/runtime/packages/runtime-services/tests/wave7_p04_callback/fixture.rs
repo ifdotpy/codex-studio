@@ -311,6 +311,22 @@ fn drop_card_writes(changes: &mut Value) {
     };
     map.remove("runtime_requests");
     map.remove("approvals");
+    // A request's execution effect follows its typed status, which differs from the
+    // frozen record when an answer was in delivery.
+    let mut effects_empty = false;
+    if let Some(effects) = map.get_mut("runtime_execution_effects") {
+        for key in ["removed", "added"] {
+            if let Some(rows) = effects[key].as_array_mut() {
+                rows.retain(|row| row[2] != "requests");
+            }
+        }
+        effects_empty = ["removed", "added"]
+            .iter()
+            .all(|key| effects[*key].as_array().is_some_and(Vec::is_empty));
+    }
+    if effects_empty {
+        map.remove("runtime_execution_effects");
+    }
     let mut empty = false;
     if let Some(sync) = map.get_mut("sync_entities") {
         for key in ["removed", "added"] {

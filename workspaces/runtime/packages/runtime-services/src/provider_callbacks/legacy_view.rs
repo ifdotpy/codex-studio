@@ -19,6 +19,11 @@ pub fn insert(tx: &Connection, card: &Value) -> Result<(), studio_runtime_store:
     if !agent_level && card["turnId"].is_null() && card["params"]["turnId"].is_null() {
         card["params"]["turnId"] = json!("turn-0");
     }
+    // A frozen deleted record may lack who deleted it and when.
+    if card["status"] == "deleted" && card.get("deletedAt").is_none() {
+        card["deletedAt"] = card.get("createdAt").cloned().unwrap_or(json!(0.0));
+        card["deletedBy"] = json!("user");
+    }
     let id = card["id"].as_str().unwrap_or_default().to_owned();
     approvals::put(tx, &approvals::from_legacy_record(&id, &card)?)?;
     Ok(())
