@@ -296,11 +296,9 @@ fn validate_cached_payload(scope: &str, payload: &Value) -> Result<(), Transcrip
         return Err(invalid_stored("sync_entities", &cache_id));
     }
     for item in items {
-        let id = item["id"]
+        item["id"]
             .as_str()
             .ok_or_else(|| invalid_stored("sync_entities", &cache_id))?;
-        studio_runtime_store::system_reads::validate("runtime_items", id, item.clone())
-            .map_err(|_| invalid_stored("sync_entities", &cache_id))?;
     }
     Ok(())
 }
