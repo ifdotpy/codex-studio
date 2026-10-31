@@ -4,6 +4,12 @@ use std::time::Duration;
 
 use studio_runtime_store::{RuntimeStore, StoreError};
 
+/// The row callback runs on the writer's dedicated blocking thread, so a blocking delay is safe.
+#[allow(clippy::disallowed_methods)]
+fn spend_row_cost() {
+    std::thread::sleep(Duration::from_millis(1));
+}
+
 #[tokio::test]
 async fn analytics_write_does_not_take_the_domain_writer() {
     let directory = tempfile::tempdir().expect("temporary state");
@@ -37,7 +43,7 @@ async fn command_arriving_during_a_batch_commits_before_the_batch_ends() {
     store
         .background_batch(0..ROWS, move |_, row| {
             // A test-only delay stands in for row cost; the part limit then splits the batch.
-            std::thread::sleep(Duration::from_millis(1));
+            spend_row_cost();
             batch_log.lock().expect("log").push(format!("row {row}"));
             if !started.swap(true, Ordering::SeqCst) {
                 let store = Arc::clone(&batch_store);
