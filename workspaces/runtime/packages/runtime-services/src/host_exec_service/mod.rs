@@ -121,6 +121,14 @@ struct RetireParams {
 #[derive(serde::Deserialize)]
 struct HealthParams {}
 
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SettingsFile {
+    slots: Option<i64>,
+    disk_budget_gi_b: Option<serde_json::Number>,
+    mac_only: Option<Vec<String>>,
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ListParams {
@@ -645,11 +653,11 @@ impl HostService {
             .join(SETTINGS_FILE);
         let shown = path.display().to_string();
         let invalid = |message: String| HostExecError::new("invalid_config", message);
-        let mut value = Value::Object(Map::new());
+        let mut fields = SettingsFile::default();
         if slots::project_folder_name(project_id) {
             match fs::read_to_string(&path) {
                 Ok(text) => {
-                    value = serde_json::from_str(&text).map_err(|error| {
+                    fields = serde_json::from_str(&text).map_err(|error| {
                         invalid(format!("{shown} is not readable JSON: {error}"))
                     })?;
                 }
@@ -659,71 +667,46 @@ impl HostService {
                 }
             }
         }
-        let fields = match &value {
-            Value::Object(fields)
-                if fields
-                    .keys()
-                    .all(|key| ["slots", "diskBudgetGiB", "macOnly"].contains(&key.as_str())) =>
-            {
-                fields
-            }
-            Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::String(_)
-            | Value::Array(_)
-            | Value::Object(_) => {
+        let slots = match fields.slots {
+            None => self.default_slots,
+            Some(value) if (1..=MAX_SLOTS).contains(&value) => value,
+            Some(_) => {
                 return Err(invalid(format!(
-                    "{shown} accepts only slots, diskBudgetGiB and macOnly"
+                    "{shown}: slots must be an integer from 1 to {MAX_SLOTS}"
                 )));
             }
         };
-        let slots = match fields.get("slots") {
-            None => self.default_slots,
-            Some(value) => integer(Some(value))
-                .filter(|slots| (1..=MAX_SLOTS).contains(slots))
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "{shown}: slots must be an integer from 1 to {MAX_SLOTS}"
-                    ))
-                })?,
-        };
-        let disk_budget = match fields.get("diskBudgetGiB") {
+        let disk_budget = match fields.disk_budget_gi_b {
             None => self.default_budget,
             Some(value) => {
                 let refusal =
                     || invalid(format!("{shown}: diskBudgetGiB must be a number above 0"));
                 match value {
-                    Value::Number(size) if !size.is_f64() => {
+                    size if !size.is_f64() => {
                         let size = size
                             .as_i64()
                             .filter(|size| *size > 0 && (*size as f64) <= MAX_BUDGET_GIB)
                             .ok_or_else(refusal)?;
                         (size as u64) * 1024 * 1024 * 1024
                     }
-                    Value::Number(size) => {
+                    size => {
                         let size = size
                             .as_f64()
                             .filter(|size| *size > 0.0 && *size <= MAX_BUDGET_GIB)
                             .ok_or_else(refusal)?;
                         (size * 1024.0 * 1024.0 * 1024.0) as u64
                     }
-                    Value::Null
-                    | Value::Bool(_)
-                    | Value::String(_)
-                    | Value::Array(_)
-                    | Value::Object(_) => return Err(refusal()),
                 }
             }
         };
-        let mac_only = match fields.get("macOnly") {
+        let mac_only = match fields.mac_only {
             None => Vec::new(),
-            Some(Value::Array(items)) if items.len() <= MAX_MAC_ONLY => {
+            Some(items) if items.len() <= MAX_MAC_ONLY => {
                 let mut paths = Vec::new();
                 for item in items {
-                    let path = protocol::relative(Some(item)).map_err(|error| {
-                        invalid(format!("{shown}: macOnly {item}: {}", error.message))
-                    })?;
+                    let path = protocol::relative(Some(&protocol::text_value(&item))).map_err(
+                        |error| invalid(format!("{shown}: macOnly {item}: {}", error.message)),
+                    )?;
                     paths.push(path);
                 }
                 paths
