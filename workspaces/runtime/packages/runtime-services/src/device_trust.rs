@@ -421,7 +421,7 @@ mod tests {
                 &tx,
                 self.id,
                 from,
-                &serde_json::to_value(list).unwrap(),
+                &json!({ "entries": list.entries }),
                 100.0,
             )
             .unwrap();
