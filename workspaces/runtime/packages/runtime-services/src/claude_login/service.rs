@@ -277,9 +277,14 @@ impl LoginService {
         let entry = self.jobs.entry(id)?;
         Ok(public(&*entry.lock().await))
     }
-    /// Request IDs retained for a reconnect baseline.
-    pub fn retained_request_ids(&self) -> Vec<String> {
-        self.jobs.snapshot().into_iter().map(|(id, _)| id).collect()
+    /// Read each retained job once for a reconnect baseline.
+    pub async fn retained_progress(&self) -> Result<Vec<(String, Value)>, LoginError> {
+        self.available()?;
+        let mut progress = Vec::new();
+        for (id, job) in self.jobs.snapshot() {
+            progress.push((id, public(&*job.lock().await)));
+        }
+        Ok(progress)
     }
     /// Current transient progress for a subscribed stream. This read performs
     /// no recovery, account writes, or receipt persistence.

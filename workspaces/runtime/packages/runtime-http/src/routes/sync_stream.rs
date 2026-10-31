@@ -600,7 +600,6 @@ async fn sync_stream(
         principal,
         studio_runtime_services::principal::Principal::Owner
     ) {
-        use studio_runtime_schema::progress_selector::ProgressSelector;
         let mut selectors = Vec::new();
         if let Some(client) = &state.vault_job_client {
             match super::host_secrets::retained_progress(client).await {
@@ -608,27 +607,9 @@ async fn sync_stream(
                 Err(error) => return error.into_response(),
             }
         }
-        if let Some(login) = &state.claude_login {
-            selectors.extend(
-                login
-                    .retained_request_ids()
-                    .into_iter()
-                    .map(|request_id| ProgressSelector::Auth { request_id }),
-            );
-        }
-        if let Some(driver) = state.account_driver.clone() {
-            let retained = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-http/retained-auth-progress",
-                move || driver.retained_login_ids(),
-            )
-            .await;
-            match retained {
-                Ok(Ok(ids)) => selectors.extend(
-                    ids.into_iter()
-                        .map(|request_id| ProgressSelector::Auth { request_id }),
-                ),
-                _ => return ApiError::internal().into_response(),
-            }
+        let cursor = state.sync_changes.snapshot();
+        if let Err(error) = append_auth_baseline(&state, &cursor, &mut initial).await {
+            return error.into_response();
         }
         let resources = match selectors
             .into_iter()
@@ -638,7 +619,6 @@ async fn sync_stream(
             Ok(resources) => resources,
             Err(error) => return error.into_response(),
         };
-        let cursor = state.sync_changes.snapshot();
         let view = ResourceChanges {
             versions: vec![cursor.revision; resources.len()],
             cursor,
@@ -789,21 +769,82 @@ pub(super) async fn append_progress_frames(
             | ResourceRef::ComplaintResource(_)
             | ResourceRef::TerminalOutputResource(_) => continue,
         };
-        let payload = json!({
-            "protocol": SYNC_PROTOCOL_VERSION,
-            "workspaceId": state.workspace_id,
-            "epoch": view.cursor.epoch,
-            "revision": revision,
-            "resource": resource.resource,
-            "value": value,
-        });
-        if state
-            .validators
-            .validate_component("ResourceProgressEvent", &payload)
-        {
-            frames.push_back(sse_event("resource-progress", None, payload));
+        append_progress_frame(
+            state,
+            &view.cursor,
+            *revision,
+            &resource.resource,
+            &value,
+            frames,
+        );
+    }
+}
+
+fn append_progress_frame(
+    state: &HttpState,
+    cursor: &studio_runtime_services::change_notifications::ChangeSnapshot,
+    revision: i64,
+    resource: &ResourceRef,
+    value: &Value,
+    frames: &mut VecDeque<Event>,
+) {
+    let payload = json!({
+        "protocol": SYNC_PROTOCOL_VERSION,
+        "workspaceId": state.workspace_id,
+        "epoch": cursor.epoch,
+        "revision": revision,
+        "resource": resource,
+        "value": value,
+    });
+    if state
+        .validators
+        .validate_component("ResourceProgressEvent", &payload)
+    {
+        frames.push_back(sse_event("resource-progress", None, payload));
+    }
+}
+
+async fn append_auth_baseline(
+    state: &HttpState,
+    cursor: &studio_runtime_services::change_notifications::ChangeSnapshot,
+    frames: &mut VecDeque<Event>,
+) -> Result<(), ApiError> {
+    use studio_runtime_schema::progress_selector::ProgressSelector;
+    let mut seen = std::collections::HashSet::new();
+    if let Some(driver) = state.account_driver.clone() {
+        let snapshot = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/retained-auth-progress",
+            move || driver.snapshot(),
+        )
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(|_| ApiError::internal())?;
+        for value in snapshot.logins {
+            let id = value
+                .get("requestId")
+                .and_then(Value::as_str)
+                .ok_or_else(ApiError::internal)?
+                .to_owned();
+            let resource = progress_resource(ProgressSelector::Auth {
+                request_id: id.clone(),
+            });
+            seen.insert(id);
+            append_progress_frame(state, cursor, cursor.revision, &resource, &value, frames);
         }
     }
+    if let Some(login) = &state.claude_login {
+        for (id, value) in login
+            .retained_progress()
+            .await
+            .map_err(|_| ApiError::internal())?
+        {
+            if seen.insert(id.clone()) {
+                let resource = progress_resource(ProgressSelector::Auth { request_id: id });
+                append_progress_frame(state, cursor, cursor.revision, &resource, &value, frames);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2806,7 +2847,10 @@ mod tests {
                 studio_runtime_schema::progress_selector::ProgressSelector::Auth { request_id }
             )) if request_id == id
         ));
-        assert_eq!(login.retained_request_ids(), vec![id]);
+        assert_eq!(
+            login.retained_progress().await.expect("retained progress")[0].0,
+            id
+        );
         output
             .send(LoginEvent::Output(format!("{url}\n").into_bytes()))
             .await
@@ -3505,7 +3549,7 @@ mod tests {
                 .expect("initial resources")
                 .expect("bytes");
         }
-        let id = "e0166868-592a-4dca-8994-04d34a730af5";
+        let id = "b935b026-00ac-42df-9a1c-ce525d7a39e7";
         let request = CodexLoginRequest {
             login_id: id.into(),
             account_key: None,
@@ -3545,6 +3589,8 @@ mod tests {
         driver
             .finish_codex_login(id, &format!("login-{id}"), None, false, None, 2.0)
             .expect("complete during disconnect");
+        super::super::subscriptions::TEST_BASELINE_AUTH_LOOKUPS
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         let mut reconnected = open(Principal::Owner).await;
         let frame = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -3562,6 +3608,12 @@ mod tests {
         .expect("completed login in baseline");
         let text = String::from_utf8_lossy(&frame);
         assert!(text.contains(id) && text.contains("error"));
+        assert_eq!(
+            super::super::subscriptions::TEST_BASELINE_AUTH_LOOKUPS
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "baseline must not perform per-request account lookups"
+        );
         for principal in [
             Principal::Device {
                 id: "device".into(),

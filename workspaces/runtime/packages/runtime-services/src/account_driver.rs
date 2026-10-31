@@ -2074,14 +2074,6 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         state.public_snapshot()
     }
 
-    /// IDs of all retained Codex login receipts, including completed ones.
-    pub fn retained_login_ids(&self) -> Result<Vec<String>, AccountDriverError> {
-        self.state
-            .lock()
-            .map(|state| state.order.logins.clone())
-            .map_err(|_| AccountDriverError::Poisoned)
-    }
-
     /// Internal selected-account record, including the non-secret identity pin.
     pub(crate) fn internal_record(&self, account: &str) -> Result<Value, AccountDriverError> {
         let state = self

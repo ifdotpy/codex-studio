@@ -10,7 +10,15 @@ use crate::router::HttpState;
 use serde_json::Value;
 use studio_runtime_schema::shared_values::SYNC_STREAM_EVENT_MAX_BYTES;
 
+#[cfg(test)]
+pub(super) static TEST_BASELINE_AUTH_LOOKUPS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 pub(super) async fn auth_progress(state: &HttpState, request_id: &str) -> Option<Value> {
+    #[cfg(test)]
+    if request_id == "b935b026-00ac-42df-9a1c-ce525d7a39e7" {
+        TEST_BASELINE_AUTH_LOOKUPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     if let Some(driver) = state.account_driver.clone() {
         let id = request_id.to_owned();
         let receipt = studio_runtime_process::blocking_pool::spawn_blocking(
