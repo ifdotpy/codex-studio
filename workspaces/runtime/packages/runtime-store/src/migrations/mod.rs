@@ -41,6 +41,7 @@ mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
 mod m2026_10_30_branch_phase;
 mod m2026_10_30_capture_errors;
+mod m2026_10_30_command_path;
 mod m2026_10_30_complaint_record;
 pub(crate) mod m2026_10_30_monitor_errors;
 mod m2026_10_30_monitor_generated;
@@ -750,6 +751,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_29_request_results_v2::message_revision(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-command-path",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Databases without command watermarks and event revisions",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_command_path::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {

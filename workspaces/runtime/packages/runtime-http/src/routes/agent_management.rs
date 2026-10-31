@@ -688,7 +688,7 @@ fn unix_time() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
 }
-async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static>(
+pub(super) async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static>(
     state: HttpState,
     action: Action,
     ports: Option<Arc<dyn LifecyclePorts>>,

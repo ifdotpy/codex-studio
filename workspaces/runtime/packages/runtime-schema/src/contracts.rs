@@ -916,7 +916,7 @@ fn check_delivery_parity(openapi: &Value) -> Result<(), String> {
             if name == "TerminalInputResult" {
                 continue;
             }
-            let reference = if name == "ManagedMessageBody" {
+            let reference = if matches!(name.as_str(), "ManagedMessageBody" | "CommandSendBody") {
                 "#/components/schemas/DeliveryMomentInput"
             } else {
                 "#/components/schemas/DeliveryMoment"
