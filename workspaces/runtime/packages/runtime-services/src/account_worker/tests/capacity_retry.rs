@@ -43,7 +43,9 @@ async fn claim_retry(state: &State) -> String {
                         None,
                     )?;
                     let snapshot = Snapshot::from_records(raw).expect("snapshot");
-                    let settings = json!({});
+                    let settings =
+                        studio_runtime_schema::continuation_snapshot::PreparationSettings::default(
+                        );
                     let failure = capacity_retry::failed(
                         &snapshot,
                         Failure::ServerOverloaded,
@@ -78,6 +80,7 @@ async fn claim_retry(state: &State) -> String {
                             automatic: true,
                         },
                         NOW,
+                        None,
                     )
                     .expect("claim");
                     let record = claim.record.expect("claimed record").value();
@@ -230,7 +233,7 @@ async fn complete(state: &State, id: &str, action: Action<'static>) {
                     )?;
                     let snapshot = Snapshot::from_records(raw).expect("snapshot");
                     let decision =
-                        capacity_retry::transition(&snapshot, action, NOW).expect("done");
+                        capacity_retry::transition(&snapshot, action, NOW, None).expect("done");
                     ContinuationRepository::put_record(
                         tx,
                         ContinuationTable::Capacity,

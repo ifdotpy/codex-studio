@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
 use studio_runtime_schema::continuation_snapshot::{
     CapacityContinuation, CapacityContinuationStatus, ContinuationAgent, ContinuationRecord,
-    ContinuationSnapshotRecord, UsageContinuation, UsageContinuationCause, UsageContinuationStatus,
+    ContinuationSnapshotRecord, PreparationSettings, UsageContinuation, UsageContinuationCause,
+    UsageContinuationStatus,
 };
 use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
@@ -398,13 +399,13 @@ pub(crate) enum ContinuationUpdate {
     PlannedAt(Option<f64>),
     ResetAt(Option<f64>),
     ProofAt(f64),
-    LastCheckedAt(Option<Value>),
+    LastCheckedAt(Option<serde_json::Number>),
     WaitingForAuth(bool),
     RemoveClaimedAt,
     ClaimedAt(f64),
     AcceptedTurnId(String),
     Waits(u64),
-    Settings(Value),
+    Settings(PreparationSettings),
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -442,7 +443,7 @@ pub(crate) struct CapacityDraft {
     pub attempt: u64,
     pub max_attempts: usize,
     pub cwd: Value,
-    pub settings: Value,
+    pub settings: PreparationSettings,
     pub task_claims: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
@@ -454,8 +455,17 @@ impl ProposedRecord {
     /// records and edits which can change the untagged variant use the full
     /// snapshot validator so its diagnostics and timing remain unchanged.
     pub(crate) fn checked(&self) -> Option<ContinuationRecord> {
-        use serde::Deserialize;
+        use studio_runtime_schema::continuation_snapshot::{BoundedNumber, BoundedString};
         use studio_runtime_schema::queue_command::Field;
+        let time = |value: f64| Some(Field::Value(BoundedNumber::from_f64(value)?));
+        let optional_time = |value: Option<f64>| match value {
+            Some(value) => time(value),
+            None => Some(Field::Null),
+        };
+        let reason = |value: &Option<String>| match value {
+            Some(value) => Some(Field::Value(BoundedString::new(value.clone())?)),
+            None => Some(Field::Null),
+        };
         let ProposedRecordData::Existing { source, updates } = &self.0 else {
             return None;
         };
@@ -474,95 +484,68 @@ impl ProposedRecord {
                     }
                 }
                 ContinuationUpdate::DueAt(v) => match &mut record {
-                    ContinuationRecord::Usage(r) => r.due_at = Field::deserialize(json!(v)).ok()?,
+                    ContinuationRecord::Usage(r) => r.due_at = optional_time(*v)?,
                     ContinuationRecord::Capacity(r) => {
-                        r.due_at = Field::deserialize(json!(v)).ok()?
+                        r.due_at = optional_time(*v)?
                     }
                 },
                 ContinuationUpdate::Reason(v) => match &mut record {
-                    ContinuationRecord::Usage(r) => r.reason = Field::deserialize(json!(v)).ok()?,
+                    ContinuationRecord::Usage(r) => r.reason = reason(v)?,
                     ContinuationRecord::Capacity(r) => {
-                        r.reason = Field::deserialize(json!(v)).ok()?
+                        r.reason = reason(v)?
                     }
                 },
                 ContinuationUpdate::PlannedAt(v) => match &mut record {
-                    ContinuationRecord::Usage(r) => {
-                        r.planned_at = Field::deserialize(json!(v)).ok()?
-                    }
-                    ContinuationRecord::Capacity(_) => {
-                        record.extra_mut().insert("plannedAt".into(), json!(v));
-                    }
+                    ContinuationRecord::Usage(r) => r.planned_at = optional_time(*v)?,
+                    ContinuationRecord::Capacity(_) => return None,
                 },
                 ContinuationUpdate::ResetAt(v) => match &mut record {
-                    ContinuationRecord::Usage(r) => {
-                        r.reset_at = Field::deserialize(json!(v)).ok()?
-                    }
-                    ContinuationRecord::Capacity(_) => {
-                        record.extra_mut().insert("resetAt".into(), json!(v));
-                    }
+                    ContinuationRecord::Usage(r) => r.reset_at = optional_time(*v)?,
+                    ContinuationRecord::Capacity(_) => return None,
                 },
                 ContinuationUpdate::ProofAt(v) => match &mut record {
-                    ContinuationRecord::Usage(r) => {
-                        r.proof_at = Field::deserialize(json!(v)).ok()?
-                    }
-                    ContinuationRecord::Capacity(_) => {
-                        record.extra_mut().insert("proofAt".into(), json!(v));
-                    }
+                    ContinuationRecord::Usage(r) => r.proof_at = time(*v)?,
+                    ContinuationRecord::Capacity(_) => return None,
                 },
                 ContinuationUpdate::RemoveClaimedAt => match &mut record {
                     ContinuationRecord::Capacity(r) => r.claimed_at = Field::Missing,
-                    ContinuationRecord::Usage(_) => {
-                        record.extra_mut().remove("claimedAt");
-                    }
+                    ContinuationRecord::Usage(r) => r.claimed_at = Field::Missing,
                 },
                 ContinuationUpdate::ClaimedAt(v) => match &mut record {
-                    ContinuationRecord::Capacity(r) => {
-                        r.claimed_at = Field::deserialize(json!(v)).ok()?
-                    }
-                    ContinuationRecord::Usage(_) => {
-                        record.extra_mut().insert("claimedAt".into(), json!(v));
-                    }
+                    ContinuationRecord::Capacity(r) => r.claimed_at = time(*v)?,
+                    ContinuationRecord::Usage(r) => r.claimed_at = time(*v)?,
                 },
                 ContinuationUpdate::AcceptedTurnId(v) => match &mut record {
-                    ContinuationRecord::Capacity(r) => {
-                        r.accepted_turn_id = Field::deserialize(json!(v)).ok()?
-                    }
-                    ContinuationRecord::Usage(_) => {
-                        record.extra_mut().insert("acceptedTurnId".into(), json!(v));
-                    }
+                    ContinuationRecord::Capacity(r) => r.accepted_turn_id = Field::Value(BoundedString::new(v.clone())?),
+                    ContinuationRecord::Usage(r) => r.accepted_turn_id = Field::Value(BoundedString::new(v.clone())?),
                 },
                 ContinuationUpdate::Waits(v) => match &mut record {
-                    ContinuationRecord::Capacity(r) => {
-                        r.waits = Some(Deserialize::deserialize(json!(v)).ok()?)
-                    }
-                    ContinuationRecord::Usage(_) => {
-                        record.extra_mut().insert("waits".into(), json!(v));
-                    }
+                    ContinuationRecord::Capacity(r) => r.waits = Some(studio_runtime_schema::recovery_record::SafeInteger::from_i64(i64::try_from(*v).ok()?)?),
+                    ContinuationRecord::Usage(r) => r.waits = Some(studio_runtime_schema::recovery_record::SafeInteger::from_i64(i64::try_from(*v).ok()?)?),
                 },
                 ContinuationUpdate::Settings(v) => match &mut record {
-                    ContinuationRecord::Capacity(r) => {
-                        r.settings = v
-                            .as_object()?
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect()
-                    }
-                    ContinuationRecord::Usage(_) => {
-                        record.extra_mut().insert("settings".into(), v.clone());
-                    }
+                    ContinuationRecord::Capacity(r) => r.settings = v.clone(),
+                    ContinuationRecord::Usage(r) => r.settings = Some(v.clone()),
                 },
-                ContinuationUpdate::StartedAt(v) => {
-                    record.extra_mut().insert("startedAt".into(), json!(v));
-                }
-                ContinuationUpdate::UpdatedAt(v) => {
-                    record.extra_mut().insert("updatedAt".into(), json!(v));
-                }
-                ContinuationUpdate::LastCheckedAt(v) => {
-                    record.extra_mut().insert("lastCheckedAt".into(), json!(v));
-                }
-                ContinuationUpdate::WaitingForAuth(v) => {
-                    record.extra_mut().insert("waitingForAuth".into(), json!(v));
-                }
+                ContinuationUpdate::StartedAt(v) => match &mut record {
+                    ContinuationRecord::Usage(r) => r.started_at = time(*v)?,
+                    ContinuationRecord::Capacity(_) => return None,
+                },
+                ContinuationUpdate::UpdatedAt(v) => match &mut record {
+                    ContinuationRecord::Usage(r) => r.updated_at = time(*v)?,
+                    ContinuationRecord::Capacity(r) => r.updated_at = time(*v)?,
+                },
+                ContinuationUpdate::LastCheckedAt(v) => match &mut record {
+                    ContinuationRecord::Usage(r) => r.last_checked_at = match v {
+                        Some(value) => Field::Value(studio_runtime_schema::continuation_snapshot::BoundedNumber::from_number(value.clone())?),
+                        None => Field::Null,
+                    },
+                    ContinuationRecord::Capacity(_) => return None,
+                },
+                ContinuationUpdate::WaitingForAuth(v) => match &mut record {
+                    ContinuationRecord::Usage(r) => r.waiting_for_auth = Some(*v),
+                    ContinuationRecord::Capacity(_) => return None,
+                },
             }
         }
         Some(record)
@@ -594,7 +577,7 @@ impl ProposedRecord {
                         ContinuationUpdate::ClaimedAt(v) => value["claimedAt"] = json!(v),
                         ContinuationUpdate::AcceptedTurnId(v) => value["acceptedTurnId"] = json!(v),
                         ContinuationUpdate::Waits(v) => value["waits"] = json!(v),
-                        ContinuationUpdate::Settings(v) => value["settings"] = v.clone(),
+                        ContinuationUpdate::Settings(v) => value["settings"] = json!(v),
                     }
                 }
                 value
@@ -603,25 +586,7 @@ impl ProposedRecord {
     }
     pub(crate) fn existing(snapshot: &Snapshot) -> Option<Self> {
         let source = snapshot.checked_record()?.clone();
-        let mut updates = Vec::new();
-        if let Some(current) = snapshot
-            .record
-            .as_ref()
-            .and_then(|record| record.get("settings"))
-        {
-            let unchanged = match &source {
-                ContinuationRecord::Capacity(record) => current.as_object().is_some_and(|object| {
-                    object.len() == record.settings.len()
-                        && object
-                            .iter()
-                            .all(|(key, value)| record.settings.get(key) == Some(value))
-                }),
-                ContinuationRecord::Usage(record) => record.extra.get("settings") == Some(current),
-            };
-            if !unchanged {
-                updates.push(ContinuationUpdate::Settings(current.clone()));
-            }
-        }
+        let updates = Vec::new();
         Some(Self(ProposedRecordData::Existing { source, updates }))
     }
     pub(crate) fn usage(record: UsageDraft) -> Self {
@@ -911,15 +876,14 @@ mod tests {
             ContinuationUpdate::PlannedAt(Some(3.0)),
             ContinuationUpdate::ResetAt(None),
             ContinuationUpdate::ProofAt(4.0),
-            ContinuationUpdate::LastCheckedAt(Some(json!({"opaque":true}))),
+            ContinuationUpdate::LastCheckedAt(Some(4.into())),
             ContinuationUpdate::WaitingForAuth(true),
             ContinuationUpdate::RemoveClaimedAt,
             ContinuationUpdate::ClaimedAt(5.0),
             ContinuationUpdate::AcceptedTurnId("turn".into()),
             ContinuationUpdate::AcceptedTurnId(String::new()),
             ContinuationUpdate::Waits(6),
-            ContinuationUpdate::Settings(json!({"x":[1]})),
-            ContinuationUpdate::Settings(json!(false)),
+            ContinuationUpdate::Settings(PreparationSettings::default()),
         ];
         for sample in samples {
             let source = ContinuationRecord::deserialize(sample).unwrap();

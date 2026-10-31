@@ -7,6 +7,7 @@ use crate::continuation::{
 };
 use crate::usage_resume::TASK_CHANGED;
 use serde_json::{Value, json};
+use studio_runtime_schema::continuation_snapshot::PreparationSettings;
 use studio_runtime_schema::shared_values::{DISK_FULL_MAX_RESUMES, DISK_FULL_RECHECK_SECONDS};
 const WAIT_MAX: f64 = 300.0;
 const WAIT_STEP: f64 = 15.0;
@@ -74,7 +75,7 @@ pub enum Action<'a> {
         turn_id: &'a str,
     },
     Claim {
-        settings: &'a Value,
+        settings: &'a PreparationSettings,
         automatic: bool,
     },
 }
@@ -83,7 +84,7 @@ pub fn failed(
     s: &Snapshot,
     kind: Failure,
     turn_id: &str,
-    settings: &Value,
+    settings: &PreparationSettings,
     now: f64,
     reason: Option<&str>,
 ) -> Result<Decision> {
@@ -140,7 +141,12 @@ pub fn failed(
     });
     Ok(Decision::save(s, r, "capacityRetry", now))
 }
-pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision> {
+pub fn transition(
+    s: &Snapshot,
+    action: Action<'_>,
+    now: f64,
+    settings_update: Option<&PreparationSettings>,
+) -> Result<Decision> {
     now_checked(now)?;
     let Some(stored) = &s.record else {
         return Ok(Decision::default());
@@ -149,6 +155,9 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
         return Ok(Decision::default());
     }
     let mut r = ProposedRecord::existing(s).expect("validated record");
+    if let Some(settings) = settings_update {
+        r.update(U::Settings(settings.clone()));
+    }
     let mut agent = ProposedAgent::new(s);
     let mut hold = None;
     let accepted_turn = s.capacity_record().map_or_else(
@@ -290,7 +299,9 @@ pub fn transition(s: &Snapshot, action: Action<'_>, now: f64) -> Result<Decision
                         .iter()
                         .any(|k| stored.get(*k) != agent.value().get(*k))
                     || s.record_account() != Some(account(agent.value()))
-                    || stored.get("settings") != Some(settings)
+                    || settings_update
+                        .or_else(|| s.capacity_record().map(|record| &record.settings))
+                        != Some(settings)
                     || stored.get("turnId") != agent.value().get("lastCompletedTurn")
                 {
                     return Err(ContinuationError::Invalid(

@@ -13,19 +13,22 @@ use std::collections::BTreeMap;
 #[serde(transparent)]
 pub struct BoundedString<const MIN: usize, const MAX: usize>(String);
 impl<const MIN: usize, const MAX: usize> BoundedString<MIN, MAX> {
+    pub fn new(value: String) -> Option<Self> {
+        (MIN..=MAX)
+            .contains(&value.chars().count())
+            .then_some(Self(value))
+    }
     pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    pub fn as_string(&self) -> &String {
         &self.0
     }
 }
 impl<'de, const MIN: usize, const MAX: usize> Deserialize<'de> for BoundedString<MIN, MAX> {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(d)?;
-        let n = s.chars().count();
-        if (MIN..=MAX).contains(&n) {
-            Ok(Self(s))
-        } else {
-            Err(D::Error::custom("string length out of range"))
-        }
+        Self::new(String::deserialize(d)?)
+            .ok_or_else(|| D::Error::custom("string length out of range"))
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -54,18 +57,22 @@ impl BoundedNumber {
     pub fn get(&self) -> f64 {
         self.0.as_f64().expect("bounded JSON number")
     }
+
+    pub fn from_number(number: Number) -> Option<Self> {
+        number
+            .as_f64()
+            .filter(|n| (0.0..=MAX_SAFE_INTEGER as f64).contains(n))
+            .map(|_| Self(number))
+    }
+
+    pub fn from_f64(value: f64) -> Option<Self> {
+        Self::from_number(Number::from_f64(value)?)
+    }
 }
 impl<'de> Deserialize<'de> for BoundedNumber {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let number = Number::deserialize(d)?;
-        if number
-            .as_f64()
-            .is_some_and(|n| (0.0..=MAX_SAFE_INTEGER as f64).contains(&n))
-        {
-            Ok(Self(number))
-        } else {
-            Err(D::Error::custom("number out of range"))
-        }
+        Self::from_number(Number::deserialize(d)?)
+            .ok_or_else(|| D::Error::custom("number out of range"))
     }
 }
 fn optional_nonnull<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
@@ -86,12 +93,6 @@ pub enum ContinuationRecord {
     Capacity(CapacityContinuation),
 }
 impl ContinuationRecord {
-    pub fn extra_mut(&mut self) -> &mut BTreeMap<String, Value> {
-        match self {
-            Self::Usage(record) => &mut record.extra,
-            Self::Capacity(record) => &mut record.extra,
-        }
-    }
     pub fn id(&self) -> &str {
         match self {
             Self::Usage(record) => record.id.as_str(),
@@ -112,7 +113,7 @@ pub struct ContinuationSnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CapacityContinuation {
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub accepted_turn_id: Field<BoundedString<1, 4096>>,
@@ -130,7 +131,7 @@ pub struct CapacityContinuation {
     pub max_attempts: SafeInteger,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
     pub reason: Field<BoundedString<0, 1048576>>,
-    pub settings: BTreeMap<String, Value>,
+    pub settings: PreparationSettings,
     #[serde(deserialize_with = "crate::string_enum::deserialize")]
     pub status: CapacityContinuationStatus,
     #[serde(
@@ -147,8 +148,32 @@ pub struct CapacityContinuation {
         skip_serializing_if = "Option::is_none"
     )]
     pub waits: Option<SafeInteger>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub updated_at: Field<BoundedNumber>,
+}
+
+/// Exact settings captured for a capacity retry.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PreparationSettings {
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub model: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub effort: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub native_effort: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub fast_mode: Field<bool>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub yolo_mode: Field<bool>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub profile_instructions: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub role: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub daybreak_enabled: Field<bool>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub cyber_access_program: Field<String>,
 }
 
 #[derive(Deserialize)]
@@ -230,6 +255,22 @@ pub struct UsageContinuation {
     pub task_claims: Option<BoundedVec<BoundedString<1, 4096>, 4096>>,
     pub thread_id: BoundedString<1, 4096>,
     pub turn_id: BoundedString<1, 4096>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub claimed_at: Field<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub accepted_turn_id: Field<BoundedString<1, 4096>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waits: Option<SafeInteger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<PreparationSettings>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub started_at: Field<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub updated_at: Field<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub last_checked_at: Field<BoundedNumber>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for_auth: Option<bool>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }

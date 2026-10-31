@@ -174,31 +174,31 @@ impl ContinuationRepository {
     }
 }
 
-/// State-check projection; the schema validates all fields used by the decision core.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct CapacityContinuationRecord {
-    id: String,
-    #[serde(flatten)]
-    extra: std::collections::BTreeMap<String, Value>,
-}
+pub type CapacityContinuationRecord =
+    studio_runtime_schema::continuation_snapshot::CapacityContinuation;
 impl crate::JsonRecord for CapacityContinuationRecord {
     type Id = String;
     const TABLE: &'static str = "runtime_capacity_retries";
     const SCHEMA: &'static str = "continuation/CapacityContinuation";
     const KEY_MODE: crate::RecordKeyMode = crate::RecordKeyMode::PayloadId;
     const QUERY_SHAPE: crate::RecordQueryShape = crate::RecordQueryShape::PhysicalAgent;
+    const TYPED_SHAPE: bool = true;
     fn record_key(&self) -> Option<&String> {
-        Some(&self.id)
-    }
-    // Remove this override once the record is closed and typed.
-    fn encode_stored(&self, _: &rusqlite::Connection, row_id: &str) -> crate::StoreResult<String> {
-        crate::records::encode_open_record(self, row_id)
+        Some(self.id.as_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capacity_record_rejects_unknown_fields() {
+        let valid = r#"{"id":"retry","accountKey":"a","attempt":1,"cause":"diskFull","cwd":"/work","epoch":1,"maxAttempts":2,"settings":{},"status":"scheduled","threadId":"t","turnId":"u"}"#;
+        let unknown = valid.replace("\"id\":\"retry\"", "\"id\":\"retry\",\"unknown\":true");
+        assert!(serde_json::from_str::<CapacityContinuationRecord>(valid).is_ok());
+        assert!(serde_json::from_str::<CapacityContinuationRecord>(&unknown).is_err());
+    }
 
     #[test]
     fn snapshot_does_not_read_unrelated_queue_data() {

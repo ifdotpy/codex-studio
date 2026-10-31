@@ -7,7 +7,8 @@ fn capacity_wait_accepts_usage_record_with_matching_embedded_id() {
     let usage = json!({"id":"same","accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","status":"scheduled","cause":"auth","failedAt":10});
     let snapshot = Snapshot::from_records(json!({"agent":{"compactions":0,"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","capacityRetry":retry},"record":usage})).unwrap();
     let decision =
-        capacity_retry::transition(&snapshot, capacity_retry::Action::Wait("wait"), 20.0).unwrap();
+        capacity_retry::transition(&snapshot, capacity_retry::Action::Wait("wait"), 20.0, None)
+            .unwrap();
     let record = decision.record.unwrap().value();
     assert_eq!(record["cause"], "auth");
     assert_eq!(record["status"], "scheduled");
@@ -68,7 +69,7 @@ fn deleted_agent_blocks_new_continuations() {
             &snapshot,
             capacity_retry::Failure::ServerOverloaded,
             "turn",
-            &json!({}),
+            &studio_runtime_schema::continuation_snapshot::PreparationSettings::default(),
             1000.0,
             None,
         )
@@ -207,7 +208,7 @@ fn capacity_counts_preserve_integer_and_decimal_alias_behavior() {
             &snapshot,
             capacity_retry::Failure::ServerOverloaded,
             "turn",
-            &json!({}),
+            &studio_runtime_schema::continuation_snapshot::PreparationSettings::default(),
             1000.0,
             None,
         )
@@ -228,9 +229,13 @@ fn capacity_counts_preserve_integer_and_decimal_alias_behavior() {
         let mut input = original.clone();
         input["record"]["waits"] = number;
         let snapshot = Snapshot::from_records(input).expect("snapshot");
-        let decision =
-            capacity_retry::transition(&snapshot, capacity_retry::Action::Wait("wait"), 1000.0)
-                .expect("wait");
+        let decision = capacity_retry::transition(
+            &snapshot,
+            capacity_retry::Action::Wait("wait"),
+            1000.0,
+            None,
+        )
+        .expect("wait");
         assert_eq!(decision.record.expect("record").value()["waits"], expected);
     }
 }
@@ -347,7 +352,8 @@ fn unknown_capacity_never_resumes() {
                 reason: "late start outcome",
                 unknown: false
             },
-            1000.0
+            1000.0,
+            None
         )
         .expect("stale error")
         .record
@@ -357,17 +363,19 @@ fn unknown_capacity_never_resumes() {
         capacity_retry::transition(
             &s,
             capacity_retry::Action::Claim {
-                settings: &json!({}),
+                settings:
+                    &studio_runtime_schema::continuation_snapshot::PreparationSettings::default(),
                 automatic: false,
             },
-            1000.0
+            1000.0,
+            None
         )
         .expect("claim")
         .effects
         .is_empty()
     );
     assert!(
-        capacity_retry::transition(&s, capacity_retry::Action::Wait("local wait"), 1000.0)
+        capacity_retry::transition(&s, capacity_retry::Action::Wait("local wait"), 1000.0, None)
             .expect("wait")
             .record
             .is_none()
@@ -390,7 +398,7 @@ fn automatic_capacity_claim_and_late_completion_cannot_resurrect_cancelled_retry
     let snapshot = Snapshot::from_records(raw).expect("cancelled retry snapshot");
     for action in [
         capacity_retry::Action::Claim {
-            settings: &json!({}),
+            settings: &studio_runtime_schema::continuation_snapshot::PreparationSettings::default(),
             automatic: true,
         },
         capacity_retry::Action::Completed {
@@ -398,8 +406,8 @@ fn automatic_capacity_claim_and_late_completion_cannot_resurrect_cancelled_retry
             completed: true,
         },
     ] {
-        let decision =
-            capacity_retry::transition(&snapshot, action, 1000.0).expect("stale timer/completion");
+        let decision = capacity_retry::transition(&snapshot, action, 1000.0, None)
+            .expect("stale timer/completion");
         assert!(
             decision.record.is_none(),
             "cancelled retry remains untouched"
@@ -421,10 +429,11 @@ fn claimed_capacity_retry_ends_finished_after_its_turn_settles() {
         .find(|c| c["name"] == "capacity-claim-success")
         .expect("scheduled retry");
     let mut raw = case["input"].clone();
-    let settings = raw["record"]["settings"].clone();
+    let settings = studio_runtime_schema::continuation_snapshot::PreparationSettings::default();
     let step = |raw: &mut Value, action: capacity_retry::Action<'_>| {
         let snapshot = Snapshot::from_records(raw.clone()).expect("snapshot");
-        let decision = capacity_retry::transition(&snapshot, action, 1000.0).expect("transition");
+        let decision =
+            capacity_retry::transition(&snapshot, action, 1000.0, None).expect("transition");
         raw["record"] = decision.record.clone().expect("record").value();
         raw["agent"] = decision.agent.clone().expect("agent").value().clone();
         decision
@@ -450,6 +459,7 @@ fn claimed_capacity_retry_ends_finished_after_its_turn_settles() {
         &snapshot,
         capacity_retry::Action::Accepted { turn_id: "turn-2" },
         1000.0,
+        None,
     )
     .expect("replay");
     assert!(replay.record.is_none() && replay.agent.is_none());
@@ -476,7 +486,7 @@ fn rejected_capacity_start_ends_failed_and_lost_reply_ends_unknown() {
         .expect("scheduled retry");
     for (unknown, status) in [(false, "failed"), (true, "unknown")] {
         let mut raw = case["input"].clone();
-        let settings = raw["record"]["settings"].clone();
+        let settings = studio_runtime_schema::continuation_snapshot::PreparationSettings::default();
         let snapshot = Snapshot::from_records(raw.clone()).expect("snapshot");
         let claimed = capacity_retry::transition(
             &snapshot,
@@ -485,6 +495,7 @@ fn rejected_capacity_start_ends_failed_and_lost_reply_ends_unknown() {
                 automatic: true,
             },
             1000.0,
+            None,
         )
         .expect("claim");
         raw["record"] = claimed.record.expect("record").value();
@@ -497,6 +508,7 @@ fn rejected_capacity_start_ends_failed_and_lost_reply_ends_unknown() {
                 unknown,
             },
             1000.0,
+            None,
         )
         .expect("error");
         assert_eq!(failed.record.expect("record").value()["status"], status);
