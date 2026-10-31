@@ -405,9 +405,9 @@ async fn command(
         ));
     }
     let text: String = command.into();
+    let wire = json!({"id": body.request_id, "room": body.id, "text": text});
     let mut message: crate::generated::ManagedMessageBody =
-        serde_json::from_value(json!({"id": body.request_id, "room": body.id, "text": text}))
-            .map_err(|_| ApiError::internal())?;
+        serde_json::from_value(wire).map_err(|_| ApiError::internal())?;
     message.delivery = Some(studio_runtime_schema::DeliveryMoment::CurrentTurn);
     let receipt = super::messages::send_message(state, message).await?;
     serde_json::to_value(receipt.0)
