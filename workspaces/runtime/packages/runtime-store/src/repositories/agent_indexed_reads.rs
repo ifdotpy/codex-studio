@@ -173,7 +173,8 @@ impl AgentIndexedReads {
     pub const ACTIVE_TEAM_MEMBERS_SQL: &'static str = "SELECT COUNT(*) FROM runtime_agents INDEXED BY runtime_agent_live_root_v2 \
          WHERE root_id=?1 AND deleted_at IS NULL \
          AND NOT (COALESCE(status,'') IN ('completed','failed','interrupted') \
-         OR (status IS 'paused' AND auto_wake IS 0))";
+         OR (status IS 'paused' \
+          AND EXISTS(SELECT 1 FROM chats ch WHERE ch.id=runtime_agents.id AND ch.auto_wake IS 0)))";
 
     pub fn active_team_members(connection: &Connection, root_id: &str) -> StoreResult<i64> {
         Ok(connection

@@ -191,6 +191,7 @@ pub fn tables_sql() -> String {
          CREATE TABLE IF NOT EXISTS {SESSION_TABLE}(
             id TEXT PRIMARY KEY, chat TEXT NOT NULL, thread_id TEXT NOT NULL,
             account_key TEXT NOT NULL, state TEXT NOT NULL) STRICT;
+         CREATE INDEX IF NOT EXISTS chats_vm ON {CHAT_TABLE}(id) WHERE execution_mode='vm';
          CREATE INDEX IF NOT EXISTS sessions_chat ON {SESSION_TABLE}(chat);
          CREATE TABLE IF NOT EXISTS {TURN_TABLE}(
             id TEXT PRIMARY KEY, chat TEXT NOT NULL, state TEXT NOT NULL, session TEXT,

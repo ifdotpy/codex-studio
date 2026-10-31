@@ -3895,8 +3895,8 @@ pub(super) struct AccountStreams {
     metadata: NotificationStreamBuffer,
 }
 
-const VM_STREAM_OWNERS_SQL: &str = "SELECT id FROM runtime_agents INDEXED BY runtime_agent_vm_stream_owner WHERE account_key=?1 AND execution_mode='vm' AND hold_status='clear'";
-const VM_STREAM_LANES_SQL: &str = "SELECT id,json_extract(record,'$.providerStream.streams') FROM runtime_agents WHERE account_key=?1 AND execution_mode='vm' AND json_type(record,'$.providerStream.streams')='object' AND hold_status='clear'";
+const VM_STREAM_OWNERS_SQL: &str = "SELECT r.id FROM chats ch INDEXED BY chats_vm CROSS JOIN runtime_agents r ON r.id=ch.id WHERE ch.execution_mode='vm' AND r.account_key=?1 AND r.hold_status='clear'";
+const VM_STREAM_LANES_SQL: &str = "SELECT r.id,json_extract(r.record,'$.providerStream.streams') FROM chats ch INDEXED BY chats_vm CROSS JOIN runtime_agents r ON r.id=ch.id WHERE ch.execution_mode='vm' AND r.account_key=?1 AND r.hold_status='clear' AND json_type(r.record,'$.providerStream.streams')='object'";
 
 fn persist_stream_lane(
     tx: &studio_runtime_store::Transaction<'_>,
@@ -4111,7 +4111,7 @@ pub(super) fn pending_preparations(
 ) -> Result<Vec<(String, i64)>, WorkerError> {
     // Python persists deferred preparation on startAttempt.prepareError and
     // clears it when preparation resumes (codex_runtime.py:7316, 7502-7505).
-    let mut query = db.prepare("SELECT id FROM runtime_agents WHERE account_key=?1 AND auto_wake=1 AND deleted_at IS NULL AND COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND (json_type(record,'$.startAttempt.prepareError')='text' OR (json_type(record,'$.startAttempt') IS NULL AND json_type(record,'$.lastWorkspaceWait.attemptId')='text')) ORDER BY id")?;
+    let mut query = db.prepare("SELECT r.id FROM chats ch CROSS JOIN runtime_agents r ON r.id=ch.id WHERE ch.auto_wake=1 AND r.account_key=?1 AND r.deleted_at IS NULL AND COALESCE(json_extract(r.record,'$.accountKey'),'default')=?1 AND (json_type(r.record,'$.startAttempt.prepareError')='text' OR (json_type(r.record,'$.startAttempt') IS NULL AND json_type(r.record,'$.lastWorkspaceWait.attemptId')='text')) ORDER BY r.id")?;
     let ids = query
         .query_map([account], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -4136,13 +4136,19 @@ mod stream_owner_query_tests {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
             .unwrap();
-        db.execute_batch("CREATE INDEX runtime_agent_vm_stream_owner ON runtime_agents(account_key,id) WHERE execution_mode='vm' AND hold_status='clear'").unwrap();
+        db.execute_batch(&studio_runtime_store::domain::tables_sql())
+            .unwrap();
         for n in 0..20 {
             let id = format!("host-{n}");
             let raw = serde_json::json!({"compactions":0,"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default","executionMode":"host"});
             db.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 rusqlite::params![id, raw.to_string()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chats(id,state,status,execution_mode) VALUES(?1,'active','idle','host')",
+                [&id],
             )
             .unwrap();
         }
@@ -4186,12 +4192,19 @@ mod pending_preparation_scan_tests {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
             .unwrap();
+        db.execute_batch(&studio_runtime_store::domain::tables_sql())
+            .unwrap();
         for n in 0..20 {
             let id = format!("disabled-{n}");
             let raw = serde_json::json!({"compactions":0,"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default","autoWake":false});
             db.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 rusqlite::params![id, raw.to_string()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chats(id,state,status,auto_wake) VALUES(?1,'active','idle',0)",
+                [&id],
             )
             .unwrap();
         }
@@ -4222,6 +4235,8 @@ mod pending_preparation_scan_tests {
         db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
             .unwrap();
         db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        db.execute_batch(&studio_runtime_store::domain::tables_sql())
             .unwrap();
         for (id, account, auto_wake, extra) in [
             (
@@ -4262,6 +4277,11 @@ mod pending_preparation_scan_tests {
             db.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 rusqlite::params![id, row.to_string()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO chats(id,state,status,auto_wake) VALUES(?1,'active','idle',?2)",
+                rusqlite::params![id, auto_wake],
             )
             .unwrap();
         }

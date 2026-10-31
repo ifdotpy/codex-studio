@@ -565,7 +565,7 @@ fn stopped_turns(
     generation: u64,
 ) -> Result<Vec<StoppedTurn>, studio_runtime_store::StoreError> {
     let mut statement = tx.prepare_cached(
-        "SELECT id FROM runtime_agents WHERE account_key=?1 AND ((auto_wake=0 AND has_disconnect_recovery=1 AND COALESCE(in_flight,0)=0) OR json_extract(record,'$.startAttempt.interrupt.outcome') IN ('unknown','unsent'))",
+        "SELECT id FROM runtime_agents WHERE account_key=?1 AND ((EXISTS(SELECT 1 FROM chats ch WHERE ch.id=runtime_agents.id AND ch.auto_wake=0) AND has_disconnect_recovery=1 AND COALESCE(in_flight,0)=0) OR json_extract(record,'$.startAttempt.interrupt.outcome') IN ('unknown','unsent'))",
     )?;
     let ids = statement
         .query_map([account], |row| row.get::<_, String>(0))?

@@ -127,8 +127,8 @@ const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v6";
 fn account_wake_candidate_predicate(a: &str) -> String {
     format!(
         "({} OR {} OR {})",
-        account_wake_queued_candidate(a),
-        account_wake_steer_candidate(a),
+        account_wake_queued_candidate(a, false),
+        account_wake_steer_candidate(a, false),
         account_wake_recovery(a, false)
     )
 }
@@ -143,9 +143,26 @@ fn account_wake_index_eligibility(a: &str) -> String {
     )
 }
 
-fn account_wake_queued_candidate(a: &str) -> String {
+/// SQL: the chat of the agent row `a` has `condition` (a condition on the alias
+/// `ch`). An index predicate cannot read another table, so the account wake
+/// index leaves these terms out and the queries add them (`exact`).
+fn chat_has(a: &str, condition: &str) -> String {
+    let id = if a.is_empty() {
+        "runtime_agents.id".to_owned()
+    } else {
+        format!("{a}id")
+    };
+    format!("EXISTS(SELECT 1 FROM chats ch WHERE ch.id={id} AND {condition})")
+}
+
+fn account_wake_queued_candidate(a: &str, exact: bool) -> String {
+    let auto_wake = if exact {
+        format!("AND {} ", chat_has(a, "ch.auto_wake=1"))
+    } else {
+        String::new()
+    };
     format!(
-        "({a}status='queued' AND {a}auto_wake=1 \
+        "({a}status='queued' {auto_wake}\
          AND COALESCE({a}in_flight,0)=0 \
          AND COALESCE({a}native_failure_hold,0)=0)"
     )
@@ -153,13 +170,21 @@ fn account_wake_queued_candidate(a: &str) -> String {
 
 /// A running turn that may receive queued user input by `turn/steer`.
 /// `SchedulerRepository::claim_steer` owns the exact eligibility check.
-fn account_wake_steer_candidate(a: &str) -> String {
+fn account_wake_steer_candidate(a: &str, exact: bool) -> String {
+    let chat = if exact {
+        format!(
+            "AND {} AND NOT {} ",
+            chat_has(a, "ch.auto_wake=1"),
+            chat_has(a, "ch.execution_mode='vm'")
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "({a}status='running' AND {a}auto_wake=1 AND {a}in_flight=1 \
+        "({a}status='running' AND {a}in_flight=1 \
          AND {a}turn_id IS NOT NULL \
          AND COALESCE({a}steer_rejected_turn_id,'')<>{a}turn_id \
-         AND COALESCE({a}native_failure_hold,0)=0 \
-         AND COALESCE({a}execution_mode,'')<>'vm')"
+         AND COALESCE({a}native_failure_hold,0)=0 {chat})"
     )
 }
 
@@ -213,7 +238,7 @@ fn deliverable_pending(agent: &str, epoch: &str, held_after: &str) -> String {
 fn account_wake_native_review(a: &str) -> String {
     format!(
         "({} AND json_extract({a}record,'$.nativeReview.status')='pending')",
-        account_wake_queued_candidate(a)
+        account_wake_queued_candidate(a, true)
     )
 }
 
@@ -229,13 +254,13 @@ fn account_wake_pending(a: &str, held_after: &str) -> String {
              AND e.epoch=json_extract({a}record,'$.epoch') AND e.status='pending' \
              AND e.kind NOT IN ({dedicated_kinds}))) \
          OR {})",
-        account_wake_queued_candidate(a),
+        account_wake_queued_candidate(a, true),
         deliverable_pending(
             "a.id",
             &format!("json_extract({a}record,'$.epoch')"),
             held_after,
         ),
-        account_wake_steer_candidate(a),
+        account_wake_steer_candidate(a, true),
         account_wake_native_review(a)
     )
 }

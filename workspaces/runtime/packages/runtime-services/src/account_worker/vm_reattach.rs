@@ -8,7 +8,8 @@ pub(super) const STARTUP_PAGE_ACTORS: i64 = 64;
 /// Startup reads use AgentIndexedReads' account/live-row index and rowid pages.
 pub(super) const STARTUP_CANDIDATES: &str = "SELECT rowid,id FROM runtime_agents \
     WHERE account_key=?1 AND deleted_at IS NULL AND rowid>?2 \
-    AND execution_mode='vm' AND in_flight=1 ORDER BY rowid LIMIT ?3";
+    AND in_flight=1 \
+    AND EXISTS(SELECT 1 FROM chats ch WHERE ch.id=runtime_agents.id AND ch.execution_mode='vm') ORDER BY rowid LIMIT ?3";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Binding {
