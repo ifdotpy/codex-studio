@@ -174,6 +174,15 @@ pub(crate) struct SyncModeItem {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SyncCloneParams {
+    operation_id: String,
+    agent_id: String,
+    path: String,
+    entry: protocol::ManifestEntry,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ResultManifestParams {
     operation_id: String,
     agent_id: String,
@@ -205,6 +214,7 @@ enum FrameParams {
     Manifest(ManifestParams),
     Prime(PrimeParams),
     SyncMode(SyncModeParams),
+    SyncClone(SyncCloneParams),
     ResultManifest(ResultManifestParams),
     // Existing dispatch until each remaining method has its own typed variant.
     Legacy(Map<String, Value>),
@@ -700,7 +710,6 @@ impl HostService {
         let slot = self.slot(&op)?;
         let mac_only = string_list(&op, "macOnly");
         match method {
-            "sync.clone" => self.sync_clone(&op, &slot, params).await,
             "sync.batch" => self.sync_batch(&op, &slot, params),
             method if method.starts_with("sync.") => {
                 self.sync_entry(method, &identity, &op, &slot, &mac_only, params)
@@ -769,6 +778,17 @@ impl HostService {
                 )?;
                 let slot = self.slot(&op)?;
                 self.sync_mode(&op, &slot, string_list(&op, "macOnly"), &params.items)
+                    .await
+            }
+            FrameParams::SyncClone(params) => {
+                let op = self.load(&params.operation_id)?;
+                require(
+                    text(&op, "agentId") == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                self.sync_clone(&op, &slot, &params.path, &params.entry)
                     .await
             }
             FrameParams::ResultManifest(params) => {
@@ -923,6 +943,10 @@ impl HostService {
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
             "sync.mode" => FrameParams::SyncMode(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "sync.clone" => FrameParams::SyncClone(
                 serde_json::from_str(raw)
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),

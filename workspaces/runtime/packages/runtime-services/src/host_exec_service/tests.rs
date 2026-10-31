@@ -493,6 +493,23 @@ async fn receipt_refuses_changed_raw_params_without_reexecution() {
 }
 
 #[tokio::test]
+async fn sync_clone_skips_when_project_folder_is_absent() {
+    let fixture = Fixture::new();
+    let acquire = json!({"operationId":"clone-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});
+    fixture
+        .call("clone-acquire", "acquire", acquire)
+        .await
+        .unwrap();
+    let params = json!({"operationId":"clone-test","agentId":"agent","path":"file","entry":{"kind":"file","bytes":1,"mode":420,"sha256":"abc"}});
+    let result = fixture
+        .call("clone-file", "sync.clone", params)
+        .await
+        .unwrap();
+    assert_eq!(result["cloned"], false);
+    assert_eq!(result["reason"], "no project folder on this host");
+}
+
+#[tokio::test]
 async fn sync_mode_uses_typed_file_entries() {
     let fixture = Fixture::new();
     let acquire = json!({"operationId":"mode-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});

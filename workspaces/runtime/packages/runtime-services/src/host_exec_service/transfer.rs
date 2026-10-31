@@ -339,18 +339,19 @@ impl HostService {
         &self,
         op: &Op,
         slot: &Path,
-        name: Option<&Value>,
-        entry: Option<&Value>,
+        name: &str,
+        entry: &protocol::ManifestEntry,
     ) -> Outcome<Value> {
-        let entry = entry.filter(|entry| {
-            entry.get("kind").and_then(Value::as_str) == Some("file")
-                && integer(entry.get("bytes")).is_some()
-                && entry.get("sha256").is_some_and(Value::is_string)
-        });
-        let entry = entry.ok_or_else(|| HostExecError::new(INVALID, "Invalid source entry"))?;
-        let mode = file_mode(entry)
-            .ok_or_else(|| HostExecError::new(INVALID, "Invalid source file mode"))?;
-        let name = protocol::relative(name)?;
+        let protocol::ManifestEntry::File {
+            bytes,
+            mode,
+            sha256,
+        } = entry
+        else {
+            return Err(HostExecError::new(INVALID, "Invalid source entry").into());
+        };
+        require(*mode <= 0o777, "Invalid source file mode", INVALID)?;
+        let name = protocol::relative(Some(&protocol::text_value(name)))?;
         require(
             !protocol::under(&name, &Self::mac_only(op)),
             "The path stays on the host (macOnly)",
@@ -371,8 +372,7 @@ impl HostService {
         let Ok(info) = fs::symlink_metadata(&origin) else {
             return skipped("the project folder has no such file");
         };
-        let bytes = integer(entry.get("bytes")).and_then(|bytes| u64::try_from(bytes).ok());
-        if !info.is_file() || Some(info.size()) != bytes {
+        if !info.is_file() || info.size() != *bytes {
             return skipped("the project file differs");
         }
         let cache = self
@@ -390,7 +390,7 @@ impl HostService {
             return skipped("the project file cannot be read");
         };
         protocol::atomic(&cache, &hashes)?;
-        if entry.get("sha256").and_then(Value::as_str) != Some(checksum.as_str()) {
+        if sha256 != &checksum {
             return skipped("the project file differs");
         }
         self.reserve(
@@ -406,7 +406,7 @@ impl HostService {
         if let Err(error) = clone_ffi::clone_file(&origin, &path) {
             return Ok(json!({"cloned": false, "reason": clone_error(&error)}));
         }
-        set_mode(&path, mode)?;
+        set_mode(&path, *mode)?;
         let after = fs::symlink_metadata(&origin)?;
         if known && protocol::stamp(&after) == protocol::stamp(&info) {
             // The origin did not change since its known hash: the run check need not read the clone.
@@ -418,14 +418,15 @@ impl HostService {
                 .or_default()
                 .insert(name, row);
         }
-        Ok(json!({"cloned": true, "bytes": entry.get("bytes").cloned().unwrap_or(Value::Null)}))
+        Ok(json!({"cloned": true, "bytes": bytes}))
     }
 
     pub(crate) async fn sync_clone(
         self: &Arc<Self>,
         op: &Op,
         slot: &Path,
-        params: &Map<String, Value>,
+        name: &str,
+        entry: &protocol::ManifestEntry,
     ) -> Outcome<Value> {
         require(
             text(op, "state") == "leased",
@@ -433,10 +434,10 @@ impl HostService {
             INVALID,
         )?;
         let (service, op, slot) = (Arc::clone(self), op.clone(), slot.to_path_buf());
-        let (name, entry) = (params.get("path").cloned(), params.get("entry").cloned());
+        let (name, entry) = (name.to_owned(), entry.clone());
         studio_runtime_store::blocking_pool::spawn_blocking(
             "runtime-services/host-exec-clone",
-            move || service.clone_source(&op, &slot, name.as_ref(), entry.as_ref()),
+            move || service.clone_source(&op, &slot, &name, &entry),
         )
         .await
         .map_err(|error| Failure::Unexpected(error.to_string()))?
