@@ -440,9 +440,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const key = resourceKey(resource);
     if (force) resourceValues.set(key, version);
     else if (!rememberResourceVersion(resource, version)) return;
-    // Draft data is admitted to the draft store in stream order. Hint coalescing may drop
-    // intermediate versions, which would turn a complete interval into a gap.
-    if (resource.kind === "drafts" && version.reason === "change") {
+    // Draft snapshots and changes must be delivered in stream order.
+    if (
+      resource.kind === "drafts" &&
+      (version.reason === "change" || version.draftSnapshot)
+    ) {
       for (const listener of subscribers.get(key) ?? []) listener(version);
       return;
     }
@@ -631,6 +633,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       if (resource.kind === "drafts") {
         version.reason = event.reason;
         version.draftChanges = revisionEntry?.draftChanges ?? undefined;
+        version.draftSnapshot = revisionEntry?.draftSnapshot ?? undefined;
       }
       if (resource.kind === "multi-server")
         version.discoverySnapshot =
@@ -666,6 +669,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           resource,
           version,
           !versions ||
+            (resource.kind === "drafts" && !!version.draftSnapshot) ||
             !!revisionEntry?.entitySequenceReset ||
             (resource.kind === "transcript" &&
               !revisionEntry?.transcriptChanges &&
@@ -673,11 +677,16 @@ export function createResourceEvents(options: ResourceEventsOptions) {
               !isDuplicate &&
               !staleRevision),
         );
-        if (event.reason !== "change") pendingBaselines.add(key);
+        if (event.reason !== "change" && !version.draftSnapshot)
+          pendingBaselines.add(key);
       } else if (!rememberResourceVersion(resource, version) && !versions) {
         resourceValues.set(key, version);
       }
-      if (event.reason !== "change" && baselineReconciliations.delete(key))
+      if (
+        event.reason !== "change" &&
+        baselineReconciliations.delete(key) &&
+        !version.draftSnapshot
+      )
         pendingResources.add(key);
     }
     pruneResourceVersions(active);
@@ -777,6 +786,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         for (const [key, listeners] of subscribers) {
           if (subscribed.has(key)) {
             const version = resourceValues.get(key);
+            if (version?.draftSnapshot) continue;
             for (const listener of listeners) listener(version);
           }
         }

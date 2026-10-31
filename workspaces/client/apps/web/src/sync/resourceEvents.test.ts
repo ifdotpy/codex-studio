@@ -345,20 +345,24 @@ describe("shared resource event transport", () => {
                     ],
                   },
                 }
-              : {}),
+              : { draftSnapshot: { complete: true, documents: [] } }),
           },
         ],
       });
     emit(0, "initial");
-    await vi.advanceTimersByTimeAsync(20);
-    expect(listener).toHaveBeenCalledOnce();
-    listener.mockClear();
     emit(1, "change");
     emit(2, "change");
     await vi.advanceTimersByTimeAsync(0);
+    expect(listener.mock.calls[0]?.[0].draftSnapshot).toEqual({
+      complete: true,
+      documents: [],
+    });
     expect(
-      listener.mock.calls.map(([version]) => version.draftChanges.through),
+      listener.mock.calls
+        .slice(1)
+        .map(([version]) => version.draftChanges.through),
     ).toEqual([1, 2]);
+    listener.mockClear();
     Source.instances[0]!.emit("resources", {
       protocol: 4,
       workspaceId,
@@ -369,9 +373,9 @@ describe("shared resource event transport", () => {
       resourceVersions: [{ revision: 2 }],
     });
     await vi.advanceTimersByTimeAsync(20);
-    expect(listener).toHaveBeenCalledTimes(3);
-    assert.ok(listener.mock.calls[2] != null);
-    expect(listener.mock.calls[2][0].reason).toBe("reconnect");
+    expect(listener).toHaveBeenCalledOnce();
+    assert.ok(listener.mock.calls[0] != null);
+    expect(listener.mock.calls[0][0].reason).toBe("reconnect");
     stop();
   });
 
