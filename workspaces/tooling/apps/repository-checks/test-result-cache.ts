@@ -51,7 +51,28 @@ export const RESULT_DIRECTORY = path.join("target", "studio-test-results");
  * every checkout. Keys hash input content, so a result is valid in any checkout. */
 export const SHARED_RESULT_DIRECTORY_ENV = "STUDIO_TEST_RESULTS_DIR";
 
-/** Content key of a step, or undefined when the step must run. */
+const contentHashes = new Map<string, string>();
+
+/** SHA-256 of a file, kept for the process by path, size and modification time.
+ * A deleted file hashes to a fixed marker. */
+function fileHash(file: string): string {
+  try {
+    const stat = fs.statSync(file);
+    const memo = `${file}:${stat.size}:${stat.mtimeMs}`;
+    let hash = contentHashes.get(memo);
+    if (!hash) {
+      hash = createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+      contentHashes.set(memo, hash);
+    }
+    return hash;
+  } catch {
+    return "absent";
+  }
+}
+
+/** Content key of a step, or undefined when the step must run. The key hashes the
+ * working-tree content of every tracked or unignored file under the inputs, so it is the same
+ * for a saved and an unsaved tree with equal content. */
 export function stepKey(
   root: string,
   step: CachedStep,
@@ -59,18 +80,32 @@ export function stepKey(
 ): string | undefined {
   if (env.STUDIO_TEST_REUSE === "0" || !step.inputs?.length) return undefined;
   const paths = [...SHARED_INPUTS, ...step.inputs];
-  const git = (args: string[]) =>
-    execFileSync("git", args, { cwd: root, encoding: "utf8" });
   try {
-    // Uncommitted input changes have no tree id; such a step always runs.
-    if (git(["status", "--porcelain", "--", ...paths]).trim()) return undefined;
-    const trees = git(["rev-parse", ...paths.map((p) => `HEAD:${p}`)]);
+    const files = [
+      ...new Set(
+        execFileSync(
+          "git",
+          [
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            ...paths,
+          ],
+          { cwd: root, encoding: "utf8", maxBuffer: 1 << 28 },
+        )
+          .split("\0")
+          .filter(Boolean),
+      ),
+    ].sort();
     return createHash("sha256")
       .update(
         JSON.stringify([
           step.id,
           step.commands ?? step.options?.script,
-          trees,
+          files.map((file) => [file, fileHash(path.join(root, file))]),
           process.version,
           process.platform,
           process.arch,
@@ -80,6 +115,62 @@ export function stepKey(
   } catch {
     return undefined;
   }
+}
+
+/** Key of a gate step. A step without declared inputs depends on the whole tree. A step that
+ * provides an artifact to later steps always runs. */
+export function cachedStepKey(
+  root: string,
+  step: CachedStep & { provides?: string | undefined },
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  return step.provides
+    ? undefined
+    : stepKey(root, { ...step, inputs: step.inputs ?? ["."] }, env);
+}
+
+/** The commands of a workspace test step, limited to the given crates. Nextest keeps `--workspace`
+ * and filters by package: `-p` would change the feature set and rebuild third-party crates. */
+export function selectCrates(
+  commands: [string, string[]][],
+  crates: string[],
+): [string, string[]][] {
+  return commands.map(([command, args]) => [
+    command,
+    args.flatMap((arg) =>
+      arg !== "--workspace"
+        ? [arg]
+        : args[0] === "nextest"
+          ? [arg, "-E", crates.map((name) => `package(=${name})`).join(" | ")]
+          : crates.flatMap((name) => ["-p", name]),
+    ),
+  ]);
+}
+
+/** Crates of a nextest JUnit report whose tests all passed. `planned` is the test count that
+ * nextest announced at the start ("Starting N tests"). A report with another count belongs to a
+ * run that stopped early, so no crate in it counts as passed. */
+export function passedCrates(
+  report: string,
+  planned: number | undefined,
+): Set<string> {
+  const passed = new Set<string>();
+  const total = Number(/<testsuites[^>]* tests="(\d+)"/.exec(report)?.[1]);
+  if (planned === undefined || total !== planned) return passed;
+  const failed = new Set<string>();
+  for (const [, name, attributes] of report.matchAll(
+    /<testsuite name="([^"]+)"([^>]*)>/g,
+  )) {
+    const crate = name!.split("::")[0]!;
+    const count = (attribute: string) =>
+      Number(new RegExp(`${attribute}="(\\d+)"`).exec(attributes!)?.[1] ?? 1);
+    (count("failures") || count("errors") || count("skipped")
+      ? failed
+      : passed
+    ).add(crate);
+  }
+  for (const crate of failed) passed.delete(crate);
+  return passed;
 }
 
 const resultFile = (root: string, step: { id?: string }, key: string) =>

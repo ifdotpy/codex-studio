@@ -20,7 +20,6 @@ import { createAccountLimitsCache } from "../usage/accountUsage";
 import { createBrowserDrafts } from "../sync/drafts";
 import { createDraftJournal } from "../sync/draftJournal";
 import { createDraftStorage } from "../sync/draftStorage";
-import { useNativeDrafts } from "../native/useNativeDrafts";
 import { createOutbox } from "../sync/send";
 import { createSyncClient } from "../sync/client";
 import { frontendIsLocal } from "../sync/localFrontend";
@@ -120,8 +119,6 @@ export function createServerServices(server: StudioServer) {
   });
   let browserDrafts: ReturnType<typeof createBrowserDrafts> | undefined;
   const drafts = () => {
-    if (transport.owner.id === "local" && hasNativeClient())
-      return useNativeDrafts;
     return (browserDrafts ??= createBrowserDrafts({
       api,
       sync: {

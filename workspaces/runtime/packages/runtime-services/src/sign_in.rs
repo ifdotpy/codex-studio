@@ -369,32 +369,13 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn the_host_bridge_names_an_unknown_method_as_the_contract_says() {
-        struct NoChats;
-        impl crate::browser_host::ChatLookup for NoChats {
-            fn chat<'a>(
-                &'a self,
-                _session: &'a str,
-            ) -> futures_util::future::BoxFuture<'a, Option<crate::browser_host::ChatContext>>
-            {
-                Box::pin(async { None })
-            }
-        }
-        let folder = tempfile::tempdir().expect("folder");
-        let bridge = crate::browser_host::HostBridge::open(
-            folder.path(),
-            Arc::new(NoChats),
-            Default::default(),
-        )
-        .expect("bridge");
-        let error = bridge
-            .call("browser.unknown", &json!({}))
-            .await
-            .expect_err("refused");
-        assert_eq!(
-            Some(error.message.as_str()),
-            contract()["unsupportedMessage"].as_str()
+    #[test]
+    fn the_host_bridge_refuses_an_unknown_method() {
+        assert!(
+            serde_json::from_str::<crate::browser_host::ControlRequest>(
+                r#"{"id":"request","method":"browser.unknown","params":{}}"#
+            )
+            .is_err()
         );
     }
 }

@@ -190,12 +190,15 @@ take the lock. Owner: `gate-config.ts`; code: `gate-lock.ts`.
 
 ### Test result cache
 
-- A step with declared inputs reuses its saved result while the git tree IDs of
-  its inputs stay the same. Shared inputs are the lockfiles, toolchain, justfile,
-  and test runner folder.
-- Uncommitted input changes always run the step. Failures are never saved.
+- A passing step is reused while the content of its inputs stays the same, in a
+  saved or an unsaved tree. A step without declared inputs depends on the whole
+  tree. The WASM, renderer and workspace build steps always run. Shared inputs
+  are the lockfiles, toolchain, justfile, and test runner folder.
+- After a failed gate, run it again on the same tree: it skips every step that
+  passed and runs only the failed ones. Failures are never saved.
 - Rust reuses results per crate. A crate runs again only when its folder or a
-  workspace crate it depends on changed.
+  workspace crate it depends on changed. After a failed nextest run, the crates
+  without a failed test count as passed.
 - Results live in `target/studio-test-results/` and travel with the warm build.
 - Code: `workspaces/tooling/apps/repository-checks/test-result-cache.ts`.
 

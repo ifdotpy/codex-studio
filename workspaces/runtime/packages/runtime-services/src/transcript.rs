@@ -91,6 +91,7 @@ impl From<StoreError> for TranscriptError {
             }
             StoreError::StateDirectory(_)
             | StoreError::AlreadyOwned
+            | StoreError::IntermediateReleaseRequired
             | StoreError::MissingDatabase(_)
             | StoreError::Migration { .. }
             | StoreError::UnsafeStateDirectory

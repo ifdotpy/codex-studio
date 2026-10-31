@@ -91,6 +91,13 @@ fn template(root: &Path) {
                 .execute_batch(sql)
                 .expect("fixture schema object");
         }
+        if database == "canvas.sqlite3" {
+            connection
+                .execute_batch(include_str!(
+                    "../../runtime-store/tests/fixtures/receipt-finish-markers.sql"
+                ))
+                .expect("completed receipt markers");
+        }
         connection
             .execute_batch("COMMIT")
             .expect("fixture schema commit");

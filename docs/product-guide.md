@@ -113,6 +113,10 @@ See [VM chats](linux-vm-workspaces.md).
 
 ## Setup
 
+If startup reports “upgrade through an intermediate release first,” open the
+existing state with a release that still includes the October 28 receipt migrations
+(such as commit `d2ee71a1b`) and let it complete before upgrading again.
+
 Requirements for a source install: the pinned Rust toolchain, Node.js 22.15 or later,
 Git, pnpm, and the signed-in provider CLI.
 The desktop package currently targets macOS on Apple silicon.

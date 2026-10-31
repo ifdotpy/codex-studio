@@ -389,7 +389,9 @@ pub async fn cancel_checked(
                     && current.record().status == studio_runtime_schema::studio_errors::MonitorStatus::Running
                     && current.record().cancel_requested == Some(true)
                 {
-                    let mut decision = if retry_reason == Some(NotSentReason::MonitorMissing) {
+                    let queued_output = retry_reason == Some(NotSentReason::MonitorMissing)
+                        && current.record().stream_queue.as_ref().is_some_and(|queue| queue.iter().any(|event| matches!(event, studio_runtime_schema::monitor_record::MonitorQueueEvent::Output { .. })));
+                    let mut decision = if retry_reason == Some(NotSentReason::MonitorMissing) && !queued_output {
                         monitor_policy::finish(
                             &current,
                             Some(&operation_for_settlement),
@@ -440,6 +442,16 @@ pub async fn cancel_checked(
                         decision.record.shell_pressure_cleanup = None;
                     }
                     monitor_runtime::apply(tx, &current, &actor, &decision, now)?;
+                    if queued_output
+                        && !current.record().stream_queue.as_ref().is_some_and(|queue| queue.iter().any(|event| matches!(event, studio_runtime_schema::monitor_record::MonitorQueueEvent::Exit { .. })))
+                    {
+                        if error.as_deref().is_none_or(str::is_empty) {
+                            return Err(MonitorError::Refused("Monitor result has no definitive outcome"));
+                        }
+                        if !crate::monitor_event_queue::enqueue_exit_in_transaction(tx, &id_for_settlement, &operation_for_settlement, &format!("cancel-result:monitor:{id_for_settlement}"), None, error.as_deref(), now)? {
+                            return Err(MonitorError::Refused("Monitor output queue is full"));
+                        }
+                    }
                     Ok::<_, MonitorError>(response_error)
                 } else {
                     Ok(None)

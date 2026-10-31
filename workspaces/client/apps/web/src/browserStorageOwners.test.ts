@@ -22,7 +22,7 @@ const allowed: Record<string, string> = {
   "native/importBrowserProfile.ts":
     "one-time import of the old browser profile into the desktop app",
   "native/preferences.ts":
-    "replaces window.localStorage with the native preference store",
+    "one-time move of the old native preferences into the page storage",
   "push/signInPush.ts":
     "Web Push subscription id of this device for each server key",
   "servers/MultiServerApp.tsx": "selected server and Studio preferences",

@@ -120,7 +120,7 @@ fn failed(error: impl std::fmt::Display) -> ReceiveError {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Put {
+pub(crate) struct Put {
     generation: String,
     file: String,
     offset: u64,
@@ -144,9 +144,7 @@ fn plain_name(name: &str) -> bool {
 
 /// Store one chunk from the paired server `principal`. The answer is
 /// `{"received": <bytes held>, "done": <file complete>}`.
-pub fn receive(root: &Path, principal: &str, payload: &Value) -> Result<Value, ReceiveError> {
-    let put: Put =
-        serde_json::from_value(payload.clone()).map_err(|_| refused("Invalid backup request"))?;
+pub(crate) fn receive(root: &Path, principal: &str, put: &Put) -> Result<Value, ReceiveError> {
     let segment = parse_segment_name(&put.file).is_some();
     if !plain_name(principal)
         || !plain_name(&put.generation)

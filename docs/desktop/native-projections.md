@@ -50,5 +50,10 @@ Nothing is deleted if a row could not be copied.
 
 ## Native core
 
-The core no longer has the `projection.getRows`, `rangeRows`, `putRows` and
-`pruneRows` commands (removed 2026-10-30, #630).
+The core keeps no projection, draft or queue state. It removed the `projection.*Rows`,
+`drafts.*`, `sync.*`, `outbox.*` and `preferences.*` commands and its SQLite store.
+At the first server connection after a start it moves the old store's drafts,
+unsent uploads and recordings to the server
+([`store_move.rs`](../../workspaces/client/packages/client-core/src/store_move.rs)).
+The desktop window uses the same web code as the browser: drafts, preferences and
+unsent input live in the page storage described above.

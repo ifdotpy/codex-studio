@@ -79,7 +79,7 @@ fn launch(host: &Host, link: &str, opens: bool) -> (i32, String, Vec<String>) {
     (code, message, opened)
 }
 
-fn only_item(host: &Host) -> Value {
+fn only_item(host: &Host) -> QueueItem {
     let queue = host.service.bridge.lock();
     let mut items = queue.items.values();
     let item = items.next().expect("one request").clone();
@@ -103,8 +103,8 @@ async fn a_mac_host_opens_the_link_at_once_and_still_shows_a_card() {
     );
     let item = only_item(&host);
     assert_eq!(
-        (item["state"].clone(), item["localOpen"].clone()),
-        (json!("pending"), json!(true))
+        (item.state, item.local_open),
+        (QueueState::Pending, Some(true))
     );
     host.service.stop().await;
 }
@@ -141,7 +141,7 @@ async fn without_the_mac_fast_path_the_launcher_only_queues_the_card() {
         message,
         "studio-browser: Studio asks the person to open id.example.com. The sign-in continues in the browser on this computer after the approval."
     );
-    assert_eq!(only_item(&host).get("localOpen"), None);
+    assert_eq!(only_item(&host).local_open, None);
     host.service.stop().await;
 }
 
@@ -150,13 +150,13 @@ async fn the_request_of_a_page_that_this_mac_opened_closes_when_its_command_stop
     let host = host(true);
     launch(&host, LINK, true);
     host.service.bridge.check().await;
-    assert_eq!(only_item(&host)["state"], "pending");
+    assert_eq!(only_item(&host).state, QueueState::Pending);
     host.listening.store(false, Ordering::SeqCst);
     host.service.bridge.check().await;
     let item = only_item(&host);
     assert_eq!(
-        (item["state"].clone(), item["closeReason"].clone()),
-        (json!("closed"), json!(LOCAL_CLOSE_REASON))
+        (item.state, item.close_reason.as_deref()),
+        (QueueState::Closed, Some(LOCAL_CLOSE_REASON))
     );
     host.service.stop().await;
 }
@@ -171,19 +171,19 @@ async fn the_production_options_open_links_on_a_mac_only() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn launcher_request_admission_keeps_order_and_json_number_rules() {
+async fn launcher_request_admission_refuses_invalid_documents() {
     let host = host(false);
     let bridge = &host.service.bridge;
-    for (line, message) in [
-        (b"{}".as_slice(), "Send one JSON line of at most 16 KB"),
-        (b"{\n".as_slice(), "The request is not valid JSON"),
-        (b"[]\n".as_slice(), "Use protocol version 1"),
-        (b"{\"v\":1.0}\n".as_slice(), "Use protocol version 1"),
-        (b"{\"v\":null}\n".as_slice(), "Use protocol version 1"),
+    for line in [
+        b"{}".as_slice(),
+        b"{\n".as_slice(),
+        b"[]\n".as_slice(),
+        b"{\"v\":1.0}\n".as_slice(),
+        b"{\"v\":null}\n".as_slice(),
     ] {
         assert_eq!(
-            bridge.handle_line(current_uid(), line).await["message"],
-            message
+            bridge.handle_line(current_uid(), line).await["code"],
+            "invalid_request"
         );
     }
     for document in [
@@ -195,8 +195,8 @@ async fn launcher_request_admission_keeps_order_and_json_number_rules() {
         ),
     ] {
         assert_eq!(
-            bridge.handle_line(current_uid(), document.as_bytes()).await["message"],
-            "The request is not valid JSON"
+            bridge.handle_line(current_uid(), document.as_bytes()).await["code"],
+            "invalid_request"
         );
     }
     for document in [
@@ -205,13 +205,13 @@ async fn launcher_request_admission_keeps_order_and_json_number_rules() {
         "{\"v\":1,\"v\":null}\n",
     ] {
         assert_eq!(
-            bridge.handle_line(current_uid(), document.as_bytes()).await["message"],
-            "Use protocol version 1"
+            bridge.handle_line(current_uid(), document.as_bytes()).await["code"],
+            "invalid_request"
         );
     }
     assert_eq!(
         bridge.handle_line(current_uid(), b"{\"v\":1}\n").await["code"],
-        "unknown_agent"
+        "invalid_request"
     );
     let too_long = vec![b' '; LINE_LIMIT + 1];
     assert_eq!(
@@ -222,21 +222,96 @@ async fn launcher_request_admission_keeps_order_and_json_number_rules() {
     let wrong_uid = current_uid().wrapping_add(1);
     assert_eq!(
         bridge.handle_line(wrong_uid, malformed.as_bytes()).await["code"],
-        "unknown_agent"
+        "invalid_request"
     );
     let invalid_session = b"{\"v\":1,\"url\":false,\"session\":false}\n";
     assert_eq!(
         bridge.handle_line(current_uid(), invalid_session).await["code"],
-        "unknown_agent"
+        "invalid_request"
     );
-    let duplicated = format!(
-        "{{\"v\":0,\"v\":1,\"url\":false,\"session\":\"wrong\",\"session\":\"{SESSION}\"}}\n"
-    );
-    assert_ne!(
+    let duplicated =
+        format!("{{\"v\":1,\"v\":1,\"url\":\"https://example.test\",\"session\":\"{SESSION}\"}}\n");
+    assert_eq!(
         bridge
             .handle_line(current_uid(), duplicated.as_bytes())
             .await["code"],
-        "unknown_agent"
+        "invalid_request"
     );
     host.service.stop().await;
+}
+
+#[tokio::test]
+async fn launcher_rejects_unknown_request_fields() {
+    let host = host(false);
+    let reply = host
+        .service
+        .bridge
+        .handle_line(current_uid(), b"{\"v\":1,\"extra\":true}\n")
+        .await;
+    assert_eq!(reply["code"], "invalid_request");
+    host.service.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn control_socket_sends_typed_queue_in_existing_wire_shape() {
+    let host = host(false);
+    let (code, _, _) = launch(&host, LINK, false);
+    assert_eq!(code, 0);
+    let mut stream = UnixStream::connect(&host.service.control_socket)
+        .await
+        .expect("control socket");
+    stream.write_all(b"{\"id\":\"request\",\"method\":\"browser.wait\",\"params\":{\"after\":0,\"waitSeconds\":0}}\n").await.expect("request");
+    let mut line = Vec::new();
+    BufReader::new(stream)
+        .read_until(b'\n', &mut line)
+        .await
+        .expect("response");
+    let reply: Value = serde_json::from_slice(&line).expect("JSON response");
+    assert_eq!(reply["id"], "request");
+    assert_eq!(reply["result"]["items"][0]["state"], "pending");
+    assert_eq!(reply["result"]["items"][0]["agentId"], SESSION);
+    assert_eq!(reply["result"]["next"], 1);
+    host.service.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn control_socket_rejects_unknown_request_fields() {
+    let host = host(false);
+    let mut stream = UnixStream::connect(&host.service.control_socket)
+        .await
+        .expect("control socket");
+    stream.write_all(b"{\"id\":\"request\",\"method\":\"browser.wait\",\"params\":{\"after\":0,\"waitSeconds\":0,\"unexpected\":true}}\n").await.expect("request");
+    let mut line = Vec::new();
+    BufReader::new(stream)
+        .read_until(b'\n', &mut line)
+        .await
+        .expect("response");
+    let reply: Value = serde_json::from_slice(&line).expect("JSON response");
+    assert_eq!(reply["id"], "");
+    assert_eq!(reply["error"]["code"], "invalid_request");
+    host.service.stop().await;
+}
+
+#[test]
+fn launcher_rejects_unknown_reply_fields() {
+    use std::io::{BufRead, Write};
+    let folder = tempfile::tempdir().expect("socket folder");
+    let socket = folder.path().join("open.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("listener");
+    let sender = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut request = Vec::new();
+        std::io::BufReader::new(&stream)
+            .read_until(b'\n', &mut request)
+            .expect("request");
+        stream.write_all(b"{\"ok\":true,\"id\":\"card\",\"host\":\"example.test\",\"joined\":false,\"extra\":true}\n").expect("reply");
+    });
+    let result = shim(
+        &[LINK.into()],
+        &socket.to_string_lossy(),
+        Some(SESSION),
+        &|_| false,
+    );
+    sender.join().expect("sender");
+    assert_eq!(result.0, 1);
 }

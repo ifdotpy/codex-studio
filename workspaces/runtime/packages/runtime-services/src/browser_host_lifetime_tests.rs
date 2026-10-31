@@ -87,7 +87,7 @@ impl Fixture {
         self.now.store(seconds.to_bits(), Ordering::SeqCst);
     }
 
-    fn item(&self, id: &str) -> Value {
+    fn item(&self, id: &str) -> QueueItem {
         self.bridge.lock().items[id].clone()
     }
 }
@@ -102,15 +102,19 @@ async fn a_listening_command_keeps_its_request_open_up_to_the_open_limit() {
         fixture.at(now);
         fixture.bridge.check().await;
         let item = fixture.item("card");
-        assert_eq!(item["state"], "pending", "the command listens at {now}");
-        let expires = item["expiresAt"].as_f64().expect("deadline");
+        assert_eq!(
+            item.state,
+            QueueState::Pending,
+            "the command listens at {now}"
+        );
+        let expires = item.expires_at;
         assert!(expires >= now, "the deadline {expires} passed at {now}");
         assert!(expires <= limit, "the deadline {expires} is past the limit");
         now += CHECK_SECONDS as f64;
     }
     fixture.at(limit + 1.0);
     fixture.bridge.check().await;
-    assert_eq!(fixture.item("card")["state"], "expired");
+    assert_eq!(fixture.item("card").state, QueueState::Expired);
 }
 
 #[tokio::test]
@@ -124,13 +128,19 @@ async fn the_person_can_approve_a_listening_request_after_the_request_time() {
     }
     let answer = fixture
         .bridge
-        .call(
-            "browser.answer",
-            &json!({"id": "card", "decision": "approve"}),
-        )
+        .answer(&AnswerParams {
+            id: "card".into(),
+            decision: AnswerDecision::Approve,
+        })
         .await
         .expect("the request is still open");
-    assert_eq!(answer["state"], "approved");
+    assert!(matches!(
+        answer,
+        HostResult::StateWithLease {
+            state: QueueState::Approved,
+            ..
+        }
+    ));
 }
 
 #[tokio::test]
@@ -138,8 +148,8 @@ async fn a_request_whose_command_stopped_listening_becomes_stale_at_once() {
     let fixture = Fixture::new(&["card"]);
     fixture.at(CREATED + TTL_SECONDS / 2.0);
     fixture.bridge.check().await;
-    assert_eq!(fixture.item("card")["state"], "pending");
+    assert_eq!(fixture.item("card").state, QueueState::Pending);
     fixture.listening.store(false, Ordering::SeqCst);
     fixture.bridge.check().await;
-    assert_eq!(fixture.item("card")["state"], "stale");
+    assert_eq!(fixture.item("card").state, QueueState::Stale);
 }

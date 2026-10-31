@@ -48,11 +48,11 @@ async fn input_schema(store: &RuntimeStore) {
 }
 
 #[tokio::test]
-async fn migrated_monitor_inputs_remain_visible_through_process_receipt() {
+async fn stored_monitor_inputs_remain_visible_through_process_receipt() {
     use serde::Serialize;
     use studio_runtime_schema::persistence::MonitorInputStatus;
     #[derive(Serialize)]
-    struct LegacyReceipt {
+    struct SavedReceipt {
         monitor: String,
         operation: studio_runtime_store::MonitorOperation,
         status: MonitorInputStatus,
@@ -64,12 +64,11 @@ async fn migrated_monitor_inputs_remain_visible_through_process_receipt() {
     let path = store.root().to_owned();
     drop(store);
     let db = rusqlite::Connection::open(path.join("canvas.sqlite3")).expect("old store");
-    db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);").expect("pre-cutover source");
     for (id, status) in [
         ("pending-input", MonitorInputStatus::Pending),
         ("unknown-input", MonitorInputStatus::Unknown),
     ] {
-        let receipt = LegacyReceipt {
+        let receipt = SavedReceipt {
             monitor: "f8fc5c50-e4e4-50bc-8ff5-885105058c9d".into(),
             operation: studio_runtime_store::MonitorOperation {
                 agent: "agent".to_owned().try_into().unwrap(),
@@ -81,18 +80,17 @@ async fn migrated_monitor_inputs_remain_visible_through_process_receipt() {
             status,
         };
         db.execute(
-            "INSERT INTO runtime_operation_receipts VALUES(?1,'http-input-v1:hash',?2)",
+            "INSERT INTO request_results(id,signature,result,created) VALUES(?1,'http-input-v1:hash',?2,?3)",
             rusqlite::params![
                 format!("monitor-http-input:{id}"),
-                serde_json::to_string(&receipt).expect("source receipt")
+                serde_json::to_string(&studio_runtime_store::request_results::ResultEnvelope { actor: Some("agent".to_owned()), reply: receipt, references: vec![] }).expect("receipt"),
+                chrono::Utc::now().timestamp_millis()
             ],
         )
         .expect("source");
     }
     drop(db);
-    let store = RuntimeStore::open(Some(&path))
-        .await
-        .expect("migrate input");
+    let store = RuntimeStore::open(Some(&path)).await.expect("reopen input");
     for (id, expected) in [("pending-input", "pending"), ("unknown-input", "unknown")] {
         let query = json!({"requestId": id, "agent": "agent", "accountKey": "default", "epoch": 2});
         let receipt = studio_runtime_services::process_controls::receipt(
@@ -102,7 +100,7 @@ async fn migrated_monitor_inputs_remain_visible_through_process_receipt() {
         .expect("caller");
         let studio_runtime_schema::process_controls::ProcessReceipt::Found(receipt) = receipt
         else {
-            panic!("migrated receipt must be found");
+            panic!("stored receipt must be found");
         };
         let Some(studio_runtime_schema::process_controls::ProcessResponse::MonitorInput(response)) =
             receipt.result.response

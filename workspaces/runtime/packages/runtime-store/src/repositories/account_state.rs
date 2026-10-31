@@ -751,50 +751,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn workspace_limits_null_map_reopens_and_migrates_idempotently() {
-        let root = tempfile::tempdir().expect("isolated state");
-        let store = crate::RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("store");
-        store
-            .transaction(|tx| {
-                crate::receipt_schema::create(tx)?;
-                crate::SyncDocumentsRepository::put_entity(
-                    tx,
-                    "workspace",
-                    "current",
-                    json!({"stateDir":"fixture","rateLimitsByAccount":null,"rateLimits":null}),
-                    false,
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("legacy workspace");
-        drop(store);
-        let store = crate::RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("null map migrates");
-        let before = store.transaction(|tx| {
-            let raw: String = tx.query_row("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'", [], |row| row.get(0))?;
-            assert_eq!(serde_json::from_str::<Value>(&raw).expect("workspace JSON")["value"], json!({"stateDir":"fixture"}));
-            assert!(limits_snapshots(tx)?.snapshots.is_empty());
-            crate::SyncDocumentsRepository::entity_sequence(tx)
-        }).await.expect("migrated workspace");
-        drop(store);
-        let reopened = crate::RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("reopen");
-        let after = reopened
-            .transaction(|tx| crate::SyncDocumentsRepository::entity_sequence(tx))
-            .await
-            .expect("sequence");
-        assert_eq!(
-            after, before,
-            "reopen must not rewrite the migrated workspace"
-        );
-    }
-
     #[test]
     fn workspace_limits_migrate_once_without_overwriting_account_entities() {
         let mut db = Connection::open_in_memory().expect("SQLite");

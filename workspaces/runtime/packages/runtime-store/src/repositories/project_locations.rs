@@ -135,4 +135,25 @@ impl crate::JsonRecord for ProjectLocationRecord {
     fn record_key(&self) -> Option<&String> {
         Some(&self.id)
     }
+    // Remove this override once the record is closed and typed.
+    fn encode_stored(&self, _: &rusqlite::Connection, row_id: &str) -> crate::StoreResult<String> {
+        crate::records::encode_open_record(self, row_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProjectLocationRecord;
+    use crate::JsonRecord;
+
+    #[test]
+    fn open_project_encoder_still_validates_schema() {
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        let invalid: ProjectLocationRecord =
+            serde_json::from_str(r#"{"id":"p","peerTeams":false}"#).unwrap();
+        assert!(invalid.encode_stored(&connection, "p").is_err());
+        let valid: ProjectLocationRecord =
+            serde_json::from_str(r#"{"id":"p","peerTeams":[]}"#).unwrap();
+        assert!(valid.encode_stored(&connection, "p").is_ok());
+    }
 }

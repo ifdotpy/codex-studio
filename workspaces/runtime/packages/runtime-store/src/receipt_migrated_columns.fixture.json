@@ -1,0 +1,153 @@
+{
+  "request_results": [
+    ["id", "TEXT", 0, 1, 0],
+    ["signature", "TEXT", 1, 0, 0],
+    ["status", "TEXT", 1, 0, 0],
+    ["ref_kind", "TEXT", 0, 0, 0],
+    ["ref_id", "TEXT", 0, 0, 0],
+    ["ref_rev", "INTEGER", 0, 0, 0],
+    ["result", "TEXT", 0, 0, 0],
+    ["created", "INTEGER", 1, 0, 0]
+  ],
+  "runtime_outbox": [
+    ["id", "TEXT", 0, 1, 0],
+    ["kind", "TEXT", 1, 0, 0],
+    ["owner_kind", "TEXT", 1, 0, 0],
+    ["owner_id", "TEXT", 1, 0, 0],
+    ["request_id", "TEXT", 0, 0, 0],
+    ["signature", "TEXT", 1, 0, 0],
+    ["status", "TEXT", 1, 0, 0],
+    ["account", "TEXT", 0, 0, 0],
+    ["stream_id", "TEXT", 0, 0, 0],
+    ["generation", "INTEGER", 0, 0, 0],
+    ["ordinal", "INTEGER", 0, 0, 0],
+    ["next_at", "INTEGER", 0, 0, 0],
+    ["payload", "TEXT", 1, 0, 0],
+    ["created", "INTEGER", 1, 0, 0],
+    ["target", "TEXT", 0, 0, 0]
+  ],
+  "runtime_error_incidents": [
+    ["id", "TEXT", 0, 1, 0],
+    ["kind", "TEXT", 1, 0, 0],
+    ["owner_kind", "TEXT", 1, 0, 0],
+    ["owner_id", "TEXT", 1, 0, 0],
+    ["created", "INTEGER", 1, 0, 0],
+    ["last_seen", "INTEGER", 1, 0, 0],
+    ["dismissed_at", "INTEGER", 0, 0, 0],
+    ["payload", "TEXT", 1, 0, 0]
+  ],
+  "runtime_account_state": [
+    ["account", "TEXT", 0, 1, 0],
+    ["next_generation", "INTEGER", 1, 0, 0],
+    ["connection_generation", "INTEGER", 0, 0, 0],
+    ["connection_id", "TEXT", 0, 0, 0],
+    ["journal_ack", "INTEGER", 1, 0, 0],
+    ["recovery_required", "INTEGER", 1, 0, 0],
+    ["streams", "TEXT", 1, 0, 0],
+    ["limits_observation", "TEXT", 0, 0, 0],
+    ["start_failure", "TEXT", 0, 0, 0]
+  ],
+  "runtime_payload_migrations": [
+    ["name", "TEXT", 0, 1, 0],
+    ["cursor", "INTEGER", 1, 0, 0],
+    ["complete", "INTEGER", 1, 0, 0],
+    ["status", "TEXT", 1, 0, 0],
+    ["updated", "REAL", 0, 0, 0],
+    ["error", "TEXT", 0, 0, 0],
+    ["cutover_ms", "INTEGER", 0, 0, 0],
+    ["receipt_enum_guard", "INTEGER", 0, 0, 2]
+  ],
+  "runtime_server_inbox": [
+    ["id", "TEXT", 0, 1, 0],
+    ["signature", "TEXT", 1, 0, 0],
+    ["state", "TEXT", 1, 0, 0],
+    ["result", "TEXT", 0, 0, 0],
+    ["created_at", "REAL", 1, 0, 0],
+    ["completed_at", "REAL", 1, 0, 0],
+    ["principal", "TEXT", 0, 0, 0],
+    ["actor", "TEXT", 0, 0, 0],
+    ["admission", "TEXT", 0, 0, 0],
+    ["receipt_state", "TEXT", 1, 0, 2]
+  ],
+  "runtime_server_outbox": [
+    ["id", "TEXT", 0, 1, 0],
+    ["server", "TEXT", 1, 0, 0],
+    ["body", "TEXT", 1, 0, 0],
+    ["state", "TEXT", 1, 0, 0],
+    ["result", "TEXT", 0, 0, 0],
+    ["attempts", "INTEGER", 1, 0, 0],
+    ["next_at", "REAL", 1, 0, 0],
+    ["error", "TEXT", 0, 0, 0],
+    ["created_at", "REAL", 1, 0, 0],
+    ["completed_at", "REAL", 1, 0, 0],
+    ["fingerprint", "TEXT", 0, 0, 0],
+    ["admission", "TEXT", 0, 0, 0],
+    ["receipt_state", "TEXT", 1, 0, 2],
+    ["receipt_kind", "TEXT", 1, 0, 2]
+  ],
+  "runtime_server_fetch": [
+    ["id", "TEXT", 0, 1, 0],
+    ["server", "TEXT", 1, 0, 0],
+    ["signature", "TEXT", 1, 0, 0],
+    ["state", "TEXT", 1, 0, 0],
+    ["result", "TEXT", 0, 0, 0],
+    ["admission", "TEXT", 0, 0, 0],
+    ["receipt_state", "TEXT", 1, 0, 2]
+  ],
+  "runtime_access_outbound": [
+    ["server", "TEXT", 1, 1, 0],
+    ["request_id", "TEXT", 1, 2, 0],
+    ["hash", "TEXT", 1, 0, 0],
+    ["record", "TEXT", 1, 0, 0],
+    ["receipt_state", "TEXT", 1, 0, 2]
+  ],
+  "runtime_federation_inbox": [
+    ["peer_id", "TEXT", 1, 1, 0],
+    ["message_id", "TEXT", 1, 2, 0],
+    ["record", "TEXT", 1, 0, 0],
+    ["receipt_ack", "TEXT", 1, 0, 2],
+    ["receipt_kind", "TEXT", 0, 0, 2]
+  ],
+  "runtime_federation_outbox": [
+    ["id", "TEXT", 0, 1, 0],
+    ["peer_id", "TEXT", 1, 0, 0],
+    ["record", "TEXT", 1, 0, 0],
+    ["receipt_state", "TEXT", 1, 0, 2],
+    ["receipt_kind", "TEXT", 1, 0, 2]
+  ],
+  "runtime_events": [
+    ["id", "TEXT", 0, 1, 0],
+    ["agent", "TEXT", 1, 0, 0],
+    ["kind", "TEXT", 1, 0, 0],
+    ["text", "TEXT", 1, 0, 0],
+    ["status", "TEXT", 1, 0, 0],
+    ["created", "REAL", 1, 0, 0],
+    ["epoch", "INTEGER", 1, 0, 0],
+    ["turn_id", "TEXT", 0, 0, 0],
+    ["error", "TEXT", 0, 0, 0],
+    ["receipt_enum_guard", "INTEGER", 0, 0, 2]
+  ],
+  "runtime_execution_effects": [
+    ["id", "TEXT", 0, 1, 0],
+    ["run", "TEXT", 1, 0, 0],
+    ["kind", "TEXT", 1, 0, 0],
+    ["reference", "TEXT", 1, 0, 0],
+    ["record", "TEXT", 1, 0, 0],
+    ["status", "TEXT", 0, 0, 2],
+    ["receipt_enum_guard", "INTEGER", 0, 0, 2]
+  ],
+  "voice_sessions": [
+    ["id", "TEXT", 0, 1, 0],
+    ["agent", "TEXT", 1, 0, 0],
+    ["created", "REAL", 1, 0, 0],
+    ["ended", "REAL", 0, 0, 0],
+    ["sdp", "TEXT", 0, 0, 0],
+    ["answer", "TEXT", 0, 0, 0],
+    ["native_thread", "TEXT", 0, 0, 0],
+    ["account_key", "TEXT", 0, 0, 0],
+    ["connection_id", "TEXT", 0, 0, 0],
+    ["state", "TEXT", 0, 0, 0],
+    ["error", "TEXT", 0, 0, 0],
+    ["provider_scope", "TEXT", 0, 0, 0]
+  ]
+}

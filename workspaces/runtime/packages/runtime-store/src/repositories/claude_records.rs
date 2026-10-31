@@ -69,6 +69,10 @@ impl JsonRecord for ClaudeAttemptRecord {
     fn record_key(&self) -> Option<&String> {
         Some(&self.id)
     }
+    // Remove this override once the record is closed and typed.
+    fn encode_stored(&self, _: &rusqlite::Connection, row_id: &str) -> crate::StoreResult<String> {
+        crate::records::encode_open_record(self, row_id)
+    }
 }
 
 #[cfg(test)]

@@ -29,7 +29,7 @@ const commit = execFileSync(
   { cwd: repo, encoding: "utf8" },
 ).trim();
 const groups = [
-  ["src/api.ts", "src/native/preferenceState.ts"],
+  ["src/api.ts"],
   ["src/native/NativeMarkdown.tsx"],
   ["src/components/conversation/transcript/HistoryWindow.tsx"],
   ["src/App.tsx"],

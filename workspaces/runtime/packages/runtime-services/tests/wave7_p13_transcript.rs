@@ -2,9 +2,6 @@
 use base64::Engine;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path, sync::Arc};
-use studio_runtime_schema::studio_errors::{
-    MigrationPhase, MigrationRollbackOutcome, MigrationTarget,
-};
 use studio_runtime_services::{
     transcript,
     transcript_runtime::{self, PageRequest},
@@ -41,20 +38,6 @@ async fn transcript_cases(group: usize) {
             .count()
     );
     let mut fault_count = 0;
-    let mut startup_refusals = 0;
-    assert_eq!(
-        cases
-            .iter()
-            .filter(|case| case["phase"] == "malformed-turn")
-            .count(),
-        1,
-        "one malformed turn must be refused at startup"
-    );
-    let expected_refusals = cases
-        .iter()
-        .enumerate()
-        .filter(|(index, case)| index % 8 == group && case["phase"] == "malformed-turn")
-        .count();
     for (_, case) in cases
         .into_iter()
         .enumerate()
@@ -63,88 +46,24 @@ async fn transcript_cases(group: usize) {
         let name = case["path"].as_str().expect("snapshot name");
         let state = root.path().join(name);
         restore_snapshot(&fixtures.join(name), &state, root.path());
-        if case["phase"] == "failed-turn" {
-            // The retired oracle inserted this minimal error row directly, omitting
-            // nullable timing fields required by both historical and current models.
-            let db = rusqlite::Connection::open(state.join("analytics.sqlite3"))
-                .expect("failed-turn fixture database");
-            let raw: String = db
-                .query_row(
-                    "SELECT record FROM analytics_turns WHERE id='agent:thread:turn'",
-                    [],
-                    |row| row.get(0),
-                )
-                .expect("failed-turn fixture row");
-            let mut record: Value = serde_json::from_str(&raw).expect("failed-turn fixture JSON");
-            let object = record.as_object_mut().expect("failed-turn fixture object");
-            for field in ["startedAt", "finishedAt", "firstOutputAt"] {
-                assert!(
-                    object.insert(field.into(), Value::Null).is_none(),
-                    "fixture already has {field}"
-                );
-            }
-            studio_runtime_store::analytics_capture::CaptureTable::Turns
-                .validate(&record)
-                .expect("failed-turn fixture satisfies the owning schema");
-            assert_eq!(
-                db.execute(
-                    "UPDATE analytics_turns SET record=?1 WHERE id='agent:thread:turn'",
-                    [record.to_string()],
-                )
-                .expect("adapt only the disposable failed-turn row"),
-                1
-            );
-        }
-        if case["phase"] == "malformed-turn" {
-            // The migration now reads this intentionally malformed source before readers run.
-            // Keep the frozen Python evidence, and require refusal without rewriting it.
-            assert_eq!(
-                case["pageError"],
-                "invalid stored object analytics_turns/agent:thread:turn"
-            );
-            let originals = ["canvas.sqlite3", "analytics.sqlite3"].map(|database| {
-                (
-                    database,
-                    std::fs::read(state.join(database)).expect("original database bytes"),
-                )
-            });
-            for _ in 0..2 {
-                let error = RuntimeStore::open(Some(&state))
-                    .await
-                    .err()
-                    .expect("malformed historical turn refuses startup");
-                assert!(
-                    matches!(&error, StoreError::Migration {
-                    id: "2026-10-26-terminal-errors",
-                    target: MigrationTarget::Analytics,
-                    phase: MigrationPhase::Validate,
-                    rollback: MigrationRollbackOutcome::NotRequired,
-                    source,
-                    rollback_error: None,
-                } if matches!(source.as_ref(), StoreError::SchemaValidation(object) if object == "analytics_turns")),
-                    "{error:?}"
-                );
-                for (database, bytes) in &originals {
-                    assert_eq!(
-                        &std::fs::read(state.join(database)).expect("refused database bytes"),
-                        bytes,
-                        "startup refusal changed {database}"
-                    );
-                }
-            }
-            startup_refusals += 1;
-            continue;
-        }
-        let orphan_replies = take_orphan_replies(&state);
-        let fixture_sync_high = {
+        let orphan_replies: Vec<(String, String, String)> =
+            serde_json::from_value(case.get("orphanReplies").cloned().unwrap_or(json!([])))
+                .expect("orphan reply fixtures");
+        let (fixture_sync_high, fixture_workspace_sequence) = {
             let db = rusqlite::Connection::open(state.join("canvas.sqlite3"))
                 .expect("restored snapshot reader");
-            db.query_row(
-                "SELECT MAX(seq) FROM (SELECT seq FROM sync_entities UNION ALL SELECT seq FROM sync_documents UNION ALL SELECT seq FROM sync_versions)",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .expect("frozen global sync sequence")
+            let high = db.query_row(
+                "SELECT MAX(seq) FROM (SELECT seq FROM sync_entities UNION ALL SELECT seq FROM sync_documents)",
+                [], |row| row.get::<_, i64>(0),
+            ).expect("frozen global sync sequence");
+            let workspace = db
+                .query_row(
+                    "SELECT seq FROM sync_entities WHERE collection='workspace' AND id='current'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("workspace sequence");
+            (high, workspace)
         };
         let mut store = Arc::new(
             RuntimeStore::open(Some(&state))
@@ -167,9 +86,8 @@ async fn transcript_cases(group: usize) {
             )
             .expect("migrated workspace sequence");
         assert_eq!(
-            workspace_sequence,
-            fixture_sync_high + 1,
-            "v4 startup migrates the legacy workspace limits exactly once"
+            workspace_sequence, fixture_workspace_sequence,
+            "reopening a migrated workspace keeps its sequence"
         );
         drop(db);
         if let Some(expected) = case["pageError"].as_str() {
@@ -469,8 +387,8 @@ async fn transcript_cases(group: usize) {
             assert_pull(
                 &got,
                 expected,
-                fixture_sync_high,
-                (durable_high - fixture_sync_high).max(1),
+                fixture_sync_high - 1,
+                (durable_high - fixture_sync_high + 1).max(1),
                 case["phase"] == "prune",
             );
             let committed = sync_snapshot(&store);
@@ -495,10 +413,6 @@ async fn transcript_cases(group: usize) {
             assert_eq!(next["checkpoint"], got["checkpoint"]);
         }
     }
-    assert_eq!(
-        startup_refusals, expected_refusals,
-        "only the malformed turn is refused at startup"
-    );
     eprintln!("P13 injected write/commit boundaries: {fault_count}");
 }
 macro_rules! transcript_groups {
@@ -517,22 +431,7 @@ transcript_groups! {
     python_turn_readers_survive_restart_with_identical_cursors_and_receipts_6: 6,
     python_turn_readers_survive_restart_with_identical_cursors_and_receipts_7: 7,
 }
-// The Python transcript-only captures contain replies with no tool owner. Move
-// those replies into current completed owners after the real migration has run.
-fn take_orphan_replies(state: &Path) -> Vec<(String, String, String)> {
-    let db = rusqlite::Connection::open(state.join("canvas.sqlite3")).expect("fixture database");
-    let mut statement = db.prepare("SELECT a.agent,a.alias,r.result FROM runtime_tool_request_aliases a JOIN runtime_tool_results r ON r.id=a.request LEFT JOIN runtime_tool_requests t ON t.id=a.request WHERE t.id IS NULL").expect("orphan replies");
-    let replies = statement
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-        .expect("query orphan replies")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("read orphan replies");
-    drop(statement);
-    db.execute("DELETE FROM runtime_tool_results WHERE id IN (SELECT a.request FROM runtime_tool_request_aliases a LEFT JOIN runtime_tool_requests t ON t.id=a.request WHERE t.id IS NULL)", []).expect("remove captured orphan result");
-    db.execute("DELETE FROM runtime_tool_request_aliases WHERE request NOT IN (SELECT id FROM runtime_tool_requests)", []).expect("remove captured orphan alias");
-    replies
-}
-
+// Frozen replies have no original tool owner; seed current owners at test time.
 async fn seed_transcript_replies(store: &RuntimeStore, replies: Vec<(String, String, String)>) {
     use studio_runtime_schema::persistence::{
         RequestIdentity, ToolRequestKind, ToolRequestOutcome, ToolRequestStatus,

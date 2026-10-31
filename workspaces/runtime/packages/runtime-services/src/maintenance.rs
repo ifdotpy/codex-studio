@@ -163,6 +163,10 @@ impl JsonRecord for MaintenanceRoomRecord {
     fn record_key(&self) -> Option<&Self::Id> {
         Some(&self.id)
     }
+    // Remove this override once the record is closed and typed.
+    fn encode_stored(&self, _: &Connection, row_id: &str) -> StoreResult<String> {
+        studio_runtime_store::encode_open_record(self, row_id)
+    }
 }
 
 fn table_exists(transaction: &Transaction<'_>, table: &str) -> StoreResult<bool> {
@@ -178,6 +182,17 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
     use serde_json::{Value, json};
+
+    #[test]
+    fn open_room_encoder_still_validates_schema() {
+        let connection = Connection::open_in_memory().unwrap();
+        let invalid: MaintenanceRoomRecord =
+            serde_json::from_str(r#"{"id":"r","kind":false}"#).unwrap();
+        assert!(invalid.encode_stored(&connection, "r").is_err());
+        let valid: MaintenanceRoomRecord =
+            serde_json::from_str(r#"{"id":"r","kind":"private"}"#).unwrap();
+        assert!(valid.encode_stored(&connection, "r").is_ok());
+    }
 
     fn seed(connection: &Connection) {
         connection

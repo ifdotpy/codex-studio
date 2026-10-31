@@ -1599,9 +1599,7 @@ mod child_turn_parent_tests {
             .ok_or_else(|| StoreError::SchemaMismatch("child is missing".into()))
     }
 
-    /// A capacity claim parked by the retired start path (agent `starting`
-    /// with an unsent `capacity` attempt, as in the 512-agent run) is released
-    /// at startup; the due tick then queues its follow-up for the ordinary claim.
+    /// A current unsubmitted capacity follow-up returns to the queue at startup.
     #[tokio::test]
     async fn startup_releases_a_parked_capacity_claim_to_the_followup_path() {
         for provider in ["codex", "claude"] {
@@ -1611,69 +1609,36 @@ mod child_turn_parent_tests {
             assert!(
                 settle_staged(&store, &intent.attempt_id, turn)
                     .await
-                    .expect("terminal settles")
+                    .unwrap()
             );
             let retry_id = child(&store)["capacityRetry"]["id"]
                 .as_str()
-                .expect("retry id")
+                .unwrap()
                 .to_owned();
-            let parked = retry_id.clone();
+            let id = retry_id.clone();
             store
                 .transaction(move |tx| {
-                    let mut agent = child_record(tx)?;
-                    let mut retry = agent.extra["capacityRetry"].clone();
-                    retry["status"] = json!("starting");
-                    retry["claimedAt"] = json!(15.0);
-                    retry["dueAt"] = Value::Null;
-                    studio_runtime_store::ContinuationRepository::put_record(
-                        tx,
-                        studio_runtime_store::ContinuationTable::Capacity,
-                        "child",
-                        &retry,
-                    )?;
-                    agent.status = AgentStatus::Starting;
-                    agent.in_flight = Some(true);
-                    for (key, value) in [
-                        ("capacityRetry", retry),
-                        (
-                            "startAttempt",
-                            json!({"id":format!("capacity:{parked}"),"epoch":1,"events":[],
-                                "action":"capacity","submitted":false,
-                                "capacityRetryId":parked,"accountKey":"default"}),
-                        ),
-                    ] {
-                        agent.extra.insert(key.into(), value);
-                    }
-                    AgentRepository::put(tx, &agent)
-                })
-                .await
-                .expect("parked claim writes");
-
-            drop(store);
-            let store = RuntimeStore::open(Some(directory.path()))
-                .await
-                .expect("dated startup conversion");
-            recover_on_startup(&store)
-                .await
-                .expect("recurring startup recovery");
-            let released = child(&store);
-            assert_eq!(released["status"], "failed", "{provider}: {released}");
-            assert_eq!(released["inFlight"], false, "{provider}");
-            assert_eq!(released.get("startAttempt"), None, "{provider}");
-            assert_eq!(released["capacityRetry"]["status"], "scheduled");
-            assert_eq!(released["capacityRetry"].get("claimedAt"), None);
-            let due = released["capacityRetry"]["dueAt"].as_f64().expect("due");
-
-            store
-                .transaction(move |tx| {
-                    let staged =
-                        crate::continuation_runtime::stage_tick(tx, "child", due + 1.0, None)
-                            .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
-                    assert!(staged.changed(), "the due tick claims the retry");
+                    let staged = crate::continuation_runtime::stage_capacity_retry_observed(
+                        tx, "child", &id, 20.0, false, None,
+                    )
+                    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+                    assert!(staged.changed());
                     Ok(())
                 })
                 .await
-                .expect("tick runs");
+                .unwrap();
+            let first = store
+                .transaction(|tx| {
+                    claim_preparation_in_transaction(tx, "child", 1, "parked", 21.0)
+                        .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
+                })
+                .await
+                .unwrap()
+                .expect("capacity follow-up claims");
+            assert_eq!(first.events.len(), 1);
+            drop(store);
+            let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+            recover_on_startup(&store).await.unwrap();
             assert_eq!(status(&store, "child"), AgentStatus::Queued, "{provider}");
             let claimed = store
                 .transaction(|tx| {
@@ -1681,15 +1646,15 @@ mod child_turn_parent_tests {
                         .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
                 })
                 .await
-                .expect("claim runs")
-                .expect("the follow-up is claimable");
+                .unwrap()
+                .expect("follow-up is claimable again");
+            assert_eq!(claimed.events.len(), 1);
             assert_eq!(
                 claimed.events[0].id,
                 format!(
                     "{}{retry_id}",
                     crate::capacity_retry::CAPACITY_FOLLOWUP_PREFIX
-                ),
-                "{provider}"
+                )
             );
             assert!(parent_events(&store).is_empty(), "{provider}");
         }

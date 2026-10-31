@@ -118,7 +118,7 @@ pub use records::{
     TaskRecord, TaskRepository, TerminalRecord, TitleJob, ToolResultRecord, TranscriptAssetId,
     TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord, UnknownAgentStatus,
     UsageResumeRecord, VmAuthBootstrap, VmLaunch, WorkItemRecord, WorkStatus,
-    WorkspaceOperationRecord, decode_agent_record,
+    WorkspaceOperationRecord, decode_agent_record, encode_open_record,
 };
 pub use repositories::agent_indexed_reads::{AgentIndexedReads, RESERVED_TURN_INPUT};
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
@@ -800,6 +800,8 @@ pub enum StoreError {
     StateDirectory(#[from] std::io::Error),
     #[error("another runtime owns the state directory")]
     AlreadyOwned,
+    #[error("upgrade through an intermediate release first")]
+    IntermediateReleaseRequired,
     #[error("state database is missing: {0}")]
     MissingDatabase(PathBuf),
     #[error("state directory cannot be inside .claude")]
@@ -1337,6 +1339,9 @@ impl RuntimeStore {
         let canvas_path = root.join("canvas.sqlite3");
         let analytics_path = root.join("analytics.sqlite3");
         let runtime_lock = Arc::new(RuntimeLock::acquire(&root)?);
+        if canvas_path.is_file() {
+            migrations::verify_receipt_finish(&canvas_path, &analytics_path)?;
+        }
         if let Some(owner) = owner {
             state_owner::claim(&root, owner)?;
         }
@@ -4067,6 +4072,126 @@ mod commit_notification_tests {
             .expect("query committed access client");
         assert_eq!(count, 1);
         assert_eq!(store.committed_change_generation(), 0);
+    }
+
+    #[tokio::test]
+    async fn fresh_receipt_columns_match_migrated_store() {
+        // Captured from a finished pre-retirement store; target was added later.
+        type Column = (String, String, i64, i64, i64);
+        let expected: std::collections::BTreeMap<String, Vec<Column>> =
+            serde_json::from_str(include_str!("receipt_migrated_columns.fixture.json")).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        drop(store);
+        let db = rusqlite::Connection::open(directory.path().join("canvas.sqlite3")).unwrap();
+        for (table, columns) in expected {
+            let mut stmt = db
+                .prepare("SELECT name,type,[notnull],pk,hidden FROM pragma_table_xinfo(?1)")
+                .unwrap();
+            let actual = stmt
+                .query_map([&table], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, i64>(4)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(actual, columns, "{table}");
+        }
+        RuntimeStore::open(Some(directory.path())).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn fresh_bootstrap_interrupted_before_receipts_resumes() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(crate::fresh_state::prepare(directory.path()).unwrap());
+        drop(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        drop(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn nonempty_store_without_receipt_markers_refuses() {
+        let directory = tempfile::tempdir().unwrap();
+        drop(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        let db = rusqlite::Connection::open(directory.path().join("canvas.sqlite3")).unwrap();
+        db.execute_batch("DROP TABLE runtime_payload_migrations; INSERT INTO messages(id,room,author,text,at,deliveries) VALUES('old','room','author','kept',1,'{}')").unwrap();
+        drop(db);
+        assert!(matches!(
+            RuntimeStore::open(Some(directory.path())).await,
+            Err(StoreError::IntermediateReleaseRequired)
+        ));
+        let db = rusqlite::Connection::open(directory.path().join("canvas.sqlite3")).unwrap();
+        assert_eq!(
+            db.query_row("SELECT text FROM messages WHERE id='old'", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn unfinished_receipts_refuse_without_changing_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
+        drop(store);
+        let path = directory.path().join("canvas.sqlite3");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let name: String = db.query_row("SELECT name FROM runtime_payload_migrations WHERE name LIKE '%receipts-tools-finish:%'", [], |r| r.get(0)).unwrap();
+        db.execute(
+            "UPDATE runtime_payload_migrations SET status='pending', complete=0 WHERE name=?1",
+            [&name],
+        )
+        .unwrap();
+        db.execute("INSERT INTO messages(id,room,author,text,at,deliveries) VALUES('witness','room','author','kept',1,'{}')", []).unwrap();
+        drop(db);
+        let analytics_path = directory.path().join("analytics.sqlite3");
+        let analytics = rusqlite::Connection::open(&analytics_path).unwrap();
+        analytics
+            .execute(
+                "INSERT INTO analytics_agents(id,record) VALUES('witness','{}')",
+                [],
+            )
+            .unwrap();
+        drop(analytics);
+        let error = match RuntimeStore::open(Some(directory.path())).await {
+            Ok(_) => panic!("unfinished receipt migration opened"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, StoreError::IntermediateReleaseRequired));
+        assert!(
+            error
+                .to_string()
+                .contains("upgrade through an intermediate release first")
+        );
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let status: String = db
+            .query_row(
+                "SELECT status FROM runtime_payload_migrations WHERE name=?1",
+                [&name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let value: String = db
+            .query_row("SELECT text FROM messages WHERE id='witness'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let analytics = rusqlite::Connection::open(&analytics_path).unwrap();
+        let record: String = analytics
+            .query_row(
+                "SELECT record FROM analytics_agents WHERE id='witness'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(record, "{}");
+        assert_eq!(status, "pending");
+        assert_eq!(value, "kept");
     }
 
     #[tokio::test]

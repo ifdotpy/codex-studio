@@ -67,16 +67,26 @@ const LIMIT_WINDOW_SECONDS: f64 = 600.0;
 const LIMIT_COUNT: usize = 6;
 const CONNECTIONS_PER_UID: usize = 2;
 const LINE_LIMIT: usize = 16 * 1024;
-// The launcher and listener share this wire owner. URL and session remain
-// open JSON until the existing session, UID and URL checks run in order.
 #[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct LauncherRequest {
-    #[serde(default)]
-    session: Value,
-    #[serde(default)]
-    url: Value,
-    #[serde(default)]
-    v: Option<serde_json::Number>,
+    session: Option<String>,
+    url: String,
+    v: u8,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LauncherReply {
+    ok: bool,
+    #[serde(rename = "id")]
+    _id: Option<String>,
+    host: Option<String>,
+    open: Option<bool>,
+    joined: Option<bool>,
+    #[serde(rename = "code")]
+    _code: Option<String>,
+    message: Option<String>,
 }
 
 const CONTROL_LINE_LIMIT: usize = 64 * 1024;
@@ -93,9 +103,6 @@ pub const JOINED: &str = studio_runtime_schema::shared_values::SIGN_IN_JOINED_ST
 /// The `closeReason` of a joined request whose sign-in finished on the card it waited on.
 pub const JOINED_SIGNED_IN_REASON: &str =
     studio_runtime_schema::shared_values::SIGN_IN_JOINED_SIGNED_IN_REASON;
-const OPEN_STATES: [&str; 3] = ["pending", "approved", JOINED];
-/// States after which the same link of a chat can queue again (`REOPEN_STATES`).
-const REOPEN_STATES: [&str; 3] = ["stale", "expired", "replaced"];
 const IPV4_REACH: [&str; 4] = ["127.0.0.1", "0.0.0.0", "::ffff:127.0.0.1", "::"];
 const IPV6_REACH: [&str; 2] = ["::1", "::"];
 
@@ -464,9 +471,8 @@ pub(crate) fn truthy(value: Option<&Value>) -> bool {
     }
 }
 
-fn canonical_session(value: &Value) -> Result<String, BridgeError> {
-    if let Some(text) = value.as_str()
-        && let Ok(parsed) = uuid::Uuid::parse_str(text)
+fn canonical_session(text: &str) -> Result<String, BridgeError> {
+    if let Ok(parsed) = uuid::Uuid::parse_str(text)
         && parsed.hyphenated().to_string() == text
     {
         return Ok(text.to_owned());
@@ -477,8 +483,8 @@ fn canonical_session(value: &Value) -> Result<String, BridgeError> {
     )
 }
 
-fn clean_headers(headers: Option<&Value>) -> Vec<(String, String)> {
-    let Some(headers) = headers.and_then(Value::as_object) else {
+fn clean_headers(headers: Option<&BTreeMap<String, String>>) -> Vec<(String, String)> {
+    let Some(headers) = headers else {
         return Vec::new();
     };
     SENT_HEADERS
@@ -486,7 +492,6 @@ fn clean_headers(headers: Option<&Value>) -> Vec<(String, String)> {
         .filter_map(|name| {
             headers
                 .get(*name)
-                .and_then(Value::as_str)
                 .filter(|value| value.len() <= 1024 && !value.chars().any(|c| (c as u32) < 32))
                 .map(|value| ((*name).to_owned(), value.to_owned()))
         })
@@ -523,9 +528,176 @@ type Clock = Arc<dyn Fn() -> f64 + Send + Sync>;
 /// This host's listeners, or `None` when the probe failed (see [`host_listeners`]).
 type Listeners = Arc<dyn Fn() -> Option<Vec<Listener>> + Send + Sync>;
 
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Queue {
     seq: u64,
-    items: BTreeMap<String, Value>,
+    items: BTreeMap<String, QueueItem>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QueueItem {
+    id: String,
+    agent_id: String,
+    project_id: Option<String>,
+    uid: u32,
+    linux_user: Option<String>,
+    url: String,
+    start_url: Option<String>,
+    host: String,
+    redirect: Option<crate::browser_cards::BrowserRedirect>,
+    client_id: Option<String>,
+    scope: Option<String>,
+    state: QueueState,
+    created_at: f64,
+    expires_at: f64,
+    #[serde(default)]
+    relays: u64,
+    lease: Option<QueueLease>,
+    seq: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    joined_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    close_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_open: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QueueLease {
+    host: String,
+    port: u16,
+    path: String,
+    expires_at: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueState {
+    Pending,
+    Approved,
+    Joined,
+    Closed,
+    Opened,
+    Declined,
+    Stale,
+    Expired,
+    Replaced,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum HostResult {
+    Item(Box<QueueItem>),
+    Wait {
+        items: Vec<QueueItem>,
+        next: u64,
+    },
+    State {
+        state: QueueState,
+    },
+    StateWithLease {
+        state: QueueState,
+        lease: Option<QueueLease>,
+    },
+    Callback {
+        status: u16,
+        #[serde(rename = "contentType")]
+        content_type: String,
+        body: String,
+        done: bool,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ControlReply {
+    Result { id: String, result: HostResult },
+    Error { id: String, error: ControlError },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "method", deny_unknown_fields)]
+pub(crate) enum ControlRequest {
+    #[serde(rename = "browser.wait")]
+    Wait {
+        id: String,
+        #[serde(default)]
+        params: WaitParams,
+    },
+    #[serde(rename = "browser.submit")]
+    Submit { id: String, params: SubmitParams },
+    #[serde(rename = "browser.answer")]
+    Answer { id: String, params: AnswerParams },
+    #[serde(rename = "browser.close")]
+    Close { id: String, params: CloseParams },
+    #[serde(rename = "browser.callback")]
+    Callback { id: String, params: CallbackParams },
+}
+
+impl ControlRequest {
+    fn id(&self) -> &str {
+        match self {
+            Self::Wait { id, .. }
+            | Self::Submit { id, .. }
+            | Self::Answer { id, .. }
+            | Self::Close { id, .. }
+            | Self::Callback { id, .. } => id,
+        }
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WaitParams {
+    #[serde(default)]
+    after: u64,
+    #[serde(default)]
+    wait_seconds: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SubmitParams {
+    pub(crate) agent_id: String,
+    pub(crate) url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AnswerParams {
+    pub(crate) id: String,
+    pub(crate) decision: AnswerDecision,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AnswerDecision {
+    Approve,
+    Decline,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CloseParams {
+    id: String,
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CallbackParams {
+    pub(crate) id: String,
+    pub(crate) target: String,
+    pub(crate) headers: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Serialize)]
+struct ControlError {
+    code: &'static str,
+    message: String,
 }
 
 /// The in-process queue of sign-in links of native chats.
@@ -613,25 +785,14 @@ impl HostBridge {
         let directory = folder.join("browser");
         private_folder(&directory)?;
         let path = directory.join("requests.json");
-        let saved: Value = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({})),
-            Err(_) => json!({}),
-        };
-        let seq = saved.get("seq").and_then(Value::as_u64).unwrap_or(0);
-        let items = saved
-            .get("items")
-            .and_then(Value::as_object)
-            .map(|items| {
-                items
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect()
-            })
+        let queue = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Queue>(&bytes).ok())
             .unwrap_or_default();
-        let (changed, _) = watch::channel(seq);
+        let (changed, _) = watch::channel(queue.seq);
         Ok(Arc::new(Self {
             path,
-            queue: Mutex::new(Queue { seq, items }),
+            queue: Mutex::new(queue),
             changed,
             chats,
             listeners: options.listeners,
@@ -660,14 +821,12 @@ impl HostBridge {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    fn update(&self, queue: &mut Queue, id: &str, fields: Value) {
+    fn update(&self, queue: &mut Queue, id: &str, edit: impl FnOnce(&mut QueueItem)) {
         queue.seq += 1;
         let seq = queue.seq;
-        if let Some(Value::Object(item)) = queue.items.get_mut(id) {
-            if let Value::Object(fields) = fields {
-                item.extend(fields);
-            }
-            item.insert("seq".into(), json!(seq));
+        if let Some(item) = queue.items.get_mut(id) {
+            edit(item);
+            item.seq = seq;
         }
         self.changed.send_replace(seq);
     }
@@ -675,18 +834,14 @@ impl HostBridge {
     fn save(&self, queue: &mut Queue) {
         let now = (self.clock)();
         queue.items.retain(|_, item| {
-            let state = item
-                .get("state")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            OPEN_STATES.contains(&state)
-                || item.get("createdAt").and_then(Value::as_f64).unwrap_or(0.0)
-                    >= now - KEEP_SECONDS
+            matches!(
+                item.state,
+                QueueState::Pending | QueueState::Approved | QueueState::Joined
+            ) || item.created_at >= now - KEEP_SECONDS
         });
-        let value = json!({"seq": queue.seq, "items": queue.items});
         if let Err(error) = write_atomic(
             &self.path,
-            serde_json::to_string(&value).unwrap_or_default().as_bytes(),
+            serde_json::to_string(queue).unwrap_or_default().as_bytes(),
             0o600,
         ) {
             eprintln!("browser host queue write failed: {error}");
@@ -697,9 +852,9 @@ impl HostBridge {
     pub async fn open_link(
         &self,
         uid: u32,
-        url: &Value,
-        session: &Value,
-    ) -> Result<Value, BridgeError> {
+        url: &str,
+        session: &str,
+    ) -> Result<QueueItem, BridgeError> {
         let agent = canonical_session(session)?;
         let context = self.chats.chat(&agent).await.ok_or_else(|| BridgeError {
             code: "unknown_agent",
@@ -708,48 +863,39 @@ impl HostBridge {
         if context.uid != uid {
             return bridge_error("unknown_agent", "LAYR_SESSION names a chat of another user");
         }
-        self.queue_link(uid, url, agent, context).await
+        self.queue_link(uid, Some(url), agent, context).await
     }
 
     /// `browser.submit`: the server queues a link for a chat, from the agent's
     /// `orchestration_sign_in` call or from a sign-in link in its message (section 7). The chat's
     /// own user owns the request, so the listener checks stay those of a link that its command
     /// opened itself (`BrowserBridge.submit`).
-    async fn submit(&self, params: &Value) -> Result<Value, BridgeError> {
-        let agent = canonical_session(params.get("agentId").unwrap_or(&Value::Null))?;
+    async fn submit(&self, params: &SubmitParams) -> Result<QueueItem, BridgeError> {
+        let agent = canonical_session(&params.agent_id)?;
         let context = self.chats.chat(&agent).await.ok_or_else(|| BridgeError {
             code: "unknown_agent",
             message: "Studio does not know this chat".into(),
         })?;
-        self.queue_link(
-            context.uid,
-            params.get("url").unwrap_or(&Value::Null),
-            agent,
-            context,
-        )
-        .await
+        self.queue_link(context.uid, Some(&params.url), agent, context)
+            .await
     }
 
     /// The request of this chat for the same link while it can still answer
     /// (`BrowserBridge._existing`): a link that a command opens and that the agent also gives
     /// in a message or a tool call gets one card.
-    fn existing(queue: &Queue, agent: &str, url: &Value, now: f64) -> Option<Value> {
-        let url = url.as_str()?;
+    fn existing(queue: &Queue, agent: &str, url: Option<&str>, now: f64) -> Option<QueueItem> {
+        let url = url?;
         queue
             .items
             .values()
             .find(|item| {
-                item.get("agentId").and_then(Value::as_str) == Some(agent)
-                    && (item.get("url").and_then(Value::as_str) == Some(url)
-                        || item.get("startUrl").and_then(Value::as_str) == Some(url))
-                    && !REOPEN_STATES.contains(
-                        &item
-                            .get("state")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default(),
+                item.agent_id == agent
+                    && (item.url == url || item.start_url.as_deref() == Some(url))
+                    && !matches!(
+                        item.state,
+                        QueueState::Stale | QueueState::Expired | QueueState::Replaced
                     )
-                    && item.get("createdAt").and_then(Value::as_f64).unwrap_or(0.0)
-                        > now - TTL_SECONDS
+                    && item.created_at > now - TTL_SECONDS
             })
             .cloned()
     }
@@ -757,18 +903,17 @@ impl HostBridge {
     async fn queue_link(
         &self,
         uid: u32,
-        url: &Value,
+        url: Option<&str>,
         agent: String,
         context: ChatContext,
-    ) -> Result<Value, BridgeError> {
+    ) -> Result<QueueItem, BridgeError> {
         let agent = if context.agent_id.is_empty() {
             agent
         } else {
             context.agent_id.clone()
         };
         let now = (self.clock)();
-        let original = url.clone();
-        if let Some(item) = Self::existing(&self.lock(), &agent, &original, now) {
+        if let Some(item) = Self::existing(&self.lock(), &agent, url, now) {
             return Ok(item);
         }
         {
@@ -776,11 +921,7 @@ impl HostBridge {
             let recent = queue
                 .items
                 .values()
-                .filter(|item| {
-                    item.get("uid").and_then(Value::as_u64) == Some(u64::from(uid))
-                        && item.get("createdAt").and_then(Value::as_f64).unwrap_or(0.0)
-                            > now - LIMIT_WINDOW_SECONDS
-                })
+                .filter(|item| item.uid == uid && item.created_at > now - LIMIT_WINDOW_SECONDS)
                 .count();
             if recent >= LIMIT_COUNT {
                 return bridge_error(
@@ -791,14 +932,13 @@ impl HostBridge {
                 );
             }
         }
-        let url = url
-            .as_str()
-            .ok_or_else(|| BridgeError::from(PolicyError("Give one link".into())))?;
+        let original = url;
+        let url = url.ok_or_else(|| BridgeError::from(PolicyError("Give one link".into())))?;
         let checked = browser_policy::classify(url, &self.http_providers)?;
-        let mut start_url = Value::Null;
+        let mut start_url = None;
         let final_link = match checked {
             Checked::StartPage { url, port } => {
-                start_url = json!(url);
+                start_url = Some(url.clone());
                 let rows = self.probe_listeners().await.ok_or_else(listeners_unknown)?;
                 let address = connect_address(uid, port, &rows)?;
                 let after = url
@@ -857,7 +997,7 @@ impl HostBridge {
             connect_address(uid, redirect.port, &rows)?;
         }
         let mut queue = self.lock();
-        if let Some(item) = Self::existing(&queue, &agent, &original, now) {
+        if let Some(item) = Self::existing(&queue, &agent, original, now) {
             return Ok(item);
         }
         // One card for one sign-in: a link of another chat with the same Linux user, sign-in
@@ -868,99 +1008,91 @@ impl HostBridge {
                 .items
                 .values()
                 .filter(|item| {
-                    matches!(item["state"].as_str(), Some("pending" | "approved"))
-                        && item.get("agentId").and_then(Value::as_str) != Some(agent.as_str())
-                        && item.get("uid").and_then(Value::as_u64) == Some(u64::from(uid))
-                        && item.get("host").and_then(Value::as_str)
-                            == Some(final_link.host.as_str())
-                        && item.get("clientId").and_then(Value::as_str) == Some(client)
-                        && now <= item["expiresAt"].as_f64().unwrap_or(0.0)
+                    matches!(item.state, QueueState::Pending | QueueState::Approved)
+                        && item.agent_id != agent
+                        && item.uid == uid
+                        && item.host == final_link.host
+                        && item.client_id.as_deref() == Some(client)
+                        && now <= item.expires_at
                 })
-                .min_by(|left, right| {
-                    left["createdAt"]
-                        .as_f64()
-                        .unwrap_or(0.0)
-                        .total_cmp(&right["createdAt"].as_f64().unwrap_or(0.0))
-                })
-                .and_then(|item| item.get("id").cloned())
+                .min_by(|left, right| left.created_at.total_cmp(&right.created_at))
+                .map(|item| item.id.clone())
         });
         // The latest link of a chat replaces its earlier pending link.
         let replaced: Vec<String> = queue
             .items
             .iter()
             .filter(|(_, item)| {
-                item.get("agentId").and_then(Value::as_str) == Some(agent.as_str())
-                    && matches!(item["state"].as_str(), Some("pending" | JOINED))
+                item.agent_id == agent
+                    && matches!(item.state, QueueState::Pending | QueueState::Joined)
             })
             .map(|(key, _)| key.clone())
             .collect();
         for key in replaced {
-            self.update(&mut queue, &key, json!({"state": "replaced"}));
+            self.update(&mut queue, &key, |item| item.state = QueueState::Replaced);
         }
         let id = uuid::Uuid::new_v4().simple().to_string();
-        let redirect = final_link
-            .redirect
-            .as_ref()
-            .map(|redirect| json!({"host": redirect.host, "port": redirect.port, "path": redirect.path}))
-            .unwrap_or(Value::Null);
-        let item = json!({
-            "id": id, "agentId": agent, "projectId": context.project_id, "uid": uid,
-            "linuxUser": context.owner, "url": final_link.url, "startUrl": start_url,
-            "host": final_link.host, "redirect": redirect, "clientId": final_link.client_id,
-            "scope": final_link.scope, "state": "pending", "createdAt": now,
-            "expiresAt": now + TTL_SECONDS, "relays": 0, "lease": null,
-        });
-        let mut item = item;
-        if let Some(leader) = leader {
-            item["state"] = json!(JOINED);
-            item["joinedTo"] = leader;
-        }
+        let item = QueueItem {
+            id: id.clone(),
+            agent_id: agent,
+            project_id: context.project_id,
+            uid,
+            linux_user: Some(context.owner),
+            url: final_link.url,
+            start_url,
+            host: final_link.host,
+            redirect: final_link
+                .redirect
+                .map(|redirect| crate::browser_cards::BrowserRedirect {
+                    host: redirect.host,
+                    port: redirect.port,
+                    path: redirect.path,
+                }),
+            client_id: final_link.client_id,
+            scope: final_link.scope,
+            state: if leader.is_some() {
+                QueueState::Joined
+            } else {
+                QueueState::Pending
+            },
+            created_at: now,
+            expires_at: now + TTL_SECONDS,
+            relays: 0,
+            lease: None,
+            seq: 0,
+            joined_to: leader,
+            close_reason: None,
+            local_open: None,
+        };
         queue.items.insert(id.clone(), item);
-        self.update(&mut queue, &id, json!({}));
+        self.update(&mut queue, &id, |_| {});
         self.save(&mut queue);
         Ok(queue.items[&id].clone())
     }
 
-    /// One JSON-RPC method of the server side.
-    pub async fn call(&self, method: &str, params: &Value) -> Result<Value, BridgeError> {
-        match method {
-            "browser.wait" => self.wait(params).await,
-            "browser.submit" => self.submit(params).await,
-            "browser.answer" => self.answer(params).await,
-            "browser.close" => {
-                let mut queue = self.lock();
-                let (id, state) = item_state(&queue, params)?;
-                if OPEN_STATES.contains(&state.as_str()) {
-                    let reason = params
-                        .get("reason")
-                        .and_then(Value::as_str)
-                        .unwrap_or("closed");
-                    self.update(
-                        &mut queue,
-                        &id,
-                        json!({"state": "closed", "closeReason": reason}),
-                    );
-                    self.save(&mut queue);
-                }
-                Ok(json!({"state": queue.items[&id]["state"]}))
-            }
-            "browser.callback" => self.callback(params).await,
-            _ => bridge_error("invalid_request", "The browser method is not supported"),
+    async fn close(&self, params: &CloseParams) -> Result<HostResult, BridgeError> {
+        let mut queue = self.lock();
+        let (id, state) = item_state(&queue, &params.id)?;
+        if matches!(
+            state,
+            QueueState::Pending | QueueState::Approved | QueueState::Joined
+        ) {
+            let reason = params.reason.as_deref().unwrap_or("closed");
+            self.update(&mut queue, &id, |item| {
+                item.state = QueueState::Closed;
+                item.close_reason = Some(reason.to_owned());
+            });
+            self.save(&mut queue);
         }
+        Ok(HostResult::State {
+            state: queue.items[&id].state,
+        })
     }
 
-    async fn wait(&self, params: &Value) -> Result<Value, BridgeError> {
-        let after = params.get("after").cloned().unwrap_or(json!(0));
-        let seconds = params.get("waitSeconds").cloned().unwrap_or(json!(0));
-        let (Some(mut after), Some(seconds)) = (after.as_u64(), seconds.as_f64()) else {
-            return bridge_error(
-                "invalid_params",
-                "after must be a cursor and waitSeconds at most 20",
-            );
-        };
-        if !(0.0..=MAX_WAIT_SECONDS).contains(&seconds)
-            || params.get("after").is_some_and(Value::is_f64)
-        {
+    async fn wait(&self, params: &WaitParams) -> Result<HostResult, BridgeError> {
+        let mut after = params.after;
+        let seconds = params.wait_seconds;
+        if !(0.0..=MAX_WAIT_SECONDS).contains(&seconds) {
             return bridge_error(
                 "invalid_params",
                 "after must be a cursor and waitSeconds at most 20",
@@ -986,122 +1118,129 @@ impl HostBridge {
             }
         }
         let queue = self.lock();
-        let mut items: Vec<Value> = queue
+        let mut items: Vec<QueueItem> = queue
             .items
             .values()
-            .filter(|item| item.get("seq").and_then(Value::as_u64).unwrap_or(0) > after)
+            .filter(|item| item.seq > after)
             .cloned()
             .collect();
-        items.sort_by_key(|item| item.get("seq").and_then(Value::as_u64).unwrap_or(0));
-        Ok(json!({"items": items, "next": queue.seq}))
+        items.sort_by_key(|item| item.seq);
+        Ok(HostResult::Wait {
+            items,
+            next: queue.seq,
+        })
     }
 
-    async fn answer(&self, params: &Value) -> Result<Value, BridgeError> {
+    async fn answer(&self, params: &AnswerParams) -> Result<HostResult, BridgeError> {
         let rows = self.probe_listeners().await;
         let mut queue = self.lock();
-        let (id, state) = item_state(&queue, params)?;
+        let (id, state) = item_state(&queue, &params.id)?;
         let item = queue.items[&id].clone();
-        match params.get("decision").and_then(Value::as_str) {
-            Some("decline") => {
-                if state == "pending" {
-                    self.update(&mut queue, &id, json!({"state": "declined"}));
+        match params.decision {
+            AnswerDecision::Decline => {
+                if state == QueueState::Pending {
+                    self.update(&mut queue, &id, |item| item.state = QueueState::Declined);
                     self.save(&mut queue);
                 }
                 let item = &queue.items[&id];
-                return Ok(
-                    json!({"state": item["state"], "lease": item.get("lease").cloned().unwrap_or(Value::Null)}),
-                );
+                return Ok(HostResult::StateWithLease {
+                    state: item.state,
+                    lease: item.lease.clone(),
+                });
             }
-            Some("approve") => {}
-            _ => return bridge_error("invalid_params", "decision must be approve or decline"),
+            AnswerDecision::Approve => {}
         }
-        if matches!(state.as_str(), "approved" | "opened") {
-            return Ok(json!({"state": state, "lease": item["lease"]}));
+        if matches!(state, QueueState::Approved | QueueState::Opened) {
+            return Ok(HostResult::StateWithLease {
+                state,
+                lease: item.lease,
+            });
         }
-        if state != "pending" || (self.clock)() > item["expiresAt"].as_f64().unwrap_or(0.0) {
+        if state != QueueState::Pending || (self.clock)() > item.expires_at {
             return bridge_error(
                 "stale",
                 "The sign-in request is no longer open. Ask the agent to run the command again",
             );
         }
-        let Some(redirect) = item.get("redirect").filter(|value| value.is_object()) else {
+        let Some(redirect) = item.redirect else {
             // A link without a loopback redirect (a device code page) needs no forward.
-            self.update(&mut queue, &id, json!({"state": "opened"}));
+            self.update(&mut queue, &id, |item| item.state = QueueState::Opened);
             self.save(&mut queue);
-            return Ok(json!({"state": "opened", "lease": null}));
+            return Ok(HostResult::StateWithLease {
+                state: QueueState::Opened,
+                lease: None,
+            });
         };
-        let uid = item["uid"].as_u64().unwrap_or(u64::MAX) as u32;
-        let port = redirect["port"].as_u64().unwrap_or(0) as u16;
+        let uid = item.uid;
+        let port = redirect.port;
         let rows = rows.ok_or_else(listeners_unknown)?;
         if let Err(error) = connect_address(uid, port, &rows) {
-            self.update(&mut queue, &id, json!({"state": "stale"}));
+            self.update(&mut queue, &id, |item| item.state = QueueState::Stale);
             self.save(&mut queue);
             return bridge_error("stale", error.message);
         }
-        let mut lease = redirect.as_object().cloned().unwrap_or_default();
-        lease.insert("expiresAt".into(), json!((self.clock)() + TTL_SECONDS));
-        let lease = Value::Object(lease);
-        self.update(
-            &mut queue,
-            &id,
-            json!({"state": "approved", "lease": lease}),
-        );
+        let lease = QueueLease {
+            host: redirect.host,
+            port,
+            path: redirect.path,
+            expires_at: (self.clock)() + TTL_SECONDS,
+        };
+        self.update(&mut queue, &id, |item| {
+            item.state = QueueState::Approved;
+            item.lease = Some(lease.clone());
+        });
         self.save(&mut queue);
-        Ok(json!({"state": "approved", "lease": lease}))
+        Ok(HostResult::StateWithLease {
+            state: QueueState::Approved,
+            lease: Some(lease),
+        })
     }
 
-    async fn callback(&self, params: &Value) -> Result<Value, BridgeError> {
+    async fn callback(&self, params: &CallbackParams) -> Result<HostResult, BridgeError> {
         let (id, lease, uid, target) = {
             let queue = self.lock();
-            let (id, state) = item_state(&queue, params)?;
+            let (id, state) = item_state(&queue, &params.id)?;
             let item = &queue.items[&id];
-            let lease = item.get("lease").cloned().unwrap_or(Value::Null);
-            if state != "approved"
-                || !lease.is_object()
-                || (self.clock)() > lease["expiresAt"].as_f64().unwrap_or(0.0)
-            {
+            let lease = item
+                .lease
+                .clone()
+                .filter(|lease| (self.clock)() <= lease.expires_at);
+            if state != QueueState::Approved {
                 return bridge_error("stale", "The sign-in forward is closed");
             }
-            if item.get("relays").and_then(Value::as_u64).unwrap_or(0) >= MAX_RELAYS {
+            let Some(lease) = lease else {
+                return bridge_error("stale", "The sign-in forward is closed");
+            };
+            if item.relays >= MAX_RELAYS {
                 return bridge_error(
                     "limit",
                     "The sign-in forward relayed its maximum number of requests",
                 );
             }
-            let target = params
-                .get("target")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
+            let target = params.target.clone();
             let path = target.split(['?', '#']).next().unwrap_or_default();
             let path = if path.is_empty() { "/" } else { path };
             if !target.starts_with('/')
                 || target.starts_with("//")
-                || path != lease["path"].as_str().unwrap_or_default()
+                || path != lease.path
                 || target.chars().count() > 8192
             {
                 return bridge_error("invalid_params", "Only the sign-in redirect path can pass");
             }
-            (
-                id,
-                lease,
-                item["uid"].as_u64().unwrap_or(u64::MAX) as u32,
-                target,
-            )
+            (id, lease, item.uid, target)
         };
-        let port = lease["port"].as_u64().unwrap_or(0) as u16;
+        let port = lease.port;
         let rows = self.probe_listeners().await.ok_or_else(listeners_unknown)?;
         let address = connect_address(uid, port, &rows)?;
-        let host = lease["host"].as_str().unwrap_or("127.0.0.1");
+        let host = lease.host.as_str();
         let host = if host == "::1" { "[::1]" } else { host };
         let mut headers = vec![("Host".to_owned(), format!("{host}:{port}"))];
-        headers.extend(clean_headers(params.get("headers")));
+        headers.extend(clean_headers(params.headers.as_ref()));
         headers.push(("Connection".into(), "close".into()));
         {
             let mut queue = self.lock();
-            if let Some(Value::Object(item)) = queue.items.get_mut(&id) {
-                let relays = item.get("relays").and_then(Value::as_u64).unwrap_or(0) + 1;
-                item.insert("relays".into(), json!(relays));
+            if let Some(item) = queue.items.get_mut(&id) {
+                item.relays += 1;
             }
             self.save(&mut queue);
         }
@@ -1136,21 +1275,20 @@ impl HostBridge {
         });
         {
             let mut queue = self.lock();
-            if done && queue.items[&id]["state"] == "approved" {
-                self.update(
-                    &mut queue,
-                    &id,
-                    json!({"state": "closed", "closeReason": "completed"}),
-                );
+            if done && queue.items[&id].state == QueueState::Approved {
+                self.update(&mut queue, &id, |item| {
+                    item.state = QueueState::Closed;
+                    item.close_reason = Some("completed".into());
+                });
             }
             self.save(&mut queue);
         }
-        Ok(json!({
-            "status": reply.status,
-            "contentType": reply.content_type.chars().take(200).collect::<String>(),
-            "body": base64::engine::general_purpose::STANDARD.encode(&reply.body),
-            "done": done,
-        }))
+        Ok(HostResult::Callback {
+            status: reply.status,
+            content_type: reply.content_type.chars().take(200).collect(),
+            body: base64::engine::general_purpose::STANDARD.encode(&reply.body),
+            done,
+        })
     }
 
     /// Mark requests whose time ran out or whose tool stopped listening. A pending request
@@ -1159,8 +1297,10 @@ impl HostBridge {
         let needs_rows = {
             let queue = self.lock();
             queue.items.values().any(|item| {
-                OPEN_STATES.contains(&item["state"].as_str().unwrap_or_default())
-                    && item.get("redirect").is_some_and(Value::is_object)
+                matches!(
+                    item.state,
+                    QueueState::Pending | QueueState::Approved | QueueState::Joined
+                ) && item.redirect.is_some()
             })
         };
         // `None`: the probe failed, so no card becomes stale in this pass.
@@ -1175,45 +1315,45 @@ impl HostBridge {
         let keys: Vec<String> = queue.items.keys().cloned().collect();
         for key in keys {
             let item = queue.items[&key].clone();
-            if !OPEN_STATES.contains(&item["state"].as_str().unwrap_or_default()) {
+            if !matches!(
+                item.state,
+                QueueState::Pending | QueueState::Approved | QueueState::Joined
+            ) {
                 continue;
             }
             let mut expires = item
-                .get("lease")
-                .and_then(|lease| lease.get("expiresAt"))
-                .and_then(Value::as_f64)
-                .unwrap_or_else(|| item["expiresAt"].as_f64().unwrap_or(0.0));
+                .lease
+                .as_ref()
+                .map_or(item.expires_at, |lease| lease.expires_at);
             // `None`: no loopback redirect, or the probe failed and the listener is unknown. An
             // unknown listener neither makes the request stale nor moves its deadline: expiry by
             // time still applies (`a_failed_listener_probe_keeps_an_open_card_and_answers_retryably`).
             let listening = item
-                .get("redirect")
-                .filter(|value| value.is_object())
+                .redirect
+                .as_ref()
                 .zip(rows.as_ref())
-                .map(|(redirect, rows)| {
-                    let uid = item["uid"].as_u64().unwrap_or(u64::MAX) as u32;
-                    let port = redirect["port"].as_u64().unwrap_or(0) as u16;
-                    connect_address(uid, port, rows).is_ok()
-                });
-            if matches!(item["state"].as_str(), Some("pending" | JOINED))
+                .map(|(redirect, rows)| connect_address(item.uid, redirect.port, rows).is_ok());
+            if matches!(item.state, QueueState::Pending | QueueState::Joined)
                 && listening == Some(true)
                 && let Some(deadline) = listening_deadline(&item, now)
             {
-                self.update(&mut queue, &key, json!({"expiresAt": deadline}));
+                self.update(&mut queue, &key, |item| item.expires_at = deadline);
                 changed = true;
                 expires = deadline;
             }
             if now > expires {
-                self.update(&mut queue, &key, json!({"state": "expired"}));
+                self.update(&mut queue, &key, |item| item.state = QueueState::Expired);
                 changed = true;
             } else if listening == Some(false) {
                 // The browser of this Mac had the page: the command ended its sign-in there.
-                let fields = if item["state"] == "pending" && truthy(item.get("localOpen")) {
-                    json!({"state": "closed", "closeReason": LOCAL_CLOSE_REASON})
+                if item.state == QueueState::Pending && item.local_open == Some(true) {
+                    self.update(&mut queue, &key, |item| {
+                        item.state = QueueState::Closed;
+                        item.close_reason = Some(LOCAL_CLOSE_REASON.into());
+                    });
                 } else {
-                    json!({"state": "stale"})
-                };
-                self.update(&mut queue, &key, fields);
+                    self.update(&mut queue, &key, |item| item.state = QueueState::Stale);
+                }
                 changed = true;
             }
         }
@@ -1231,12 +1371,12 @@ impl HostBridge {
         let joined: Vec<(String, String, f64)> = queue
             .items
             .iter()
-            .filter(|(_, item)| item["state"] == JOINED)
+            .filter(|(_, item)| item.state == QueueState::Joined)
             .map(|(key, item)| {
                 (
                     key.clone(),
-                    item["joinedTo"].as_str().unwrap_or_default().to_owned(),
-                    item["createdAt"].as_f64().unwrap_or(0.0),
+                    item.joined_to.clone().unwrap_or_default(),
+                    item.created_at,
                 )
             })
             .collect();
@@ -1246,8 +1386,13 @@ impl HostBridge {
         }
         for (leader, mut waiting) in leaders {
             let ended = queue.items.get(&leader).map(|card| {
-                let state = card["state"].as_str().unwrap_or_default();
-                (!OPEN_STATES.contains(&state), signed_in(card))
+                (
+                    !matches!(
+                        card.state,
+                        QueueState::Pending | QueueState::Approved | QueueState::Joined
+                    ),
+                    signed_in(card),
+                )
             });
             let (ended, signed) = ended.unwrap_or((true, false));
             if !ended {
@@ -1256,19 +1401,21 @@ impl HostBridge {
             changed = true;
             if signed {
                 for (_, key) in waiting {
-                    self.update(
-                        queue,
-                        &key,
-                        json!({"state": "closed", "closeReason": JOINED_SIGNED_IN_REASON}),
-                    );
+                    self.update(queue, &key, |item| {
+                        item.state = QueueState::Closed;
+                        item.close_reason = Some(JOINED_SIGNED_IN_REASON.into());
+                    });
                 }
                 continue;
             }
             waiting.sort_by(|left, right| left.0.total_cmp(&right.0));
             let (_, card) = waiting.remove(0);
-            self.update(queue, &card, json!({"state": "pending", "joinedTo": null}));
+            self.update(queue, &card, |item| {
+                item.state = QueueState::Pending;
+                item.joined_to = None;
+            });
             for (_, key) in waiting {
-                self.update(queue, &key, json!({"joinedTo": card}));
+                self.update(queue, &key, |item| item.joined_to = Some(card.clone()));
             }
         }
         changed
@@ -1324,27 +1471,28 @@ impl HostBridge {
         if line.len() > LINE_LIMIT || !line.ends_with(b"\n") {
             return json!({"ok": false, "code": "invalid_request", "message": "Send one JSON line of at most 16 KB"});
         }
-        let Ok(value) = serde_json::from_slice::<Value>(line) else {
-            return json!({"ok": false, "code": "invalid_request", "message": "The request is not valid JSON"});
+        let Ok(request) = serde_json::from_slice::<LauncherRequest>(line) else {
+            return json!({"ok": false, "code": "invalid_request", "message": "The browser request is invalid"});
         };
-        // Parse the full document first to retain duplicate-last, number and
-        // depth admission; only then project the known launcher fields.
-        let request = value
-            .is_object()
-            .then(|| LauncherRequest::deserialize(value).ok())
-            .flatten();
-        let Some(request) = request.filter(|request| request.v == Some(1.into())) else {
+        if request.v != 1 {
             return json!({"ok": false, "code": "invalid_request", "message": "Use protocol version 1"});
-        };
+        }
         // `open`: the launcher also opens the link in the browser of this Mac (`local_open`).
-        match self.open_link(uid, &request.url, &request.session).await {
+        match self
+            .open_link(
+                uid,
+                &request.url,
+                request.session.as_deref().unwrap_or_default(),
+            )
+            .await
+        {
             Ok(item) => {
                 // A joined link waits on a card whose page is already open: no second page.
-                let joined = item["state"] == JOINED;
+                let joined = item.state == QueueState::Joined;
                 if self.local_open && !joined {
                     self.mark_local_open(&item);
                 }
-                json!({"ok": true, "id": item["id"], "host": item["host"],
+                json!({"ok": true, "id": item.id, "host": item.host,
                        "open": self.local_open && !joined, "joined": joined})
             }
             Err(error) => {
@@ -1355,17 +1503,15 @@ impl HostBridge {
 
     /// Note that the launcher opens this request's page in the browser of this Mac, so its
     /// card closes as answered when the command stops listening (`check`).
-    fn mark_local_open(&self, item: &Value) {
-        let Some(id) = item.get("id").and_then(Value::as_str) else {
-            return;
-        };
+    fn mark_local_open(&self, item: &QueueItem) {
+        let id = &item.id;
         let mut queue = self.lock();
         let open = queue
             .items
             .get(id)
-            .is_some_and(|item| item["state"] == "pending" && !truthy(item.get("localOpen")));
+            .is_some_and(|item| item.state == QueueState::Pending && item.local_open != Some(true));
         if open {
-            self.update(&mut queue, id, json!({"localOpen": true}));
+            self.update(&mut queue, id, |item| item.local_open = Some(true));
             self.save(&mut queue);
         }
     }
@@ -1379,38 +1525,46 @@ impl HostBridge {
             reader.read_until(b'\n', &mut line),
         )
         .await;
-        let request: Option<Value> = match read {
+        let request: Option<ControlRequest> = match read {
             Ok(Ok(_)) if line.len() <= CONTROL_LINE_LIMIT && line.ends_with(b"\n") => {
                 serde_json::from_slice(&line).ok()
             }
             _ => None,
         };
-        let identity = request
-            .as_ref()
-            .and_then(|request| request.get("id"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        let response = match request.as_ref().and_then(Value::as_object) {
-            Some(fields)
-                if !identity.is_empty()
-                    && fields.get("method").is_some_and(Value::is_string)
-                    && fields.get("params").is_none_or(Value::is_object) =>
-            {
-                let params = fields.get("params").cloned().unwrap_or_else(|| json!({}));
-                match self
-                    .call(fields["method"].as_str().unwrap_or_default(), &params)
-                    .await
-                {
-                    Ok(result) => json!({"id": identity, "result": result}),
-                    Err(error) => {
-                        json!({"id": identity, "error": {"code": error.code, "message": error.message}})
-                    }
+        let response = match request {
+            Some(request) if !request.id().is_empty() => {
+                let identity = request.id().to_owned();
+                let result = match request {
+                    ControlRequest::Wait { params, .. } => self.wait(&params).await,
+                    ControlRequest::Submit { params, .. } => self
+                        .submit(&params)
+                        .await
+                        .map(|item| HostResult::Item(Box::new(item))),
+                    ControlRequest::Answer { params, .. } => self.answer(&params).await,
+                    ControlRequest::Close { params, .. } => self.close(&params).await,
+                    ControlRequest::Callback { params, .. } => self.callback(&params).await,
+                };
+                match result {
+                    Ok(result) => ControlReply::Result {
+                        id: identity,
+                        result,
+                    },
+                    Err(error) => ControlReply::Error {
+                        id: identity,
+                        error: ControlError {
+                            code: error.code,
+                            message: error.message,
+                        },
+                    },
                 }
             }
-            _ => {
-                json!({"id": identity, "error": {"code": "invalid_request", "message": "The browser request is invalid"}})
-            }
+            _ => ControlReply::Error {
+                id: String::new(),
+                error: ControlError {
+                    code: "invalid_request",
+                    message: "The browser request is invalid".into(),
+                },
+            },
         };
         let mut bytes = serde_json::to_vec(&response).unwrap_or_default();
         bytes.push(b'\n');
@@ -1423,15 +1577,20 @@ impl HostBridge {
 /// Whether the sign-in of a request that ended finished: the command took a relayed result,
 /// the browser of this Mac had the page, a device page opened, or the person approved the
 /// card and its command then stopped listening.
-fn signed_in(item: &Value) -> bool {
-    match item["state"].as_str() {
-        Some("closed") => matches!(
-            item["closeReason"].as_str(),
+fn signed_in(item: &QueueItem) -> bool {
+    match item.state {
+        QueueState::Closed => matches!(
+            item.close_reason.as_deref(),
             Some("completed" | LOCAL_CLOSE_REASON)
         ),
-        Some("opened") => true,
-        Some("stale") => item.get("lease").is_some_and(Value::is_object),
-        _ => false,
+        QueueState::Opened => true,
+        QueueState::Stale => item.lease.is_some(),
+        QueueState::Pending
+        | QueueState::Approved
+        | QueueState::Joined
+        | QueueState::Declined
+        | QueueState::Expired
+        | QueueState::Replaced => false,
     }
 }
 
@@ -1439,26 +1598,20 @@ fn signed_in(item: &Value) -> bool {
 /// deadline (`listening_deadline`): one request time from now, at most `OPEN_LIMIT_SECONDS`
 /// from its creation. The deadline moves when it is at most `EXTEND_BEFORE_SECONDS` away, so
 /// a listening request changes about once in five minutes, not at every check.
-fn listening_deadline(item: &Value, now: f64) -> Option<f64> {
-    let created = item.get("createdAt").and_then(Value::as_f64)?;
-    let expires = item.get("expiresAt").and_then(Value::as_f64)?;
+fn listening_deadline(item: &QueueItem, now: f64) -> Option<f64> {
+    let created = item.created_at;
+    let expires = item.expires_at;
     let limit = created + OPEN_LIMIT_SECONDS;
     let rolled = (now + TTL_SECONDS).min(limit);
     (rolled > expires && (rolled - expires >= EXTEND_BEFORE_SECONDS || rolled >= limit))
         .then_some(rolled)
 }
 
-fn item_state(queue: &Queue, params: &Value) -> Result<(String, String), BridgeError> {
-    let Some(id) = params.get("id").and_then(Value::as_str) else {
-        return bridge_error("not_found", "The sign-in request does not exist");
-    };
+fn item_state(queue: &Queue, id: &str) -> Result<(String, QueueState), BridgeError> {
     let Some(item) = queue.items.get(id) else {
         return bridge_error("not_found", "The sign-in request does not exist");
     };
-    Ok((
-        id.to_owned(),
-        item["state"].as_str().unwrap_or_default().to_owned(),
-    ))
+    Ok((id.to_owned(), item.state))
 }
 
 /// The running host bridge: its two sockets and its check loop.
@@ -1701,11 +1854,11 @@ pub fn shim(
         return (2, "studio-browser: give exactly one URL".into());
     };
     let request = LauncherRequest {
-        v: Some(1.into()),
-        url: json!(link),
-        session: json!(session),
+        v: 1,
+        url: link.clone(),
+        session: session.map(str::to_owned),
     };
-    let exchange = || -> std::io::Result<Value> {
+    let exchange = || -> std::io::Result<LauncherReply> {
         let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
         stream.set_read_timeout(Some(Duration::from_secs(15)))?;
         stream.set_write_timeout(Some(Duration::from_secs(15)))?;
@@ -1740,11 +1893,11 @@ pub fn shim(
             );
         }
     };
-    let opened = reply.get("open") == Some(&Value::Bool(true)) && open(link);
-    if reply.get("ok") != Some(&Value::Bool(true)) {
+    let opened = reply.open == Some(true) && open(link);
+    if !reply.ok {
         let message = reply
-            .get("message")
-            .and_then(Value::as_str)
+            .message
+            .as_deref()
             .filter(|message| !message.is_empty())
             .unwrap_or("Studio refused the link");
         if opened {
@@ -1757,11 +1910,8 @@ pub fn shim(
         }
         return (1, format!("studio-browser: {message}"));
     }
-    let host = match reply.get("host") {
-        Some(Value::String(host)) => host.clone(),
-        _ => "None".into(),
-    };
-    if reply.get("joined") == Some(&Value::Bool(true)) {
+    let host = reply.host.as_deref().unwrap_or("None");
+    if reply.joined == Some(true) {
         return (
             0,
             format!(
@@ -1874,9 +2024,9 @@ mod tests {
     fn launcher_request_encoding_preserves_existing_wire_shape() {
         for session in [None, Some("session")] {
             let request = LauncherRequest {
-                v: Some(1.into()),
-                url: json!("https://example.test"),
-                session: json!(session),
+                v: 1,
+                url: "https://example.test".into(),
+                session: session.map(str::to_owned),
             };
             assert_eq!(
                 serde_json::to_vec(&request).expect("typed request"),
@@ -1884,6 +2034,16 @@ mod tests {
                     .expect("original request")
             );
         }
+    }
+
+    #[test]
+    fn launcher_accepts_guest_reply_without_open() {
+        let reply: LauncherReply =
+            serde_json::from_str(r#"{"ok":true,"id":"card","host":"example.test","joined":false}"#)
+                .expect("guest reply");
+        assert!(reply.ok);
+        assert_eq!(reply.host.as_deref(), Some("example.test"));
+        assert_eq!(reply.open, None);
     }
 
     #[test]
@@ -1912,11 +2072,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn queue_with_unknown_fields_starts_empty() {
+        let folder = tempfile::tempdir().expect("state");
+        let browser = folder.path().join("browser");
+        private_folder(&browser).expect("browser folder");
+        write_atomic(
+            &browser.join("requests.json"),
+            br#"{"seq":42,"items":{},"unexpected":true}"#,
+            0o600,
+        )
+        .expect("queue");
+        let bridge = HostBridge::open(
+            folder.path(),
+            Arc::new(NoChats),
+            HostBridgeOptions::default(),
+        )
+        .expect("bridge");
+        assert_eq!(bridge.lock().seq, 0);
+    }
+
+    #[test]
+    fn joined_queue_state_matches_shared_wire_owner() {
+        assert_eq!(
+            serde_json::to_string(&QueueState::Joined).expect("state"),
+            format!("\"{JOINED}\"")
+        );
+    }
+
+    #[test]
+    fn queue_rejects_unknown_item_fields() {
+        let raw = r#"{"seq":1,"items":{"i":{"id":"i","agentId":"a","uid":1,"url":"https://example.test","host":"example.test","state":"pending","createdAt":1,"expiresAt":2,"seq":1,"unexpected":true}}}"#;
+        assert!(serde_json::from_str::<Queue>(raw).is_err());
+    }
+
     /// A saved card with a loopback redirect in `state`.
     fn saved_card(state: &str) -> Value {
         json!({
             "id": "card", "agentId": "agent", "uid": 501, "state": state,
-            "url": "https://id.example.com/authorize", "startUrl": null,
+            "url": "https://id.example.com/authorize", "startUrl": null, "host": "id.example.com",
             "redirect": {"host": "localhost", "port": 4242, "path": "/"},
             "createdAt": 100.0, "expiresAt": 100.0 + TTL_SECONDS, "seq": 1
         })
@@ -1959,20 +2153,27 @@ mod tests {
         let now = Arc::new(std::sync::atomic::AtomicU64::new(200.0_f64.to_bits()));
         let bridge =
             bridge_with_failed_probe(folder.path(), saved_card("pending"), Arc::clone(&now));
-        let state = |bridge: &HostBridge| bridge.lock().items["card"]["state"].clone();
+        let state = |bridge: &HostBridge| bridge.lock().items["card"].state;
 
         bridge.check().await;
         assert_eq!(
             state(&bridge),
-            "pending",
+            QueueState::Pending,
             "an unknown probe is not a stale card"
         );
         let answered = bridge
-            .answer(&json!({"id": "card", "decision": "approve"}))
+            .answer(&AnswerParams {
+                id: "card".into(),
+                decision: AnswerDecision::Approve,
+            })
             .await
             .expect_err("approval needs a known listener");
         assert_eq!(answered.code, NOT_SENT_CODE, "{}", answered.message);
-        assert_eq!(state(&bridge), "pending", "the card stays open for a retry");
+        assert_eq!(
+            state(&bridge),
+            QueueState::Pending,
+            "the card stays open for a retry"
+        );
 
         // Expiry by time still applies while the probe fails.
         now.store(
@@ -1980,7 +2181,7 @@ mod tests {
             std::sync::atomic::Ordering::SeqCst,
         );
         bridge.check().await;
-        assert_eq!(state(&bridge), "expired");
+        assert_eq!(state(&bridge), QueueState::Expired);
     }
 
     #[tokio::test]
@@ -1993,13 +2194,17 @@ mod tests {
         let now = Arc::new(std::sync::atomic::AtomicU64::new(200.0_f64.to_bits()));
         let bridge = bridge_with_failed_probe(folder.path(), card, now);
         let refused = bridge
-            .callback(&json!({"id": "card", "target": "/?code=fake-code&state=S1"}))
+            .callback(&CallbackParams {
+                id: "card".into(),
+                target: "/?code=fake-code&state=S1".into(),
+                headers: None,
+            })
             .await
             .expect_err("a relay needs a known listener");
         assert_eq!(refused.code, NOT_SENT_CODE, "{}", refused.message);
         let item = bridge.lock().items["card"].clone();
-        assert_eq!(item["state"], "approved", "the forward stays open");
-        assert!(item.get("relays").is_none(), "nothing was relayed");
+        assert_eq!(item.state, QueueState::Approved, "the forward stays open");
+        assert_eq!(item.relays, 0, "nothing was relayed");
     }
 
     #[test]

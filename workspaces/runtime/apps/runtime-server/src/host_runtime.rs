@@ -2787,7 +2787,7 @@ mod voice_composition_tests {
     }
 
     #[tokio::test]
-    async fn pre_cutover_provider_retry_expires_before_signature_check_without_sending() {
+    async fn expired_provider_retry_refuses_before_signature_check_without_sending() {
         use studio_runtime_schema::persistence::RequestIdentity;
         use studio_runtime_store::request_results::RequestResults;
         let directory = tempfile::tempdir().unwrap();
@@ -2802,8 +2802,9 @@ mod voice_composition_tests {
         )
         .unwrap();
         store.transaction(move |tx| {
-            let cutover = RequestResults::expired_before_ms(tx).map_err(studio_runtime_store::StoreError::from)?;
-            assert!(cutover > identity.issued_ms(), "migration installs the admission watermark");
+            let cutover = identity.issued_ms() + 1;
+            tx.execute("INSERT INTO runtime_orchestration_settings(id,record) VALUES('global',json_object('expired_before_ms',?1)) ON CONFLICT(id) DO UPDATE SET record=json_set(record,'$.expired_before_ms',?1)", [cutover])?;
+            assert_eq!(RequestResults::expired_before_ms(tx)?, cutover);
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('expired-agent',?1)", [json!({"compactions":0,"id":"expired-agent","rootId":"expired-agent","epoch":3,"status":"idle","isLead":true,"provider":"codex","threadId":"voice-thread","accountKey":"voice-account"}).to_string()])?;
             // A saved row with a different signature must not mask the expiry refusal.
             tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES(?1,'original-import-signature','{}',?2)", rusqlite::params![identity.id(),cutover])?;
@@ -3023,95 +3024,26 @@ mod voice_composition_tests {
     }
 
     #[tokio::test]
-    async fn migrated_voice_stop_replays_unknown_with_real_worker_without_resending() {
-        use studio_runtime_schema::provider_call_contract::{
-            ConnectionScope, ProviderCallIntent, RequestActor, transport_key,
-        };
-        use studio_runtime_store::request_results::AdmittedRequest;
-        #[derive(serde::Serialize)]
-        struct LegacyStop<'a> {
-            agent: &'a str,
-            epoch: i64,
-            status: &'a str,
-        }
-        #[derive(serde::Serialize)]
-        struct LegacySubmission {
-            call: ProviderCallIntent<studio_runtime_providers::Method, AdmittedRequest>,
-            request: studio_runtime_schema::provider_call_contract::TransportRequest<
-                studio_runtime_providers::Method,
-            >,
-        }
-
+    async fn unknown_voice_stop_replays_with_real_worker_without_resending() {
+        use studio_runtime_schema::persistence::{CapturedScope, ProviderScope};
+        use studio_runtime_store::{VoiceEffect, VoiceEffectAuthority, VoiceEffectDisposition};
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
         seed_voice_agent(&store, "legacy-agent").await;
         let voice_session = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-        let operation = format!("voice:stop:{voice_session}");
-        let scope = studio_runtime_schema::persistence::ProviderScope {
-            generation: 42,
-            connection: "legacy-connection".into(),
-        };
-        let transport = transport_key("voice-account", &operation);
-        let call = LegacySubmission {
-            call: ProviderCallIntent {
-                root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
-                admitted_request: None,
-                scope: ConnectionScope {
-                    account: "voice-account".into(),
-                    connection: scope.connection.clone(),
-                    generation: scope.generation,
-                },
-                operation: operation.clone(),
-                actor: Some(RequestActor {
-                    agent: "legacy-agent".into(),
-                    epoch: 3,
-                }),
-                transfer: None,
-                deleted_actor_session: None,
-                method: studio_runtime_providers::Method::ThreadRealtimeStop,
-                params: json!({"threadId":"voice-thread"}),
-            },
-            request: studio_runtime_schema::provider_call_contract::TransportRequest {
-                id: studio_runtime_schema::provider_input::RequestId::String(transport.clone()),
-                generation: scope.generation,
-                method: studio_runtime_providers::Method::ThreadRealtimeStop,
-                operation: transport.clone(),
-                thread: None,
-                lightweight: false,
-                deadline: 100,
-                unknown: true,
-                remote_id: None,
-            },
-        };
         let session_for_seed = voice_session.clone();
-        let submitted_id = format!("account-worker:{}:submitted", transport);
         store.transaction(move |tx| {
-            tx.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL);")?;
-            tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,state) VALUES(?1,'legacy-agent',1,'voice-thread','voice-account','legacy-connection','ready')", [&session_for_seed])?;
-            tx.execute("INSERT INTO runtime_operation_receipts VALUES('agent-voice-stop:legacy-agent:3','lifecycle.voice-stop.v1',?1)", [serde_json::to_string(&LegacyStop { agent: "legacy-agent", epoch: 3, status: "pending" }).unwrap()])?;
-            tx.execute("INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)", rusqlite::params![submitted_id, serde_json::to_string(&call).unwrap()])?;
+            let scope = ProviderScope { generation: 42, connection: "legacy-connection".into() };
+            let effect = VoiceEffect {
+                session_id: session_for_seed.clone(), agent: "legacy-agent".into(), epoch: 3,
+                account: "voice-account".into(), thread: "voice-thread".into(),
+                disposition: VoiceEffectDisposition::Active,
+                authority: VoiceEffectAuthority::Held { scope: CapturedScope::Known(scope.clone()) },
+            };
+            tx.execute("INSERT INTO voice_sessions(id,agent,created,native_thread,account_key,connection_id,provider_scope,state) VALUES(?1,'legacy-agent',1,'voice-thread','voice-account','legacy-connection',?2,'ready')", rusqlite::params![session_for_seed, serde_json::to_string(&scope)?])?;
+            tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,signature,status,payload,created) VALUES('held-stop','voice_stop','agent','legacy-agent','lifecycle.voice-stop.v1','unknown',?1,1)", [serde_json::to_string(&effect)?])?;
             Ok(())
         }).await.unwrap();
-        drop(store);
-        let store = Arc::new(
-            RuntimeStore::open(Some(directory.path()))
-                .await
-                .expect("migrate legacy voice"),
-        );
-        let encoded: String = store
-            .test_reader()
-            .unwrap()
-            .query_row(
-                "SELECT provider_scope FROM voice_sessions WHERE id=?1",
-                [&voice_session],
-                |row| row.get(0),
-            )
-            .expect("migrated session scope");
-        assert_eq!(
-            serde_json::from_str::<studio_runtime_schema::persistence::ProviderScope>(&encoded)
-                .unwrap(),
-            scope
-        );
         let factory = Arc::new(VoiceFactory::default());
         let (mut worker, session, callbacks) =
             start_voice_worker(directory.path(), store.clone(), factory.clone()).await;
@@ -3131,8 +3063,8 @@ mod voice_composition_tests {
                 now,
             )
             .await
-            .expect("replay uncertain legacy stop");
-            assert_eq!(replay.get("state").and_then(Value::as_str), Some("unknown"));
+            .expect("replay uncertain stop");
+            assert_eq!(replay.get("state").and_then(Value::as_str), Some("ready"));
         }
         assert_eq!(factory.stop_attempts.load(Ordering::SeqCst), 0);
         assert_eq!(factory.stop_writes.load(Ordering::SeqCst), 0);

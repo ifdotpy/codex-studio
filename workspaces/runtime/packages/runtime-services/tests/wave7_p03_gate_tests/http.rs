@@ -1,7 +1,7 @@
 pub(super) mod support;
 
 /// The `send` command of `POST /api/commands`; the command id is the message id.
-fn send_command(id: &str, room: &str, text: &str, assets: serde_json::Value) -> String {
+fn send_command(id: &str, room: &str, text: &str, assets: &serde_json::Value) -> String {
     serde_json::json!({
         "id": id, "client": "test", "number": 1, "kind": "send",
         "target": room, "body": {"text": text, "assets": assets}
@@ -62,7 +62,7 @@ async fn http_accepts_unrelated_operation_started_after_preparation() {
             &request_id,
             "late-operation-recipient",
             "hello",
-            serde_json::json!([]),
+            &serde_json::json!([]),
         )))
         .expect("request");
     let response = app.oneshot(request).await.expect("HTTP response");
@@ -127,7 +127,7 @@ async fn http_accepts_uploaded_asset_id_with_empty_message_text() {
             &request_id,
             "late-operation-recipient",
             "",
-            serde_json::json!([asset["id"].clone()]),
+            &serde_json::json!([asset["id"].clone()]),
         )))
         .expect("request");
     let response = app.oneshot(request).await.expect("HTTP response");
@@ -270,7 +270,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
                 id,
                 "late-operation-recipient",
                 text,
-                serde_json::json!(assets),
+                &serde_json::json!(assets),
             )))
             .expect("request")
     };

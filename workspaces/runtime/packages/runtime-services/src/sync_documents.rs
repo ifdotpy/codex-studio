@@ -103,6 +103,7 @@ pub async fn push_drafts(
             }
             error @ StoreError::StateDirectory(_)
             | error @ StoreError::AlreadyOwned
+            | error @ StoreError::IntermediateReleaseRequired
             | error @ StoreError::MissingDatabase(_)
             | error @ StoreError::Migration { .. }
             | error @ StoreError::UnsafeStateDirectory

@@ -559,6 +559,7 @@ fn map_store_error(error: crate::StoreError) -> TranscriptStoreError {
         | other @ crate::StoreError::RequestResult(_)
         | other @ crate::StoreError::Outbox(_)
         | other @ crate::StoreError::AlreadyOwned
+        | other @ crate::StoreError::IntermediateReleaseRequired
         | other @ crate::StoreError::MissingDatabase(_)
         | other @ crate::StoreError::UnsafeStateDirectory
         | other @ crate::StoreError::Migration { .. }

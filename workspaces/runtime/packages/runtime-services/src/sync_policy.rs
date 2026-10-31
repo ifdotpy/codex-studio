@@ -2694,6 +2694,7 @@ pub async fn push_preferences(
             }
             other @ StoreError::StateDirectory(_)
             | other @ StoreError::AlreadyOwned
+            | other @ StoreError::IntermediateReleaseRequired
             | other @ StoreError::MissingDatabase(_)
             | other @ StoreError::Migration { .. }
             | other @ StoreError::UnsafeStateDirectory

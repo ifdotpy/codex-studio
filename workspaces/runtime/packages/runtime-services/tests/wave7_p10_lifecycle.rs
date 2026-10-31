@@ -78,6 +78,12 @@ fn template(root: &Path) {
             db.execute_batch(object["sql"].as_str().expect("ddl"))
                 .expect("fixture ddl");
         }
+        if database == "canvas.sqlite3" {
+            db.execute_batch(include_str!(
+                "../../runtime-store/tests/fixtures/receipt-finish-markers.sql"
+            ))
+            .expect("completed receipt markers");
+        }
         db.execute_batch("COMMIT")
             .expect("fixture schema commits once");
     }

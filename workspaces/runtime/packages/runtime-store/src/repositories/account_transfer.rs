@@ -23,6 +23,10 @@ impl JsonRecord for AccountTransferRecord {
     fn record_key(&self) -> Option<&String> {
         Some(&self.id)
     }
+    // Remove this override once the record is closed and typed.
+    fn encode_stored(&self, _: &rusqlite::Connection, row_id: &str) -> crate::StoreResult<String> {
+        crate::records::encode_open_record(self, row_id)
+    }
 }
 pub const MAX_TRANSFER_RECORD_BYTES: usize = 8 * 1024 * 1024;
 /// Largest provider read reply kept inline in a transfer record. A larger reply

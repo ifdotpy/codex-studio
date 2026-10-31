@@ -24,7 +24,7 @@ const MONITOR_INDEX: &str = "runtime_monitor_startup_active";
 const REQUEST_INDEX: &str = "runtime_request_startup_unsettled";
 const TOOL_REQUEST_INDEX: &str = "runtime_tool_request_startup_unsettled_v2";
 const CLEANUP_INTENT_INDEX: &str = "runtime_agent_cleanup_intent_v2";
-const DELETED_UNSETTLED_INDEX: &str = "runtime_agent_deleted_unsettled_v2";
+pub(crate) const DELETED_UNSETTLED_INDEX: &str = "runtime_agent_deleted_unsettled_v2";
 
 /// SQL: agent column `column` is neither absent, null, false nor zero.
 /// A superset of the Rust `truthy` test (an empty string or container passes),
@@ -241,6 +241,10 @@ impl StartupRecoveryRepository {
                 connection.execute_batch(&selection.definition().create_sql)?;
             }
         }
+        Self::prepare_agent_indexes(connection)
+    }
+
+    pub(crate) fn prepare_agent_indexes(connection: &Connection) -> StoreResult<()> {
         if crate::schema::table_exists(connection, "runtime_agents")? {
             for selection in [CLEANUP_INTENTS, DELETED_UNSETTLED] {
                 connection.execute_batch(&selection.definition().create_sql)?;

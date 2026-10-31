@@ -1339,7 +1339,7 @@ mod replay_identity_tests {
     }
 
     #[tokio::test]
-    async fn migrated_submitted_without_request_stays_unknown_without_preparation() {
+    async fn submitted_without_request_stays_unknown_without_preparation() {
         use serde::Serialize;
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
@@ -1359,10 +1359,6 @@ mod replay_identity_tests {
             process_id: &'a str,
             cwd: &'a std::path::Path,
             command: [&'a str; 1],
-        }
-        #[derive(Serialize)]
-        struct Submitted {
-            call: Call,
         }
         let root = tempfile::tempdir().expect("state");
         let store = RuntimeStore::open(Some(root.path()))
@@ -1403,29 +1399,45 @@ mod replay_identity_tests {
         let mut watch = monitor_fixture();
         watch.cwd = root.path().to_string_lossy().into_owned();
         watch.operation = Some(operation);
+        let key = call.key();
+        let seed_key = key.clone();
         store
-            .transaction(move |tx| {
-                AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(agent)?)?;
-                studio_runtime_store::Table::new(tx).put(&watch)
+            .transaction_with(move |tx| {
+                AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(agent)
+                        .map_err(StoreError::from)?,
+                )?;
+                studio_runtime_store::Table::new(tx).put(&watch)?;
+                let identity =
+                    RequestIdentity::new("retained-fixture", &[], &call.root_request_id, &[])
+                        .expect("root");
+                let Admission::Fresh(owner) =
+                    RequestResults::admit(tx, &identity, "fixture", now_ms())
+                        .map_err(result_error)?
+                else {
+                    return Err(WorkerError::Capacity);
+                };
+                let admitted = super::super::reserve_provider_call(tx, &owner, call.clone())?;
+                let mut saved = row(tx, &seed_key)?.ok_or(WorkerError::Capacity)?;
+                let mut call = call;
+                call.admitted_request = Some(admitted.clone());
+                saved.status = OutboxStatus::Unknown;
+                saved.payload = store::ProviderCall::Retained(Box::new(RetainedCall {
+                    call,
+                    request: None,
+                    admitted,
+                    written: true,
+                    outcome: None,
+                }));
+                put(tx, &saved)
             })
             .await
-            .expect("owners");
+            .expect("unknown provider call");
         drop(store);
-        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).expect("database");
-        db.execute_batch("DELETE FROM runtime_payload_migrations WHERE name LIKE 'receipts:%'; CREATE TABLE runtime_operation_receipts(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL)").expect("legacy schema");
-        let key = call.key();
-        db.execute(
-            "INSERT INTO runtime_operation_receipts VALUES(?1,'submitted',?2)",
-            rusqlite::params![
-                format!("account-worker:{key}:submitted"),
-                serde_json::to_string(&Submitted { call }).expect("submitted")
-            ],
-        )
-        .expect("legacy submitted");
-        drop(db);
         let store = RuntimeStore::open(Some(root.path()))
             .await
-            .expect("migrate held submission");
+            .expect("reopen held submission");
         store
             .read_async("test/held-replay", move |tx| {
                 let row = row(tx, &key)?.expect("held provider call");

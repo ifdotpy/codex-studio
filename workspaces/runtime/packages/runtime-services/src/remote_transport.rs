@@ -1113,6 +1113,7 @@ fn map_outbound_error(error: StoreError) -> RemoteTransportError {
         error @ (StoreError::Outbox(_)
         | StoreError::StateDirectory(_)
         | StoreError::AlreadyOwned
+        | StoreError::IntermediateReleaseRequired
         | StoreError::MissingDatabase(_)
         | StoreError::UnsafeStateDirectory
         | StoreError::SchemaMismatch(_)
