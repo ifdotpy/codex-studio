@@ -100,7 +100,7 @@ fn case(name: &str) -> Value {
                     .expect("fields")
                     .clone(),
                 );
-            json!({"action":"stop","target":"lead","descendants":false})
+            json!({"action":"pause","target":"lead","descendants":false})
         }
         "unassign" => {
             records["tables"]["runtime_work"] = json!([{"id":"work","owner":"worker","rootId":"lead","version":2,"status":"review","title":"Assignment","results":[{"id":"result","text":"Keep this result"}],"decisions":[]}]);
@@ -118,10 +118,10 @@ fn case(name: &str) -> Value {
                     .expect("fields")
                     .clone(),
                 );
-            json!({"action":"stop","target":"lead","descendants":true})
+            json!({"action":"pause","target":"lead","descendants":true})
         }
         "delete" => json!({"action":"delete","target":"lead"}),
-        "stop-ended-voice" => json!({"action":"stop","target":"lead","descendants":true}),
+        "stop-ended-voice" => json!({"action":"pause","target":"lead","descendants":true}),
         other => panic!("unknown case {other}"),
     };
     json!({"name":name,"records":records,"action":action,"now":NOW})
