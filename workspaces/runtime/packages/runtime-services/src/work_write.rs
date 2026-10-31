@@ -219,7 +219,7 @@ async fn run_accepted_archive(
     let Some((intent, prior_status)) = store
         .transaction_with_error(
             move |tx| -> Result<Option<(ArchiveIntent, WorkEffectStatus)>, WorkWriteError> {
-                let current = WorkItemsRepository::work_record(tx, &task_id_for_claim)?
+                let mut current = WorkItemsRepository::work_record(tx, &task_id_for_claim)?
                     .ok_or(Error::InvalidRequest("Unknown work item"))?;
                 if current.status() != studio_runtime_store::WorkStatus::Accepted
                     || current.owner() != Some(owner_for_claim.as_str())
@@ -233,7 +233,6 @@ async fn run_accepted_archive(
                 ).map_err(studio_runtime_store::StoreError::from)?;
                 let mut intent: ArchiveIntent =
                     serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-                let mut record = current.into_value();
                 let prior_status = intent.status;
                 if !matches!(
                     prior_status,
@@ -249,8 +248,13 @@ async fn run_accepted_archive(
                 intent.status = WorkEffectStatus::Unknown;
                 intent.attempt_started_at = Some(now);
                 intent.next_attempt_at = Some(now + ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS as f64);
-                record["archiveIntent"] = studio_runtime_store::projection_value(&intent);
-                WorkItemsRepository::update_work(tx, &task_id_for_claim, &record)?;
+                current
+                    .set(
+                        "archiveIntent",
+                        studio_runtime_store::projection_value(&intent),
+                    )
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                WorkItemsRepository::update_checked_work(tx, &task_id_for_claim, &current)?;
                 Ok(Some((claimed, prior_status)))
             },
         )
@@ -403,7 +407,7 @@ async fn run_accepted_archive(
                     .check(tx)
                     .map_err(|_| Error::Conflict("The accepted task owner or result changed"))?;
             }
-            let Some(current) = WorkItemsRepository::work_record(tx, &task_id_for_settlement)?
+            let Some(mut current) = WorkItemsRepository::work_record(tx, &task_id_for_settlement)?
             else {
                 return Ok(ArchiveRun::Skipped);
             };
@@ -413,7 +417,6 @@ async fn run_accepted_archive(
             {
                 return Ok(ArchiveRun::Skipped);
             }
-            let mut current = current.into_value();
             let next_attempt = intent_for_settlement.attempts + 1;
             let delay = if retryable {
                 ACCEPTED_ARCHIVE_BASE_DELAY_SECONDS
@@ -423,7 +426,9 @@ async fn run_accepted_archive(
                 ACCEPTED_ARCHIVE_MAX_DELAY_SECONDS
             };
             if receipt_status != WorkEffectStatus::Unknown {
-                current["archive"] = archive.clone();
+                current
+                    .set("archive", archive.clone())
+                    .map_err(studio_runtime_store::StoreError::from)?;
             }
             let mut final_intent = intent_for_settlement.clone();
             final_intent.status = if retryable {
@@ -439,8 +444,13 @@ async fn run_accepted_archive(
             if !retryable && receipt_status != WorkEffectStatus::Unknown {
                 final_intent.outcome = Some(archive.clone());
             }
-            current["archiveIntent"] = studio_runtime_store::projection_value(&final_intent);
-            WorkItemsRepository::update_work(tx, &task_id_for_settlement, &current)?;
+            current
+                .set(
+                    "archiveIntent",
+                    studio_runtime_store::projection_value(&final_intent),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            WorkItemsRepository::update_checked_work(tx, &task_id_for_settlement, &current)?;
             if matches!(timing, ArchiveTiming::Immediate)
                 && !retryable
                 && receipt_status == WorkEffectStatus::Terminal
@@ -477,11 +487,8 @@ async fn run_accepted_archive(
             }
             let mut response = match final_intent.public_response {
                 Some(response) => response,
-                None => LegacyWorkReply::from_value(work_item_view(
-                    tx,
-                    &WorkItemRecord::checked(&current)?,
-                )?)
-                .map_err(studio_runtime_store::StoreError::from)?,
+                None => LegacyWorkReply::from_value(work_item_view(tx, &current)?)
+                    .map_err(studio_runtime_store::StoreError::from)?,
             };
             response
                 .set("archive", archive)
