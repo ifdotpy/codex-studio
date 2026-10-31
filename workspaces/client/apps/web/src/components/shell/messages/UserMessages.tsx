@@ -63,14 +63,12 @@ function MessageResponse({
   notify: (s: string) => void;
   onResponse: (c: ComplaintDetailResponse) => void;
 }) {
-  const { get, post, save, saved } = useServerApi();
+  const { get, post, save } = useServerApi();
   const { writeLocalDraft } = useServerLocalDrafts();
   const { replyDrafts } = useMessageCache();
 
   const draftKey = JSON.stringify([pendingKey, detail.id]);
-  const storageKey = `studio-reply-draft:${draftKey}`;
-  const draft =
-    replyDrafts.get(draftKey) || saved<ReplyDraft | null>(storageKey, null);
+  const draft = replyDrafts.get(draftKey);
   const previous = requests.get(detail.id);
   const [text, setText] = useState(previous?.text || draft?.text || "");
   const status: UserComplaintResponse["status"] =
@@ -80,7 +78,6 @@ function MessageResponse({
   const [error, setError] = useState<unknown>(null);
   const saveDraft = (value: ReplyDraft) => {
     replyDrafts.set(draftKey, value);
-    setError(writeLocalDraft(storageKey, value) || "");
   };
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -115,8 +112,6 @@ function MessageResponse({
       save(pendingKey, Object.fromEntries(requests));
       setRetry(false);
       replyDrafts.delete(draftKey);
-      const storageError = writeLocalDraft(storageKey, null);
-      if (storageError) notify(storageError);
       setText("");
       if ("detail" in outcome) onResponse(outcome.detail);
       else notify(errorText(outcome.reloadError));
