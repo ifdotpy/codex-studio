@@ -20,7 +20,14 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 
 use studio_runtime_schema::desktop::PeerUpdateBuild;
+<<<<<<< head
 use studio_runtime_schema::persistence::{OutboxStatus, RequestIdentity};
+||||||| base
+use studio_runtime_schema::desktop::{
+    PeerUpdateBuild, PeerUpdateEvent, PeerUpdatePending, PeerUpdateStatus,
+};
+=======
+>>>>>>> origin/feat/one-outbox-1
 use studio_runtime_store::RuntimeStore;
 use studio_runtime_store::remote_outbox::{RemoteEffect, RemoteEntry, RemoteOutbox};
 
