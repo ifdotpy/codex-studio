@@ -3412,10 +3412,6 @@
       "fingerprint": "357bddd01f01e74983563c621bc0013cfefb49c854302174df21068711f0abdb:0"
     },
     {
-      "file": "workspaces/client/apps/web/src/sync/thinCache.test.ts",
-      "fingerprint": "d8b7e8690084a50b657476ce09c22cf7aa88438157c5f099945d9c6cafe17d7d:0"
-    },
-    {
       "file": "workspaces/client/apps/web/src/useProjectDelete.test.ts",
       "fingerprint": "2ebfd9d24e18773172e185fca4d5ccb63c9d81261f036418544170bb7aafaa11:0"
     },
@@ -3542,10 +3538,6 @@
     {
       "file": "workspaces/client/apps/web/src/sync/syncBrowserFixture.ts",
       "fingerprint": "5fb4df4e30379ee9ef807c7d573adb828fc958eb388320770ee9aacba45e6bd3:0"
-    },
-    {
-      "file": "workspaces/client/apps/web/src/usage/sessionCostCache.ts",
-      "fingerprint": "cee6b1138720a7dc31199d4e4b179fba163387c839288231378ec120209fe1df:0"
     },
     {
       "file": "workspaces/client/apps/web/tests/chat/chat-prefetch-ui.fixture.ts",

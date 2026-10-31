@@ -10,11 +10,13 @@ it("keeps queued files only for the lifetime of their owner", async () => {
   vi.stubGlobal("indexedDB", { open });
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("BroadcastChannel", undefined);
-  const options = {
+  const options: UploadOptions = {
     databaseName: "test",
-    storage: { getItem: () => null },
     syncDatabase: async () => ({ workspaceId: "workspace" }),
-  } as unknown as UploadOptions;
+    syncGet: async () => ({ workspaceId: "workspace" }),
+    refreshSession: vi.fn(),
+    syncPost: vi.fn(),
+  };
   const first = createUploads(options);
   await first.queueUploads(
     "state",
@@ -40,20 +42,19 @@ it("does not restore an upload removed while its request is in flight", async ()
       }
     },
   );
-  let resolve!: (asset: { id: string; name: string; path: string }) => void;
-  const response = new Promise<{ id: string; name: string; path: string }>(
-    (done) => {
-      resolve = done;
-    },
-  );
+  type Asset = Awaited<ReturnType<UploadOptions["syncPost"]>>;
+  let resolve!: (asset: Asset) => void;
+  const response = new Promise<Asset>((done) => {
+    resolve = done;
+  });
   const post = vi.fn(() => response);
-  const options = {
+  const options: UploadOptions = {
     databaseName: "test",
     syncDatabase: async () => ({ workspaceId: "workspace" }),
     syncGet: async () => ({ workspaceId: "workspace" }),
-    refreshSession: async () => ({ token: "token" }),
+    refreshSession: vi.fn(),
     syncPost: post,
-  } as unknown as UploadOptions;
+  };
   const uploads = createUploads(options);
   const [row] = await uploads.queueUploads(
     "state",
@@ -64,7 +65,16 @@ it("does not restore an upload removed while its request is in flight", async ()
   const delivery = uploads.deliverUpload(row!);
   await vi.waitFor(() => expect(post).toHaveBeenCalled());
   await uploads.removeUpload(row!.id);
-  resolve({ id: row!.id, name: row!.name, path: "path" });
+  resolve({
+    agent: "agent",
+    created: 0,
+    hash: "hash",
+    id: row!.id,
+    image: false,
+    mime: "text/plain",
+    name: row!.name,
+    size: 1,
+  });
   expect(await delivery).toBeNull();
   expect(await uploads.pendingUploads("state")).toEqual([]);
 });

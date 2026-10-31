@@ -48,7 +48,7 @@ it("removes retired draft and upload data without touching identities", async ()
     },
     key: (index: number) => [...values.keys()][index] ?? null,
     removeItem: (key: string) => values.delete(key),
-  } as unknown as Storage;
+  };
   const deleted: string[] = [];
   const factory = {
     databases: async () => [
@@ -63,7 +63,7 @@ it("removes retired draft and upload data without touching identities", async ()
       queueMicrotask(() => request.onsuccess?.(new Event("success")));
       return request;
     },
-  } as unknown as IDBFactory;
+  };
   await cleanupLegacyPersistence(storage, factory);
   expect([...values.keys()]).toEqual([
     "studio-queue-change:scope:chat",

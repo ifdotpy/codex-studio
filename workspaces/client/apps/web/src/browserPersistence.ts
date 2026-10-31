@@ -63,8 +63,13 @@ export function outboxRequestKeys(
 
 /** Remove retired local copies without touching credentials or request fences. */
 export async function cleanupLegacyPersistence(
-  storage: Storage = globalThis.localStorage,
-  factory: IDBFactory | undefined = browserIndexedDB(),
+  storage: Pick<
+    Storage,
+    "length" | "key" | "removeItem"
+  > = globalThis.localStorage,
+  factory:
+    | Pick<IDBFactory, "databases" | "deleteDatabase">
+    | undefined = browserIndexedDB(),
 ) {
   const retiredKeys = [
     "codex-chat-draft:",
