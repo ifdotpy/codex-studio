@@ -17,10 +17,6 @@ const allowed: Record<string, string> = {
     "request identity of a pending MCP action, kept for a lost reply",
   "components/shell/MonitorRestart.tsx":
     "request body of a pending monitor restart, kept for a lost reply",
-  "native/importBrowserProfile.ts":
-    "one-time import of the old browser profile into the desktop app",
-  "native/preferences.ts":
-    "one-time move of the old native preferences into the page storage",
   "push/signInPush.ts":
     "Web Push subscription id of this device for each server key",
   "servers/MultiServerApp.tsx": "selected server and Studio preferences",

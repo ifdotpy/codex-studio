@@ -1,7 +1,7 @@
 // Exercise the native host through hidden WebViews and disposable fixtures.
 import type { BackendIdentity } from "../desktop/backend.ts";
 import type { components } from "../web/src/generated/api.ts";
-import type { BrowserProfileArchive } from "../web/src/native/importBrowserProfile.ts";
+import type { BrowserProfileArchive } from "../web/src/native/browserProfile.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";

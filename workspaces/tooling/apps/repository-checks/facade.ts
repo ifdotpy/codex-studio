@@ -252,9 +252,9 @@ const SHARED_TYPE_OWNERS = [
       "Self-contained desktop bridge types shared by the host and renderer.",
   },
   {
-    file: "workspaces/client/apps/web/src/native/importBrowserProfile.ts",
+    file: "workspaces/client/apps/web/src/native/browserProfile.ts",
     purpose:
-      "Browser profile document types shared by profile export fixtures and importers.",
+      "Browser profile document types shared by profile export fixtures.",
   },
   {
     file: "workspaces/client/apps/web/src/apiTypes.ts",

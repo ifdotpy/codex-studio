@@ -292,54 +292,6 @@
     "callee": "syncGet"
   },
   {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "indexedDB.databases"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.length"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.length"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.key"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "indexedDB.deleteDatabase"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "indexedDB.open"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "native/preferences.ts",
-    "callee": "window.localStorage"
-  },
-  {
     "file": "native/serverCredentials.test.ts",
     "callee": "new NativeServerCredentials().fetch"
   },

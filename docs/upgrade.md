@@ -8,6 +8,10 @@ The removed Python preflight, payload-migration, and supervisor scripts are no
 longer supported commands. Their historical output does not verify the Rust server.
 Do not run an old migration script against current state.
 
+The desktop no longer imports legacy browser profile archives or old native
+preference rows. A profile that was never imported needs fresh server pairing;
+its archived files remain on disk.
+
 [Runtime migrations](runtime-migrations.md) use per-step rollback: a failed
 transaction rolls back, completed steps remain, and startup resumes safely from
 retained state. The server must not serve requests before the migration barrier

@@ -5,7 +5,7 @@ import type {
   BrowserProfileRecord,
   BrowserProfileChunk,
   EncodedProfileValue,
-} from "../web/src/native/importBrowserProfile.ts";
+} from "../web/src/native/browserProfile.ts";
 // This function runs in the original Chromium origin. Keep it self-contained:
 // the offline exporter passes it to a hidden, sandboxed WebContents.
 export async function exportBrowserProfile(

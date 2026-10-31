@@ -1,9 +1,6 @@
-import { importNativeProfile } from "./native/preferences";
 import { cleanupLegacyPersistence } from "./browserPersistence";
 
-// Preferences must be ready before modules read their initial settings.
-void importNativeProfile()
-  .then(() => cleanupLegacyPersistence())
+void cleanupLegacyPersistence()
   .then(() => import("./mount"))
   .catch((error) => {
     const container = document.getElementById("root");

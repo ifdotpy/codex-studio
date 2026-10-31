@@ -47,7 +47,7 @@
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
       assert(mounted(), "Large profile bootstrap did not finish");
-      /** @type {import("./native-check-types.ts").CheckResponse<{id: string, snapshot: import("../../../web/src/native/importBrowserProfile.ts").BrowserProfileSnapshot}>} */
+      /** @type {import("./native-check-types.ts").CheckResponse<{id: string, snapshot: import("../../../web/src/native/browserProfile.ts").BrowserProfileSnapshot}>} */
       const response = await call("census-manifest", "profile.snapshot", {
         owner: "root",
       });
