@@ -32,7 +32,7 @@ const question: Message = {
     },
   }),
 };
-const approval: Message = {
+const approvalItem: Message = {
   id: "lead:command-item",
   role: "output",
   toolStatus: "running",
@@ -62,7 +62,7 @@ const initial: Approval[] = [
 ];
 function Fixture() {
   const [requests, setRequests] = useState(initial);
-  const [items, setItems] = useState([question, approval]);
+  const [items, setItems] = useState([question, approvalItem]);
   const lookup: QuestionLookup = {
     agentId: "lead",
     history: new Map(),

@@ -1439,7 +1439,8 @@ export async function readTestState(
     const details = new Map<string, JsonObject>();
     for (const entry of baselines)
       for (const document of entry.entityChanges?.documents || [])
-        if (document.op === "upsert") details.set(document.id, document.value);
+        if (document.op === "upsert" && isJsonObject(document.value))
+          details.set(document.id, document.value);
     entities.set("agentDetail", details);
   }
   const agents = list("agentSummary").map((summary) => ({

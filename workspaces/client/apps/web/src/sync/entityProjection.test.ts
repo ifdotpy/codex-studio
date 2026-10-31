@@ -7,7 +7,7 @@ import {
 import { required } from "../components/componentTestFixtures.ts";
 import type { EntityRow } from "./entityProjection.ts";
 import type { Agent, Message, Snapshot } from "../types";
-import { approval } from "../approvalFixtures";
+import { approval, browserOpen } from "../approvalFixtures";
 import type { SyncEntityPayload } from "../generated/api";
 import assert from "node:assert/strict";
 import {
@@ -1361,7 +1361,7 @@ it("reuses unchanged work, request, and peer team arrays when agents change", ()
         "r1",
         approval({
           id: "r1",
-          request: { kind: "browser_open", url: "https://example.com" },
+          request: browserOpen("https://example.com"),
         }),
         2,
       ),
@@ -1379,7 +1379,7 @@ it("reuses unchanged work, request, and peer team arrays when agents change", ()
         "r1",
         approval({
           id: "r1",
-          request: { kind: "browser_open", url: "https://example.com" },
+          request: browserOpen("https://example.com"),
         }),
         2,
       ),
@@ -1439,7 +1439,7 @@ it("maps all runtime collections and carries workspace and edge data into snapsh
       "u",
       approval({
         id: "u",
-        request: { kind: "browser_open", url: "https://example.com" },
+        request: browserOpen("https://example.com"),
       }),
     ],
     ["rule", "l", { id: "l" }],

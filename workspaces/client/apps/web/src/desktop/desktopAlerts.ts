@@ -1,5 +1,5 @@
 import { AgentStatus } from "../generated/api";
-import { approvalCreated, approvalParams, needsAnswer } from "../approvals";
+import { approvalCreated, needsAnswer } from "../approvals";
 import {
   SIGN_IN_ALERT_GRACE_SECONDS,
   SIGN_IN_REMINDER_SECONDS,
@@ -30,20 +30,18 @@ type SignInTimes = { host: string; alertAt: number; reminderAt: number | null };
 function signInTimes(
   request: Snapshot["runtime"]["requests"][number],
 ): SignInTimes | null {
-  if (request.request.kind !== "browser_open" || !needsAnswer(request))
-    return null;
-  const params = approvalParams(request);
+  const card = request.request;
+  if (card.kind !== "browser_open" || !needsAnswer(request)) return null;
   const created = approvalCreated(request);
   const alertAt = created + SIGN_IN_ALERT_GRACE_SECONDS;
-  const expiresAt =
-    typeof params.expiresAt === "number" ? params.expiresAt : null;
+  const expiresAt = card.expires_at;
   // A phone sign-in that waits for its pasted result already has the person.
   const reminderAt =
-    expiresAt !== null && params.phase !== "waiting"
+    expiresAt !== null && card.phase.kind === "link"
       ? expiresAt - SIGN_IN_REMINDER_SECONDS
       : null;
   return {
-    host: typeof params.host === "string" ? params.host : "the sign-in page",
+    host: card.host || "the sign-in page",
     alertAt,
     reminderAt: reminderAt !== null && reminderAt > alertAt ? reminderAt : null,
   };
@@ -158,10 +156,10 @@ export function desktopAlerts(
         times.alertAt,
         true,
       );
-      const expiresAt = approvalParams(request).expiresAt;
+      const expiresAt = request.request.expires_at;
       if (
         times.reminderAt !== null &&
-        typeof expiresAt === "number" &&
+        expiresAt !== null &&
         now >= times.reminderAt &&
         now <= expiresAt
       )

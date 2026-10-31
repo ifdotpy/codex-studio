@@ -1,5 +1,5 @@
 import { AgentStatus } from "../generated/api";
-import { approval, question, simpleRequest } from "../approvalFixtures";
+import { approval, browserOpen, question, simpleRequest } from "../approvalFixtures";
 import type { Approval } from "../approvals";
 import { snapshotFixture } from "../snapshotFixture";
 import type { Agent, Snapshot, Complaint } from "../types";
@@ -377,12 +377,6 @@ it("does not show a complaint from before the window started when its page arriv
   assert.equal(fresh(withoutTime), true);
 });
 
-const signInParams = {
-  bridgeId: "b1",
-  host: "id.example.com",
-  expiresAt: 1600,
-  source: "host",
-};
 const answeredState: Approval["state"] = {
   kind: "answered",
   answer: { kind: "decision", decision: "accept" },
@@ -392,16 +386,24 @@ const answeredState: Approval["state"] = {
 const signIn = (
   fields: {
     state?: Approval["state"];
-    params?: Approval["detail"]["params"];
+    expiresAt?: number;
+    waiting?: boolean;
   } = {},
 ): Approval =>
   approval({
     id: "card-1",
     agent: "lead",
-    request: { kind: "browser_open", url: "https://id.example.com/device" },
+    request: browserOpen("https://id.example.com/device", {
+      bridgeId: "b1",
+      host: "id.example.com",
+      source: "host",
+      expiresAt: fields.expiresAt ?? 1600,
+      phase: fields.waiting
+        ? { kind: "waiting", expires_at: 1600 }
+        : { kind: "link" },
+    }),
     created: 1000,
-    params: signInParams,
-    ...fields,
+    ...(fields.state ? { state: fields.state } : {}),
   });
 
 it("alerts once with sound for a sign-in card that is still open after the grace", () => {
@@ -452,18 +454,12 @@ it("reminds once before a sign-in card closes, and not while a phone sign-in wai
     sound: true,
   });
   // The person already opened the page on a phone: the card waits for the pasted result.
-  const waiting = signIn({
-    params: {
-      ...signInParams,
-      phase: "waiting",
-      waiting: { expiresAt: 1600 },
-    },
-  });
+  const waiting = signIn({ waiting: true });
   assert.deepEqual(ids(1300, waiting), ["signin:card-1"]);
   // A card whose deadline passed gives no reminder.
   assert.deepEqual(ids(1601), ["signin:card-1"]);
   // A card shorter than the grace plus the reminder lead gets only the first alert.
-  const short = signIn({ params: { ...signInParams, expiresAt: 1200 } });
+  const short = signIn({ expiresAt: 1200 });
   assert.deepEqual(ids(1100, short), ["signin:card-1"]);
 });
 

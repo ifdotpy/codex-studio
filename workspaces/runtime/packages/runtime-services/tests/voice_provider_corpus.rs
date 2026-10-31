@@ -1215,7 +1215,7 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
         .expect("seed callback request and live actor");
     let card = studio_runtime_services::provider_callbacks::legacy_view::stored(
         &store.test_reader().expect("fixture reader"),
-        &callback_request_id,
+        callback_request_id,
     )
     .expect("callback card");
     crate::callback_fixtures::seed_admission(&store, &card).await;

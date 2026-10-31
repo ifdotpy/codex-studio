@@ -3,14 +3,14 @@ declare global {
     __notes: string[];
   }
 }
-import { approval } from "../../src/approvalFixtures.ts";
+import { approval, browserOpen } from "../../src/approvalFixtures.ts";
 import type { Approval } from "../../src/approvals.ts";
 
 type SignInFields = {
   clientId?: string;
   scope?: string;
   linuxUser?: string;
-  source?: string;
+  source?: "vm" | "host";
   expiresAt?: number;
   userCode?: string;
 };
@@ -31,8 +31,13 @@ export function signInCards(
     approval({
       id,
       agent: "worker",
-      request: { kind: "browser_open", url },
-      params: { bridgeId: id, host, redirect, ...defaults, ...extra },
+      request: browserOpen(url, {
+        bridgeId: id,
+        host,
+        redirect,
+        ...defaults,
+        ...extra,
+      }),
     });
 }
 

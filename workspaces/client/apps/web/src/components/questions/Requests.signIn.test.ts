@@ -1,4 +1,4 @@
-import { approval } from "../../approvalFixtures";
+import { approval, browserOpen } from "../../approvalFixtures";
 import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -47,14 +47,13 @@ function card() {
     {
       id: requestId,
       agent: "agent",
-      request: { kind: "browser_open", url: link },
-      params: {
+      request: browserOpen(link, {
         bridgeId: forward.bridgeId,
         host: "identity.example.test",
         source: "host",
         redirect: { host: "localhost", port: 8250, path: "/callback" },
         expiresAt: forward.expiresAt,
-      },
+      }),
     },
   );
   renderToStaticMarkup(

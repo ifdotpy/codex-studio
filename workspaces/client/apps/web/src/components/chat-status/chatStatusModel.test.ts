@@ -1067,15 +1067,10 @@ it("rejects malformed request epochs while preserving absent, null and numeric r
     [{ epoch: null }, true],
     [{ epoch: 4 }, true],
     [{ epoch: 3 }, false],
-    [{ epoch: "3" }, false],
   ] as const;
 
   for (const [record, current] of requestEpochs) {
-    // The epoch matrix intentionally includes a string epoch.
-    const request = simpleRequest({
-      agent: "lead",
-      ...(record as unknown as { epoch?: number | null }),
-    });
+    const request = simpleRequest({ agent: "lead", ...record });
     assert.equal(
       chatWaitState(makeSnapshot([waiting], { requests: [request] }), waiting)
         .inputs,

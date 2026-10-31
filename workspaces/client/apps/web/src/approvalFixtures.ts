@@ -98,3 +98,40 @@ export function simpleRequest({
       : {}),
   });
 }
+
+type BrowserFields = {
+  bridgeId?: string;
+  host?: string;
+  source?: "vm" | "host";
+  redirect?: { host: string; port: number; path: string } | null;
+  clientId?: string | null;
+  scope?: string | null;
+  linuxUser?: string | null;
+  userCode?: string | null;
+  expiresAt?: number | null;
+  phase?: Extract<Approval["request"], { kind: "browser_open" }>["phase"];
+  joined?: string[];
+};
+
+/** A sign-in request with every field the server stores. */
+export function browserOpen(
+  url: string,
+  fields: BrowserFields = {},
+): Extract<Approval["request"], { kind: "browser_open" }> {
+  return {
+    kind: "browser_open",
+    url,
+    bridge_id: fields.bridgeId ?? "b1",
+    host: fields.host ?? new URL(url).host,
+    source: fields.source ?? "host",
+    redirect: fields.redirect ?? null,
+    client_id: fields.clientId ?? null,
+    scope: fields.scope ?? null,
+    linux_user: fields.linuxUser ?? null,
+    user_code: fields.userCode ?? null,
+    expires_at: fields.expiresAt ?? null,
+    phase: fields.phase ?? { kind: "link" },
+    forward: null,
+    joined: fields.joined ?? [],
+  };
+}

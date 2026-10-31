@@ -1,4 +1,4 @@
-import { approval, question } from "../../approvalFixtures";
+import { approval, browserOpen, question } from "../../approvalFixtures";
 import { required } from "../componentTestFixtures.ts";
 import { describe, expect, it } from "vitest";
 import { answerList } from "./AnswerFields";
@@ -7,12 +7,6 @@ import {
   requestApprovalDetails,
   requestQuestions,
 } from "./requestData";
-
-const browserRequest = (
-  url: string,
-  params: Record<string, unknown>,
-  id = "request-browser",
-) => approval({ id, request: { kind: "browser_open", url }, params });
 
 describe("requestQuestions", () => {
   it("preserves the producer's question fields and option descriptions", () => {
@@ -229,11 +223,13 @@ describe("custom answer permission", () => {
 });
 
 describe("browserOpenDetails", () => {
+  const open = (url: string, fields: Parameters<typeof browserOpen>[1] = {}) =>
+    approval({ id: "request-browser", request: browserOpen(url, fields) });
+
   it("reads the sign-in host, the forward port and the OAuth client", () => {
-    const request = browserRequest(
+    const request = open(
       "https://accounts.example.com/authorize?client_id=kube",
       {
-        bridgeId: "b1",
         host: "accounts.example.com",
         redirect: { host: "localhost", port: 8000, path: "/" },
         clientId: "kube",
@@ -249,21 +245,25 @@ describe("browserOpenDetails", () => {
       clientId: "kube",
       scope: "openid",
       linuxUser: "studio-a-1",
+      source: "host",
     });
   });
 
   it("reads the waiting phase, its deadline, and a sent paste", () => {
-    const params = {
+    const fields = {
       host: "id.example.com",
       redirect: { host: "127.0.0.1", port: 40645, path: "/oauth/callback" },
       expiresAt: 1_800_000_600,
-      phase: "waiting",
-      waiting: { expiresAt: 1_800_000_900 },
-      paste: { at: 1_800_000_100 },
-      outcome: null,
     };
     const url = "https://id.example.com/authorize?state=s";
-    expect(browserOpenDetails(browserRequest(url, params))).toMatchObject({
+    expect(
+      browserOpenDetails(
+        open(url, {
+          ...fields,
+          phase: { kind: "pasted", at: 1_800_000_100, expires_at: 1_800_000_900 },
+        }),
+      ),
+    ).toMatchObject({
       port: 40645,
       redirectPath: "/oauth/callback",
       phase: "waiting",
@@ -271,23 +271,21 @@ describe("browserOpenDetails", () => {
       waitingExpiresAt: 1_800_000_900,
       pasteSent: true,
     });
-    const before = browserOpenDetails(
-      browserRequest(url, { ...params, phase: "other", paste: null }),
-    );
+    const before = browserOpenDetails(open(url, fields));
     expect(before?.phase).toBeUndefined();
     expect(before?.pasteSent).toBeUndefined();
   });
 
   it("has no forward port for a device code page and ignores other kinds", () => {
-    const device = browserRequest(
-      "https://device.example.com/?user_code=ABCD",
-      { host: "device.example.com", redirect: null, userCode: "ABCD" },
-      "request-device",
-    );
+    const device = open("https://device.example.com/?user_code=ABCD", {
+      host: "device.example.com",
+      userCode: "ABCD",
+    });
     expect(browserOpenDetails(device)).toEqual({
       host: "device.example.com",
       url: "https://device.example.com/?user_code=ABCD",
       userCode: "ABCD",
+      source: "host",
     });
     expect(
       browserOpenDetails(

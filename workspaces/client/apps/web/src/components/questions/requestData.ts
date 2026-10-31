@@ -180,40 +180,29 @@ const numberValue = (value: unknown): number | undefined =>
 export function browserOpenDetails(
   approval: Approval,
 ): BrowserOpenDetails | undefined {
-  if (approval.request.kind !== "browser_open") return undefined;
-  const params = objectValue(approvalParams(approval));
-  const host = stringValue(params.host);
-  const url = approval.request.url;
+  const request = approval.request;
+  if (request.kind !== "browser_open") return undefined;
+  const { host, url, redirect, phase } = request;
   if (!host || !url) return undefined;
-  const redirect = objectValue(params.redirect);
-  const port = numberValue(redirect.port);
-  const redirectPath = stringValue(redirect.path);
-  const clientId = stringValue(params.clientId);
-  const scope = stringValue(params.scope);
-  const linuxUser = stringValue(params.linuxUser);
-  const source = stringValue(params.source);
-  const userCode = stringValue(params.userCode);
-  const expiresAt = numberValue(params.expiresAt);
-  const waitingExpiresAt = numberValue(objectValue(params.waiting).expiresAt);
-  const joined = Array.isArray(params.joined)
-    ? params.joined.filter(
-        (agent): agent is string => typeof agent === "string",
-      )
-    : [];
+  const waiting =
+    phase.kind === "waiting" || phase.kind === "pasted"
+      ? phase.expires_at
+      : undefined;
   return {
     host,
     url,
-    ...(port !== undefined ? { port } : {}),
-    ...(port !== undefined && redirectPath ? { redirectPath } : {}),
-    ...(clientId ? { clientId } : {}),
-    ...(scope ? { scope } : {}),
-    ...(linuxUser ? { linuxUser } : {}),
-    ...(source ? { source } : {}),
-    ...(userCode ? { userCode } : {}),
-    ...(params.phase === "waiting" ? { phase: "waiting" as const } : {}),
-    ...(expiresAt !== undefined ? { expiresAt } : {}),
-    ...(waitingExpiresAt !== undefined ? { waitingExpiresAt } : {}),
-    ...(isJsonObject(params.paste) ? { pasteSent: true } : {}),
-    ...(joined.length ? { joined } : {}),
+    ...(redirect ? { port: redirect.port, redirectPath: redirect.path } : {}),
+    ...(request.client_id ? { clientId: request.client_id } : {}),
+    ...(request.scope ? { scope: request.scope } : {}),
+    ...(request.linux_user ? { linuxUser: request.linux_user } : {}),
+    source: request.source,
+    ...(request.user_code ? { userCode: request.user_code } : {}),
+    ...(phase.kind === "waiting" || phase.kind === "pasted"
+      ? { phase: "waiting" as const }
+      : {}),
+    ...(request.expires_at !== null ? { expiresAt: request.expires_at } : {}),
+    ...(waiting !== undefined ? { waitingExpiresAt: waiting } : {}),
+    ...(phase.kind === "pasted" ? { pasteSent: true } : {}),
+    ...(request.joined.length ? { joined: request.joined } : {}),
   };
 }
