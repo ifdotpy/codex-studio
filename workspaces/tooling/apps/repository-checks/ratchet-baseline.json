@@ -3602,10 +3602,6 @@
       "fingerprint": "25eb064b5da850b90f51e8e4eec57d15a83381121d4c000c9d8b9f0f98d53026:0"
     },
     {
-      "file": "workspaces/client/apps/web/src/components/shell/MonitorRestart.tsx",
-      "fingerprint": "9217db42f84c8bae50a0c9b0873bf5c390d08fdcca1852450a457563e9a67409:0"
-    },
-    {
       "file": "workspaces/client/apps/web/tests/agents/agent-phase-browser.fixture.tsx",
       "fingerprint": "ef8faf965d18f1b26f79b093501df67122872504c3bbd84994619adfb7a00cc0:0"
     },

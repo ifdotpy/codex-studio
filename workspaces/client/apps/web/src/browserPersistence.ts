@@ -1,3 +1,5 @@
+import { scopedStorage } from "./servers/storage";
+
 /** Browser databases allowed for device keys, credentials, and request fences. */
 export const browserDatabases = {
   deviceKey: "studio-device-key-v1",
@@ -32,6 +34,9 @@ const outboxPrefixes = {
   pairing: "studio-pairing-attempt-v1",
   serverManagement: "studio-server-management-v1:",
   legacyServerManagement: "studio-server-discovery-pending-v1",
+  monitorRestart: "monitor-restart:",
+  processControl: "process-control:",
+  mcpReconnect: "studio-mcp-reconnect:",
 } as const;
 export type OutboxRequestKind = keyof typeof outboxPrefixes;
 
@@ -53,6 +58,18 @@ export function outboxRequests(
     remove: (kind: OutboxRequestKind, suffix: string) =>
       storage.removeItem(key(kind, suffix)),
   };
+}
+
+export function sessionOutboxRequests() {
+  return outboxRequests({
+    getItem: (key) => globalThis.sessionStorage.getItem(key),
+    setItem: (key, value) => globalThis.sessionStorage.setItem(key, value),
+    removeItem: (key) => globalThis.sessionStorage.removeItem(key),
+  });
+}
+
+export function scopedSessionOutbox(prefix: string): Storage {
+  return scopedStorage(() => globalThis.sessionStorage, prefix);
 }
 
 export function outboxRequestKeys(

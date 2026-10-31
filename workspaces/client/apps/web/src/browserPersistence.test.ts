@@ -1,8 +1,9 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   cleanupLegacyPersistence,
   outboxRequestKeys,
   outboxRequests,
+  scopedSessionOutbox,
 } from "./browserPersistence";
 
 it("keeps typed outbox operations at their existing keys", () => {
@@ -29,6 +30,43 @@ it("keeps typed outbox operations at their existing keys", () => {
   ]);
   outbox.remove("nativeAction", "workspace:agent");
   expect(values.size).toBe(0);
+});
+
+it("retains the existing per-server session prefix", () => {
+  const values = new Map<string, string>();
+  vi.stubGlobal("sessionStorage", {
+    get length() {
+      return values.size;
+    },
+    key: (index: number) => [...values.keys()][index] ?? null,
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  });
+  try {
+    const scoped = scopedSessionOutbox(":server:remote:");
+    scoped.setItem("request", "exact body");
+    expect(values.get(":server:remote:request")).toBe("exact body");
+    expect(scoped.getItem("request")).toBe("exact body");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+
+it("replays an existing monitor restart fence without changing its bytes", () => {
+  let saved = '{"request_id":"old","outputPatterns":["ready"]}';
+  const storage = {
+    getItem: (key: string) =>
+      key === "monitor-restart:remote:task" ? saved : null,
+    setItem: (_key: string, value: string) => {
+      saved = value;
+    },
+    removeItem: () => {
+      saved = "";
+    },
+  };
+  const outbox = outboxRequests(storage);
+  expect(outbox.get("monitorRestart", "remote:task")).toBe(saved);
 });
 
 it("removes retired draft and upload data without touching identities", async () => {
