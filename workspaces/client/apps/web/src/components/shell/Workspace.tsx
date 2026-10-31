@@ -1054,10 +1054,7 @@ function inventoryName(value: unknown): string | undefined {
 
 function Profiles(c: Context) {
   const state = useResource("/api/profiles", c.revision),
-    [draft, setDraft] = useFormDraft(
-      `studio-profile-draft:${c.data.stateDir}`,
-      c.notify,
-    ),
+    [draft, setDraft] = useFormDraft(`studio-profile-draft:${c.data.stateDir}`),
     [busy, setBusy] = useState(false),
     [remove, setRemove] = useState<
       GetResult<"/api/profiles">["profiles"][number] | null
@@ -1330,7 +1327,6 @@ function Rules(c: Context) {
     }),
     [draftValue, setDraftValue] = useFormDraft(
       `studio-rule-draft:${JSON.stringify([c.data.stateDir, c.selected?.id])}`,
-      c.notify,
     ),
     [busy, setBusy] = useState(false),
     [remove, setRemove] = useState<RuleRecord | null>(null);
