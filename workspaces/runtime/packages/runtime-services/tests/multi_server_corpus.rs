@@ -352,7 +352,7 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
             let key = key.clone();
             move |tx| {
                 tx.execute(
-                    "UPDATE runtime_server_outbox SET state='running',next_at=0 WHERE id=?1",
+                    "UPDATE runtime_outbox SET status='submitted',next_at=0 WHERE kind='remote_delivery' AND request_id=?1",
                     [&key],
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
@@ -386,7 +386,7 @@ async fn peer_delivery_replays_same_identity_after_lost_receipt_and_restart_once
     let connection = restarted.test_reader().expect("reopened store reads");
     let state: (i64, i64) = connection
         .query_row(
-            "SELECT (SELECT count(*) FROM runtime_server_outbox WHERE id=?1), (SELECT count(*) FROM request_results WHERE id=?1)",
+            "SELECT (SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery' AND request_id=?1), (SELECT count(*) FROM request_results WHERE id=?1)",
             [&key],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -1236,7 +1236,7 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
         .test_reader()
         .expect("read queued stop")
         .query_row(
-            "SELECT next_at,fingerprint FROM runtime_server_outbox WHERE id=?1 AND state='queued'",
+            "SELECT next_at/1000.0,signature FROM runtime_outbox WHERE kind='remote_delivery' AND request_id=?1 AND status='pending'",
             [&outbox_key],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -1591,7 +1591,7 @@ async fn rust_remote_event_outbox_row_matches_python_queue_writer() {
     let connection = store.test_reader().unwrap();
     let (server, body, state, attempts): (String, String, String, i64) = connection
         .query_row(
-            "SELECT server,body,state,attempts FROM runtime_server_outbox WHERE id=?1",
+            "SELECT target,json_extract(payload,'$.record.body'),CASE status WHEN 'pending' THEN 'queued' ELSE 'running' END,json_extract(payload,'$.record.attempts') FROM runtime_outbox WHERE kind='remote_delivery' AND request_id=?1",
             [&key],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
@@ -1692,7 +1692,7 @@ async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "DELETE FROM runtime_server_outbox WHERE id!='python-exec'",
+                    "DELETE FROM runtime_outbox WHERE kind='remote_delivery' AND request_id!='python-exec'",
                     [],
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
@@ -1734,7 +1734,7 @@ async fn python_exec_receipt_row_probes_once_and_settles_from_the_reply() {
         let db = store.test_reader().unwrap();
         let pending: i64 = db
             .query_row(
-                "SELECT count(*) FROM runtime_server_outbox WHERE id='python-exec'",
+                "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery' AND request_id='python-exec'",
                 [],
                 |r| r.get(0),
             )
@@ -1830,7 +1830,7 @@ async fn rust_exec_attempt_writes_the_python_receipt_form_and_never_resends() {
         .test_reader()
         .unwrap()
         .query_row(
-            "SELECT body FROM runtime_server_outbox WHERE id=?1",
+            "SELECT json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery' AND request_id=?1",
             [&key],
             |row| row.get(0),
         )
@@ -1885,7 +1885,7 @@ async fn rust_exec_attempt_writes_the_python_receipt_form_and_never_resends() {
         )
     );
     let (pending, complete): (i64,i64) = store.test_reader().unwrap().query_row(
-        "SELECT (SELECT count(*) FROM runtime_server_outbox WHERE id=?1),(SELECT count(*) FROM request_results WHERE id=?1)", [&key], |row| Ok((row.get(0)?,row.get(1)?)),
+        "SELECT (SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery' AND request_id=?1),(SELECT count(*) FROM request_results WHERE id=?1)", [&key], |row| Ok((row.get(0)?,row.get(1)?)),
     ).unwrap();
     assert_eq!(
         (pending, complete),
@@ -2738,11 +2738,7 @@ async fn multi_server_corpus_witness() {
         .expect("state-check accepts the real Python writers");
     let names: std::collections::BTreeSet<_> = report.tables.iter().map(|t| t.table).collect();
     assert_eq!(names.len(), report.tables.len(), "one report per table");
-    for table in [
-        "runtime_access_clients",
-        "runtime_access_discovered",
-        "runtime_server_outbox",
-    ] {
+    for table in ["runtime_access_clients", "runtime_access_discovered"] {
         let checked = report
             .tables
             .iter()
@@ -3319,7 +3315,7 @@ async fn a_row_that_cannot_be_delivered_does_not_hold_back_later_rows() {
             // Python rewrites some stored bodies after queueing (an exec receipt probe), so
             // the stored body no longer matches the fingerprint of the original request.
             tx.execute(
-                "UPDATE runtime_server_outbox SET body=json_set(body,'$.payload.args.text','changed') WHERE id=?1",
+                "UPDATE runtime_outbox SET payload=json_set(payload,'$.record.body',CAST(json_set(json_extract(payload,'$.record.body'),'$.payload.args.text','changed') AS TEXT)) WHERE kind='remote_delivery' AND request_id=?1",
                 [&key],
             )?;
             Ok::<_, studio_runtime_store::StoreError>(())

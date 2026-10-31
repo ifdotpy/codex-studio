@@ -1231,7 +1231,7 @@ mod tests {
         .expect("paired input queues");
         assert!(result);
         let (server, body): (String, String) = connection
-            .query_row("SELECT server,body FROM runtime_server_outbox", [], |row| {
+            .query_row("SELECT target,json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery'", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .expect("stable outbox row");
@@ -1259,16 +1259,18 @@ mod tests {
         })
         .expect("lost response retry");
         let retry: String = connection
-            .query_row("SELECT body FROM runtime_server_outbox", [], |r| r.get(0))
+            .query_row("SELECT json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery'", [], |r| r.get(0))
             .expect("same outbox");
         assert_eq!(
             serde_json::from_str::<Value>(&retry).unwrap()["requestId"],
             root
         );
         let count: i64 = connection
-            .query_row("SELECT count(*) FROM runtime_server_outbox", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1);
         let public = studio_runtime_schema::persistence::RequestIdentity::issue_root();

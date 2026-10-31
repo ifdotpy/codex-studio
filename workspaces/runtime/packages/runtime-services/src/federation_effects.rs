@@ -749,8 +749,12 @@ pub(crate) fn acknowledge_outbox(
     };
     crate::event_write::settle_request(tx, &admitted, None, &reply)?;
     tx.execute(
-        "DELETE FROM runtime_federation_outbox WHERE id=?1 AND peer_id=?2",
-        params![id, peer],
+        "DELETE FROM runtime_outbox WHERE id=?1",
+        params![studio_runtime_store::remote_outbox::RemoteOutbox::id(
+            studio_runtime_store::remote_outbox::RemoteEffect::FederationMessage,
+            peer,
+            id
+        )],
     )
     .map_err(StoreError::from)?;
     Ok(true)

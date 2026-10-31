@@ -24,6 +24,11 @@ pub enum RemoteEffect {
     UpdateChunk,
     /// `update.release`: tell the paired server that the pull ended.
     UpdateRelease,
+    /// A signed request to a paired server (`runtime_server_outbox`). The body keeps its
+    /// action, so the restart rule depends on the action (see `multi_server_orchestration`).
+    ServerRequest,
+    /// A federation chat or room message (`runtime_federation_outbox`).
+    FederationMessage,
 }
 
 impl RemoteEffect {
@@ -35,6 +40,8 @@ impl RemoteEffect {
             Self::UpdateExport => "update_export",
             Self::UpdateChunk => "update_chunk",
             Self::UpdateRelease => "update_release",
+            Self::ServerRequest => "server_request",
+            Self::FederationMessage => "federation_message",
         }
     }
 
@@ -47,6 +54,9 @@ impl RemoteEffect {
             Self::UpdateOffer | Self::UpdateExport | Self::UpdateChunk | Self::UpdateRelease => {
                 RestartRule::TargetDedupes
             }
+            // The receiver dedupes by request id. Server requests whose action is not
+            // replay safe are held by `hold_unclean_server_requests`.
+            Self::ServerRequest | Self::FederationMessage => RestartRule::TargetDedupes,
         }
     }
 }
@@ -229,6 +239,26 @@ impl RemoteOutbox {
             .transpose()
     }
 
+    /// Every entry of one family, optionally of one target, in insertion order.
+    pub fn entries<T: DeserializeOwned>(
+        db: &Connection,
+        effect: RemoteEffect,
+        target: Option<&str>,
+    ) -> Result<Vec<RemoteEntry<T>>, OutboxError> {
+        let mut query = db.prepare_cached(
+            "SELECT id,target,request_id,signature,status,next_at,payload FROM runtime_outbox \
+             WHERE kind=?1 AND json_extract(payload,'$.effect')=?2 AND (?3 IS NULL OR target=?3) \
+             ORDER BY rowid",
+        )?;
+        let rows = query
+            .query_map(
+                params![OutboxKind::RemoteDelivery, effect.as_str(), target],
+                Self::raw,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter().map(Self::decode).collect()
+    }
+
     fn raw(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawEntry> {
         Ok((
             row.get(0)?,
@@ -254,6 +284,31 @@ impl RemoteOutbox {
             next_at,
             record: payload.record,
         })
+    }
+
+    /// Change an existing entry, or insert it when it does not exist.
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert<T: Serialize>(
+        tx: &Transaction<'_>,
+        effect: RemoteEffect,
+        target: &str,
+        request_id: &str,
+        signature: &str,
+        status: OutboxStatus,
+        next_at: Option<i64>,
+        record: T,
+        created: i64,
+    ) -> Result<(), OutboxError> {
+        let record = serde_json::to_value(record)?;
+        let changed = Self::update(
+            tx, effect, target, request_id, signature, status, next_at, &record,
+        )?;
+        if !changed {
+            Self::put(
+                tx, effect, target, request_id, signature, status, next_at, record, created,
+            )?;
+        }
+        Ok(())
     }
 
     /// Remove the entry in the transaction that saves its result.
@@ -430,5 +485,71 @@ mod tests {
         .unwrap();
         assert_eq!(entry.status, OutboxStatus::Unknown);
         assert_eq!(entry.next_at, None);
+    }
+
+    #[test]
+    fn upsert_inserts_then_changes_and_entries_list_one_family_in_order() {
+        let mut db = database();
+        let tx = db.transaction().unwrap();
+        for (request, text) in [("a", "first"), ("b", "second")] {
+            RemoteOutbox::upsert(
+                &tx,
+                RemoteEffect::FederationMessage,
+                "peer",
+                request,
+                "sig",
+                OutboxStatus::Pending,
+                Some(1),
+                json!({"text": text}),
+                1,
+            )
+            .unwrap();
+        }
+        // Another upsert changes the record and keeps the identity.
+        RemoteOutbox::upsert(
+            &tx,
+            RemoteEffect::FederationMessage,
+            "peer",
+            "a",
+            "sig",
+            OutboxStatus::Committed,
+            None,
+            json!({"text": "changed"}),
+            1,
+        )
+        .unwrap();
+        RemoteOutbox::upsert(
+            &tx,
+            RemoteEffect::ServerFetch,
+            "other",
+            "c",
+            "sig",
+            OutboxStatus::Pending,
+            None,
+            json!({}),
+            1,
+        )
+        .unwrap();
+        let entries = RemoteOutbox::entries::<serde_json::Value>(
+            &tx,
+            RemoteEffect::FederationMessage,
+            Some("peer"),
+        )
+        .unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| e.request_id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        assert_eq!(entries[0].record["text"], "changed");
+        assert_eq!(entries[0].status, OutboxStatus::Committed);
+        assert_eq!(
+            RemoteOutbox::entries::<serde_json::Value>(&tx, RemoteEffect::ServerFetch, None)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

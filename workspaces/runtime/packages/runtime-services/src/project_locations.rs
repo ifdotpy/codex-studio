@@ -210,8 +210,7 @@ mod receipt_tests {
             CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
             CREATE TABLE sync_documents(seq INTEGER);
             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
-            CREATE TABLE runtime_orchestration_settings(id TEXT,record TEXT);
-            CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,server TEXT,body TEXT,state TEXT,result TEXT,error TEXT,fingerprint TEXT,attempts INTEGER DEFAULT 0,created_at REAL DEFAULT 0,completed_at REAL DEFAULT 0);").expect("schema");
+            CREATE TABLE runtime_orchestration_settings(id TEXT,record TEXT);").expect("schema");
         studio_runtime_store::receipt_schema::create(&db).expect("request schema");
         let tx = db.transaction().expect("transaction");
         let Admission::Fresh(admitted) =
@@ -222,9 +221,20 @@ mod receipt_tests {
         ProjectsRepository::put_project(&tx, &case["project"]).expect("project");
         ProjectsRepository::put_location_request(&tx, "/home-project", &key, &admitted)
             .expect("intent");
-        tx.execute(
-            "INSERT INTO runtime_server_outbox(id,server,body,state) VALUES(?1,'peer',?2,'queued')",
-            rusqlite::params![key, raw["body"].to_string()],
+        crate::server_outbox::insert(
+            &tx,
+            "peer",
+            &key,
+            "fingerprint",
+            studio_runtime_schema::persistence::ServerDeliveryState::Queued,
+            0.0,
+            &crate::server_outbox::ServerRequestRecord {
+                body: raw["body"].to_string(),
+                admission: admitted.clone(),
+                attempts: 0,
+                error: None,
+            },
+            1,
         )
         .expect("transport");
         ProjectsRepository::remove(&tx, "/home-project").expect("hide");

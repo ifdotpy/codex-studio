@@ -783,7 +783,7 @@ static CATALOG: &[&dyn Migration] = &[
             id: "2026-10-30-one-outbox",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
-            supported_source: "Pending reservations in runtime_access_outbound and runtime_server_fetch",
+            supported_source: "Pending rows of the four transport outboxes",
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_one_outbox::apply(c.transaction),
@@ -1188,6 +1188,10 @@ fn run_receipt_migrations(
     }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     m2026_10_29_request_results_v2::convert_annotations(&tx)?;
+    tx.commit()?;
+    // The receipt families keep the pending transport rows in their old tables. Move them.
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    m2026_10_30_one_outbox::apply(&tx)?;
     tx.commit()?;
     m2026_10_28_receipts_drop_old_tables::verify_absent(db)
         .map_err(|error| receipt_error(&error))?;

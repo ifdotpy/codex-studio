@@ -309,7 +309,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     let outbox_count: i64 = support::read(fixture.store.clone(), |connection| {
         connection
             .query_row(
-                "SELECT COUNT(*) FROM runtime_server_outbox WHERE state='queued'",
+                "SELECT COUNT(*) FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='server_request' AND status='pending'",
                 [],
                 |row| row.get::<_, i64>(0),
             )
@@ -351,7 +351,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     let (server, raw): (String, String) = support::read(fixture.store.clone(), |connection| {
         connection
             .query_row(
-                "SELECT server,body FROM runtime_server_outbox WHERE state='queued'",
+                "SELECT target,json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='server_request' AND status='pending'",
                 [],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
@@ -527,7 +527,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     let raw = support::read(fixture.store.clone(), move |connection| {
         connection
             .query_row(
-            "SELECT body FROM runtime_server_outbox WHERE server='remote-server' AND json_extract(body,'$.payload.text')=?1",
+            "SELECT json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery' AND target='remote-server' AND json_extract(json_extract(payload,'$.record.body'),'$.payload.text')=?1",
             [&unicode_for_query],
             |row| row.get::<_, String>(0),
         )
@@ -676,7 +676,7 @@ async fn http_queues_remote_anchor_message_as_paired_event_intent() {
     let outbox_count: i64 = support::read(fixture.store.clone(), |connection| {
         connection
             .query_row(
-                "SELECT COUNT(*) FROM runtime_server_outbox WHERE state='queued'",
+                "SELECT COUNT(*) FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='server_request' AND status='pending'",
                 [],
                 |row| row.get::<_, i64>(0),
             )

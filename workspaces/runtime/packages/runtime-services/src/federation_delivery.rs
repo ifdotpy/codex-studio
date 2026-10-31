@@ -160,12 +160,14 @@ pub async fn delivery_deadlines_by_peer(
 ) -> std::result::Result<Vec<(String, f64)>, StoreError> {
     store.read_async("runtime-services/federation_delivery", |connection| {
         let mut statement = connection.prepare(
-                "SELECT peer.id,MIN(CASE WHEN json_type(outbox.record,'$.nextAt') IN ('integer','real') \
-                     THEN CAST(json_extract(outbox.record,'$.nextAt') AS REAL) END) \
-                 FROM runtime_federation_outbox AS outbox \
-                 JOIN runtime_federation_peers AS peer ON peer.id=outbox.peer_id \
-                 WHERE json_extract(peer.record,'$.status')='approved' \
-                   AND json_extract(outbox.record,'$.status')='queued' \
+                "SELECT peer.id,MIN(CASE WHEN json_type(outbox.payload,'$.record.nextAt') IN ('integer','real') \
+                     THEN CAST(json_extract(outbox.payload,'$.record.nextAt') AS REAL) END) \
+                 FROM runtime_outbox AS outbox \
+                 JOIN runtime_federation_peers AS peer ON peer.id=outbox.target \
+                 WHERE outbox.kind='remote_delivery' \
+                   AND json_extract(outbox.payload,'$.effect')='federation_message' \
+                   AND json_extract(peer.record,'$.status')='approved' \
+                   AND json_extract(outbox.payload,'$.record.status')='queued' \
                  GROUP BY peer.id ORDER BY peer.id",
             )?;
         let rows = statement.query_map([], |row| {
@@ -806,7 +808,10 @@ mod tests {
                 for (peer_id, status) in [("approved", "approved"), ("pending", "pending")] {
                     tx.execute(
                         "INSERT INTO runtime_federation_peers(id,record) VALUES (?1,?2)",
-                        rusqlite::params![peer_id, json!({"id":peer_id,"status":status}).to_string()],
+                        rusqlite::params![
+                            peer_id,
+                            json!({"id":peer_id,"status":status}).to_string()
+                        ],
                     )?;
                 }
                 for (id, peer, status, due) in [
@@ -814,9 +819,16 @@ mod tests {
                     ("earlier-but-unapproved", "pending", "queued", 1.0),
                     ("done", "approved", "delivered", 0.0),
                 ] {
-                    tx.execute(
-                        "INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES (?1,?2,?3)",
-                        rusqlite::params![id, peer, json!({"status":status,"kind":"chat-message","nextAt":due}).to_string()],
+                    studio_runtime_store::remote_outbox::RemoteOutbox::put(
+                        tx,
+                        studio_runtime_store::remote_outbox::RemoteEffect::FederationMessage,
+                        peer,
+                        id,
+                        "signature",
+                        studio_runtime_schema::persistence::OutboxStatus::Pending,
+                        Some(1),
+                        json!({"status":status,"kind":"chat-message","nextAt":due}),
+                        1,
                     )?;
                 }
                 Ok(())
