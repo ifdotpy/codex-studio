@@ -1,0 +1,22 @@
+name: release-please
+
+# Keeps a release pull request with the next version and its notes (CHANGELOG.md) from the
+# Conventional Commits on main. Merging that pull request tags the version and makes the
+# GitHub release. It builds and installs nothing.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

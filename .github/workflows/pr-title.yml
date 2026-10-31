@@ -1,0 +1,31 @@
+name: pr-title
+
+# Pull requests merge by squash, and the title becomes the commit on main.
+# release-please writes the release notes from these commits (AGENTS.md).
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  title:
+    name: Conventional Commit subjects
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check the title and the commit subjects
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git log --format=%s "$BASE..$HEAD" > subjects.txt
+          { printf '%s\n' "$TITLE"; cat subjects.txt; } | tr '\n' '\0' | xargs -0 node workspaces/tooling/apps/repository-checks/conventional-commit.ts
