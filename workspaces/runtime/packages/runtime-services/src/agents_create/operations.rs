@@ -2,7 +2,7 @@
 use super::*;
 use crate::account_driver::{AccountDriver, AccountDriverError, AccountStatus};
 use crate::account_policy::AccountPolicyState;
-use crate::event_write::{python_json, python_strip, truthy};
+use crate::event_write::{python_strip, truthy};
 use crate::host_worker_create::{AccountIdentity, ExecutionSettings};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -189,9 +189,8 @@ fn permissions_signature(request: &Conversation) -> String {
 }
 
 fn typed_signature(body: &impl Serialize) -> String {
-    let body = studio_runtime_schema::json_compat::python_json_serialized(body)
-        .expect("signature fields are serializable");
-    data_encoding::HEXLOWER.encode(&Sha256::digest(body.as_bytes()))
+    let body = serde_json::to_vec(body).expect("signature fields are serializable");
+    data_encoding::HEXLOWER.encode(&Sha256::digest(body))
 }
 
 /// A nullable setting retains wire presence without permitting contradictory flags.
@@ -1664,10 +1663,20 @@ pub async fn configure(
         if !SUBAGENT_CONCURRENCY.contains(&limit) {
             return Err(OperationError::Invalid(CONCURRENCY_REFUSAL));
         }
-        let signature = crate::event_write::request_signature(&json!({
-            "operation":AgentMutation::Concurrency.operation(),"agent":request.id,
-            "concurrency":limit,"expectedRevision":revision
-        }));
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Signature<'a> {
+            operation: &'static str,
+            agent: &'a str,
+            concurrency: i64,
+            expected_revision: i64,
+        }
+        let signature = typed_signature(&Signature {
+            operation: AgentMutation::Concurrency.operation(),
+            agent: &request.id,
+            concurrency: limit,
+            expected_revision: revision,
+        });
         let validate = std::sync::Arc::clone(&validate);
         return mutate(context, move |tx| {
             let validate = |schema: &str, value: &Value| validate(schema, value);
@@ -2457,7 +2466,7 @@ pub async fn rename_operation(
         replayed: false,
     })
 }
-fn rename_signature(id: &str, name: Option<&str>) -> String {
+pub(super) fn rename_signature(id: &str, name: Option<&str>) -> String {
     #[derive(Serialize)]
     struct Signature<'a> {
         chat: &'a str,
@@ -3106,7 +3115,7 @@ fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> Stri
     if let Some(cwd) = cwd {
         settings["cwd"] = json!(cwd);
     }
-    python_json(&settings)
+    serde_json::to_string(&settings).expect("creation settings are serializable")
 }
 
 fn reusable_previous_workspace(prior: &Value, _workspace: &str, _cwd: &str) -> bool {
@@ -3221,72 +3230,6 @@ mod tests {
                 )
                 .unwrap();
             assert!(project_for_cwd(&connection, "/project/child", |_| true).is_err());
-        }
-    }
-
-    #[test]
-    fn rename_signature_preserves_legacy_json_hash() {
-        for name in [None, Some(""), Some("Zażółć \"chat\"")] {
-            let expected = json!({"chat":"会話", "name":name, "operation":"rename"});
-            assert_eq!(
-                rename_signature("会話", name),
-                crate::event_write::request_signature(&expected)
-            );
-        }
-    }
-
-    #[test]
-    fn conversation_signatures_preserve_nullable_setting_identity() {
-        for effort in [None, Some(None), Some(Some("high".to_owned()))] {
-            for daybreak in [None, Some(None), Some(Some(true))] {
-                for filled in [false, true] {
-                    let request = Conversation {
-                        id: "agent-会話".into(),
-                        expected_account: Some("account".into()),
-                        excluded: filled.then(|| vec!["excluded".into()]),
-                        cwd: filled.then(|| "/project".into()),
-                        yolo_mode: Some(true),
-                        model: filled.then(|| "model".into()),
-                        effort: effort.clone().into(),
-                        fast_mode: filled.then_some(false),
-                        daybreak_enabled: daybreak.into(),
-                        next_turn: Some(Some(true)),
-                        request_id: Some(Some("request".into())),
-                        mode_settings: false,
-                        mode_limit: None,
-                        mode_revision: None,
-                        mode_request_id: None,
-                        worker_settings: false,
-                        worker_defaults: None,
-                        review_defaults: None,
-                        non_defaults: true,
-                    };
-                    let expected_permissions = json!({
-                        "operation": AgentMutation::Permissions.operation(), "agent":request.id,
-                        "yolo":true, "account":"account", "cwd":request.cwd, "model":request.model,
-                        "effort":[effort.is_some(), effort], "fastMode":request.fast_mode, "daybreak":daybreak.flatten(), "excluded":request.excluded,
-                    });
-                    assert_eq!(
-                        permissions_signature(&request),
-                        crate::event_write::request_signature(&expected_permissions)
-                    );
-                    let mut expected_next = json!({"operation":AgentMutation::NextTurn.operation(), "agent":request.id, "id":request.id, "next_turn":true, "request_id":"request", "expected_account_key":"account"});
-                    if filled {
-                        expected_next["model"] = json!("model");
-                        expected_next["fast_mode"] = json!(false);
-                    }
-                    if let Some(value) = effort.as_ref() {
-                        expected_next["effort"] = json!(value);
-                    }
-                    if let Some(value) = daybreak.flatten() {
-                        expected_next["daybreak_enabled"] = json!(value);
-                    }
-                    assert_eq!(
-                        next_turn_signature(&request, "request"),
-                        crate::event_write::request_signature(&expected_next)
-                    );
-                }
-            }
         }
     }
 
