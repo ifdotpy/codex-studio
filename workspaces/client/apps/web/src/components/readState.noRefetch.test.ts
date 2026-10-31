@@ -63,6 +63,9 @@ it.each([false, true])(
       "workspace",
     );
     state.observeRead({ id: "lead", threadId: "thread", turnId: "turn" });
+    expect(h.post).not.toHaveBeenCalled();
+    state.select("lead");
+    state.observeRead({ id: "lead", threadId: "thread", turnId: "turn" });
     expect(h.post).toHaveBeenCalledTimes(1);
     await Promise.resolve();
     await Promise.resolve();

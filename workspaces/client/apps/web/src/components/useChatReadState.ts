@@ -98,6 +98,7 @@ export function useChatReadState(
   }
   const latest = useRef({ data, opened, notify, refresh, workspaceId });
   latest.current = { data, opened, notify, refresh, workspaceId };
+  const selected = useRef<string | null>(null);
   const readStateFor = useCallback(
     (agent: Agent): ChatReadState | null => {
       const saved = agent.readState ?? null;
@@ -259,13 +260,26 @@ export function useChatReadState(
     await writeCurrent.current(proof, false);
   }, []);
   const observeRead = useCallback((proof: ChatReadProof) => {
+    if (selected.current !== proof.id) return;
+    selected.current = null;
     void writeCurrent.current(proof, true);
+  }, []);
+  const select = useCallback((id: string) => {
+    selected.current = id;
+    if (latest.current.opened !== id) return;
+    const agent = latest.current.data?.threads.find((row) => row.id === id);
+    const proof = agent && completed(agent);
+    if (proof) {
+      selected.current = null;
+      void writeCurrent.current(proof, true);
+    }
   }, []);
   return {
     readStateFor,
     marking: new Set(scope.current.requests.keys()),
     markUnread,
     observeRead,
+    select,
   };
 }
 
