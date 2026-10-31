@@ -921,7 +921,15 @@ pub fn apply_with_rule(
     }
     if before.record() != &decision.record {
         Table::new(tx).put(&decision.record)?;
-        crate::agent_progress::publish_owner(tx, &actor.id.0)?;
+        if decision.effects.is_empty() {
+            crate::agent_progress::publish_monitor_owner_change(
+                tx,
+                before.record(),
+                &decision.record,
+            )?;
+        } else {
+            crate::agent_progress::publish_owner(tx, &actor.id.0)?;
+        }
         crate::sync_policy::publish_monitor_change(tx, Some(before), &after)?;
     }
     Ok(())
