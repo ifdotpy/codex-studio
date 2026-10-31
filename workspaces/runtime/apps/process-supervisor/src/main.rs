@@ -1,4 +1,7 @@
 //! Explicit standalone entry point; service installation remains an operator action.
+#[cfg(test)]
+extern crate studio_test_deps;
+
 fn main() -> std::process::ExitCode {
     let mut args = std::env::args_os().skip(1);
     let mut state = None;
@@ -35,6 +38,3 @@ fn main() -> std::process::ExitCode {
         std::process::ExitCode::FAILURE
     }
 }
-
-#[cfg(test)]
-extern crate studio_test_deps;

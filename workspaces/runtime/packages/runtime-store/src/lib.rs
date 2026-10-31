@@ -1,3 +1,6 @@
+#[cfg(test)]
+extern crate studio_test_deps;
+
 pub mod account_registry;
 pub mod agent_columns;
 pub mod agent_volatile;
@@ -5167,6 +5170,3 @@ mod projection_adapter_tests {
         assert_eq!(projected, serde_json::json!({"name":"sample", "count":3}));
     }
 }
-
-#[cfg(test)]
-extern crate studio_test_deps;

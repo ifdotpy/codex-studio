@@ -2,8 +2,7 @@
 //! backend restart) and records the platform's native start identity.
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 #![allow(clippy::unwrap_used)]
-#[path = "../../../packages/runtime-process/tests/support/mod.rs"]
-mod support;
+use crate::process_support as support;
 use studio_runtime_process::HealthRequest;
 use support::*;
 
