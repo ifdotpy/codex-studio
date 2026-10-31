@@ -1583,7 +1583,7 @@
       "agent": "8b4f3a85-0811-422b-9493-63abf5b601e6",
       "record": {
         "id": "8b4f3a85-0811-422b-9493-63abf5b601e6:preview",
-        "role": "tool",
+        "role": "output",
         "title": "commandExecution",
         "text": "{\"command\": \"printf review\", \"cwd\": \"/fixture\", \"changes\": [{\"path\": \"file.txt\", \"kind\": \"update\"}]}",
         "truncated": false,
@@ -1643,6 +1643,7 @@
     {
       "id": "/fixture/callbacks",
       "path": "/fixture/callbacks",
+      "peerTeams": [],
       "name": "template",
       "created": 1792684423.9519954,
       "accountKey": "default",
