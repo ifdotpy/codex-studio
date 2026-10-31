@@ -39,14 +39,8 @@ mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
-<<<<<<< head
 mod m2026_10_30_approvals;
 mod m2026_10_30_outbox_reopen;
-mod m2026_10_30_domain_model;
-||||||| base
-mod m2026_10_30_domain_model;
-=======
->>>>>>> origin/main
 mod m2026_10_30_branch_phase;
 mod m2026_10_30_capture_errors;
 mod m2026_10_30_command_path;
