@@ -172,6 +172,12 @@ fn project_domain(mut project: Value) -> Value {
     if let Some(fields) = project.as_object_mut() {
         fields.remove("registration");
         fields.remove("locationIntents");
+        // The persisted record tag is storage shape, not part of the corpus domain view.
+        assert_eq!(
+            fields.remove("recordKind"),
+            Some(Value::String("live".into())),
+            "stored project carries the live record kind"
+        );
     }
     project
 }

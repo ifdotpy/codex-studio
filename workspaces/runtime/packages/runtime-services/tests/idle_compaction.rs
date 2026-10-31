@@ -159,52 +159,6 @@ async fn fixture(path: &std::path::Path, mode: Mode) -> (Arc<RuntimeStore>, Epis
 }
 
 #[tokio::test]
-async fn episode_index_upgrade_preserves_deadlines_and_rolls_back_on_failure() {
-    let root = tempfile::tempdir().unwrap();
-    let (store, episode) = fixture(root.path(), Mode::Compact).await;
-    let ddl: String = store
-        .test_reader()
-        .unwrap()
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE name='runtime_idle_compaction_deadline'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    drop(store);
-    let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).unwrap();
-    db.execute_batch("DROP INDEX runtime_idle_compaction_deadline; ALTER TABLE runtime_agents DROP COLUMN idle_episode_type; ALTER TABLE runtime_agents DROP COLUMN idle_episode_fire_at; ALTER TABLE runtime_agents DROP COLUMN idle_episode_id; CREATE TABLE runtime_idle_compaction_deadline(id TEXT);").unwrap();
-    drop(db);
-    assert!(RuntimeStore::open(Some(root.path())).await.is_err());
-    let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3")).unwrap();
-    let columns: i64 = db
-        .query_row(
-            "SELECT count(*) FROM pragma_table_xinfo('runtime_agents') WHERE name IN ('idle_episode_type','idle_episode_fire_at','idle_episode_id')",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(columns, 0, "failed migration rolls back the column rebuild");
-    db.execute_batch("DROP TABLE runtime_idle_compaction_deadline")
-        .unwrap();
-    drop(db);
-    for _ in 0..2 {
-        let store = reopen(root.path()).await;
-        let current: String = store
-            .test_reader()
-            .unwrap()
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE name='runtime_idle_compaction_deadline'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(current, ddl, "fresh and migrated index DDL agree");
-        assert_eq!(idle::next(&store).await.unwrap().unwrap().1.id, episode.id);
-    }
-}
-
-#[tokio::test]
 async fn five_minute_sleep_episode_uses_actual_ttl_and_unload_deadline() {
     let root = tempfile::tempdir().unwrap();
     let (store, _) = fixture(root.path(), Mode::Compact).await;

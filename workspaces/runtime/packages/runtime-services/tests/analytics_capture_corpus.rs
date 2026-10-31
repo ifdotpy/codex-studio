@@ -24,6 +24,9 @@ fn fixture() -> (Connection, Value) {
         db.execute_batch(object["sql"].as_str().expect("DDL"))
             .expect("analytics schema");
     }
+    // A fresh state starts the usage revision clock at zero; no migration seeds it any more.
+    db.execute("INSERT INTO analytics_usage_revision_clock VALUES(0)", [])
+        .expect("revision clock");
     studio_runtime_store::cost_aggregate::install(&db).expect("cost aggregate");
     (db, common::agent())
 }
