@@ -216,6 +216,8 @@ struct LoopActivity {
     completed_ticks: AtomicUsize,
     deadline_reads: AtomicUsize,
     wait_cycles: AtomicUsize,
+    /// Event waits entered while the stall cursor was mid-traversal.
+    incomplete_waits: AtomicUsize,
     /// Event waits that a durable or retry deadline ended, not a wake signal.
     timer_wakes: AtomicUsize,
     /// Whether the latest event wait had a deadline.
@@ -1608,6 +1610,16 @@ pub fn start(
                     .loop_activity
                     .wait_cycles
                     .fetch_add(1, Ordering::SeqCst);
+                if runtime
+                    .scan
+                    .try_lock()
+                    .is_ok_and(|scan| scan.stall_monitor.as_deref() != Some(""))
+                {
+                    runtime
+                        .loop_activity
+                        .incomplete_waits
+                        .fetch_add(1, Ordering::SeqCst);
+                }
                 runtime.loop_activity.waited.notify_one();
             }
             loop {
@@ -2561,6 +2573,9 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let task = super::start(runtime.clone(), shutdown_rx);
         wait_for_calls(&port, 1).await;
+        // The first tick can finish before the watcher registers the root; an
+        // event for a directory created earlier is never delivered.
+        wait_for_watch_directory(&runtime, root.path()).await;
         let first_watch_event = runtime.loop_activity.watch_events.load(Ordering::SeqCst) + 1;
         let new_ancestor = root.path().join("new-directory");
         std::fs::create_dir(&new_ancestor).expect("create watched ancestor");
@@ -2764,6 +2779,9 @@ mod tests {
         let page_count = monitor_count.div_ceil(crate::monitor_runtime::MONITOR_TICK_BATCH);
         // The probe commit leaves a wake pending, so a new cycle traverses the
         // same pages once more before the runtime can enter its idle wait.
+        // Native watcher events of the fixture files arrive at unpredictable
+        // times and add whole traversals, so the test asserts the invariant at
+        // every wait (a finished cursor) and a lower bound on ticks.
         let expected_ticks = page_count * 2;
         let active_at = crate::event_write::unix_time().expect("read fixture time");
         store
@@ -2809,15 +2827,15 @@ mod tests {
         wait_for_calls(&port, expected_ticks).await;
         wait_for_completed_ticks(&runtime, expected_ticks).await;
         wait_for_cycles(&runtime, page_count).await;
-        assert!(
-            runtime.scan.lock().await.stall_monitor.as_deref() == Some(""),
-            "both cursor traversals must finish before claiming the loop is idle"
+        assert_eq!(
+            runtime
+                .loop_activity
+                .incomplete_waits
+                .load(Ordering::SeqCst),
+            0,
+            "every idle wait must follow a finished cursor traversal"
         );
         assert_eq!(port.probes.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            runtime.loop_activity.ticks.load(Ordering::SeqCst),
-            expected_ticks
-        );
         let ticks = runtime.loop_activity.ticks.load(Ordering::SeqCst);
         tokio::time::pause();
         tokio::time::advance(Duration::from_secs(5)).await;
