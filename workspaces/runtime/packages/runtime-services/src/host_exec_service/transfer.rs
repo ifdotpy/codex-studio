@@ -129,6 +129,14 @@ impl HostService {
             .collect()
     }
 
+    pub(crate) fn cache_paths(items: &[String]) -> Result<Vec<String>, HostExecError> {
+        require(items.len() <= MAX_CACHES, "Invalid cache folders", INVALID)?;
+        items
+            .iter()
+            .map(|item| protocol::relative(Some(&protocol::text_value(item))))
+            .collect()
+    }
+
     /// The project's folder on this Mac (`layr-projects/<project>/project.json` "source").
     pub(crate) fn project_folder(&self, project_id: &str) -> Option<PathBuf> {
         if !slots::project_folder_name(project_id) {

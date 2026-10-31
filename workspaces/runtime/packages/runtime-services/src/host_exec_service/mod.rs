@@ -121,9 +121,29 @@ struct RetireParams {
 #[derive(serde::Deserialize)]
 struct HealthParams {}
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunParams {
+    operation_id: String,
+    agent_id: String,
+    argv: Vec<String>,
+    manifest_sha256: String,
+    #[serde(default)]
+    timeout_seconds: Option<f64>,
+    #[serde(default)]
+    caches: Vec<String>,
+    #[serde(default)]
+    layr_state: Option<String>,
+    #[serde(default)]
+    layr_tree: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
 enum FrameParams {
     Health,
     Retire(RetireParams),
+    Run(RunParams),
     // Existing dispatch until each remaining method has its own typed variant.
     Legacy(Map<String, Value>),
 }
@@ -649,15 +669,37 @@ impl HostService {
             method if method.starts_with("sync.") => {
                 self.sync_entry(method, &identity, &op, &slot, &mac_only, params)
             }
-            "run" => self
-                .run(&identity, op, slot, mac_only, params)
-                .await
-                .map(Value::Object),
             "cancel" => self.cancel(&identity, &mut op).await.map(Value::Object),
             "release" => self
                 .release(&identity, op, &slot, params)
                 .map(Value::Object),
             _ => Err(HostExecError::new(INVALID, "Unknown host method").into()),
+        }
+    }
+
+    async fn dispatch_frame(
+        self: &Arc<Self>,
+        method: &str,
+        params: &FrameParams,
+    ) -> Outcome<Value> {
+        match params {
+            FrameParams::Legacy(params) => self.dispatch(method, params).await,
+            FrameParams::Run(params) => {
+                let op = self.load(&params.operation_id)?;
+                require(
+                    text(&op, "agentId") == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                let mac_only = string_list(&op, "macOnly");
+                self.run(&params.operation_id, op, slot, mac_only, params)
+                    .await
+                    .map(Value::Object)
+            }
+            FrameParams::Health | FrameParams::Retire(_) => {
+                Err(HostExecError::new(INVALID, "Invalid request").into())
+            }
         }
     }
 
@@ -772,6 +814,10 @@ impl HostService {
                 serde_json::from_str(raw)
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
+            "run" => FrameParams::Run(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
             _ => FrameParams::Legacy(
                 serde_json::from_str(raw)
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
@@ -806,12 +852,9 @@ impl HostService {
             return Ok(json!({"id": id, "result": {
                 "state": "retiring", "buildId": self.build_id, "pid": std::process::id()}}));
         }
-        let FrameParams::Legacy(params) = params else {
-            return Err(HostExecError::new(INVALID, "Invalid request").into());
-        };
         if READ_METHODS.contains(&method.as_str()) {
             self.inner().reading += 1;
-            let result = self.dispatch(&method, &params).await;
+            let result = self.dispatch_frame(&method, &params).await;
             self.inner().reading -= 1;
             return Ok(json!({"id": id, "result": result?}));
         }
@@ -862,7 +905,7 @@ impl HostService {
         let service = Arc::clone(self);
         let task_id = id.clone();
         tokio::spawn(async move {
-            let result = match service.dispatch(&method, &params).await {
+            let result = match service.dispatch_frame(&method, &params).await {
                 Ok(value) => json!({"id": task_id, "result": value}),
                 Err(Failure::Refused(error)) => json!({"id": task_id, "error": error.object()}),
                 Err(Failure::Unexpected(message)) => {
