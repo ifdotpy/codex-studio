@@ -1,3 +1,4 @@
+import { outboxRequests } from "../browserPersistence";
 import { useServerFileDialogs } from "../servers/ServerServicesContext";
 import {
   localSidebarBackend,
@@ -220,11 +221,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       return false;
     }
   };
-  const {
-    saved,
-    storage: localStorage,
-    editPreference: writePreferenceEdit,
-  } = services.cache;
+  const { editPreference: writePreferenceEdit } = services.cache;
   reportPromptComposerRender("sidebar");
   const runtime = p.data.runtime;
   const aliases = useServerAliases(readServerAliases);
@@ -293,27 +290,17 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const [organizing, setOrganizing] = useState<string | null>(null);
   const organizationLock = useRef(false);
   type Conversion = { source: Agent; target: Agent; project: NavigableProject };
-  const conversionKey = `studio-peer-conversion-dialog:${p.data.stateDir}`;
-  const [conversion, updateConversion] = useState<Conversion | null>(() =>
-    saved(conversionKey, null),
-  );
-  const setConversion = (value: Conversion | null) => {
-    try {
-      localStorage.setItem(conversionKey, JSON.stringify(value));
-      updateConversion(value);
-    } catch (error) {
-      p.notify?.(`Could not save the conversion request: ${String(error)}`);
-    }
-  };
+  const [conversion, setConversion] = useState<Conversion | null>(null);
   const closeConversion = () => {
     try {
       if (
         conversion &&
-        services
-          .owner({ kind: "chat", id: conversion.source.id })
-          .storage.getItem(
-            `studio-peer-convert:${p.data.stateDir}:${conversion.source.id}:${conversion.target.id}`,
-          )
+        outboxRequests(
+          services.owner({ kind: "chat", id: conversion.source.id }).storage,
+        ).get(
+          "projectSave",
+          `${p.data.stateDir}:${conversion.source.id}:${conversion.target.id}`,
+        )
       ) {
         p.notify?.(
           "Retry the saved request to confirm its result before closing.",

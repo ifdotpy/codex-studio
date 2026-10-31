@@ -40,6 +40,7 @@ it("removes retired draft and upload data without touching identities", async ()
     ["codex-sidebar-order:scope", "cached"],
     ["codex-sidebar-order:scope:pending", "pending"],
     ["studio-removed-messages:chat", "old"],
+    ["studio-peer-conversion-dialog:state", "old"],
     [
       "studio-agent-mode:with-pending",
       JSON.stringify({

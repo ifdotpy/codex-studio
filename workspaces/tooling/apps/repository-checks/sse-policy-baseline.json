@@ -56,10 +56,6 @@
     "callee": "syncGet"
   },
   {
-    "file": "components/Sidebar.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
     "file": "components/TerminalDock.tsx",
     "callee": "syncPost"
   },

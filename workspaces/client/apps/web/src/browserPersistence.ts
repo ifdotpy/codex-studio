@@ -132,6 +132,7 @@ export async function cleanupLegacyPersistence(
     "studio-workspace-panel-width:",
     "studio-sidebar-width:",
     "studio-removed-messages:",
+    "studio-peer-conversion-dialog:",
   ];
   const keys = Array.from({ length: storage.length }, (_, index) =>
     storage.key(index),
