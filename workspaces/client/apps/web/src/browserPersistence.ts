@@ -21,6 +21,7 @@ const outboxPrefixes = {
   nativeAction: "studio-native-action:",
   stableRequest: "request-id:",
   chatCreation: "codex-pending-creation:",
+  complaintResponse: "studio-message-responses:",
   projectSave: "studio-peer-convert:",
   queueChange: "studio-queue-change:",
   removeSending: "studio-remove-sending:",

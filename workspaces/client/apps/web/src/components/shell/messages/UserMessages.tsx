@@ -2,7 +2,6 @@ import { useSubscription } from "../../../sync/subscriptions";
 import {
   useServerApi,
   useServerStorage,
-  useServerLocalDrafts,
 } from "../../../servers/ServerServicesContext";
 import { Button, Textarea } from "@mantine/core";
 import { useEffect, useMemo, useState } from "react";
@@ -17,6 +16,8 @@ import AgentAvatar from "../../agents/AgentAvatar";
 
 import {
   complaintReplyRequest,
+  complaintResponseStore,
+  isDefinitiveComplaintRefusal,
   submitComplaintResponse,
   type UserComplaintResponse,
 } from "./complaintReplyRequest";
@@ -63,8 +64,12 @@ function MessageResponse({
   notify: (s: string) => void;
   onResponse: (c: ComplaintDetailResponse) => void;
 }) {
-  const { get, post, save } = useServerApi();
-  const { writeLocalDraft } = useServerLocalDrafts();
+  const { get, post } = useServerApi();
+  const storage = useServerStorage();
+  const responseStore = complaintResponseStore(
+    storage,
+    pendingKey.slice("studio-message-responses:".length),
+  );
   const { replyDrafts } = useMessageCache();
 
   const draftKey = JSON.stringify([pendingKey, detail.id]);
@@ -88,14 +93,14 @@ function MessageResponse({
       text.trim(),
       status,
     );
+    const existing = requests.get(detail.id);
     requests.set(detail.id, payload);
-    const storageError = writeLocalDraft(
-      pendingKey,
-      Object.fromEntries(requests),
-    );
-    if (storageError) {
-      requests.delete(detail.id);
-      setError(storageError);
+    try {
+      responseStore.write(requests);
+    } catch (failure) {
+      if (existing) requests.set(detail.id, existing);
+      else requests.delete(detail.id);
+      setError(errorText(failure));
       return;
     }
     setSending(true);
@@ -108,8 +113,10 @@ function MessageResponse({
           post("/api/complaints", request, { sessionToken }),
         (id) => get("/api/complaint", { query: { id } }),
       );
+      const remaining = new Map(requests);
+      remaining.delete(detail.id);
+      responseStore.write(remaining);
       requests.delete(detail.id);
-      save(pendingKey, Object.fromEntries(requests));
       setRetry(false);
       replyDrafts.delete(draftKey);
       setText("");
@@ -122,9 +129,16 @@ function MessageResponse({
       }
     } catch (failure) {
       if (failure instanceof ApiError) {
-        if (failure.status >= 400 && failure.status < 500) {
+        if (isDefinitiveComplaintRefusal(failure.status)) {
+          const remaining = new Map(requests);
+          remaining.delete(detail.id);
+          try {
+            responseStore.write(remaining);
+          } catch (storageFailure) {
+            setError(errorText(storageFailure));
+            return;
+          }
           requests.delete(detail.id);
-          save(pendingKey, Object.fromEntries(requests));
           setRetry(false);
           if (
             failure.status === 409 ||
@@ -215,18 +229,24 @@ export default function UserMessages({
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 }) {
-  const { saved } = useServerApi();
-
+  const storage = useServerStorage();
   const pendingKey = `studio-message-responses:${data.stateDir}`;
-  const responseRequests = useMemo(
-    () =>
-      new Map<string, UserComplaintResponse>(
-        Object.entries(
-          saved<Record<string, UserComplaintResponse>>(pendingKey, {}),
+  const pending = useMemo(() => {
+    try {
+      return {
+        requests: new Map(
+          Object.entries(complaintResponseStore(storage, data.stateDir).read()),
         ),
-      ),
-    [pendingKey],
-  );
+        error: "",
+      };
+    } catch {
+      return {
+        requests: new Map<string, UserComplaintResponse>(),
+        error:
+          "The saved response request cannot be read. Resolve it before sending another response.",
+      };
+    }
+  }, [pendingKey, storage]);
   const records = data.runtime.complaints.filter(
     (message) =>
       recipient(message) === target &&
@@ -234,19 +254,23 @@ export default function UserMessages({
   );
   return (
     <section className="user-message-list">
-      {records.map((message) => (
-        <UserMessage
-          key={JSON.stringify([data.stateDir, message.id])}
-          message={message}
-          data={data}
-          focused={message.id === focusId}
-          focusRequestId={focusRequestId}
-          requests={responseRequests}
-          pendingKey={pendingKey}
-          refresh={refresh}
-          notify={notify}
-        />
-      ))}
+      {pending.error ? (
+        <p role="alert">{pending.error}</p>
+      ) : (
+        records.map((message) => (
+          <UserMessage
+            key={JSON.stringify([data.stateDir, message.id])}
+            message={message}
+            data={data}
+            focused={message.id === focusId}
+            focusRequestId={focusRequestId}
+            requests={pending.requests}
+            pendingKey={pendingKey}
+            refresh={refresh}
+            notify={notify}
+          />
+        ))
+      )}
       {!hideEmpty && !records.length && (
         <p className="notice">No messages yet.</p>
       )}
