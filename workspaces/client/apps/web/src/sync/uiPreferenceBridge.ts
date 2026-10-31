@@ -4,7 +4,6 @@ import {
   setPreferenceWriteStatus,
 } from "./uiPreferenceStatus";
 import type { syncPost } from "../api";
-import { onResume } from "./resume";
 import {
   acknowledgePreferenceFields,
   initializePreferenceMigration,
@@ -117,7 +116,6 @@ export function createUiPreferenceBridge(
       confirmed[scope] = serialized;
       receivePreferenceFields(scope, fields, storage);
     }
-    void send();
   };
 
   return {
@@ -128,16 +126,10 @@ export function createUiPreferenceBridge(
       active = true;
       initializePreferenceMigration("user", storage);
       initializePreferenceMigration("server", storage);
-      for (const scope of ["user", "server"] as const) {
-        if (Object.keys(readPreferenceFields(scope, storage)).length)
-          setPreferenceWriteStatus(storage, scope, { state: "saving" });
-      }
       const stopRetry = registerPreferenceRetry(storage, () => void send(true));
       const stopWrites = watchPreferenceWrites(() => void send());
-      const stopResume = onResume(() => void send(true));
       return () => {
         active = false;
-        stopResume();
         stopWrites();
         stopRetry();
       };
