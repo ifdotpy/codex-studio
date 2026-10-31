@@ -745,6 +745,7 @@ mod tests {
         };
         drop(store);
         let mut previous_indexes = None;
+        let mut previous_schema_cookie = None;
         for _ in 0..2 {
             let store = RuntimeStore::open(Some(root.path()))
                 .await
@@ -780,6 +781,16 @@ mod tests {
                 assert_eq!(&indexes, previous);
             }
             previous_indexes = Some(indexes);
+            let schema_cookie: i64 = db
+                .pragma_query_value(None, "schema_version", |row| row.get(0))
+                .expect("schema cookie");
+            if let Some(previous) = previous_schema_cookie {
+                assert_eq!(
+                    schema_cookie, previous,
+                    "reopening does not rebuild current indexes"
+                );
+            }
+            previous_schema_cookie = Some(schema_cookie);
         }
     }
 
