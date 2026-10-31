@@ -22,6 +22,7 @@ const outboxPrefixes = {
   chatCreation: "codex-pending-creation:",
   projectSave: "studio-peer-convert:",
   queueChange: "studio-queue-change:",
+  removeSending: "studio-remove-sending:",
   serverAccess: "studio-server-access-pending",
   pairing: "studio-pairing-attempt-v1",
   serverManagement: "studio-server-management-v1:",

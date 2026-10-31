@@ -117,11 +117,7 @@
   },
   {
     "file": "components/removeSendingMessages.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "components/removeSendingMessages.ts",
-    "callee": "localStorage.setItem"
+    "callee": "localStorage"
   },
   {
     "file": "components/removeSendingMessages.ts",
