@@ -12,7 +12,7 @@ use studio_runtime_store::{
     SyncDocumentsRepository, Table, Transaction, monitor_runtime as repository,
 };
 
-use crate::event_write::{self, python_json};
+use crate::event_write;
 use crate::monitor_policy::{
     self as policy, Decision, Effect, Input, InputOutcome, MonitorError, MonitorSnapshot, Operation,
 };
@@ -883,7 +883,8 @@ pub fn apply_with_rule(
                     actor,
                     id.clone(),
                     "monitor_output",
-                    payload.python_json(),
+                    serde_json::to_string(payload)
+                        .map_err(studio_runtime_store::StoreError::from)?,
                     now,
                 )?;
             }
@@ -898,7 +899,7 @@ pub fn apply_with_rule(
                     actor,
                     format!("monitor-stall:{}:{generation}", before.id()),
                     "monitor_stall",
-                    python_json(payload),
+                    payload.to_string(),
                     now,
                 )?;
             }
@@ -1027,7 +1028,7 @@ fn enqueue(
     now: f64,
 ) -> Result<(), MonitorError> {
     if wake.0 {
-        event_write::enqueue_recovery_event(tx, actor, id.into(), kind, python_json(payload), now)?;
+        event_write::enqueue_recovery_event(tx, actor, id.into(), kind, payload.to_string(), now)?;
     } else {
         EventWriteRepository::insert_event(
             tx,
@@ -1035,7 +1036,7 @@ fn enqueue(
                 id: QueueEventId::from(id),
                 agent: actor.id.clone(),
                 kind: kind.into(),
-                text: python_json(payload),
+                text: payload.to_string(),
                 status: "cancelled".into(),
                 created: now,
                 epoch: wake.1.unwrap_or(actor.epoch),
