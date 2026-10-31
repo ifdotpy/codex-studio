@@ -37,8 +37,7 @@ const BRANCH_TURNS_PER_PAGE: u32 = 10;
 // or opaque provider evidence. Keep that evidence and its presence verbatim.
 #[derive(Deserialize, Serialize)]
 struct BranchOperation {
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    signature: Field<Value>,
+    signature: String,
     phase: OperationPhase,
     #[serde(
         rename = "legacyPhase",
@@ -217,7 +216,7 @@ async fn branch(
                     .optional()?
                 {
                     let mut prior = decode_branch_operation(&prior)?;
-                    if prior.signature.value().and_then(Value::as_str) != Some(signature.as_str()) {
+                    if prior.signature != signature {
                         return Err(studio_runtime_store::StoreError::SchemaMismatch(
                             "branch request id has different content".into(),
                         ));
@@ -340,7 +339,7 @@ async fn branch(
                         ("created".into(), json!(unix_time())),
                     ]);
                     let record = BranchOperation {
-                        signature: Field::Value(json!(signature)),
+                        signature,
                         phase: OperationPhase::ProviderPending,
                         legacy_phase: Field::Missing,
                         legacy_phase_collision: Field::Missing,
@@ -947,7 +946,7 @@ async fn branch_needs_catalog(
                 return Ok(true);
             };
             let operation = decode_branch_operation(&raw).map_err(|_| ApiError::internal())?;
-            if operation.signature.value().and_then(Value::as_str) != Some(signature.as_str()) {
+            if operation.signature != signature {
                 return Err(bad_request("branch request id has different content"));
             }
             Ok(operation.phase != OperationPhase::Completed)
@@ -1342,10 +1341,13 @@ mod tests {
 
     #[test]
     fn branch_operation_requires_a_known_phase() {
-        assert!(decode_branch_operation(r#"{"phase":"local_mutation"}"#).is_ok());
+        assert!(decode_branch_operation(r#"{"phase":"local_mutation"}"#).is_err());
+        assert!(decode_branch_operation(r#"{"phase":"local_mutation","signature":null}"#).is_err());
         assert!(decode_branch_operation("{}").is_err());
-        assert!(decode_branch_operation(r#"{"phase":{"completed":null}}"#).is_err());
-        let operation = decode_branch_operation(r#"{"phase":"local_mutation","legacyPhase":{"old":2},"legacyPhaseCollision":[{"older":3},{"new":1}]}"#).expect("migrated operation");
+        assert!(
+            decode_branch_operation(r#"{"phase":{"completed":null},"signature":"abc"}"#).is_err()
+        );
+        let operation = decode_branch_operation(r#"{"phase":"local_mutation","signature":"abc","legacyPhase":{"old":2},"legacyPhaseCollision":[{"older":3},{"new":1}]}"#).expect("migrated operation");
         assert_eq!(
             operation
                 .legacy_phase
@@ -1362,6 +1364,15 @@ mod tests {
                 .get(),
             r#"[{"older":3},{"new":1}]"#
         );
+    }
+
+    #[test]
+    fn branch_operation_rejects_non_string_signature() {
+        assert!(
+            decode_branch_operation(r#"{"phase":"local_mutation","signature":{"bad":true}}"#)
+                .is_err()
+        );
+        assert!(decode_branch_operation(r#"{"phase":"local_mutation","signature":"abc"}"#).is_ok());
     }
     use axum::response::IntoResponse;
     use std::sync::Mutex;
@@ -1465,7 +1476,7 @@ mod tests {
             }
         }
         store.transaction(|tx| {
-            tx.execute("INSERT OR REPLACE INTO runtime_workspace_operations(id,record) VALUES('branch:legacy',?1)", [r#"{"agent":null,"provider":[1,null],"result":false,"vendor":{"opaque":true}}"#])?;
+            tx.execute("INSERT OR REPLACE INTO runtime_workspace_operations(id,record) VALUES('branch:legacy',?1)", [r#"{"signature":"s","agent":null,"provider":[1,null],"result":false,"vendor":{"opaque":true}}"#])?;
             studio_runtime_store::migrations::migrate_branch_phase(tx)?;
             Ok(())
         }).await.unwrap();
@@ -1487,6 +1498,39 @@ mod tests {
         assert_eq!(record["provider"], json!([1, null]));
         assert_eq!(record["result"], false);
         assert_eq!(record["vendor"]["opaque"], true);
+    }
+
+    #[tokio::test]
+    async fn branch_catalog_refuses_unreconstructible_signature_without_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+        for raw in [
+            r#"{"phase":"completed"}"#,
+            r#"{"phase":"completed","signature":null}"#,
+        ] {
+            let expected = raw.to_owned();
+            let stored = expected.clone();
+            store.transaction(move |tx| {
+                tx.execute("INSERT OR REPLACE INTO runtime_workspace_operations(id,record) VALUES('branch:legacy',?1)", [stored])?;
+                Ok(())
+            }).await.unwrap();
+            assert!(
+                branch_needs_catalog(&store, "branch:legacy", "s")
+                    .await
+                    .is_err()
+            );
+            let actual: String = store
+                .read_async("branch witness", |db| {
+                    Ok::<_, studio_runtime_store::StoreError>(db.query_row(
+                        "SELECT record FROM runtime_workspace_operations WHERE id='branch:legacy'",
+                        [],
+                        |row| row.get(0),
+                    )?)
+                })
+                .await
+                .unwrap();
+            assert_eq!(actual, expected);
+        }
     }
 
     #[test]
@@ -1556,7 +1600,7 @@ mod tests {
             let child = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"child","rootId":"child","epoch":0,"status":"queued","provider":"codex"}))?;
             AgentRepository::put(tx, &source)?;
             AgentRepository::put(tx, &child)?;
-            let operation = json!({"id":"operation","agent":"source","phase":"provider_pending","source":CheckpointsRepository::workspace_source(&source.value())});
+            let operation = json!({"id":"operation","signature":"s","agent":"source","phase":"provider_pending","source":CheckpointsRepository::workspace_source(&source.value())});
             tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('operation',?1)", [operation.to_string()])?;
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.expect("seed");
