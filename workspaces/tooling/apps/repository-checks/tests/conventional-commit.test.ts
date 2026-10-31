@@ -51,3 +51,40 @@ test("release-please sections list the same types", () => {
     commitTypes.filter((type) => type !== "style").sort(),
   );
 });
+
+// The manifest owns the product version. Every extra file of release-please must carry it.
+function field(value: unknown, key: string): unknown {
+  assert.ok(typeof value === "object" && value !== null && key in value, key);
+  return Object.entries(value).find(([name]) => name === key)?.[1];
+}
+
+test("every release-please version field equals the manifest version", () => {
+  const read = (path: string) =>
+    readFileSync(new URL(`../../../../../${path}`, import.meta.url), "utf8");
+  const version = field(JSON.parse(read(".release-please-manifest.json")), ".");
+  const packageConfig = field(
+    field(JSON.parse(read("release-please-config.json")), "packages"),
+    ".",
+  );
+  const files = field(packageConfig, "extra-files");
+  assert.ok(Array.isArray(files) && files.length > 0);
+  for (const file of files) {
+    const path = String(field(file, "path"));
+    const jsonpath = String(field(file, "jsonpath"));
+    const text = read(path);
+    let found: unknown;
+    if (field(file, "type") === "json") {
+      found = field(JSON.parse(text), "version");
+    } else if (path === "Cargo.toml") {
+      found = /\[workspace\.package\][^[]*?\nversion = "([^"]+)"/.exec(
+        text,
+      )?.[1];
+    } else {
+      const crate = /@\.name\.value=="([^"]+)"/.exec(jsonpath)?.[1] ?? "";
+      found = new RegExp(`name = "${crate}"\\nversion = "([^"]+)"`).exec(
+        text,
+      )?.[1];
+    }
+    assert.equal(found, version, `${path} ${jsonpath}`);
+  }
+});
