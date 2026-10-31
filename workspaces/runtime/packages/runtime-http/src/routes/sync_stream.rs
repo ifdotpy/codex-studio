@@ -5234,7 +5234,9 @@ mod tests {
             Some(store),
             None,
         );
-        let resource = serde_json::from_value(json!({"kind":"drafts"})).expect("resource");
+        let resource = ResourceRef::DraftsResource(crate::generated::DraftsResource {
+            kind: crate::generated::DraftsResourceKind::Drafts,
+        });
         let entry = draft_initial_snapshot(state, resource)
             .await
             .expect("snapshot");
