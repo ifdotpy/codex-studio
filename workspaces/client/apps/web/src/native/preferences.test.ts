@@ -4,10 +4,9 @@ import { moveLegacyPreferences } from "./preferences";
 class MemoryStorage implements Storage {
   [name: string]: unknown;
   private values = new Map<string, string>();
-  constructor(
-    initial: Record<string, string> = {},
-    private readonly lossy = false,
-  ) {
+  private lossy: boolean;
+  constructor(initial: Record<string, string> = {}, lossy = false) {
+    this.lossy = lossy;
     for (const [key, value] of Object.entries(initial))
       this.values.set(key, value);
   }
