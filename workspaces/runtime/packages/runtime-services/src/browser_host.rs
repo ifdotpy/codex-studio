@@ -75,6 +75,20 @@ struct LauncherRequest {
     v: u8,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LauncherReply {
+    ok: bool,
+    #[serde(rename = "id")]
+    _id: Option<String>,
+    host: Option<String>,
+    open: Option<bool>,
+    joined: Option<bool>,
+    #[serde(rename = "code")]
+    _code: Option<String>,
+    message: Option<String>,
+}
+
 const CONTROL_LINE_LIMIT: usize = 64 * 1024;
 const READ_SECONDS: u64 = 5;
 const CHECK_SECONDS: u64 = 5;
@@ -1704,7 +1718,7 @@ pub fn shim(
         url: link.clone(),
         session: session.map(str::to_owned),
     };
-    let exchange = || -> std::io::Result<Value> {
+    let exchange = || -> std::io::Result<LauncherReply> {
         let mut stream = std::os::unix::net::UnixStream::connect(socket)?;
         stream.set_read_timeout(Some(Duration::from_secs(15)))?;
         stream.set_write_timeout(Some(Duration::from_secs(15)))?;
@@ -1739,11 +1753,11 @@ pub fn shim(
             );
         }
     };
-    let opened = reply.get("open") == Some(&Value::Bool(true)) && open(link);
-    if reply.get("ok") != Some(&Value::Bool(true)) {
+    let opened = reply.open == Some(true) && open(link);
+    if !reply.ok {
         let message = reply
-            .get("message")
-            .and_then(Value::as_str)
+            .message
+            .as_deref()
             .filter(|message| !message.is_empty())
             .unwrap_or("Studio refused the link");
         if opened {
@@ -1756,11 +1770,8 @@ pub fn shim(
         }
         return (1, format!("studio-browser: {message}"));
     }
-    let host = match reply.get("host") {
-        Some(Value::String(host)) => host.clone(),
-        _ => "None".into(),
-    };
-    if reply.get("joined") == Some(&Value::Bool(true)) {
+    let host = reply.host.as_deref().unwrap_or("None");
+    if reply.joined == Some(true) {
         return (
             0,
             format!(
@@ -1883,6 +1894,16 @@ mod tests {
                     .expect("original request")
             );
         }
+    }
+
+    #[test]
+    fn launcher_accepts_guest_reply_without_open() {
+        let reply: LauncherReply =
+            serde_json::from_str(r#"{"ok":true,"id":"card","host":"example.test","joined":false}"#)
+                .expect("guest reply");
+        assert!(reply.ok);
+        assert_eq!(reply.host.as_deref(), Some("example.test"));
+        assert_eq!(reply.open, None);
     }
 
     #[test]

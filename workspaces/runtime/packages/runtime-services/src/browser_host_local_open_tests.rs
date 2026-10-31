@@ -251,3 +251,27 @@ async fn launcher_rejects_unknown_request_fields() {
     assert_eq!(reply["code"], "invalid_request");
     host.service.stop().await;
 }
+
+#[test]
+fn launcher_rejects_unknown_reply_fields() {
+    use std::io::{BufRead, Write};
+    let folder = tempfile::tempdir().expect("socket folder");
+    let socket = folder.path().join("open.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("listener");
+    let sender = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut request = Vec::new();
+        std::io::BufReader::new(&stream)
+            .read_until(b'\n', &mut request)
+            .expect("request");
+        stream.write_all(b"{\"ok\":true,\"id\":\"card\",\"host\":\"example.test\",\"joined\":false,\"extra\":true}\n").expect("reply");
+    });
+    let result = shim(
+        &[LINK.into()],
+        &socket.to_string_lossy(),
+        Some(SESSION),
+        &|_| false,
+    );
+    sender.join().expect("sender");
+    assert_eq!(result.0, 1);
+}
