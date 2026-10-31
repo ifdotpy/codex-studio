@@ -1026,6 +1026,10 @@ struct LegacyReviewProbe {
 struct LegacyReview {
     status: studio_runtime_schema::persistence::NativeReviewThreadStatus,
 }
+fn studio_runtime_store_truthy_false(value: &Value) -> bool {
+    !matches!(value, Value::Bool(true)) && value.as_i64().unwrap_or(0) == 0
+}
+
 fn agent_owners(
     tx: &Transaction<'_>,
     row: &SourceReceipt,
@@ -1037,6 +1041,17 @@ fn agent_owners(
     let invalid = || unclassifiable(table, &row.id, &row.signature);
     if !value.is_object() {
         return Err(invalid());
+    }
+    // A paused or finished agent has no turn in flight; a start attempt left on it by an
+    // older build is history only and is dropped instead of classified.
+    if matches!(
+        value["status"].as_str(),
+        Some("paused" | "completed" | "failed" | "cancelled" | "stopped")
+    ) && studio_runtime_store_truthy_false(&value["inFlight"])
+    {
+        if let Some(object) = value.as_object_mut() {
+            object.remove("startAttempt");
+        }
     }
     if let Some(ticket) = value.pointer_mut("/startAttempt/requestTicket")
         && let Some(number) = ticket.as_number()

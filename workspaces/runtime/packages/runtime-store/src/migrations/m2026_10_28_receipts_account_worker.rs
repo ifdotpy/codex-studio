@@ -815,10 +815,10 @@ fn submission_input(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> 
         .or_else(|| row.signature.strip_prefix("agent:"))
         .ok_or_else(|| fail(row))?;
     let inputs = record["inputs"].as_array().ok_or_else(|| fail(row))?;
-    let first = inputs
-        .first()
-        .and_then(|v| v["id"].as_str())
-        .ok_or_else(|| fail(row))?;
+    // Old user items stored inputs without ids; no provider submission can name them.
+    let Some(first) = inputs.first().and_then(|v| v["id"].as_str()) else {
+        return Ok(());
+    };
     let receipt_id = format!(
         "provider-submission:{}",
         crate::sha256_hex(format!("{agent}:{first}").as_bytes())

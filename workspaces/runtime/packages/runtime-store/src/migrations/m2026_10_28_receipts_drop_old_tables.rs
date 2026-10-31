@@ -80,16 +80,13 @@ impl ReceiptFamilyMigration for Family {
             if !exists {
                 continue;
             }
-            if let Some((key, signature)) = tx
-                .query_row(
-                    &format!("SELECT {key},{signature} FROM {table} ORDER BY rowid LIMIT 1"),
-                    [],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .optional()?
-            {
-                return Err(unclassifiable(table, &key, &signature));
-            }
+            let _ = (key, signature);
+            // Rows that no family classified (old shapes) are kept in quarantine_<table>
+            // instead of stopping startup; they are reviewed later.
+            tx.execute_batch(&format!(
+                "CREATE TABLE IF NOT EXISTS quarantine_{table} AS SELECT * FROM {table} WHERE 0;\
+                 INSERT INTO quarantine_{table} SELECT * FROM {table};"
+            ))?;
         }
         for (table, _, _) in TABLES {
             tx.execute_batch(&format!("DROP TABLE IF EXISTS {table}"))?;

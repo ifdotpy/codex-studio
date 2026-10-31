@@ -1221,6 +1221,35 @@ pub struct MigrationProgress {
     pub total: i64,
 }
 
+/// Moves one row that no receipt family can classify into `quarantine_<table>`, keyed by
+/// its `id` column, so an old row shape cannot stop startup. Returns false when the table has
+/// no `id` column or no such row; the caller then keeps the original refusal.
+fn quarantine(tx: &rusqlite::Transaction<'_>, table: &str, key: &str) -> StoreResult<bool> {
+    // Undo the failed batch first; only the quarantine move commits.
+    tx.execute_batch("ROLLBACK TO receipt_batch")?;
+    let has_id: bool = tx.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='id')"),
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_id {
+        return Ok(false);
+    }
+    let quarantine = format!("quarantine_{table}");
+    tx.execute_batch(&format!(
+        "CREATE TABLE IF NOT EXISTS \"{quarantine}\" AS SELECT * FROM \"{table}\" WHERE 0"
+    ))?;
+    let moved = tx.execute(
+        &format!("INSERT INTO \"{quarantine}\" SELECT * FROM \"{table}\" WHERE id=?1"),
+        [key],
+    )?;
+    if moved == 0 {
+        return Ok(false);
+    }
+    tx.execute(&format!("DELETE FROM \"{table}\" WHERE id=?1"), [key])?;
+    Ok(true)
+}
+
 /// Run under runtime.lock, before ordinary recovery, workers, readers or readiness.
 pub(crate) fn run(
     root: &Path,
@@ -1362,8 +1391,18 @@ fn run_receipt_family_progress(
             if checkpoint.status == MigrationStatus::Complete {
                 break;
             }
+            tx.execute_batch("SAVEPOINT receipt_batch")?;
             let next = match migration.family.move_batch(&tx, source, &checkpoint) {
                 Ok(next) => next,
+                Err(crate::receipt_migration_contract::ReceiptMigrationError::Unclassifiable {
+                    table,
+                    key,
+                    ..
+                }) if quarantine(&tx, &table, &key)? => {
+                    // The row now waits in quarantine_<table>; the batch reruns without it.
+                    tx.commit()?;
+                    continue;
+                }
                 Err(error) => {
                     return Err(rolled_back(
                         tx,

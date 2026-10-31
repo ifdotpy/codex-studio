@@ -5,11 +5,20 @@ pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
     if !crate::schema::table_exists(tx, "runtime_complaints")? {
         return Ok(());
     }
-    let mut query = tx.prepare("SELECT id,json_insert(record,'$.author',null,'$.leadId',null,'$.text',null,'$.recipient','lead','$.version',null,'$.created',null,'$.updated',null,'$.readAt',null,'$.responses',json('[]')) FROM runtime_complaints")?;
+    let mut query = tx.prepare("SELECT id,json_insert(json_remove(record,'$.legacyStatus','$.legacyLeadReadAt'),'$.author',null,'$.leadId',null,'$.text',null,'$.recipient','lead','$.version',null,'$.created',null,'$.updated',null,'$.readAt',null,'$.responses',json('[]')) FROM runtime_complaints")?;
     let mut rows = query.query([])?;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
-        let raw: String = row.get(1)?;
+        let mut value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(1)?)?;
+        // The retired Python backend saved "open" replies; they mean work is in progress.
+        if let Some(responses) = value["responses"].as_array_mut() {
+            for response in responses {
+                if response["status"] == "open" {
+                    response["status"] = serde_json::json!("in_progress");
+                }
+            }
+        }
+        let raw = value.to_string();
         let record: studio_runtime_schema::complaint_record::ComplaintRecord =
             serde_json::from_str(&raw)?;
         if record.id != id {

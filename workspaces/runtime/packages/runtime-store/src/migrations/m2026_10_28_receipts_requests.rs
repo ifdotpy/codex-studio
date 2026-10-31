@@ -1901,11 +1901,18 @@ mod tests {
             "CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
         )
         .expect("owner");
-        insert(&db, "tool-id", &json!({"id":"tool-id","room":"room","deliveries":{"peer":"queued"}}));
+        insert(
+            &db,
+            "tool-id",
+            &json!({"id":"tool-id","room":"room","deliveries":{"peer":"queued"}}),
+        );
         let admitted = admitted_owner_token("tool-id", "outer-signature", CUTOVER);
         let task = json!({"id":"tool-id","agent":"agent","tool":"orchestration_message","kind":"managed_tool","stage":"failed","outcome":"unknown","signature":"outer-signature","admitted":admitted});
-        db.execute("INSERT INTO runtime_tool_requests VALUES('tool-id',?1)", [task.to_string()])
-            .expect("task");
+        db.execute(
+            "INSERT INTO runtime_tool_requests VALUES('tool-id',?1)",
+            [task.to_string()],
+        )
+        .expect("task");
         let outer = json!({"actor":"agent","reply":{"success":false,"contentItems":[{"type":"inputText","text":"disk I/O error"}]},"references":[]}).to_string();
         db.execute(
             "INSERT INTO request_results(id,signature,result,created) VALUES('tool-id','outer-signature',?1,?2)",

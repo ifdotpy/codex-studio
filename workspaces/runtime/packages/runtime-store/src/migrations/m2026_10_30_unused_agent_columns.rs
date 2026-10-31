@@ -15,7 +15,11 @@ pub(super) const RETIRED: [&str; 7] = [
 ];
 
 pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
-    tx.execute_batch("DROP INDEX IF EXISTS runtime_agent_account_wake_candidates_v4")?;
+    // Older builds indexed the retired columns; the scheduler recreates its current index.
+    tx.execute_batch(
+        "DROP INDEX IF EXISTS runtime_agent_account_wake_candidates_v4;\
+         DROP INDEX IF EXISTS runtime_agent_account_wake_candidates_v5;",
+    )?;
     for column in RETIRED {
         let kind: Option<i64> = tx
             .query_row(
@@ -27,6 +31,16 @@ pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
         match kind {
             None => {}
             Some(3) => {
+                // Indexes of older builds that read the column would block the drop.
+                let stale: Vec<String> = tx
+                    .prepare(
+                        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='runtime_agents' AND sql LIKE '%' || ?1 || '%'",
+                    )?
+                    .query_map([column], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                for index in stale {
+                    tx.execute_batch(&format!("DROP INDEX IF EXISTS \"{index}\""))?;
+                }
                 tx.execute_batch(&format!("ALTER TABLE runtime_agents DROP COLUMN {column}"))?
             }
             Some(_) => {
