@@ -2189,72 +2189,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn typed_usage_revision_migrates_old_database_without_changing_groups() {
-        let temp = tempfile::tempdir().expect("state");
-        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
-        store.analytics_transaction::<_, StoreError>(|tx, _| {
-            let record = json!({"id":"receipt","agentId":"agent","rootId":"root","threadId":"thread","at":1,
-                "responseId":"response","accountKey":"acct","last":{},"total":{},
-                "studioUsage":{"kind":"response","responseId":"response","model":"m","evidence":"live",
-                    "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2}}});
-            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &record)?;
-            Ok(())
-        }).await.expect("record usage");
-        let db = crate::AnalyticsRepository::new(store.root())
-            .open_read_only()
-            .expect("reader");
-        let before = super::cost_groups(&db, "root", &Default::default()).expect("groups");
-        drop(db);
-        drop(store);
-        let db = rusqlite::Connection::open(temp.path().join("analytics.sqlite3"))
-            .expect("old database");
-        db.execute_batch("DROP TRIGGER analytics_cost_group_revision_insert; DROP TRIGGER analytics_cost_group_revision_update;
-            DROP TRIGGER analytics_cost_group_revision_delete; DROP TABLE analytics_cost_group_revisions;
-            DROP TRIGGER analytics_usage_revision_insert; DROP TRIGGER analytics_usage_revision_update;
-            DROP TRIGGER analytics_usage_revision_delete; DROP TABLE analytics_usage_revisions;
-            DROP TABLE analytics_usage_revision_clock;").expect("restore old schema");
-        drop(db);
-        let store = RuntimeStore::open(Some(temp.path()))
-            .await
-            .expect("migrate old database");
-        let db = crate::AnalyticsRepository::new(store.root())
-            .open_read_only()
-            .expect("reader");
-        assert_eq!(
-            super::cost_groups(&db, "root", &Default::default()).expect("groups after migration"),
-            before
-        );
-        assert_eq!(
-            db.query_row(
-                "SELECT count(*) FROM analytics_cost_group_revisions",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .expect("group revisions"),
-            0
-        );
-        assert_eq!(
-            db.query_row(
-                "SELECT revision FROM analytics_usage_revision_clock",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .expect("clock"),
-            0
-        );
-    }
-
-    #[tokio::test]
-    async fn typed_usage_cost_index_migration_preserves_groups_on_reopen() {
+    async fn typed_usage_cost_index_is_restored_without_changing_groups() {
         let temp = tempfile::tempdir().expect("state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         drop(store);
         let db =
             rusqlite::Connection::open(temp.path().join("analytics.sqlite3")).expect("database");
-        db.execute_batch("DROP INDEX analytics_cost_groups_cover;
-            CREATE INDEX analytics_cost_groups_key ON analytics_cost_groups(root,model,account,input,cached,cache_write,output,uncached);
-            INSERT INTO analytics_cost_groups VALUES('root','m','acct',10,3,2,1,1,2,NULL);")
-            .expect("previous group index and retained facts");
+        db.execute_batch(
+            "DROP INDEX analytics_cost_groups_cover;
+            INSERT INTO analytics_cost_groups VALUES('root','m','acct',10,3,2,1,1,2,NULL);",
+        )
+        .expect("missing group index and retained facts");
         let expected =
             super::cost_groups(&db, "root", &Default::default()).expect("before migration");
         drop(db);
@@ -2269,8 +2214,8 @@ mod tests {
                 super::cost_groups(&db, "root", &Default::default()).expect("retained groups"),
                 expected
             );
-            let old: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='analytics_cost_groups_key')", [], |row| row.get(0)).expect("old index");
-            assert!(!old, "retire the redundant index");
+            let restored: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='analytics_cost_groups_cover')", [], |row| row.get(0)).expect("current index");
+            assert!(restored, "restore the covering index");
             let version: i64 = db
                 .pragma_query_value(None, "schema_version", |row| row.get(0))
                 .expect("schema version");

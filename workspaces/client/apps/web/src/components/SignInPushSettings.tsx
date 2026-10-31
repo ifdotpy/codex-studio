@@ -3,10 +3,10 @@ import { useEffect, useState } from "react";
 import { Button } from "@mantine/core";
 import { errorText, type GetResult } from "../api";
 import {
-  devicePushId,
+  endpointFingerprint,
   enableSignInPush,
   pushSupported,
-  rememberDevicePushId,
+  stopSignInPush,
 } from "../push/signInPush";
 
 type PushState = GetResult<"/api/web-push">;
@@ -17,6 +17,7 @@ export function SignInPushSettings({ active }: { active: boolean }) {
   const [state, setState] = useState<PushState | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [fingerprint, setFingerprint] = useState<string | null>();
   const load = () =>
     get("/api/web-push").then(
       (value) => {
@@ -28,8 +29,30 @@ export function SignInPushSettings({ active }: { active: boolean }) {
   useEffect(() => {
     if (active) void load();
   }, [active]);
+  useEffect(() => {
+    if (!active || !pushSupported()) return;
+    setFingerprint(undefined);
+    let mounted = true;
+    void navigator.serviceWorker
+      .getRegistration("/")
+      .then(async (registration) => {
+        const subscription = await registration?.pushManager.getSubscription();
+        const value = subscription
+          ? await endpointFingerprint(subscription.endpoint)
+          : null;
+        if (mounted) setFingerprint(value);
+      })
+      .catch((failure: unknown) => {
+        if (mounted) setError(errorText(failure));
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [active]);
   if (!active) return null;
-  const thisDevice = state ? devicePushId(state.publicKey) : null;
+  const thisDevice = state?.subscriptions.find(
+    (device) => device.endpointFingerprint === fingerprint,
+  )?.id;
   const subscribed =
     !!thisDevice &&
     !!state?.subscriptions.some((device) => device.id === thisDevice);
@@ -43,24 +66,36 @@ export function SignInPushSettings({ active }: { active: boolean }) {
   const enable = (publicKey: string) =>
     run(async () => {
       const registration = await navigator.serviceWorker.ready;
-      const old = devicePushId(publicKey);
-      if (old) await post("/api/web-push/remove", { id: old });
-      const row = await enableSignInPush({
+      const old = thisDevice;
+      if (old) {
+        await stopSignInPush(
+          await registration.pushManager.getSubscription(),
+          () => post("/api/web-push/remove", { id: old }),
+        );
+      }
+      await enableSignInPush({
         registration,
         requestPermission: () => Notification.requestPermission(),
         publicKey,
         userAgent: navigator.userAgent,
         save: (body) => post("/api/web-push/subscriptions", body),
       });
-      rememberDevicePushId(publicKey, row.id);
+      const subscription = await registration.pushManager.getSubscription();
+      setFingerprint(
+        subscription ? await endpointFingerprint(subscription.endpoint) : null,
+      );
     });
-  const stop = (publicKey: string, id: string) =>
+  const stop = (id: string) =>
     run(async () => {
-      await post("/api/web-push/remove", { id });
-      if (id !== devicePushId(publicKey)) return;
-      rememberDevicePushId(publicKey, null);
-      const registration = await navigator.serviceWorker.getRegistration("/");
-      await (await registration?.pushManager.getSubscription())?.unsubscribe();
+      const registration =
+        id === thisDevice
+          ? await navigator.serviceWorker.getRegistration("/")
+          : undefined;
+      await stopSignInPush(
+        (await registration?.pushManager.getSubscription()) ?? null,
+        () => post("/api/web-push/remove", { id }),
+      );
+      if (id === thisDevice) setFingerprint(null);
     });
   return (
     <section className="settings-group" aria-label="Phone sign-in alerts">
@@ -85,7 +120,7 @@ export function SignInPushSettings({ active }: { active: boolean }) {
         <Button
           mt="md"
           loading={busy}
-          disabled={!state.ready || subscribed}
+          disabled={!state.ready || subscribed || fingerprint === undefined}
           onClick={() => enable(state.publicKey)}
         >
           {subscribed
@@ -104,8 +139,10 @@ export function SignInPushSettings({ active }: { active: boolean }) {
               <Button
                 size="compact-sm"
                 variant="subtle"
-                disabled={busy}
-                onClick={() => stop(state.publicKey, device.id)}
+                disabled={
+                  busy || (pushSupported() && fingerprint === undefined)
+                }
+                onClick={() => stop(device.id)}
               >
                 Stop alerts
               </Button>

@@ -1,10 +1,14 @@
 import { hasNativeClient } from "../native/client";
+import {
+  PAIRED_SERVERS_KEY,
+  readPairedServerReferences,
+  writePairedServerReferences,
+} from "../browserPersistence";
 import { isolatedServerView, serverParentOrigin } from "./environment";
 import type { StudioServerIdentity } from "./serverIdentity.ts";
 import {
   defaultServerAlias,
   DEFAULT_LOCAL_SERVER_ALIAS,
-  LOCAL_ALIAS_KEY,
   validateServerAlias,
 } from "./serverAliases";
 export type StudioServer = StudioServerIdentity & {
@@ -15,8 +19,24 @@ export function serverResourceScope(server?: Pick<StudioServer, "id">) {
   return !server || server.id === "current" ? "local" : server.id;
 }
 export const LOCAL_NAME_KEY = "studio-local-server-name-v1";
-export const SERVER_REGISTRY_KEY = "studio-paired-servers-v1";
+export const SERVER_REGISTRY_KEY = PAIRED_SERVERS_KEY;
 export const SERVER_REGISTRY_EVENT = "studio-server-registry";
+const metadata = new Map<string, StudioServer>();
+let localDetails: { label?: string; alias?: string } = {};
+
+export function setLocalServerDetails(details: {
+  label?: string;
+  alias?: string;
+}) {
+  if (
+    (details.label === undefined || details.label === localDetails.label) &&
+    (details.alias === undefined || details.alias === localDetails.alias)
+  )
+    return;
+  localDetails = { ...localDetails, ...details };
+  if (typeof window !== "undefined")
+    window.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
+}
 export function serveOrigin(value: string) {
   const url = new URL(value.trim());
   if (
@@ -34,50 +54,53 @@ export function serveOrigin(value: string) {
     );
   return url.origin;
 }
-export function readServers(storage = globalThis.localStorage): StudioServer[] {
-  const value: unknown = JSON.parse(
-    storage.getItem(SERVER_REGISTRY_KEY) || "[]",
-  );
-  if (!Array.isArray(value))
-    throw new Error("The saved server list is invalid.");
+export function readServers(storage?: Storage): StudioServer[] {
+  const value = readPairedServerReferences(storage);
   const ids = new Set<string>();
-  const localAlias =
-    storage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS;
-  const aliases = new Set<string>([localAlias]);
+  const aliases = new Set<string>([
+    localDetails.alias || DEFAULT_LOCAL_SERVER_ALIAS,
+  ]);
   for (const item of value) {
-    if (item?.alias !== undefined) {
-      validateServerAlias(item.alias, aliases);
-      aliases.add(item.alias);
+    const prior = metadata.get(item.id);
+    if (
+      prior?.origin === item.origin &&
+      prior.credentialId === item.credentialId &&
+      prior.alias
+    ) {
+      validateServerAlias(prior.alias, aliases);
+      aliases.add(prior.alias);
     }
   }
-  return value.map((item) => {
+  const servers = value.map((item) => {
     if (
-      !item ||
-      typeof item.id !== "string" ||
       !/^[a-zA-Z0-9_-]{1,128}$/.test(item.id) ||
       item.id === "local" ||
-      typeof item.label !== "string" ||
-      !item.label.trim() ||
-      item.label.length > 128 ||
-      typeof item.credentialId !== "string" ||
       !item.credentialId ||
       ids.has(item.id)
     )
       throw new Error("The saved server list is invalid.");
     ids.add(item.id);
-    const alias = item.alias || defaultServerAlias(item, aliases);
+    const origin = serveOrigin(item.origin);
+    const prior = metadata.get(item.id);
+    const details =
+      prior?.origin === origin && prior.credentialId === item.credentialId
+        ? prior
+        : undefined;
+    const label = details?.label || new URL(origin).hostname;
+    const alias =
+      details?.alias || defaultServerAlias({ ...item, label }, aliases);
     aliases.add(alias);
     return {
       id: item.id,
-      label: item.label,
-      origin: serveOrigin(item.origin),
+      label,
+      origin,
       credentialId: item.credentialId,
       alias,
-      ...(typeof item.workspaceId === "string"
-        ? { workspaceId: item.workspaceId }
-        : {}),
+      ...(details?.workspaceId ? { workspaceId: details.workspaceId } : {}),
     };
   });
+  for (const id of metadata.keys()) if (!ids.has(id)) metadata.delete(id);
+  return servers;
 }
 /** Keep each unchanged server object, and the list itself when nothing changed. A reread
  * of the same saved list must not look like a new server to open dialogs and connections. */
@@ -95,13 +118,8 @@ export function shareServers(
     ? (previous as StudioServer[])
     : shared;
 }
-export function writeServers(
-  servers: StudioServer[],
-  storage = globalThis.localStorage,
-) {
-  const aliases = new Set([
-    storage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
-  ]);
+export function writeServers(servers: StudioServer[], storage?: Storage) {
+  const aliases = new Set([localDetails.alias || DEFAULT_LOCAL_SERVER_ALIAS]);
   for (const server of servers) {
     if (server.alias) {
       validateServerAlias(server.alias, aliases);
@@ -113,16 +131,31 @@ export function writeServers(
     aliases.add(alias);
     return { ...server, alias };
   });
-  storage.setItem(SERVER_REGISTRY_KEY, JSON.stringify(normalized));
+  writePairedServerReferences(
+    normalized.map((server) => {
+      if (!server.credentialId)
+        throw new Error("The saved server list is invalid.");
+      return {
+        id: server.id,
+        origin: server.origin,
+        credentialId: server.credentialId,
+      };
+    }),
+    storage,
+  );
+  metadata.clear();
+  for (const server of normalized) metadata.set(server.id, server);
   if (typeof window !== "undefined")
-    window.dispatchEvent(new Event(SERVER_REGISTRY_EVENT));
+    window.dispatchEvent(
+      new CustomEvent(SERVER_REGISTRY_EVENT, { detail: normalized }),
+    );
 }
 export function localServer(): StudioServer {
   return {
     id: "local",
-    label: localStorage.getItem(LOCAL_NAME_KEY) || "This computer",
+    label: localDetails.label || "This computer",
     origin: hasNativeClient() ? "http://localhost" : location.origin,
-    alias: localStorage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
+    alias: localDetails.alias || DEFAULT_LOCAL_SERVER_ALIAS,
   };
 }
 export function readServerAliases(): Record<string, string> {

@@ -23,8 +23,8 @@ Server preferences stay on their own server.
 | Shell logical project collapse                                              | `studio-logical-project-collapsed`                                                                                                      | User                                                                          |
 | Shell logical project compact mode                                          | `studio-logical-project-compact`                                                                                                        | User                                                                          |
 | Legacy shell compact mode                                                   | `studio-server-project-compact-v1`                                                                                                      | User, migrated                                                                |
-| Server alias                                                                | `studio-local-server-alias-v1`, `studio-paired-servers-v1[].alias`, server discovery aliases                                            | User, keyed by sync workspace identity                                        |
-| Server label and registry order                                             | `studio-paired-servers-v1[].label`, array order                                                                                         | User, credentials and pairing stay local                                      |
+| Server alias                                                                | Server preference fields and discovery aliases                                                                                          | User, keyed by sync workspace identity                                        |
+| Server label and registry order                                             | Server preference fields                                                                                                                | User; connection identities stay local                                        |
 | Progress visibility                                                         | `codex-progress-hidden:<stateDir>`                                                                                                      | Server, explicit choice overrides the phone width default                     |
 | Worker excerpt disclosures                                                  | `codex-worker-disclosures`                                                                                                              | Server                                                                        |
 | Transcript tool disclosures                                                 | `studio-turns:<stateDir>:<chat>:tools-v3`                                                                                               | Device, transient per-turn expansion                                          |
@@ -41,7 +41,9 @@ Server preferences stay on their own server.
 | Last server used for a project                                              | `project-last-server:<project>`                                                                                                         | Device, navigation history                                                    |
 | Scroll position and history anchor                                          | `studio-chat-scroll:*`, transcript `:window-anchor`                                                                                     | Device                                                                        |
 | Open dialogs, search, temporary expansions                                  | React state                                                                                                                             | Device                                                                        |
-| Drafts, attachments and dictation text                                      | Draft journal, `studio-answer-draft:*`, form draft keys, dictation cache                                                                | Device for this preference feature; existing draft transport stays intact     |
+| Drafts and attachments                                                      | Draft journal and form draft state                                                                                                      | Device for this preference feature; existing draft transport stays intact     |
+| Request answer and message reply drafts                                     | Component memory                                                                                                                        | Lost on reload                                                                |
+| Browser speech review text                                                  | Component memory                                                                                                                        | Lost on reload or when changing chats                                         |
 | Removed pending message flags and saved copies                              | `studio-removed-messages:*`, `:copies`, `:restored`                                                                                     | Device, explicit removal and retry recovery; these are not chat hide settings |
 | Read state and team message seen state                                      | Existing read-state API and `TeamChats` seen cache                                                                                      | Existing behavior, not a visual preference                                    |
 | Pending command IDs, pairing attempts, operation receipts and outbox fences | `request-id:*`, operation-specific pending keys, pairing cache, upload fences                                                           | Device                                                                        |
@@ -50,7 +52,7 @@ Server preferences stay on their own server.
 | Account, model, permission and worker concurrency choices                   | Existing server APIs and their entities                                                                                                 | Server, already synced; not UI preference fields                              |
 
 `workspaces/client/apps/web/src/servers/storage.ts` adds the server namespace to local keys in server views.
-The offline cache retains the previous local keys for the first render.
+The preference projection stays in memory and is restored from the server stream.
 
 ## Storage and delivery
 
@@ -63,20 +65,17 @@ The merge is idempotent, including after a lost response.
 `POST /api/sync/preferences` uses the existing permission and schema checks.
 The existing entity pull and state resource stream deliver changes.
 The shell connects to each paired server and merges user fields from all servers.
-A retry retains field versions. An unavailable server receives the cache after reconnection.
+A retry retains field versions during the current page session.
 Credentials never enter the preference entity.
 
-A migration marker prevents repeated imports from legacy local keys.
-Legacy fields have timestamp zero. Explicit edits have a current timestamp.
-The backend includes inert preference JSON in its HTML response.
-A fresh browser reads that JSON before React renders.
-An existing browser keeps its local cache for the first render.
+Explicit edits have a current timestamp. Older local preference copies are not
+imported; defaults apply until the server projection arrives.
 
 ## Check evidence
 
 The backend tests cover validation, independent fields, stale writes, equal timestamps,
 scope separation, duplicate requests, and SQLite close and reopen.
-The client tests cover merge, legacy migration, independent first edits, stale controls,
+The client tests cover merge, independent first edits, stale controls,
 two-server merge, reconnection, and recovery after a lost response.
 The browser test uses isolated contexts and a fixture backend on a dynamic port.
 It checks live theme, text size, project order, project collapse, and server alias.
@@ -181,9 +180,8 @@ there is no compare-and-swap base revision in this existing API. Retrying does
 not refresh provenance or timestamps. Edits during a write remain queued and are
 sent after it, without replacing unrelated fields.
 
-The existing server-specific browser cache is an optimistic view and durable
-outbox, not the authority. SSE entity projections reconcile it with SQLite after
-reconnect, reload, or restart; no preference polling is added. Pending edits show
+The server-specific in-memory view is optimistic. SSE entity projections restore it
+after reload or restart; no preference polling is added. Pending edits show
 saving status; failed HTTP writes show an unsaved error and a retry control.
 A failed user-scope write does not block server-scope writes, or vice versa.
 Each failed scope keeps its own error and pending field versions. A drain attempts
@@ -191,7 +189,7 @@ each rejected payload once per explicit retry generation; successful writes in
 the other scope do not trigger an unbounded retry loop. A new field value or an
 explicit retry, reconnect, or resume advances that guard even during an active
 drain. An unchanged retry keeps the existing identity and field versions.
-Reconnect/resume retries the existing outbox. Rapid toggles read the latest cache
+Reconnect/resume retries pending edits during the session. Rapid toggles read the latest view
 before changing one selection, avoiding a stale React-render overwrite.
 
 The field extends the existing preference protocol without a new storage version.

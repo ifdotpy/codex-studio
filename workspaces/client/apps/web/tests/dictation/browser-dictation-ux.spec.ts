@@ -1,6 +1,6 @@
 import { fixtureOrigin } from "../misc-fixture.ts";
 import type {} from "./browser-dictation-ux.fixture.tsx";
-// Real React and storage, simulated browser speech. No audio or service requests.
+// Real React, simulated browser speech. No audio or service requests.
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import { createFixtureViteServer, test, expect } from "../playwright.ts";
@@ -79,7 +79,7 @@ test("browser dictation ux", async ({ page: runnerPage }) => {
       await page
         .getByRole("textbox", { name: "Review dictated text" })
         .inputValue(),
-      "Corrected text",
+      "",
     );
     await page.getByRole("button", { name: "Record", exact: true }).click();
     await page.getByRole("button", { name: "Switch chat" }).click();
@@ -100,7 +100,7 @@ test("browser dictation ux", async ({ page: runnerPage }) => {
     assert.deepEqual(await page.evaluate(() => window.dictationCalls), []);
     expect(errors).toEqual([]);
     console.log(
-      "PASS: browser/mobile speech capability, final text review, explicit insert, storage, stop outside panel, chat cleanup, unsupported browser.",
+      "PASS: browser/mobile speech capability, final text review, explicit insert, reload reset, stop outside panel, chat cleanup, unsupported browser.",
     );
   } finally {
     await server.close();

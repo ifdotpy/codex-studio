@@ -19,6 +19,7 @@ import {
   onDesktopNavigate,
 } from "../native/notifications";
 import { orderPreferenceServers } from "./preferenceServerOrder";
+import { preferenceMemory } from "./storage";
 import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { useUiPreferenceSync } from "./useUiPreferenceSync";
 import {
@@ -123,6 +124,9 @@ function MultiServerShell({
     }
   };
   const [paired, setPaired] = useState<StudioServer[]>(load);
+  const [navigation, setNavigation] = useState<
+    Record<string, ServerNavigation>
+  >({});
   // Discovery and preference updates reread the saved list often. Unchanged servers keep
   // their objects, so an open dialog or a server connection is not reset by a reread.
   const [registryRevision, setRegistryRevision] = useState(0);
@@ -131,14 +135,16 @@ function MultiServerShell({
     () =>
       (sharedServers.current = shareServers(
         sharedServers.current,
-        orderPreferenceServers(uiOnly ? paired : [localServer(), ...paired]),
+        orderPreferenceServers(
+          (uiOnly ? paired : [localServer(), ...paired]).map((server) => {
+            const workspaceId = navigation[server.id]?.workspaceId;
+            return workspaceId ? { ...server, workspaceId } : server;
+          }),
+        ),
       )),
-    [paired, registryRevision],
+    [paired, registryRevision, navigation],
   );
-  const [selected, setSelected] = useState(
-    () =>
-      localStorage.getItem("studio-selected-server") || servers[0]?.id || "",
-  );
+  const [selected, setSelected] = useState(() => servers[0]?.id || "");
   const current = servers.some((server) => server.id === selected)
     ? selected
     : servers[0]?.id || "";
@@ -158,14 +164,14 @@ function MultiServerShell({
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
     (server) => add(server, false),
     !uiOnly,
+    Object.fromEntries(
+      servers.map((server) => [server.id, server.workspaceId]),
+    ),
   );
   const accountsServers = useMemo(
     () => accountServers(servers, discovery.snapshot?.servers || []),
     [servers, discovery.snapshot],
   );
-  const [navigation, setNavigation] = useState<
-    Record<string, ServerNavigation>
-  >({});
   const sidebarSources = useRef(createSidebarSourceStore());
   const navigationRef = useRef(navigation);
   navigationRef.current = navigation;
@@ -214,7 +220,7 @@ function MultiServerShell({
   const [preferences, setPreferences] = useState(() => {
     try {
       return parseStudioPreferences(
-        localStorage.getItem(studioPreferencesStorageKey) || "null",
+        preferenceMemory.getItem(studioPreferencesStorageKey) || "null",
       );
     } catch {
       return defaultStudioPreferences;
@@ -243,7 +249,6 @@ function MultiServerShell({
   };
   const select = useCallback((id: string) => {
     setSelected(id);
-    localStorage.setItem("studio-selected-server", id);
     setMobileOpen(false);
     requestAnimationFrame(() => {
       if (currentRef.current !== id) return;
@@ -556,7 +561,7 @@ function MultiServerShell({
     const apply = () => {
       try {
         const next = parseStudioPreferences(
-          localStorage.getItem(studioPreferencesStorageKey) || "null",
+          preferenceMemory.getItem(studioPreferencesStorageKey) || "null",
         );
         setPreferences(next);
         publishPreferences(next);

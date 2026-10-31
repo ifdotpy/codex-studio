@@ -1,23 +1,21 @@
 import { orderPreferenceServers } from "./preferenceServerOrder";
-import { legacyPreferenceSeed } from "./legacyPreferenceSeed";
 import { useEffect } from "react";
 import {
   capturePreferenceWrite,
   readPreferenceFields,
-  receivePreferenceFields,
   watchPreferenceWrites,
 } from "../sync/uiPreferenceStore";
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
 import {
   defaultServerAlias,
   DEFAULT_LOCAL_SERVER_ALIAS,
-  LOCAL_ALIAS_KEY,
 } from "./serverAliases";
 import {
   readServers,
+  localServer,
+  setLocalServerDetails,
+  writeServers,
   SERVER_REGISTRY_EVENT,
-  SERVER_REGISTRY_KEY,
-  LOCAL_NAME_KEY,
   type StudioServer,
 } from "./registry";
 
@@ -28,7 +26,7 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
       id,
       origin,
       credentialId,
-      localStorage.getItem(`studio-server-workspace-id:${id}`) || workspaceId,
+      workspaceId,
     ]),
   );
   useEffect(() => {
@@ -40,23 +38,12 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
     >();
     let previousOrder: string[] | undefined;
     for (const server of servers) {
-      const identity =
-        localStorage.getItem(`studio-server-workspace-id:${server.id}`) ||
-        server.workspaceId;
+      const identity = server.workspaceId;
       if (identity) identities.set(server.id, identity);
       snapshots.set(server.id, { alias: server.alias, label: server.label });
     }
     const keyFor = (kind: string, identity: string) =>
       `server-${kind}:${identity}`;
-    const seed = () => {
-      const fields = legacyPreferenceSeed(
-        servers,
-        identities,
-        readPreferenceFields("user"),
-        localStorage.getItem(LOCAL_NAME_KEY),
-      );
-      if (Object.keys(fields).length) receivePreferenceFields("user", fields);
-    };
     const apply = () => {
       if (applying) return;
       applying = true;
@@ -79,10 +66,8 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
           const current =
             typeof alias === "string"
               ? alias
-              : localStorage.getItem(LOCAL_ALIAS_KEY) ||
-                local.alias ||
-                DEFAULT_LOCAL_SERVER_ALIAS;
-          localStorage.setItem(LOCAL_ALIAS_KEY, current);
+              : local.alias || DEFAULT_LOCAL_SERVER_ALIAS;
+          setLocalServerDetails({ alias: current });
           used.add(current);
           snapshots.set("local", { alias: current, label: local.label });
         }
@@ -105,9 +90,7 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
             return next;
           })
           .sort((a, b) => rank(a) - rank(b));
-        const serialized = JSON.stringify(paired);
-        if (localStorage.getItem(SERVER_REGISTRY_KEY) !== serialized)
-          localStorage.setItem(SERVER_REGISTRY_KEY, serialized);
+        writeServers(paired);
         previousOrder = orderPreferenceServers([
           ...(local ? [local] : []),
           ...paired,
@@ -117,17 +100,20 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
         applying = false;
       }
     };
-    const capture = () => {
+    const capture = (event: Event) => {
       if (applying) return;
-      const paired = readServers();
+      const reordered =
+        event instanceof CustomEvent && Array.isArray(event.detail);
+      const paired: StudioServer[] = reordered ? event.detail : readServers();
       const current = [...paired];
       const local = servers.find((server) => server.id === "local");
       if (local)
         current.splice(servers.indexOf(local), 0, {
           ...local,
-          alias:
-            localStorage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
+          alias: localServer().alias || DEFAULT_LOCAL_SERVER_ALIAS,
         });
+      if (!reordered)
+        current.splice(0, current.length, ...orderPreferenceServers(current));
       for (const server of current) {
         const identity = identities.get(server.id);
         const prior = snapshots.get(server.id);
@@ -156,15 +142,9 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
         );
       previousOrder = order;
     };
-    seed();
     apply();
     const stopWrites = watchPreferenceWrites(apply);
     window.addEventListener(SERVER_REGISTRY_EVENT, capture);
-    const stored = (event: StorageEvent) => {
-      if (event.key === SERVER_REGISTRY_KEY || event.key === LOCAL_ALIAS_KEY)
-        capture();
-    };
-    window.addEventListener("storage", stored);
     const visual = (event: Event) => {
       if (
         event instanceof CustomEvent &&
@@ -177,7 +157,6 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
     return () => {
       stopWrites();
       window.removeEventListener(SERVER_REGISTRY_EVENT, capture);
-      window.removeEventListener("storage", stored);
       window.removeEventListener(preferenceEvent, visual);
     };
   }, [ownership]);

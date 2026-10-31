@@ -6,7 +6,6 @@ import {
 import type { syncPost } from "../api";
 import {
   acknowledgePreferenceFields,
-  initializePreferenceMigration,
   readPreferenceFields,
   receivePreferenceFields,
   watchPreferenceWrites,
@@ -18,7 +17,7 @@ import {
 } from "./uiPreferenceMerge";
 import type { UiPreferenceProjection } from "./entityProjection";
 
-/** Bridges projected preference rows to local storage and gated API writes. */
+/** Bridges projected preference rows to memory and gated API writes. */
 export function createUiPreferenceBridge(
   storage: Storage,
   post: typeof syncPost<"/api/sync/preferences">,
@@ -132,8 +131,6 @@ export function createUiPreferenceBridge(
     start() {
       if (active) return () => {};
       active = true;
-      initializePreferenceMigration("user", storage);
-      initializePreferenceMigration("server", storage);
       const stopRetry = registerPreferenceRetry(storage, () => void send(true));
       const stopWrites = watchPreferenceWrites(() => void send());
       return () => {

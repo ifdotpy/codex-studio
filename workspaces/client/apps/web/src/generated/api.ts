@@ -26884,6 +26884,11 @@ export interface components {
       created: number;
       /** Device */
       device: string;
+      /**
+       * Endpoint Fingerprint
+       * @description Lowercase SHA-256 of the endpoint, used to identify this browser's subscription.
+       */
+      endpointFingerprint: string;
       /** Id */
       id: string;
     };

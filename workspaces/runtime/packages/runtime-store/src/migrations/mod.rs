@@ -8,14 +8,7 @@ pub(crate) mod m2026_10_22_analytics;
 pub(crate) mod m2026_10_26_canvas;
 mod m2026_10_26_provider_identity;
 mod m2026_10_26_registry;
-mod m2026_10_26_terminal_errors;
 pub(crate) mod m2026_10_27_cost_index;
-mod m2026_10_27_retired_sqlite;
-mod m2026_10_27_scheduler_indexes;
-mod m2026_10_28_agent_account;
-mod m2026_10_28_agent_fields;
-mod m2026_10_28_group_revision;
-mod m2026_10_28_usage_revision;
 mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
@@ -57,7 +50,14 @@ pub use m2026_10_20_agents::prepare_columns;
 pub use m2026_10_26_provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_26_provider_identity::migrate_canvas_2026_10_26;
+<<<<<<< head
 pub(crate) use m2026_10_30_approvals::approval_from_record;
+||||||| base
+=======
+pub(crate) use m2026_10_26_provider_identity::{
+    ANALYTICS_PROVIDER_FORMAT_KEY, PROVIDER_IDENTITY_FORMAT,
+};
+>>>>>>> origin/main
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_30_branch_phase::apply as migrate_branch_phase;
 #[cfg(any(test, feature = "test-support"))]
@@ -100,11 +100,6 @@ const OCTOBER_26: MigrationDate = MigrationDate {
     month: 10,
     day: 26,
 };
-const OCTOBER_27: MigrationDate = MigrationDate {
-    year: 2026,
-    month: 10,
-    day: 27,
-};
 const OCTOBER_28: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
@@ -125,26 +120,12 @@ const OCTOBER_30: MigrationDate = MigrationDate {
     month: 10,
     day: 30,
 };
-const OCTOBER_22: MigrationDate = MigrationDate {
-    year: 2026,
-    month: 10,
-    day: 22,
-};
-const OCTOBER_20: MigrationDate = MigrationDate {
-    year: 2026,
-    month: 10,
-    day: 20,
-};
-/// Stable migration identifier; includes the introduction date.
-const ANALYTICS_PROVIDER_ID: &str = "2026-10-26-analytics-provider";
 /// Stable migration identifier; includes the introduction date.
 const ANALYTICS_PROJECTION_ID: &str = "2026-10-22-analytics-projection";
-/// Stable migration identifier; includes the introduction date.
+const ANALYTICS_PROVIDER_ID: &str = "2026-10-26-analytics-provider";
 const CANVAS_PROVIDER_ID: &str = "2026-10-26-canvas-provider";
 /// Stable migration identifier; includes the introduction date.
 const AGENT_STORAGE_ID: &str = "2026-10-20-agent-storage";
-/// Stable migration identifier; includes the introduction date.
-const CANVAS_COLUMNS_ID: &str = "2026-10-26-canvas-columns";
 /// Stable migration identifier; includes the introduction date.
 const WORKSPACE_LIMITS_ID: &str = "2026-10-26-workspace-limits";
 /// Stable migration identifier; includes the introduction date.
@@ -153,32 +134,10 @@ const RETIRED_WAITS_ID: &str = "2026-10-26-retired-waits";
 const SUPERVISOR_ID: &str = "2026-10-26-supervisor-journal";
 const SUPERVISOR_WRITTEN_ID: &str = "2026-10-29-supervisor-written";
 /// Stable migration identifier; includes the introduction date.
-const TERMINAL_ERRORS_ID: &str = "2026-10-26-terminal-errors";
-const RETIRED_CANVAS_ID: &str = "2026-10-27-retired-canvas";
-const RETIRED_ANALYTICS_ID: &str = "2026-10-27-retired-analytics";
-const SCHEDULER_INDEXES_ID: &str = "2026-10-27-scheduler-indexes";
 const REMOVE_AFTER_SOURCE_RETIRED: &str = "Supported installations and restorable backups no longer admit the source format; pending historical effects are converted or terminal";
-
-#[derive(Clone, Copy)]
-enum SourceDatabase<'a> {
-    Canvas(&'a Connection),
-    Independent,
-}
 
 struct SqlContext<'a, 'db> {
     transaction: &'a Transaction<'db>,
-    accounts: &'a Accounts,
-    source: SourceDatabase<'a>,
-}
-impl SqlContext<'_, '_> {
-    fn canvas(&self) -> StoreResult<&Connection> {
-        match self.source {
-            SourceDatabase::Canvas(db) => Ok(db),
-            SourceDatabase::Independent => Err(StoreError::RecordContract(
-                "migration requires the Canvas source database",
-            )),
-        }
-    }
 }
 
 /// The sole typed migration contract. The runner owns transaction rollback;
@@ -258,33 +217,6 @@ impl Migration for RegistryMigration {
 static CATALOG: &[&dyn Migration] = &[
     &SqlMigration {
         definition: MigrationDefinition {
-            id: ANALYTICS_PROVIDER_ID,
-            introduced: OCTOBER_26,
-            target: MigrationTarget::Analytics,
-            supported_source: "Analytics without providerIdentityFormat; known providers only",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| {
-            m2026_10_26_provider_identity::migrate_analytics_2026_10_26(c.transaction, c.accounts)
-        },
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: ANALYTICS_PROJECTION_ID,
-            introduced: OCTOBER_22,
-            target: MigrationTarget::Analytics,
-            supported_source: "Retired Python cost projection and pre-current aggregate columns",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| {
-            m2026_10_22_analytics::migrate_2026_10_22_drop_python_cost_projection(c.transaction)?;
-            m2026_10_22_analytics::aggregate_columns(c.transaction)?;
-            crate::schema::ensure_analytics_limits_index(c.transaction)?;
-            crate::repositories::cost_aggregate::install(c.transaction)
-        },
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
             id: "2026-10-30-agent-compactions",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
@@ -302,18 +234,6 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_start_wait::apply(c.transaction),
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: CANVAS_PROVIDER_ID,
-            introduced: OCTOBER_26,
-            target: MigrationTarget::Canvas,
-            supported_source: "Canvas without an explicit provider column; known historical identities",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| {
-            m2026_10_26_provider_identity::migrate_canvas_2026_10_26(c.transaction, c.accounts)
-        },
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -354,30 +274,6 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_unused_start_action::apply(c.transaction),
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: AGENT_STORAGE_ID,
-            introduced: OCTOBER_20,
-            target: MigrationTarget::Canvas,
-            supported_source: "JSON agent columns and pre-2026-10-21 capacity column",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| {
-            m2026_10_20_agents::prepare_columns(c.transaction)?;
-            crate::bootstrap::prepare_sync_schema(c.transaction)?;
-            crate::bootstrap::prepare_runtime_event_indexes(c.transaction)?;
-            crate::AgentRepository::prepare_change_journal(c.transaction)?;
-            if !crate::schema::table_exists(
-                c.transaction,
-                crate::agent_volatile::AGENT_VOLATILE_TABLE,
-            )? {
-                c.transaction
-                    .execute_batch(&crate::agent_volatile::TABLE_SQL)?;
-                m2026_10_20_agents::migrate_2026_10_20(c.transaction)?;
-            }
-            crate::agent_volatile::prepare(c.transaction)
-        },
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -431,77 +327,6 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
-            id: CANVAS_COLUMNS_ID,
-            introduced: OCTOBER_26,
-            target: MigrationTarget::Canvas,
-            supported_source: "Terminal output without generation",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| {
-            crate::feature_schema::prepare(c.transaction)?;
-            m2026_10_26_canvas::feature_columns(c.transaction)?;
-            crate::MonitorsRepository::prepare_indexes(c.transaction)?;
-            crate::AgentIndexedReads::prepare_index(c.transaction)
-        },
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: WORKSPACE_LIMITS_ID,
-            introduced: OCTOBER_26,
-            target: MigrationTarget::Canvas,
-            supported_source: "Workspace rateLimits/rateLimitsByAccount before per-account entities",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_26_canvas::migrate_workspace_limits(c.transaction),
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: SCHEDULER_INDEXES_ID,
-            introduced: OCTOBER_27,
-            target: MigrationTarget::Canvas,
-            supported_source: "Canvas without scheduler indexes",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_27_scheduler_indexes::apply(c.transaction),
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: "2026-10-28-agent-fields",
-            introduced: OCTOBER_28,
-            target: MigrationTarget::Canvas,
-            supported_source: "Agent execution fields before typed decoding",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_28_agent_fields::apply(c.transaction),
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: "2026-10-28-agent-account",
-            introduced: OCTOBER_28,
-            target: MigrationTarget::Canvas,
-            supported_source: "Agent records before account ownership was materialized",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_28_agent_account::apply(c.transaction),
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: RETIRED_WAITS_ID,
-            introduced: OCTOBER_26,
-            target: MigrationTarget::Canvas,
-            supported_source: "Retired auth_probe_wait and provably unsubmitted capacity attempts; prepared callback cache",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| {
-            m2026_10_26_canvas::migrate_auth_probe_waits(c.transaction)?;
-            m2026_10_26_canvas::release_capacity_start_attempts(
-                c.transaction,
-                m2026_10_26_canvas::unix_now(),
-            )
-        },
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
             id: SUPERVISOR_ID,
             introduced: OCTOBER_26,
             target: MigrationTarget::Supervisor,
@@ -519,66 +344,6 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| crate::supervisor_journal::prepare_written_schema(c.transaction),
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: TERMINAL_ERRORS_ID,
-            introduced: OCTOBER_26,
-            target: MigrationTarget::Analytics,
-            supported_source: "Incomplete terminalErrorRepairV1 checkpoint and exact persisted native error notices",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_26_terminal_errors::apply(c.transaction, c.canvas()?),
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: RETIRED_ANALYTICS_ID,
-            introduced: OCTOBER_27,
-            target: MigrationTarget::Analytics,
-            supported_source: "Retired unused SQLite families",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_27_retired_sqlite::analytics(c.transaction),
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: RETIRED_CANVAS_ID,
-            introduced: OCTOBER_27,
-            target: MigrationTarget::Canvas,
-            supported_source: "Retired unused SQLite families",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_27_retired_sqlite::canvas(c.transaction),
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: "2026-10-27-cost-group-cover",
-            introduced: OCTOBER_27,
-            target: MigrationTarget::Analytics,
-            supported_source: "Cost groups with the non-covering lookup index",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_27_cost_index::apply(c.transaction),
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: "2026-10-28-usage-revision",
-            introduced: OCTOBER_28,
-            target: MigrationTarget::Analytics,
-            supported_source: "Analytics usage without receipt revisions",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_28_usage_revision::apply(c.transaction),
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
-            id: "2026-10-28-group-revision",
-            introduced: OCTOBER_28,
-            target: MigrationTarget::Analytics,
-            supported_source: "Cost groups without revisions",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_28_group_revision::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -986,6 +751,16 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| m2026_10_31_project_record_kind::apply(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-analytics-revision-schema",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Analytics,
+            supported_source: "Completed stores without analytics revision tracking",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::fresh_state::prepare_analytics_revision_schema(c.transaction),
+    },
 ];
 
 /// Operator-facing catalog; implementation and metadata have one owner.
@@ -1049,15 +824,7 @@ fn preflight_sql_sources(canvas: &Path, analytics: &Path) -> StoreResult<()> {
             e,
         )
     })?;
-    m2026_10_26_terminal_errors::preflight(&analytics, &canvas).map_err(|error| {
-        failure(
-            TERMINAL_ERRORS_ID,
-            MigrationTarget::Analytics,
-            MigrationPhase::Validate,
-            MigrationRollbackOutcome::NotRequired,
-            error,
-        )
-    })
+    Ok(())
 }
 
 fn rolled_back(
@@ -1092,20 +859,13 @@ fn rolled_back(
     }
 }
 
-fn apply_target(
-    db: &mut Connection,
-    target: MigrationTarget,
-    accounts: &Accounts,
-    source_database: SourceDatabase<'_>,
-) -> StoreResult<()> {
-    apply_target_catalog(db, target, accounts, source_database, CATALOG)
+fn apply_target(db: &mut Connection, target: MigrationTarget) -> StoreResult<()> {
+    apply_target_catalog(db, target, CATALOG)
 }
 
 fn apply_target_catalog(
     db: &mut Connection,
     target: MigrationTarget,
-    accounts: &Accounts,
-    source_database: SourceDatabase<'_>,
     catalog: &[&dyn Migration],
 ) -> StoreResult<()> {
     let marker_table = match target {
@@ -1154,18 +914,36 @@ fn apply_target_catalog(
             )
         })?;
     let mut last = first.definition().id;
+    if target == MigrationTarget::Canvas
+        && let Err(source) = crate::bootstrap::prepare_sync_schema(&tx)
+    {
+        return Err(rolled_back(tx, last, target, MigrationPhase::Apply, source));
+    }
     for step in catalog
         .iter()
         .filter(|step| step.definition().target == target && step.receipt_family().is_none())
     {
         last = step.definition().id;
-        if let Err(source) = step.apply(&Context::Sql(SqlContext {
-            transaction: &tx,
-            accounts,
-            source: source_database,
-        })) {
+        if let Err(source) = step.apply(&Context::Sql(SqlContext { transaction: &tx })) {
             return Err(rolled_back(tx, last, target, MigrationPhase::Apply, source));
         }
+    }
+    let current_schema = match target {
+        MigrationTarget::Canvas => (|| {
+            crate::bootstrap::prepare_runtime_event_indexes(&tx)?;
+            crate::AgentRepository::prepare_change_journal(&tx)?;
+            crate::feature_schema::prepare(&tx)?;
+            crate::MonitorsRepository::prepare_indexes(&tx)?;
+            crate::AgentIndexedReads::prepare_index(&tx)
+        })(),
+        MigrationTarget::Analytics => (|| {
+            crate::schema::ensure_analytics_limits_index(&tx)?;
+            crate::repositories::cost_aggregate::install(&tx)
+        })(),
+        MigrationTarget::Supervisor | MigrationTarget::AccountRegistry => Ok(()),
+    };
+    if let Err(source) = current_schema {
+        return Err(rolled_back(tx, last, target, MigrationPhase::Apply, source));
     }
     if target == MigrationTarget::Canvas {
         let seeded: bool = tx.query_row(
@@ -1433,6 +1211,10 @@ fn seed_receipt_finish(tx: &Transaction<'_>) -> StoreResult<()> {
         let required = if nullable { "" } else { "NOT NULL" };
         tx.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {name} TEXT GENERATED ALWAYS AS ({expression}) VIRTUAL {required} {check}"))?;
     }
+    seed_receipt_finish_markers(tx)
+}
+
+pub(crate) fn seed_receipt_finish_markers(tx: &Transaction<'_>) -> StoreResult<()> {
     for family in CATALOG.iter().filter_map(|entry| entry.receipt_family()) {
         tx.execute("INSERT INTO runtime_payload_migrations(name,cursor,complete,status,updated,cutover_ms) VALUES(?1,0,1,'complete',0,0)", [receipt_finish_name(family.id)])?;
     }
@@ -1459,19 +1241,8 @@ pub(crate) fn run(
     crate::schema::register_python_trigger_functions(&canvas)?;
     crate::sqlite_durability::configure_writer(&analytics)?;
     crate::sqlite_durability::configure_writer(&canvas)?;
-    let source_canvas = crate::open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    apply_target(
-        &mut analytics,
-        MigrationTarget::Analytics,
-        &accounts,
-        SourceDatabase::Canvas(&source_canvas),
-    )?;
-    apply_target(
-        &mut canvas,
-        MigrationTarget::Canvas,
-        &accounts,
-        SourceDatabase::Canvas(&source_canvas),
-    )?;
+    apply_target(&mut analytics, MigrationTarget::Analytics)?;
+    apply_target(&mut canvas, MigrationTarget::Canvas)?;
     run_receipt_migrations(&mut canvas, progress)?;
     RegistryMigration.apply(&Context::Registry(&registry))
 }
@@ -1517,12 +1288,7 @@ pub(crate) fn supervisor(db: &mut Connection) -> StoreResult<()> {
             source,
         )
     })?;
-    apply_target(
-        db,
-        MigrationTarget::Supervisor,
-        &Accounts::new(),
-        SourceDatabase::Independent,
-    )
+    apply_target(db, MigrationTarget::Supervisor)
 }
 
 #[cfg(test)]
@@ -1532,15 +1298,10 @@ pub(crate) fn m2026_10_30_domain_model_for_tests(tx: &Transaction<'_>) -> StoreR
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn prepare_canvas_fixture(transaction: &Transaction<'_>) -> StoreResult<()> {
-    let accounts = Accounts::new();
     for step in CATALOG.iter().filter(|step| {
         step.definition().target == MigrationTarget::Canvas && step.receipt_family().is_none()
     }) {
-        step.apply(&Context::Sql(SqlContext {
-            transaction,
-            accounts: &accounts,
-            source: SourceDatabase::Independent,
-        }))?;
+        step.apply(&Context::Sql(SqlContext { transaction }))?;
     }
     crate::schema::prepare_receipt_owners(transaction)
 }
@@ -1573,8 +1334,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn catalog_change_runs_new_body_and_failure_rolls_back_marker() {
+    #[tokio::test]
+    async fn catalog_change_runs_new_body_and_failure_rolls_back_marker() {
         fn first(c: &SqlContext<'_, '_>) -> StoreResult<()> {
             c.transaction
                 .execute("UPDATE counts SET first=first+1", [])?;
@@ -1609,17 +1370,20 @@ mod tests {
             definition: definition("bad"),
             apply: fail,
         };
-        let mut db = Connection::open_in_memory().expect("database");
-        db.execute_batch("CREATE TABLE analytics_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE counts(first INTEGER,second INTEGER); INSERT INTO counts VALUES(0,0)").expect("fixture");
-        let accounts = Accounts::new();
+        let root = tempfile::tempdir().expect("state");
+        drop(
+            crate::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("fresh state"),
+        );
+        let mut db = Connection::open(root.path().join("analytics.sqlite3")).expect("database");
+        db.execute_batch(
+            "CREATE TABLE counts(first INTEGER,second INTEGER); INSERT INTO counts VALUES(0,0)",
+        )
+        .expect("fixture");
+
         let run = |db: &mut Connection, steps: &[&dyn Migration]| {
-            apply_target_catalog(
-                db,
-                MigrationTarget::Analytics,
-                &accounts,
-                SourceDatabase::Independent,
-                steps,
-            )
+            apply_target_catalog(db, MigrationTarget::Analytics, steps)
         };
         run(&mut db, &[&one]).expect("first run");
         run(&mut db, &[&one]).expect("reopen skips bodies");
@@ -1720,16 +1484,12 @@ mod tests {
         crate::receipt_schema::create(&db).expect("schema");
         db.execute_batch("DROP INDEX runtime_error_incidents_dismissed; INSERT INTO runtime_error_incidents(id,kind,owner_kind,owner_id,created,last_seen,dismissed_at,payload) VALUES('dismissed','http_failure','request','owner',1,1,2,'null'),('open','http_failure','request','owner',1,1,NULL,'null');").expect("old incidents");
         let tx = db.transaction().expect("transaction");
-        let accounts = Accounts::new();
+
         let step = CATALOG
             .iter()
             .find(|step| step.definition().id == "2026-10-30-dismissed-incidents-index")
             .expect("registered migration");
-        let context = Context::Sql(SqlContext {
-            transaction: &tx,
-            accounts: &accounts,
-            source: SourceDatabase::Independent,
-        });
+        let context = Context::Sql(SqlContext { transaction: &tx });
         step.apply(&context).expect("migration");
         step.apply(&context).expect("repeat migration");
         let rows: i64 = tx
@@ -1748,17 +1508,13 @@ mod tests {
         let mut db = Connection::open_in_memory().expect("database");
         db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL); CREATE INDEX runtime_monitor_stall_due ON runtime_monitors(json_extract(record,'$.activityAt')) WHERE json_extract(record,'$.status')='running'; INSERT INTO runtime_monitors(id,record) VALUES('m','{}');").expect("legacy monitor");
         let tx = db.transaction().expect("transaction");
-        let accounts = Accounts::new();
+
         let step = CATALOG
             .iter()
             .find(|step| step.definition().id == "2026-10-30-unused-monitor-stall-index")
             .expect("registered migration");
-        step.apply(&Context::Sql(SqlContext {
-            transaction: &tx,
-            accounts: &accounts,
-            source: SourceDatabase::Independent,
-        }))
-        .expect("migration");
+        step.apply(&Context::Sql(SqlContext { transaction: &tx }))
+            .expect("migration");
         assert!(
             !tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='runtime_monitor_stall_due')",
@@ -1778,81 +1534,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn retired_sqlite_drop_fault_rolls_back_each_target() {
-        let root = tempfile::tempdir().expect("state");
-        drop(
-            crate::RuntimeStore::open(Some(root.path()))
-                .await
-                .expect("fresh"),
-        );
-        for (file, target, setup, denied, restored) in [
-            (
-                "canvas.sqlite3",
-                MigrationTarget::Canvas,
-                "CREATE TABLE runtime_turn_item_links_v1(id TEXT); CREATE TABLE runtime_budget_usage(id TEXT); INSERT INTO runtime_turn_item_links_v1 VALUES('old'); CREATE TRIGGER runtime_turn_item_link_delete_v1 AFTER DELETE ON runtime_items BEGIN DELETE FROM runtime_turn_item_links_v1; END;",
-                "runtime_budget_usage",
-                "runtime_turn_item_links_v1",
-            ),
-            (
-                "analytics.sqlite3",
-                MigrationTarget::Analytics,
-                "CREATE TABLE analytics_cost_changes_v1(id TEXT); CREATE TABLE analytics_cost_roots_v1(id TEXT); INSERT INTO analytics_cost_changes_v1 VALUES('old');",
-                "analytics_cost_roots_v1",
-                "analytics_cost_changes_v1",
-            ),
-        ] {
-            let mut db = Connection::open(root.path().join(file)).expect("database");
-            db.execute_batch(setup).expect("old objects");
-            let marker_table = if target == MigrationTarget::Canvas {
-                "sync_entity_meta"
-            } else {
-                "analytics_meta"
-            };
-            db.execute(
-                &format!("DELETE FROM {marker_table} WHERE key='migration_catalog'"),
-                [],
-            )
-            .expect("old catalog");
-            db.authorizer(Some(move |context: AuthContext<'_>| {
-                if matches!(context.action, AuthAction::DropTable { table_name } if table_name == denied) {
-                    Authorization::Deny
-                } else {
-                    Authorization::Allow
-                }
-            })).expect("fault");
-            let source =
-                Connection::open(root.path().join("canvas.sqlite3")).expect("canvas source");
-            let error = apply_target(
-                &mut db,
-                target,
-                &Accounts::new(),
-                SourceDatabase::Canvas(&source),
-            )
-            .expect_err("drop fails");
-            assert!(matches!(
-                error,
-                StoreError::Migration {
-                    phase: MigrationPhase::Apply,
-                    rollback: MigrationRollbackOutcome::RolledBack,
-                    ..
-                }
-            ));
-            db.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
-                .expect("remove fault");
-            let count: i64 = db
-                .query_row(&format!("SELECT count(*) FROM {restored}"), [], |row| {
-                    row.get(0)
-                })
-                .expect("retired rows restored");
-            assert_eq!(count, 1);
-            if target == MigrationTarget::Canvas {
-                let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='runtime_turn_item_link_delete_v1')", [], |row| row.get(0)).expect("trigger restored");
-                assert!(exists);
-            }
-        }
-    }
-
     #[test]
     fn migration_catalog_has_real_unique_dates_sources_and_removal_rules() {
         let order = catalog().map(|entry| entry.id).collect::<Vec<_>>();
@@ -1868,7 +1549,6 @@ mod tests {
             position("2026-10-31-retired-start-indexes")
                 < position("2026-10-30-unused-agent-columns")
         );
-        assert!(position(AGENT_STORAGE_ID) < position("2026-10-31-restore-startup-agent-indexes"));
         let mut ids = std::collections::BTreeSet::new();
         for entry in catalog() {
             assert!(ids.insert(entry.id), "duplicate migration ID");
@@ -1901,71 +1581,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_analytics_sql_fault_rolls_back_provider_and_schema_together() {
-        let root = tempfile::tempdir().expect("state");
-        drop(
-            crate::RuntimeStore::open(Some(root.path()))
-                .await
-                .expect("fresh"),
-        );
-        let mut db = Connection::open(root.path().join("analytics.sqlite3")).expect("analytics");
-        db.execute_batch("DELETE FROM analytics_meta WHERE key IN ('providerIdentityFormat','migration_catalog'); DROP TABLE analytics_cost_rows; DROP TABLE analytics_cost_groups;").expect("source");
-        db.authorizer(Some(|action: AuthContext<'_>| {
-            if matches!(
-                action.action,
-                AuthAction::CreateTable {
-                    table_name: "analytics_cost_rows"
-                }
-            ) {
-                Authorization::Deny
-            } else {
-                Authorization::Allow
-            }
-        }))
-        .expect("install SQL fault");
-        let error = apply_target(
-            &mut db,
-            MigrationTarget::Analytics,
-            &Accounts::new(),
-            SourceDatabase::Canvas(
-                &Connection::open(root.path().join("canvas.sqlite3")).expect("Canvas source"),
-            ),
-        )
-        .expect_err("fault after provider transition");
-        assert!(matches!(
-            error,
-            StoreError::Migration {
-                phase: MigrationPhase::Apply,
-                rollback: MigrationRollbackOutcome::RolledBack,
-                ..
-            }
-        ));
-        db.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
-            .expect("remove SQL fault");
-        assert_eq!(
-            db.query_row(
-                "SELECT count(*) FROM analytics_meta WHERE key='providerIdentityFormat'",
-                [],
-                |row| row.get::<_, i64>(0)
-            )
-            .expect("no partial marker"),
-            0
-        );
-        assert!(
-            !crate::schema::table_exists(&db, "analytics_cost_rows").expect("no partial table")
-        );
-        apply_target(
-            &mut db,
-            MigrationTarget::Analytics,
-            &Accounts::new(),
-            SourceDatabase::Canvas(
-                &Connection::open(root.path().join("canvas.sqlite3")).expect("Canvas source"),
-            ),
-        )
-        .expect("continue after fault removed");
-    }
-
-    #[tokio::test]
     async fn migration_commit_and_rollback_failures_keep_both_typed_causes() {
         use rusqlite::hooks::TransactionOperation;
         let root = tempfile::tempdir().expect("state");
@@ -1989,15 +1604,8 @@ mod tests {
             }
         }))
         .expect("transaction faults");
-        let error = apply_target(
-            &mut db,
-            MigrationTarget::Analytics,
-            &Accounts::new(),
-            SourceDatabase::Canvas(
-                &Connection::open(root.path().join("canvas.sqlite3")).expect("Canvas source"),
-            ),
-        )
-        .expect_err("commit and rollback denied");
+        let error = apply_target(&mut db, MigrationTarget::Analytics)
+            .expect_err("commit and rollback denied");
         assert!(
             matches!(&error,StoreError::Migration{phase:MigrationPhase::Rollback,rollback:MigrationRollbackOutcome::Unknown,source,rollback_error:Some(_),..} if matches!(**source,StoreError::Migration{phase:MigrationPhase::Commit,..}))
         );
@@ -2018,16 +1626,12 @@ mod monitor_active_index_regression {
         let mut db = Connection::open_in_memory().expect("database");
         db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT,monitor_status TEXT); INSERT INTO runtime_monitors VALUES('m','{}','running');").expect("old schema");
         let tx = db.transaction().expect("transaction");
-        let accounts = Accounts::new();
+
         let step = CATALOG
             .iter()
             .find(|step| step.definition().id == "2026-10-31-restore-monitor-active-index")
             .expect("migration");
-        let context = Context::Sql(SqlContext {
-            transaction: &tx,
-            accounts: &accounts,
-            source: SourceDatabase::Independent,
-        });
+        let context = Context::Sql(SqlContext { transaction: &tx });
         step.apply(&context).expect("restore index");
         step.apply(&context).expect("repeat migration");
         let plan: String = tx.query_row("EXPLAIN QUERY PLAN SELECT id FROM runtime_monitors WHERE monitor_status IN ('running','starting','approval')", [], |row| row.get(3)).expect("plan");

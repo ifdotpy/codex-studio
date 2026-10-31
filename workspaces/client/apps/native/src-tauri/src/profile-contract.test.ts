@@ -3,12 +3,11 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 
-// importBrowserProfile.ts owns the full wire contract. Rust intentionally
+// browserProfile.ts owns the full wire contract. Rust intentionally
 // reads only these fields and keeps unselected snapshots and records opaque.
 test("native archive views track the browser profile contract and callers", () => {
   const read = (path: string) => readFileSync(path, "utf8");
-  const ownerPath =
-    "workspaces/client/apps/web/src/native/importBrowserProfile.ts";
+  const ownerPath = "workspaces/client/apps/web/src/native/browserProfile.ts";
   const owner = ts.createSourceFile(
     ownerPath,
     read(ownerPath),
@@ -114,24 +113,10 @@ test("native archive views track the browser profile contract and callers", () =
       );
     }
   }
-  // The importer owns the accepted chunk bound; the native read guard must
-  // enforce the same byte limit before opening and hashing the file.
+  // Native bounds chunk reads before opening and hashing the file.
   assert.match(rust, /const MAX_CHUNK_BYTES: u64 = 64 \* 1024 \* 1024;/);
   assert.match(rust, /metadata\.len\(\) > MAX_CHUNK_BYTES/);
   assert.match(rust, /\.take\(MAX_CHUNK_BYTES \+ 1\)/);
-  const limits: string[] = [];
-  const findLimits = (node: ts.Node) => {
-    if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.GreaterThanToken &&
-      node.left.getText(owner) === "chunk.bytes"
-    )
-      limits.push(node.right.getText(owner));
-    ts.forEachChild(node, findLimits);
-  };
-  findLimits(owner);
-  assert.deepEqual(limits, ["64 * 1024 * 1024"]);
-
   const parse = (path: string) =>
     ts.createSourceFile(path, read(path), ts.ScriptTarget.Latest, true);
   for (const [path, names] of [
@@ -154,8 +139,7 @@ test("native archive views track the browser profile contract and callers", () =
       (node) =>
         ts.isImportDeclaration(node) &&
         ts.isStringLiteral(node.moduleSpecifier) &&
-        node.moduleSpecifier.text ===
-          "../web/src/native/importBrowserProfile.ts",
+        node.moduleSpecifier.text === "../web/src/native/browserProfile.ts",
     );
     assert.ok(declaration && ts.isImportDeclaration(declaration));
     const bindings = declaration.importClause?.namedBindings;
@@ -167,10 +151,6 @@ test("native archive views track the browser profile contract and callers", () =
       );
   }
   for (const [path, calls] of [
-    [
-      "workspaces/client/apps/web/src/native/preferences.ts",
-      ["profile.workspace", "profile.chunk"],
-    ],
     [
       "workspaces/client/apps/web/src/native/frame.ts",
       ["profile.snapshot", "profile.chunk"],

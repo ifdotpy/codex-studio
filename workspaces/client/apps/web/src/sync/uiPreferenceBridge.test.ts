@@ -4,7 +4,6 @@ import type { syncPost } from "../api";
 
 const mocks = vi.hoisted(() => ({
   acknowledge: vi.fn(),
-  initialize: vi.fn(),
   isSchemaMismatch: vi.fn(() => false),
   read: vi.fn((_scope?: string) => ({})),
   sessionRead: vi.fn(),
@@ -28,7 +27,6 @@ vi.mock("../api", () => ({
 }));
 vi.mock("./uiPreferenceStore", () => ({
   acknowledgePreferenceFields: mocks.acknowledge,
-  initializePreferenceMigration: mocks.initialize,
   readPreferenceFields: mocks.read,
   receivePreferenceFields: mocks.receive,
   watchPreferenceWrites: mocks.watch,

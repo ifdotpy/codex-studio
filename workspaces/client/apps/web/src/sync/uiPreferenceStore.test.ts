@@ -6,9 +6,9 @@ import {
   acknowledgePreferenceFields,
   readPreferenceFields,
   receivePreferenceFields,
-  initializePreferenceMigration,
   writePreferenceEdit,
 } from "./uiPreferenceStore";
+import { preferenceMemory } from "../servers/storage";
 function memoryStorage(): Storage {
   const values = new Map<string, string>();
   return {
@@ -36,11 +36,26 @@ class FakeStorageEvent extends Event {
   }
 }
 beforeEach(() => {
+  preferenceMemory.clear();
   vi.stubGlobal("localStorage", memoryStorage());
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("StorageEvent", FakeStorageEvent);
 });
 describe("UI preference cache", () => {
+  it("keeps streamed user preferences out of browser persistence", () => {
+    receivePreferenceFields("user", {
+      '["codex-studio-preferences-v1","theme"]': {
+        value: "dark",
+        timestamp: 1,
+        writer: "server",
+      },
+    });
+    expect(localStorage.getItem(`${preferenceCacheKey}:user`)).toBeNull();
+    expect(
+      readPreferenceFields("user")['["codex-studio-preferences-v1","theme"]']
+        ?.value,
+    ).toBe("dark");
+  });
   it("repairs a malformed cached timestamp without losing other fields", () => {
     const storage = memoryStorage();
     const bad = '["codex-project-tree:x","open"]';
@@ -103,26 +118,12 @@ describe("UI preference cache", () => {
       '["codex-studio-preferences-v1","theme"]',
     ]);
   });
-  it("drops invalid legacy appearance fields before syncing the remaining choices", () => {
-    localStorage.setItem(
-      "codex-studio-preferences-v1",
-      JSON.stringify({ theme: "dark", sidebarFontSize: 99 }),
-    );
-
-    initializePreferenceMigration("user");
-
-    expect(readPreferenceFields("user")).toEqual({
-      '["codex-studio-preferences-v1","theme"]': expect.objectContaining({
-        value: "dark",
-      }),
-    });
-    expect(localStorage.getItem(`${preferenceCacheKey}:user`)).not.toContain(
-      "sidebarFontSize",
-    );
-  });
   it("keeps a remote field when a stale control changes another field", () => {
     const before = { theme: "auto", mainFontSize: 14 };
-    localStorage.setItem("codex-studio-preferences-v1", JSON.stringify(before));
+    preferenceMemory.setItem(
+      "codex-studio-preferences-v1",
+      JSON.stringify(before),
+    );
     receivePreferenceFields("user", {
       '["codex-studio-preferences-v1","mainFontSize"]': {
         value: 18,
@@ -148,7 +149,7 @@ describe("UI preference cache", () => {
       theme: "dark",
     });
     const a = readPreferenceFields("user");
-    localStorage.clear();
+    preferenceMemory.clear();
     writePreferenceEdit("codex-studio-preferences-v1", before, {
       ...before,
       mainFontSize: 18,
@@ -169,11 +170,11 @@ describe("UI preference cache", () => {
       },
     });
     const cached = JSON.parse(
-      localStorage.getItem("codex-studio-preferences-v1")!,
+      preferenceMemory.getItem("codex-studio-preferences-v1")!,
     );
     expect(cached.theme).toBe("dark");
     expect(cached.mainFontSize).toBe(14);
-    expect(localStorage.getItem(`${preferenceCacheKey}:user`)).toContain(
+    expect(preferenceMemory.getItem(`${preferenceCacheKey}:user`)).toContain(
       "server",
     );
   });
@@ -208,6 +209,6 @@ it("shows the server value when it wins over a clamped edit", () => {
     [key]: { value: "light", timestamp: 2000, writer: "b" },
   });
   expect(
-    JSON.parse(localStorage.getItem("codex-studio-preferences-v1")!).theme,
+    JSON.parse(preferenceMemory.getItem("codex-studio-preferences-v1")!).theme,
   ).toBe("light");
 });

@@ -12,6 +12,7 @@ import {
 } from "../../sync/uiPreferenceStatus";
 import type { syncPost } from "../../api";
 import { preferenceCacheKey } from "../../sync/uiPreferenceMerge";
+import { preferenceMemory } from "../../servers/storage";
 import { readModelChoices, writeModelChoices } from "./modelChoices";
 
 const key = '["studio-model-choices-v1"]';
@@ -36,6 +37,7 @@ function memoryStorage(): Storage {
   };
 }
 beforeEach(() => {
+  preferenceMemory.clear();
   vi.stubGlobal("localStorage", memoryStorage());
   vi.stubGlobal("window", new EventTarget());
   vi.stubGlobal("document", new EventTarget());
@@ -189,7 +191,6 @@ it("saves the server model choices when user preferences are rejected and retrie
     },
     storage,
   );
-  writeModelChoices(astra, storage);
   const post = vi.fn<typeof syncPost<"/api/sync/preferences">>(
     async (_path, body) => {
       if (body.scope === "user") throw new Error("User preferences rejected");
@@ -199,6 +200,7 @@ it("saves the server model choices when user preferences are rejected and retrie
   const bridge = createUiPreferenceBridge(storage, post);
   const stop = bridge.start();
   try {
+    writeModelChoices(astra, storage);
     bridge.receiveProjection({});
     await expectState(storage, "saved");
     expect(readPreferenceWriteStatus(storage, "user")).toEqual({

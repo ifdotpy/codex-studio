@@ -11,7 +11,7 @@ const MAX_ARCHIVE: u64 = 256 * 1024 * 1024;
 // Maximum profile chunk file size in bytes; shared with the web importer.
 const MAX_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
 // These are deliberately partial views of the archive contract owned by
-// web/src/native/importBrowserProfile.ts. Invalid fields stay deferred until
+// web/src/native/browserProfile.ts. Invalid fields stay deferred until
 // the operation that needs them; snapshots remain raw for the renderer.
 #[derive(Default, Deserialize)]
 #[serde(untagged)]

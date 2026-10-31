@@ -33,7 +33,7 @@ it("rejects empty, long, nonletter, lowercase, and duplicate aliases", () => {
   expect(validateServerAlias("A", [storedAlias])).toBe("A");
 });
 
-it("keeps explicit aliases and derives unique legacy defaults", () => {
+it("derives unique defaults without loading legacy aliases", () => {
   const storedAlias = ["M", "A", "C"].join("");
   const rows = ["one", "two", "three"].map((id) => ({
     id,
@@ -48,8 +48,8 @@ it("keeps explicit aliases and derives unique legacy defaults", () => {
       key === SERVER_REGISTRY_KEY ? JSON.stringify(rows) : null,
   } as Storage;
   expect(readServers(storage).map((row) => row.alias)).toEqual([
-    "AAA",
-    storedAlias,
     "SAM",
+    "AAA",
+    "AAB",
   ]);
 });

@@ -1,7 +1,7 @@
 import type {
   BrowserProfileChunk,
   BrowserProfileRecord,
-} from "../web/src/native/importBrowserProfile.ts";
+} from "../web/src/native/browserProfile.ts";
 import type { exportBrowserProfile } from "./export-browser-profile.ts";
 export type ChunkReply =
   | { value: BrowserProfileChunk; error?: never }

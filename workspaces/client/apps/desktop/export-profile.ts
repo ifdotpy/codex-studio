@@ -7,7 +7,7 @@ import type { WebContents, WebFrameMain } from "electron";
 import type {
   BrowserProfileSnapshot,
   BrowserProfileArchive,
-} from "../web/src/native/importBrowserProfile.ts";
+} from "../web/src/native/browserProfile.ts";
 import { app, BrowserWindow, session, safeStorage } from "electron";
 import type { SpawnSyncReturns } from "node:child_process";
 import { execFileSync } from "node:child_process";
@@ -18,7 +18,7 @@ import path from "node:path";
 import { exportServerCredentials } from "./export-server-credentials.ts";
 import { exportBrowserProfile } from "./export-browser-profile.ts";
 
-export type { BrowserProfileArchive } from "../web/src/native/importBrowserProfile.ts";
+export type { BrowserProfileArchive } from "../web/src/native/browserProfile.ts";
 export type ExportManifest = {
   profile: string;
   output: string;

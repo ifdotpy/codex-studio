@@ -1,5 +1,4 @@
 import { useServerActivity } from "../servers/activity";
-import { useServerStorage } from "../servers/ServerServicesContext";
 import { useEffect, useRef, useState } from "react";
 import { Popover } from "@mantine/core";
 import { Mic } from "lucide-react";
@@ -35,11 +34,9 @@ export function BrowserDictation({
   onInsert: (text: string) => void;
   disabled?: boolean;
 }) {
-  const localStorage = useServerStorage();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(false);
-  const [storageFailed, setStorageFailed] = useState(false);
-  useServerActivity(active || storageFailed);
+  useServerActivity(active);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [text, setText] = useState("");
@@ -49,30 +46,12 @@ export function BrowserDictation({
   const stopTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
-  const key = `dictation-review:${chatId}`;
   const Constructor =
     (window as SpeechWindow).SpeechRecognition ||
     (window as SpeechWindow).webkitSpeechRecognition;
   const supported = window.isSecureContext && !!Constructor;
-  const persist = (value: string) => {
-    setText(value);
-    try {
-      localStorage.setItem(key, value);
-      setStorageFailed(false);
-    } catch {
-      setStorageFailed(true);
-      setError(
-        "The text could not be saved on this device. Copy it before you leave.",
-      );
-    }
-  };
   useEffect(() => {
-    try {
-      setText(localStorage.getItem(key) || "");
-    } catch {
-      setStorageFailed(true);
-      setError("Saved text is unavailable on this device.");
-    }
+    setText("");
     return () => {
       clearTimeout(stopTimer.current);
       const current = recognition.current;
@@ -85,7 +64,7 @@ export function BrowserDictation({
         current.abort();
       }
     };
-  }, [key]);
+  }, [chatId]);
   const start = () => {
     if (!supported || !Constructor || recognition.current) return;
     setError("");
@@ -108,7 +87,7 @@ export function BrowserDictation({
       Array.from(event.results).forEach((result) =>
         (result.isFinal ? final : pending).push(result[0].transcript),
       );
-      persist([prefix, final.join(" ")].filter(Boolean).join("\n"));
+      setText([prefix, final.join(" ")].filter(Boolean).join("\n"));
       setPartial(pending.join(" "));
     };
     current.onerror = (event) => {
@@ -119,7 +98,7 @@ export function BrowserDictation({
         "service-not-allowed":
           "Speech recognition is unavailable in this browser. Use keyboard dictation or the desktop app.",
         network:
-          "The browser speech service lost its connection. The text already shown is saved on this device.",
+          "The browser speech service lost its connection. The text already shown remains available here.",
         "no-speech":
           "No speech was detected. Check the microphone, then try again.",
         "audio-capture":
@@ -130,7 +109,7 @@ export function BrowserDictation({
       if (event.error !== "aborted")
         setError(
           messages[event.error] ||
-            "Dictation stopped. The text already shown is saved on this device.",
+            "Dictation stopped. The text already shown remains available here.",
         );
       if (event.error !== "aborted") current.abort();
     };
@@ -259,7 +238,7 @@ export function BrowserDictation({
               aria-label="Review dictated text"
               value={text}
               disabled={active}
-              onChange={(event) => persist(event.target.value)}
+              onChange={(event) => setText(event.target.value)}
             />
           </label>
           <button

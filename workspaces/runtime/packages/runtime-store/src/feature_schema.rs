@@ -270,11 +270,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn terminal_generation_upgrade_preserves_output_and_counts_resets() {
+    fn terminal_generation_preserves_output_and_counts_resets() {
         use crate::TerminalsRepository;
         let mut db = crate::fresh_state::test_canvas();
-        db.execute_batch("ALTER TABLE user_terminals DROP COLUMN output_generation")
-            .expect("legacy schema");
         let record = serde_json::json!({"id":"terminal","agent":"a","title":"Terminal","cwd":std::env::temp_dir(),"status":"running","created":1});
         db.execute(
             "INSERT INTO user_terminals(id,record,output,offset) VALUES('terminal',?1,'a🙂',0)",
@@ -282,9 +280,6 @@ mod tests {
         )
         .expect("legacy output");
         let tx = db.transaction().expect("upgrade");
-        crate::migrations::m2026_10_26_canvas::feature_columns(&tx).expect("additive transition");
-        super::prepare(&tx).expect("current schema");
-        crate::migrations::m2026_10_26_canvas::feature_columns(&tx).expect("idempotent transition");
         super::prepare(&tx).expect("current schema");
         let row = TerminalsRepository::get(&tx, "terminal")
             .expect("read")

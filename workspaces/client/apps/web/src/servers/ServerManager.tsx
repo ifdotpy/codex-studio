@@ -25,14 +25,16 @@ import {
   readServers,
   writeServers,
   localServer,
+  setLocalServerDetails,
   serveOrigin,
   type StudioServer,
 } from "./registry";
-import { LOCAL_ALIAS_KEY, defaultServerAlias } from "./serverAliases";
+import { defaultServerAlias } from "./serverAliases";
 import ServerDetailsEditor from "./ServerDetailsEditor";
 import { Check, Copy } from "lucide-react";
 import "./server-settings.css";
 import { serverCredentialAdapter } from "./transport";
+import { outboxRequests } from "../browserPersistence";
 import type { ServerNavigation, ServerAccount } from "./navigation";
 export default function ServerManager({
   servers,
@@ -55,6 +57,7 @@ export default function ServerManager({
   navigation?: Record<string, ServerNavigation>;
   accountsByServer?: Record<string, ServerAccount[]>;
 }) {
+  const outbox = outboxRequests();
   const [origin, setOrigin] = useState("");
   const [code, setCode] = useState("");
   const [label, setLabel] = useState("");
@@ -356,7 +359,7 @@ export default function ServerManager({
                         )
                           return discovery.setAlias(server.id, alias);
                         if (server.id === "local")
-                          localStorage.setItem(LOCAL_ALIAS_KEY, alias);
+                          setLocalServerDetails({ alias });
                         writeServers(
                           readServers().map((row) =>
                             row.id === server.id ? { ...row, alias } : row,
@@ -405,9 +408,7 @@ export default function ServerManager({
                 }
                 try {
                   const invitation = parseInvitation(code.trim(), address);
-                  const saved = JSON.parse(
-                    localStorage.getItem("studio-pairing-attempt-v1") || "null",
-                  );
+                  const saved = JSON.parse(outbox.get("pairing", "") || "null");
                   if (
                     !request.current ||
                     request.current.origin !== address ||
@@ -423,8 +424,9 @@ export default function ServerManager({
                       code: code.trim(),
                       id,
                     };
-                    localStorage.setItem(
-                      "studio-pairing-attempt-v1",
+                    outbox.set(
+                      "pairing",
+                      "",
                       JSON.stringify({
                         origin: address,
                         inviteId: invitation.inviteId,
@@ -450,7 +452,7 @@ export default function ServerManager({
                   setOrigin("");
                   setLabel("");
                   request.current = null;
-                  localStorage.removeItem("studio-pairing-attempt-v1");
+                  outbox.remove("pairing", "");
                 })()
                   .catch((failure: unknown) =>
                     setError(

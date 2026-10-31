@@ -1,157 +1,121 @@
-import {
-  useServerStorage,
-  useServerStorageEventKey,
-} from "../servers/ServerServicesContext";
-import { serverLocalStorage as localStorage } from "../servers/storage";
+import { useServerStorage } from "../servers/ServerServicesContext";
+import { serverLocalStorage } from "../servers/storage";
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import type { Message } from "../types";
 
 const changed = "studio-removed-messages-changed";
+type Removed = {
+  keys: Set<string>;
+  copies: Message[];
+  restored: Message[];
+  revision: number;
+};
+const owners = new WeakMap<Storage, Map<string, Removed>>();
+function record(storage: Storage, key: string): Removed {
+  let records = owners.get(storage);
+  if (!records) owners.set(storage, (records = new Map()));
+  let value = records.get(key);
+  if (!value)
+    records.set(
+      key,
+      (value = { keys: new Set(), copies: [], restored: [], revision: 0 }),
+    );
+  return value;
+}
 
 export function messageRemovalKeys(message: Message, chat: string) {
   const keys = [`item:${message.id}`];
   const clientId = message.clientMessageId;
-  if (clientId) {
-    // The same receipt can become a native input after a delayed acknowledgement.
+  if (clientId)
     keys.push(
       `client:${clientId}`,
       `item:${clientId}`,
       `item:${chat}:${clientId}`,
       `item:${chat}:${clientId}:0`,
     );
-  }
   return keys;
 }
-
-function parseKeys(value: string) {
-  try {
-    const keys: unknown = JSON.parse(value);
-    return new Set(
-      Array.isArray(keys)
-        ? keys.filter((key): key is string => typeof key === "string")
-        : [],
-    );
-  } catch {
-    return new Set<string>();
-  }
-}
-
 export const removedMessagesStorageKey = (
   workspace: string,
   kind: string,
   chat: string | null,
 ) => `studio-removed-messages:${JSON.stringify([workspace, kind, chat])}`;
-
 export function isRemovedMessage(
   workspace: string,
   kind: string,
   chat: string,
   message: Message,
-  storage = localStorage,
+  storage = serverLocalStorage,
 ) {
-  const keys = parseKeys(
-    storage.getItem(removedMessagesStorageKey(workspace, kind, chat)) || "[]",
+  const value = record(
+    storage,
+    removedMessagesStorageKey(workspace, kind, chat),
   );
-  return messageRemovalKeys(message, chat).some((key) => keys.has(key));
+  return messageRemovalKeys(message, chat).some((key) => value.keys.has(key));
 }
-
-export function removeMessageFromDevice(
-  workspace: string,
-  kind: string,
-  chat: string,
-  message: Message,
-  storage = localStorage,
-) {
-  const storageKey = removedMessagesStorageKey(workspace, kind, chat);
-  saveRemovedMessage(workspace, kind, chat, message, storage);
-  const next = parseKeys(storage.getItem(storageKey) || "[]");
-  for (const key of messageRemovalKeys(message, chat)) next.add(key);
-  storage.setItem(storageKey, JSON.stringify([...next]));
-  window.dispatchEvent(new CustomEvent(changed, { detail: storageKey }));
-}
-
 export function saveRemovedMessage(
   workspace: string,
   kind: string,
   chat: string,
   message: Message,
-  storage = localStorage,
+  storage = serverLocalStorage,
 ) {
-  const key = `${removedMessagesStorageKey(workspace, kind, chat)}:copies`;
-  const copies: Message[] = JSON.parse(storage.getItem(key) || "[]");
-  const same = (item: Message) =>
-    item.id === message.id ||
-    (message.clientMessageId &&
-      item.clientMessageId === message.clientMessageId);
-  storage.setItem(
-    key,
-    JSON.stringify([...copies.filter((item) => !same(item)), message]),
+  const value = record(
+    storage,
+    removedMessagesStorageKey(workspace, kind, chat),
   );
+  value.copies = value.copies.filter(
+    (item) =>
+      item.id !== message.id &&
+      (!message.clientMessageId ||
+        item.clientMessageId !== message.clientMessageId),
+  );
+  value.copies.push(message);
 }
-
+export function removeMessageFromDevice(
+  workspace: string,
+  kind: string,
+  chat: string,
+  message: Message,
+  storage = serverLocalStorage,
+) {
+  const key = removedMessagesStorageKey(workspace, kind, chat);
+  saveRemovedMessage(workspace, kind, chat, message, storage);
+  const value = record(storage, key);
+  for (const item of messageRemovalKeys(message, chat)) value.keys.add(item);
+  value.revision++;
+  window.dispatchEvent(new CustomEvent(changed, { detail: key }));
+}
 export function useRemovedMessages(
   workspace: string,
   kind: string,
   chat: string | null,
 ) {
-  const localStorage = useServerStorage();
-  const serverStorageEventKey = useServerStorageEventKey();
-  const storageKey = removedMessagesStorageKey(workspace, kind, chat);
-  const snapshot = useCallback(() => {
-    try {
-      return localStorage.getItem(storageKey) || "[]";
-    } catch {
-      return "[]";
-    }
-  }, [storageKey, localStorage]);
+  const storage = useServerStorage();
+  const key = removedMessagesStorageKey(workspace, kind, chat);
+  const value = record(storage, key);
+  const snapshot = useCallback(() => value.revision, [value]);
   const subscribe = useCallback(
     (notify: () => void) => {
-      const storage = (event: StorageEvent) => {
-        if (serverStorageEventKey(event) === storageKey || event.key === null)
-          notify();
-      };
       const local = (event: Event) => {
-        if ((event as CustomEvent<string>).detail === storageKey) notify();
+        if ((event as CustomEvent<string>).detail === key) notify();
       };
-      window.addEventListener("storage", storage);
       window.addEventListener(changed, local);
-      return () => {
-        window.removeEventListener("storage", storage);
-        window.removeEventListener(changed, local);
-      };
+      return () => window.removeEventListener(changed, local);
     },
-    [storageKey, serverStorageEventKey],
+    [key],
   );
-  const serialized = useSyncExternalStore(subscribe, snapshot);
-  const keys = useMemo(() => parseKeys(serialized), [serialized]);
+  const revision = useSyncExternalStore(subscribe, snapshot);
   const hidden = useCallback(
     (message: Message) =>
-      messageRemovalKeys(message, chat || "").some((key) => keys.has(key)),
-    [chat, keys],
+      messageRemovalKeys(message, chat || "").some((item) =>
+        value.keys.has(item),
+      ),
+    [chat, value, revision],
   );
-  return {
-    hidden,
-    restored: useMemo<Message[]>(() => {
-      // Restored copies are display records. They never return to the outbox.
-      void serialized;
-      let copies: Message[];
-      try {
-        const saved: unknown = JSON.parse(
-          localStorage.getItem(`${storageKey}:restored`) || "[]",
-        );
-        copies = Array.isArray(saved)
-          ? saved.filter(
-              (message): message is Message =>
-                message !== null &&
-                typeof message === "object" &&
-                typeof message.id === "string" &&
-                typeof message.text === "string",
-            )
-          : [];
-      } catch {
-        return [];
-      }
-      return copies.map((message) => ({
+  const restored = useMemo(
+    () =>
+      value.restored.map((message) => ({
         ...message,
         pending: false,
         localDelivery: false,
@@ -161,26 +125,20 @@ export function useRemovedMessages(
         )
           ? "uncertain"
           : message.deliveryStatus,
-      }));
-    }, [serialized, storageKey, localStorage]),
-    hasRemoved: keys.size > 0,
+      })),
+    [value, revision],
+  );
+  return {
+    hidden,
+    restored,
+    hasRemoved: value.keys.size > 0,
     restore: () => {
-      localStorage.setItem(
-        `${storageKey}:restored`,
-        localStorage.getItem(`${storageKey}:copies`) || "[]",
-      );
-      localStorage.removeItem(storageKey);
-      window.dispatchEvent(new CustomEvent(changed, { detail: storageKey }));
+      value.restored = value.copies;
+      value.keys.clear();
+      value.revision++;
+      window.dispatchEvent(new CustomEvent(changed, { detail: key }));
     },
-    remove: (message: Message) => {
-      // Report a storage failure instead of hiding a card that reappears on reload.
-      removeMessageFromDevice(
-        workspace,
-        kind,
-        chat || "",
-        message,
-        localStorage,
-      );
-    },
+    remove: (message: Message) =>
+      removeMessageFromDevice(workspace, kind, chat || "", message, storage),
   };
 }

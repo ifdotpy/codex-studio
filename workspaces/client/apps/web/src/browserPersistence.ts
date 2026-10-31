@@ -17,10 +17,59 @@ export function browserIndexedDB(): IDBFactory | undefined {
   return globalThis.indexedDB;
 }
 
+const outboxPrefixes = {
+  nativeAction: "studio-native-action:",
+  projectSave: "studio-peer-convert:",
+  queueChange: "studio-queue-change:",
+  serverAccess: "studio-server-access-pending",
+  pairing: "studio-pairing-attempt-v1",
+  serverManagement: "studio-server-management-v1:",
+  legacyServerManagement: "studio-server-discovery-pending-v1",
+} as const;
+export type OutboxRequestKind = keyof typeof outboxPrefixes;
+
+/** One logical outbox, retaining existing keys and exact request bytes. */
+export function outboxRequests(
+  storage: Pick<
+    Storage,
+    "getItem" | "setItem" | "removeItem"
+  > = globalThis.localStorage,
+) {
+  const key = (kind: OutboxRequestKind, suffix: string) =>
+    outboxPrefixes[kind] + suffix;
+  return {
+    key,
+    get: (kind: OutboxRequestKind, suffix: string) =>
+      storage.getItem(key(kind, suffix)),
+    set: (kind: OutboxRequestKind, suffix: string, value: string) =>
+      storage.setItem(key(kind, suffix), value),
+    remove: (kind: OutboxRequestKind, suffix: string) =>
+      storage.removeItem(key(kind, suffix)),
+  };
+}
+
+export function outboxRequestKeys(
+  storage: Storage,
+  kind: OutboxRequestKind,
+  suffix: string,
+) {
+  const prefix = outboxPrefixes[kind] + suffix;
+  return Array.from({ length: storage.length }, (_, index) =>
+    storage.key(index),
+  )
+    .filter((name): name is string => !!name?.startsWith(prefix))
+    .map((name) => name.slice(outboxPrefixes[kind].length));
+}
+
 /** Remove retired local copies without touching credentials or request fences. */
 export async function cleanupLegacyPersistence(
-  storage: Storage = globalThis.localStorage,
-  factory: IDBFactory | undefined = browserIndexedDB(),
+  storage: Pick<
+    Storage,
+    "length" | "key" | "removeItem"
+  > = globalThis.localStorage,
+  factory:
+    | Pick<IDBFactory, "databases" | "deleteDatabase">
+    | undefined = browserIndexedDB(),
 ) {
   const retiredKeys = [
     "codex-chat-draft:",
@@ -30,6 +79,7 @@ export async function cleanupLegacyPersistence(
     "studio-upload-settled:",
     "studio-workspace-panel-width:",
     "studio-sidebar-width:",
+    "studio-removed-messages:",
   ];
   const keys = Array.from({ length: storage.length }, (_, index) =>
     storage.key(index),
@@ -58,4 +108,44 @@ export async function cleanupLegacyPersistence(
         reject(new Error("Close older Studio pages to remove retired data."));
     });
   }
+}
+
+export const PAIRED_SERVERS_KEY = "studio-paired-servers-v1";
+
+export type PairedServerReference = {
+  id: string;
+  origin: string;
+  credentialId: string;
+};
+
+export function readPairedServerReferences(
+  storage: Storage = globalThis.localStorage,
+): PairedServerReference[] {
+  const rows: unknown = JSON.parse(storage.getItem(PAIRED_SERVERS_KEY) || "[]");
+  if (!Array.isArray(rows))
+    throw new Error("The saved server list is invalid.");
+  return rows.map((row) => {
+    if (
+      !row ||
+      typeof row.id !== "string" ||
+      typeof row.origin !== "string" ||
+      typeof row.credentialId !== "string"
+    )
+      throw new Error("The saved server list is invalid.");
+    return { id: row.id, origin: row.origin, credentialId: row.credentialId };
+  });
+}
+
+export function writePairedServerReferences(
+  servers: readonly PairedServerReference[],
+  storage: Storage = globalThis.localStorage,
+): void {
+  storage.setItem(
+    PAIRED_SERVERS_KEY,
+    JSON.stringify(
+      servers
+        .map(({ id, origin, credentialId }) => ({ id, origin, credentialId }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    ),
+  );
 }

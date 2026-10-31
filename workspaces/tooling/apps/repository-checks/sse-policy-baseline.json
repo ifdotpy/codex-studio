@@ -84,14 +84,6 @@
     "callee": "localStorage.setItem"
   },
   {
-    "file": "components/BrowserDictation.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/BrowserDictation.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
     "file": "components/MessageQueue.tsx",
     "callee": "localStorage.length"
   },
@@ -192,50 +184,6 @@
     "callee": "localStorage"
   },
   {
-    "file": "components/removedMessages.ts",
-    "callee": "localStorage"
-  },
-  {
-    "file": "components/removedMessages.ts",
-    "callee": "localStorage"
-  },
-  {
-    "file": "components/removedMessages.ts",
-    "callee": "localStorage"
-  },
-  {
-    "file": "components/removedMessages.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "components/removedMessages.ts",
-    "callee": "localStorage"
-  },
-  {
-    "file": "components/removedMessages.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "components/removedMessages.ts",
-    "callee": "localStorage"
-  },
-  {
-    "file": "components/removedMessages.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/removedMessages.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "components/removedMessages.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "components/removedMessages.ts",
-    "callee": "localStorage"
-  },
-  {
     "file": "components/resourceReadRecovery.test.ts",
     "callee": "localStorage.getItem"
   },
@@ -293,25 +241,9 @@
   },
   {
     "file": "components/useMessageQueue.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "components/useMessageQueue.ts",
     "callee": "syncPost"
   },
   {
-    "file": "components/useProjectSave.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/useProjectSave.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "components/useProjectSave.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
     "file": "components/useSendingMessageRemoval.ts",
     "callee": "localStorage"
   },
@@ -360,54 +292,6 @@
     "callee": "syncGet"
   },
   {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "indexedDB.databases"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.length"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.length"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.key"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "indexedDB.deleteDatabase"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "indexedDB.open"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "native/importBrowserProfile.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "native/preferences.ts",
-    "callee": "window.localStorage"
-  },
-  {
     "file": "native/serverCredentials.test.ts",
     "callee": "new NativeServerCredentials().fetch"
   },
@@ -418,62 +302,6 @@
   {
     "file": "native/serverCredentials.test.ts",
     "callee": "new NativeServerCredentials().fetch"
-  },
-  {
-    "file": "push/signInPush.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "push/signInPush.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "push/signInPush.ts",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "servers/MultiServerApp.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/MultiServerApp.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/MultiServerApp.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/MultiServerApp.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/ServerAccessSettings.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/ServerAccessSettings.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/ServerAccessSettings.tsx",
-    "callee": "localStorage.removeItem"
-  },
-  {
-    "file": "servers/ServerManager.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/ServerManager.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/ServerManager.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/ServerManager.tsx",
-    "callee": "localStorage.removeItem"
   },
   {
     "file": "servers/automaticAccessStore.ts",
@@ -504,56 +332,20 @@
     "callee": "adapter.fetch"
   },
   {
-    "file": "servers/frameBridge.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/frameBridge.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
     "file": "servers/mutationIdentity.test.ts",
     "callee": "globalThis.fetch"
-  },
-  {
-    "file": "servers/preferenceServerOrder.ts",
-    "callee": "localStorage.getItem"
   },
   {
     "file": "servers/projectLocations.ts",
     "callee": "globalThis.localStorage"
   },
   {
-    "file": "servers/registry.ts",
-    "callee": "globalThis.localStorage"
-  },
-  {
-    "file": "servers/registry.ts",
-    "callee": "globalThis.localStorage"
-  },
-  {
-    "file": "servers/registry.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/registry.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
     "file": "servers/routes.ts",
     "callee": "fetch"
   },
   {
     "file": "servers/routes.ts",
     "callee": "fetch"
-  },
-  {
-    "file": "servers/routes.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/routes.ts",
-    "callee": "localStorage.setItem"
   },
   {
     "file": "servers/serverNames.ts",
@@ -633,23 +425,11 @@
   },
   {
     "file": "servers/useServerDiscovery.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useServerDiscovery.ts",
     "callee": "localStorage.setItem"
   },
   {
     "file": "servers/useServerDiscovery.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useServerDiscovery.ts",
     "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useServerDiscovery.ts",
-    "callee": "localStorage.getItem"
   },
   {
     "file": "servers/useServerDiscovery.ts",
@@ -661,46 +441,6 @@
   },
   {
     "file": "servers/useUiPreferenceSync.test.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.test.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.test.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "servers/useUiPreferenceSync.ts",
     "callee": "localStorage.getItem"
   },
   {
@@ -809,39 +549,7 @@
   },
   {
     "file": "sync/uiPreferenceStore.test.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "sync/uiPreferenceStore.test.ts",
     "callee": "localStorage.getItem"
-  },
-  {
-    "file": "sync/uiPreferenceStore.test.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "sync/uiPreferenceStore.test.ts",
-    "callee": "localStorage.clear"
-  },
-  {
-    "file": "sync/uiPreferenceStore.test.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "sync/uiPreferenceStore.test.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "sync/uiPreferenceStore.test.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "sync/uiPreferenceStore.ts",
-    "callee": "globalThis.localStorage"
-  },
-  {
-    "file": "sync/uiPreferenceStore.ts",
-    "callee": "globalThis.localStorage"
   },
   {
     "file": "sync/uploads.ts",
@@ -858,17 +566,5 @@
   {
     "file": "usage/accountUsage.test.ts",
     "callee": "localStorage"
-  },
-  {
-    "file": "useNativeAction.ts",
-    "callee": "localStorage.getItem"
-  },
-  {
-    "file": "useNativeAction.ts",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "useNativeAction.ts",
-    "callee": "localStorage.removeItem"
   }
 ]

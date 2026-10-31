@@ -1,4 +1,5 @@
 import { randomUUID } from "../uuid";
+import { outboxRequests } from "../browserPersistence";
 import {
   useServerApi,
   useServerStorage,
@@ -36,10 +37,10 @@ function isStringArray(value: unknown): value is string[] {
   );
 }
 
-function readStoredQueueRequest(localStorage: Storage, key: string): unknown {
+function readStoredQueueRequest(storage: Storage, suffix: string): unknown {
   let stored: string | null;
   try {
-    stored = localStorage.getItem(key);
+    stored = outboxRequests(storage).get("queueChange", suffix);
   } catch {
     return "";
   }
@@ -90,11 +91,12 @@ export function useMessageQueue(p: {
   const { updateLocalDraft } = useServerLocalDrafts();
   const serverStorageEventKey = useServerStorageEventKey();
   const readQueueRequest = useCallback(
-    (key: string) => readStoredQueueRequest(storage, key),
+    (suffix: string) => readStoredQueueRequest(storage, suffix),
     [storage],
   );
 
-  const key = `studio-queue-change:${p.scope}:${p.id}`;
+  const suffix = `${p.scope}:${p.id}`;
+  const key = outboxRequests(storage).key("queueChange", suffix);
   const currentKey = useRef(key);
   currentKey.current = key;
   const [state, setState] = useState<{
@@ -111,14 +113,14 @@ export function useMessageQueue(p: {
     request: unknown;
   }>({
     key,
-    request: readQueueRequest(key),
+    request: readQueueRequest(suffix),
   });
   const [busyKey, setBusy] = useState<string | null>(null);
   const locks = useRef(new Set<string>());
   const serial = useRef(0);
   const view = state.key === key ? state.view : emptyQueue;
   const pending =
-    pendingState.key === key ? pendingState.request : readQueueRequest(key);
+    pendingState.key === key ? pendingState.request : readQueueRequest(suffix);
 
   const reload = useCallback(async () => {
     if (!p.enabled || !p.id) return;
@@ -141,7 +143,7 @@ export function useMessageQueue(p: {
 
   useEffect(() => {
     serial.current++;
-    setPending({ key, request: readQueueRequest(key) });
+    setPending({ key, request: readQueueRequest(suffix) });
     if (!p.enabled || !p.id) return;
     return subscribeStateProjection(
       (snapshot) => {
@@ -159,7 +161,14 @@ export function useMessageQueue(p: {
         if (error) setFailure({ key, text: errorText(error) });
       },
     );
-  }, [key, p.enabled, p.id, subscribeStateProjection, readQueueRequest]);
+  }, [
+    key,
+    suffix,
+    p.enabled,
+    p.id,
+    subscribeStateProjection,
+    readQueueRequest,
+  ]);
 
   const clearRequest = async (request: QueueMutation) => {
     const next = await updateLocalDraft<unknown>(key, null, (current) =>
@@ -171,7 +180,7 @@ export function useMessageQueue(p: {
   };
   useEffect(() => {
     const syncPending = () =>
-      setPending({ key, request: readQueueRequest(key) });
+      setPending({ key, request: readQueueRequest(suffix) });
     const changed = (event: StorageEvent) => {
       if (
         serverStorageEventKey(event) === key ||
@@ -186,7 +195,7 @@ export function useMessageQueue(p: {
       window.removeEventListener("storage", changed);
       stop();
     };
-  }, [key, readQueueRequest, serverStorageEventKey]);
+  }, [key, suffix, readQueueRequest, serverStorageEventKey]);
   const execute = async (request: QueueMutation) => {
     if (locks.current.has(key))
       throw new Error("Wait for the current queue change.");
@@ -229,7 +238,7 @@ export function useMessageQueue(p: {
   };
   const mutate = async (change: QueueChange) => {
     if (!p.id) throw new Error("The queue belongs to another chat.");
-    const existing = readQueueRequest(key);
+    const existing = readQueueRequest(suffix);
     setPending({ key, request: existing });
     if (existing !== null)
       throw new Error(
@@ -277,7 +286,7 @@ export function useMessageQueue(p: {
     pending,
     reload,
     retry: async () => {
-      const request = readQueueRequest(key);
+      const request = readQueueRequest(suffix);
       setPending({ key, request });
       if (request !== null) {
         if (!isQueueMutation(request))

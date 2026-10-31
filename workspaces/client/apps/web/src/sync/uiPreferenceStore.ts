@@ -1,17 +1,15 @@
 import { setPreferenceWriteStatus } from "./uiPreferenceStatus";
 import { randomUUID } from "../uuid";
-import { serverStoragePrefix } from "../servers/storage";
 import {
   defaultStudioPreferences,
-  parseStudioPreferences,
   normalizeStudioPreferences,
-  applyStudioPreferences,
   studioPreferencesStorageKey,
 } from "../studioPreferences";
 import {
-  scopedStorage,
+  preferenceStorageForServer as scopedPreferenceStorage,
   serverLocalStorage,
   observeStorageWrites,
+  preferenceMemory,
 } from "../servers/storage";
 import {
   preferenceCacheKey,
@@ -20,12 +18,11 @@ import {
   preferenceScope,
   storageFields,
   mergePreferenceFields,
-  migratePreferenceFields,
   type PreferenceFields,
   type PreferenceScope,
 } from "./uiPreferenceMerge";
 import { RETIRED_MODEL_WHITELIST_KEY } from "../generated/sharedValues.ts";
-const userStorage = () => globalThis.localStorage;
+const userStorage = () => preferenceMemory;
 const retiredModelWhitelistField = JSON.stringify([
   RETIRED_MODEL_WHITELIST_KEY,
 ]);
@@ -149,20 +146,6 @@ export function readPreferenceFields(
 ) {
   return cache(scope === "user" ? userStorage() : storage, scope);
 }
-export function initializePreferenceMigration(
-  scope: PreferenceScope,
-  storage = serverLocalStorage,
-) {
-  const target = scope === "user" ? userStorage() : storage;
-  const marker = `${preferenceCacheKey}:migrated:${scope}`;
-  if (target.getItem(marker)) return;
-  persist(
-    target,
-    scope,
-    migratePreferenceFields(target, cache(target, scope), scope, writer()),
-  );
-  target.setItem(marker, "1");
-}
 export function receivePreferenceFields(
   scope: PreferenceScope,
   incoming: PreferenceFields,
@@ -238,55 +221,9 @@ export function watchPreferenceWrites(listener: () => void) {
   };
 }
 export function preferenceStorageForServer(id: string) {
-  return scopedStorage(
-    () => globalThis.localStorage,
-    serverStoragePrefix(id),
-    new Set(["codex-studio-preferences-v1", "mantine-color-scheme-value"]),
-  );
+  return scopedPreferenceStorage(id);
 }
 observeStorageWrites(capturePreferenceWrite);
-
-export function bootstrapPreferenceCache() {
-  const element = document.getElementById("studio-ui-preferences");
-  if (!element?.textContent) return;
-  try {
-    const seed = JSON.parse(element.textContent);
-    const serverId =
-      new URLSearchParams(location.search).get("studio-server") || "local";
-    if (typeof seed.workspaceId === "string") {
-      userStorage().setItem(
-        `studio-server-workspace-id:${serverId}`,
-        seed.workspaceId,
-      );
-      const alias =
-        seed.user?.fields?.[
-          JSON.stringify([`server-alias:${seed.workspaceId}`])
-        ]?.value;
-      if (
-        serverId === "local" &&
-        typeof alias === "string" &&
-        !userStorage().getItem("studio-local-server-alias-v1")
-      )
-        userStorage().setItem("studio-local-server-alias-v1", alias);
-    }
-    for (const scope of ["user", "server"] as const) {
-      const target = scope === "user" ? userStorage() : serverLocalStorage;
-      const incoming = { ...seed[scope]?.fields } as PreferenceFields;
-      // Existing local values must remain available for the one-time migration.
-      for (const name of Object.keys(incoming)) {
-        const [key] = JSON.parse(name);
-        if (
-          !target.getItem(`${preferenceCacheKey}:${scope}`) &&
-          target.getItem(key) !== null
-        )
-          delete incoming[name];
-      }
-      receivePreferenceFields(scope, incoming);
-    }
-  } catch {
-    /* An unavailable cache does not stop Studio. */
-  }
-}
 
 /** Record the fields changed by this control, even when another field arrived before React rendered. */
 export function writePreferenceEdit<T extends Record<string, unknown>>(
@@ -323,24 +260,6 @@ export function writePreferenceEdit<T extends Record<string, unknown>>(
     storage,
   );
   return latest;
-}
-
-export function applyCachedPreferenceAppearance() {
-  try {
-    const raw = userStorage().getItem(studioPreferencesStorageKey);
-    if (!raw) return;
-    const value = parseStudioPreferences(raw);
-    applyStudioPreferences(value, document.documentElement);
-    document.documentElement.dataset.mantineColorScheme =
-      value.theme === "auto"
-        ? window.matchMedia("(prefers-color-scheme: dark)").matches
-          ? "dark"
-          : "light"
-        : value.theme;
-    userStorage().setItem("mantine-color-scheme-value", value.theme);
-  } catch {
-    /* The existing preference loader reports invalid cache values. */
-  }
 }
 
 /** Adopt the server clock correction only if this exact edit is still current. */

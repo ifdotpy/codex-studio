@@ -177,11 +177,6 @@ test("the direct sidebar bounds pointer resize, cancels lost capture, and measur
     const before = await sidebar.evaluate(
       (node) => node.getBoundingClientRect().width,
     );
-    const storedKey = await page.evaluate(() =>
-      Object.keys(localStorage).find((key) =>
-        key.startsWith("studio-sidebar-width:"),
-      ),
-    );
     const box = (await rail.boundingBox())!;
     await page.mouse.move(box.x + box.width / 2, box.y + 80);
     await page.mouse.down();
@@ -233,10 +228,12 @@ test("the direct sidebar bounds pointer resize, cancels lost capture, and measur
       ),
     );
     expect(keys).toHaveLength(0);
-    await page.evaluate((key) => {
-      if (!key) throw new Error("Missing sidebar preference key");
-      localStorage.setItem(key, "invalid JSON");
-    }, storedKey);
+    await rail.press("End");
+    await expect
+      .poll(() =>
+        sidebar.evaluate((node) => node.getBoundingClientRect().width),
+      )
+      .toBe(Number(await rail.getAttribute("aria-valuemax")));
     await page.reload();
     await expect(rail).toBeVisible();
     const defaultWidth = await page.evaluate(() => {

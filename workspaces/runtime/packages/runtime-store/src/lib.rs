@@ -4114,7 +4114,45 @@ mod commit_notification_tests {
         let directory = tempfile::tempdir().unwrap();
         assert!(crate::fresh_state::prepare(directory.path()).unwrap());
         drop(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        let analytics =
+            rusqlite::Connection::open(directory.path().join("analytics.sqlite3")).unwrap();
+        assert_eq!(
+            analytics
+                .query_row(
+                    "SELECT revision FROM analytics_usage_revision_clock",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            analytics
+                .query_row(
+                    "SELECT count(*) FROM analytics_meta WHERE key IN (?1, ?2)",
+                    [
+                        crate::migrations::ANALYTICS_PROVIDER_FORMAT_KEY,
+                        crate::fresh_state::TERMINAL_ERROR_REPAIR_KEY
+                    ],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            2
+        );
+        drop(analytics);
+        let canvas = rusqlite::Connection::open(directory.path().join("canvas.sqlite3")).unwrap();
+        let version: i64 = canvas
+            .pragma_query_value(None, "schema_version", |row| row.get(0))
+            .unwrap();
+        drop(canvas);
         drop(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        let canvas = rusqlite::Connection::open(directory.path().join("canvas.sqlite3")).unwrap();
+        assert_eq!(
+            version,
+            canvas
+                .pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))
+                .unwrap()
+        );
     }
 
     #[tokio::test]

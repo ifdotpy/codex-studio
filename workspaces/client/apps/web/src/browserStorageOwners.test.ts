@@ -10,36 +10,19 @@ import { expect, it } from "vitest";
 // matches the source.
 const allowed: Record<string, string> = {
   "App.tsx": "workspace id of each server view, read by the server list",
+  "browserPersistence.ts": "allowed browser persistence and legacy cleanup",
   "components/shell/BackgroundTasks.tsx":
     "request identity of a pending background task control, kept for a lost reply",
   "components/shell/McpInventory.tsx":
     "request identity of a pending MCP action, kept for a lost reply",
   "components/shell/MonitorRestart.tsx":
     "request body of a pending monitor restart, kept for a lost reply",
-  "native/importBrowserProfile.ts":
-    "one-time import of the old browser profile into the desktop app",
-  "native/preferences.ts":
-    "one-time move of the old native preferences into the page storage",
-  "push/signInPush.ts":
-    "Web Push subscription id of this device for each server key",
-  "servers/MultiServerApp.tsx": "selected server and Studio preferences",
-  "servers/ServerManager.tsx":
-    "local server alias and the pending pairing attempt",
   "servers/automaticAccessStore.ts":
     "servers removed from the automatic UI list",
-  "servers/frameBridge.ts": "Studio preferences sent from a server frame",
-  "servers/preferenceServerOrder.ts":
-    "workspace id of each server, for the preference order",
   "servers/projectLocations.ts": "paired server list, for project locations",
-  "servers/registry.ts":
-    "paired server list and the local server name and alias",
-  "servers/routes.ts": "routes that a paired server reported, for each server",
   "servers/serverServices.ts": "server-scoped storage for each server view",
   "servers/storage.ts":
     "server-scoped storage that drafts, queues, uploads, and caches use",
-  "servers/useUiPreferenceSync.ts":
-    "workspace id and local server name, for preference sync",
-  "sync/uiPreferenceStore.ts": "UI preferences of this user",
 };
 
 const root = fileURLToPath(new URL(".", import.meta.url));

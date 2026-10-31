@@ -35,6 +35,7 @@ fn device(row: &web_push::Subscription) -> generated::WebPushSubscription {
         id: row.id.clone(),
         device: row.device.clone(),
         created: row.created,
+        endpoint_fingerprint: studio_runtime_store::sha256_hex(row.endpoint.as_bytes()),
     }
 }
 
@@ -198,8 +199,16 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{row}");
         assert_eq!(row["device"], "iPhone");
+        assert_eq!(
+            row["endpointFingerprint"],
+            "88ebf617997e2dc82d3ce799e52579feb916c1c5092aa8292d04f6559b4191fe"
+        );
         let (_, listed) = call(&app, "/api/web-push", Method::GET, None).await;
         assert_eq!(listed["publicKey"], first["publicKey"]);
+        assert_eq!(
+            listed["subscriptions"][0]["endpointFingerprint"],
+            "88ebf617997e2dc82d3ce799e52579feb916c1c5092aa8292d04f6559b4191fe"
+        );
         let listed = listed["subscriptions"].to_string();
         assert!(listed.contains("iPhone"));
         assert!(
@@ -218,6 +227,14 @@ mod tests {
         )
         .await;
         assert_eq!(removed, json!({"removed": true}));
+        let (_, retried) = call(
+            &app,
+            "/api/web-push/remove",
+            Method::POST,
+            Some(json!({"id": row["id"]})),
+        )
+        .await;
+        assert_eq!(retried, json!({"removed": false}));
         let (_, listed) = call(&app, "/api/web-push", Method::GET, None).await;
         assert_eq!(listed["subscriptions"], json!([]));
     }

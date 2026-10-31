@@ -74,8 +74,7 @@ pub(crate) async fn notify_resources(
     }))
 }
 
-/// Sessions share the same authenticated HTTP boundary as their streams. The
-/// stream records no per-user identity: local and browser callers share HttpState.
+/// Sessions retain their authenticated principal for subscription updates.
 #[derive(Default)]
 pub(crate) struct SyncSessions(Mutex<BTreeMap<String, SyncSession>>);
 
@@ -141,9 +140,61 @@ impl ResourceIdentity for SubscribedResource {
 }
 
 struct SyncSession {
+    principal: studio_runtime_services::principal::Principal,
     resources: Vec<SubscribedResource>,
     generation: i64,
     sender: tokio::sync::mpsc::Sender<SubscriptionChange>,
+}
+
+fn authorize_resource(
+    principal: &studio_runtime_services::principal::Principal,
+    resource: &ResourceRef,
+) -> Result<(), ApiError> {
+    use studio_runtime_services::principal::{CommandClass, access};
+    let class = match resource {
+        ResourceRef::AuthProgressResource(_) => {
+            crate::route_class::class_of("POST", "/api/accounts/login")
+        }
+        ResourceRef::VaultJobProgressResource(_) | ResourceRef::VaultReadinessResource(_) => {
+            crate::route_class::class_of("POST", "/api/vault/setup")
+        }
+        ResourceRef::AccountsResource(_)
+        | ResourceRef::CostsResource(_)
+        | ResourceRef::DesktopResource(_)
+        | ResourceRef::DraftsResource(_)
+        | ResourceRef::LimitsResource(_)
+        | ResourceRef::ModelsResource(_)
+        | ResourceRef::MultiServerResource(_)
+        | ResourceRef::QueueResource(_)
+        | ResourceRef::ReceiptsResource(_)
+        | ResourceRef::RoomResource(_)
+        | ResourceRef::SessionCostResource(_)
+        | ResourceRef::StateResource(_)
+        | ResourceRef::TaskResource(_)
+        | ResourceRef::TasksResource(_)
+        | ResourceRef::TerminalResource(_)
+        | ResourceRef::TerminalsResource(_)
+        | ResourceRef::TranscriptResource(_)
+        | ResourceRef::TranscriptsResource(_)
+        | ResourceRef::VoiceResource(_)
+        | ResourceRef::WorkspaceResource(_)
+        | ResourceRef::RenameProgressResource(_)
+        | ResourceRef::AgentDetailResource(_)
+        | ResourceRef::MonitorsResource(_)
+        | ResourceRef::ProcessesResource(_)
+        | ResourceRef::WorkResource(_)
+        | ResourceRef::ComplaintResource(_)
+        | ResourceRef::TerminalOutputResource(_) => Some(CommandClass::Read),
+    }
+    .unwrap_or(CommandClass::OwnerOnly);
+    if access(principal, class).passes_edge() {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "This caller may not access this resource",
+        ))
+    }
 }
 
 struct SubscriptionChange {
@@ -187,6 +238,7 @@ pub(crate) fn routes() -> RouteGroup {
 
 async fn sync_subscriptions(
     State(state): State<HttpState>,
+    Caller(principal): Caller,
     ApiJson(request): ApiJson<crate::generated::SyncSubscriptionRequest>,
 ) -> Result<Json<crate::generated::SyncSubscriptionAck>, ApiError> {
     fn check_size<T: Serialize>(resources: &[T]) -> Result<(), ApiError> {
@@ -210,6 +262,15 @@ async fn sync_subscriptions(
     let session = sessions.get_mut(&request.session_id).ok_or_else(|| {
         ApiError::new(StatusCode::GONE, "Unknown sync session; reopen the stream")
     })?;
+    if session.principal != principal {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "This caller may not update this stream",
+        ));
+    }
+    for addition in &request.add {
+        authorize_resource(&principal, &addition.resource)?;
+    }
     if session.sender.is_closed() {
         return Err(ApiError::new(
             StatusCode::GONE,
@@ -323,6 +384,11 @@ async fn sync_stream(
         Ok(resources) => resources,
         Err(error) => return error.into_response(),
     };
+    for resource in &resources {
+        if let Err(error) = authorize_resource(&principal, &resource.resource) {
+            return error.into_response();
+        }
+    }
     let since = match parse_since(&query, &state, &resources) {
         Ok(since) => since,
         Err(error) => return error.into_response(),
@@ -457,6 +523,7 @@ async fn sync_stream(
             sessions.insert(
                 session_id.clone(),
                 SyncSession {
+                    principal: principal.clone(),
                     resources: resources.clone(),
                     generation: 0,
                     sender,
@@ -3167,6 +3234,75 @@ mod tests {
                 session.get("token").and_then(Value::as_str),
                 is_owner.then_some("owner-secret")
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn owner_progress_is_forbidden_to_other_principals() {
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use studio_runtime_services::principal::{Grant, Principal};
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router(state).expect("router");
+        for principal in [
+            Principal::Device {
+                id: "device".into(),
+                grant: Grant::Full,
+            },
+            Principal::Peer {
+                server: "peer".into(),
+            },
+        ] {
+            let request = |method: &str, uri: &str, body: Body| {
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("host", "127.0.0.1:4321")
+                    .header("x-canvas-token", "token")
+                    .header("content-type", "application/json")
+                    .extension(ConnectInfo(std::net::SocketAddr::from((
+                        [127, 0, 0, 1],
+                        12345,
+                    ))))
+                    .extension(principal.clone())
+                    .body(body)
+                    .expect("request")
+            };
+            let denied = app.clone().oneshot(request("GET", &format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%7B%22kind%22%3A%22auth-progress%22%2C%22requestId%22%3A%22one%22%7D%5D&tokenRates=false"), Body::empty())).await.expect("stream");
+            assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+            let response = app.clone().oneshot(request("GET", &format!("/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%5D&tokenRates=false"), Body::empty())).await.expect("stream");
+            let mut stream = response.into_body().into_data_stream();
+            let frame = stream.next().await.expect("session").expect("bytes");
+            let text = String::from_utf8_lossy(&frame);
+            let session: Value = serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("session");
+            let update = json!({"sessionId":session["sessionId"],"gen":1,"add":[{"resource":{"kind":"vault-job-progress","requestId":"one","job":"setup"}}],"remove":[]});
+            let denied = app
+                .clone()
+                .oneshot(request(
+                    "POST",
+                    "/api/sync/subscriptions",
+                    Body::from(update.to_string()),
+                ))
+                .await
+                .expect("subscription");
+            assert_eq!(denied.status(), StatusCode::FORBIDDEN);
         }
     }
 

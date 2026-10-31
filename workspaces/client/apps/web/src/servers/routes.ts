@@ -18,7 +18,6 @@ export const ROUTE_RETURN_INTERVAL_MS = 60_000;
 
 /** The public identity of a server; it needs no key. */
 const IDENTITY_PATH = "/api/multi-server/v1/identity";
-const STORAGE_PREFIX = "studio-routes-v1:";
 
 type RouteStore = {
   read(): string[];
@@ -258,28 +257,7 @@ export async function sendRouted(
 const registry = new Map<string, ServerRoutes>();
 let listening = false;
 
-function localStore(serverId: string): RouteStore {
-  const key = STORAGE_PREFIX + serverId;
-  return {
-    read() {
-      try {
-        const saved: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
-        return Array.isArray(saved)
-          ? saved.flatMap((item) => routeOrigin(item) ?? [])
-          : [];
-      } catch {
-        return [];
-      }
-    },
-    write(learned) {
-      try {
-        localStorage.setItem(key, JSON.stringify(learned));
-      } catch {
-        // Routes still work for this page without storage.
-      }
-    },
-  };
-}
+const pageRoutes: RouteStore = { read: () => [], write: () => {} };
 
 /** Checks earlier routes of every server. */
 function wakeAll() {
@@ -293,7 +271,7 @@ export function routesFor(server: {
 }): ServerRoutes {
   let routes = registry.get(server.id);
   if (!routes || routes.paired !== server.origin) {
-    routes = new ServerRoutes(server.origin, server.id, localStore(server.id));
+    routes = new ServerRoutes(server.origin, server.id, pageRoutes);
     registry.set(server.id, routes);
   }
   if (

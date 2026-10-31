@@ -1,5 +1,35 @@
 import { expect, it } from "vitest";
-import { cleanupLegacyPersistence } from "./browserPersistence";
+import {
+  cleanupLegacyPersistence,
+  outboxRequestKeys,
+  outboxRequests,
+} from "./browserPersistence";
+
+it("keeps typed outbox operations at their existing keys", () => {
+  const values = new Map<string, string>();
+  const storage = {
+    get length() {
+      return values.size;
+    },
+    key: (index: number) => [...values.keys()][index] ?? null,
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+    removeItem: (key: string) => {
+      values.delete(key);
+    },
+  } as Storage;
+  const outbox = outboxRequests(storage);
+  outbox.set("nativeAction", "workspace:agent", "body");
+  expect(values.get("studio-native-action:workspace:agent")).toBe("body");
+  expect(outbox.get("nativeAction", "workspace:agent")).toBe("body");
+  expect(outboxRequestKeys(storage, "nativeAction", "workspace:")).toEqual([
+    "workspace:agent",
+  ]);
+  outbox.remove("nativeAction", "workspace:agent");
+  expect(values.size).toBe(0);
+});
 
 it("removes retired draft and upload data without touching identities", async () => {
   const values = new Map([
@@ -7,6 +37,7 @@ it("removes retired draft and upload data without touching identities", async ()
     [":server:remote:studio-session-cost:session", "cost"],
     ["studio-upload-cancelled:one", "true"],
     ["studio-sidebar-width:scope", "20"],
+    ["studio-removed-messages:chat", "old"],
     ["studio-queue-change:scope:chat", "request"],
     ["studio-paired-servers-v1", "servers"],
     ["unrelated-app-key", "other"],
@@ -17,7 +48,7 @@ it("removes retired draft and upload data without touching identities", async ()
     },
     key: (index: number) => [...values.keys()][index] ?? null,
     removeItem: (key: string) => values.delete(key),
-  } as unknown as Storage;
+  };
   const deleted: string[] = [];
   const factory = {
     databases: async () => [
@@ -32,7 +63,7 @@ it("removes retired draft and upload data without touching identities", async ()
       queueMicrotask(() => request.onsuccess?.(new Event("success")));
       return request;
     },
-  } as unknown as IDBFactory;
+  };
   await cleanupLegacyPersistence(storage, factory);
   expect([...values.keys()]).toEqual([
     "studio-queue-change:scope:chat",

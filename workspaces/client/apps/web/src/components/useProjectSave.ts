@@ -1,5 +1,6 @@
 import { useSidebarBackend } from "./sidebar/services";
 import { useRef, useState } from "react";
+import { outboxRequests } from "../browserPersistence";
 import {
   ApiError,
   errorText,
@@ -24,13 +25,22 @@ export function useProjectSave<Path extends ApiPostPath>(
 ) {
   // A retry uses the server connection selected when this form opened.
   const backend = useRef(useSidebarBackend()).current;
-  const { post, saved: readSaved, storage: localStorage } = backend;
+  const { post, storage } = backend;
+  const outbox = outboxRequests(storage);
   type StoredRequest = {
     body: PostBody<Path>;
     acknowledged: boolean;
   };
   const [stored] = useState<StoredRequest | null>(() =>
-    storageKey ? readSaved<StoredRequest | null>(storageKey, null) : null,
+    (() => {
+      try {
+        return storageKey
+          ? JSON.parse(outbox.get("projectSave", storageKey) || "null")
+          : null;
+      } catch {
+        return null;
+      }
+    })(),
   );
   const [pending, setPending] = useState(false);
   const [frozen, setFrozen] = useState(!!stored);
@@ -47,7 +57,8 @@ export function useProjectSave<Path extends ApiPostPath>(
   const acknowledged = useRef(!!stored?.acknowledged);
   const persist = () => {
     if (storageKey)
-      localStorage.setItem(
+      outbox.set(
+        "projectSave",
         storageKey,
         JSON.stringify({
           body: request.current,
@@ -72,7 +83,7 @@ export function useProjectSave<Path extends ApiPostPath>(
         persist();
       }
       await onSaved();
-      if (storageKey) localStorage.removeItem(storageKey);
+      if (storageKey) outbox.remove("projectSave", storageKey);
     } catch (failure) {
       if (
         !acknowledged.current &&
@@ -82,7 +93,7 @@ export function useProjectSave<Path extends ApiPostPath>(
         failure.status !== 408
       ) {
         request.current = null;
-        if (storageKey) localStorage.removeItem(storageKey);
+        if (storageKey) outbox.remove("projectSave", storageKey);
         setFrozen(false);
         setRetryLabel(null);
       } else {

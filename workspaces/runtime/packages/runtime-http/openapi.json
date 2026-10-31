@@ -60979,6 +60979,13 @@
             "title": "Device",
             "type": "string"
           },
+          "endpointFingerprint": {
+            "description": "Lowercase SHA-256 of the endpoint, used to identify this browser's subscription.",
+            "maxLength": 64,
+            "minLength": 64,
+            "title": "Endpoint Fingerprint",
+            "type": "string"
+          },
           "id": {
             "maxLength": 64,
             "minLength": 1,
@@ -60989,7 +60996,8 @@
         "required": [
           "id",
           "device",
-          "created"
+          "created",
+          "endpointFingerprint"
         ],
         "title": "WebPushSubscription",
         "type": "object"

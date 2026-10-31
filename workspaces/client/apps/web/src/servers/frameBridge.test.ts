@@ -46,6 +46,7 @@ import { ApiError } from "../api";
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
 import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { defaultStudioPreferences } from "../studioPreferences";
+import { preferenceMemory } from "./storage";
 
 class TestStorageEvent extends Event {
   readonly key: string | null;
@@ -61,6 +62,7 @@ let surface: EventTarget & {
 let records: Map<string, string>;
 let cleanup: (() => void)[];
 beforeEach(() => {
+  preferenceMemory.clear();
   hooks.effects = [];
   hooks.screen = null;
   cleanup = [];
@@ -241,7 +243,7 @@ it("republishes saved order and tree changes from scoped or materialized storage
   expect(
     navigationMessages().at(-1)?.[0].navigation.sidebar?.sidebarOrder,
   ).toBeUndefined();
-  records.set(
+  preferenceMemory.setItem(
     ":server:remote:codex-project-tree:/same/state",
     JSON.stringify({ "/work": true }),
   );
@@ -284,7 +286,9 @@ it("keeps command and preference source, origin and server checks", () => {
   expect(run).toHaveBeenCalledExactlyOnceWith({ action: "open", id: "lead" });
   message(preference);
   expect(
-    JSON.parse(records.get("codex-studio-preferences-v1") || "null").theme,
+    JSON.parse(
+      preferenceMemory.getItem("codex-studio-preferences-v1") || "null",
+    ).theme,
   ).toBe("dark");
   expect(navigationMessages()).toHaveLength(1);
 });
