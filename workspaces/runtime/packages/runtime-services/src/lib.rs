@@ -202,6 +202,7 @@ pub mod task_settlement;
 pub mod terminal_driver;
 #[cfg(unix)]
 pub mod terminal_pty;
+pub mod text_blob_sweep;
 pub mod thread_fork_runtime;
 pub mod thread_prepare;
 pub mod title_generation;
