@@ -5945,6 +5945,7 @@ mod tests {
         let tokens = TokenRateHub::new();
         let mut changes = hub.subscribe();
         let baseline = changes.borrow_and_update().clone();
+        let notifications = Arc::new(ResourceNotifications::new(Arc::new(hub.clone())));
         let state = ResourceStream {
             principal: None,
             http_state: None,
@@ -5965,8 +5966,8 @@ mod tests {
             draft_sequence: 0,
             store: None,
             changes,
-            live: tokio::sync::broadcast::channel(1).1,
-            notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
+            live: notifications.subscribe_live(),
+            notifications,
             token_rates: Some(tokens.subscribe()),
             last_token_rates: None,
             consecutive_token_frames: 0,
@@ -6020,7 +6021,7 @@ mod tests {
             draft_sequence: 0,
             store: None,
             changes,
-            live: tokio::sync::broadcast::channel(1).1,
+            live: notifications.subscribe_live(),
             notifications: notifications.clone(),
             token_rates: Some(token_hub.subscribe()),
             last_token_rates: None,
@@ -6721,6 +6722,7 @@ mod tests {
         let hub = ChangeNotificationHub::new();
         let changes = hub.subscribe();
         let baseline = changes.borrow().clone();
+        let notifications = Arc::new(ResourceNotifications::new(Arc::new(hub.clone())));
         let state = ResourceStream {
             principal: None,
             http_state: None,
@@ -6741,8 +6743,8 @@ mod tests {
             draft_sequence: 0,
             store: None,
             changes,
-            live: tokio::sync::broadcast::channel(1).1,
-            notifications: Arc::new(ResourceNotifications::new(Arc::new(hub.clone()))),
+            live: notifications.subscribe_live(),
+            notifications,
             token_rates: Some(TokenRateHub::new().subscribe()),
             last_token_rates: None,
             consecutive_token_frames: 0,
