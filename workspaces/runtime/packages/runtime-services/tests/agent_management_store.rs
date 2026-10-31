@@ -100,7 +100,7 @@ fn case(name: &str) -> Value {
                     .expect("fields")
                     .clone(),
                 );
-            json!({"action":"stop","target":"lead","descendants":false})
+            json!({"action":"pause","target":"lead","descendants":false})
         }
         "unassign" => {
             records["tables"]["runtime_work"] = json!([{"id":"work","owner":"worker","rootId":"lead","version":2,"status":"review","title":"Assignment","results":[{"id":"result","text":"Keep this result"}],"decisions":[]}]);
@@ -118,10 +118,10 @@ fn case(name: &str) -> Value {
                     .expect("fields")
                     .clone(),
                 );
-            json!({"action":"stop","target":"lead","descendants":true})
+            json!({"action":"pause","target":"lead","descendants":true})
         }
         "delete" => json!({"action":"delete","target":"lead"}),
-        "stop-ended-voice" => json!({"action":"stop","target":"lead","descendants":true}),
+        "stop-ended-voice" => json!({"action":"pause","target":"lead","descendants":true}),
         other => panic!("unknown case {other}"),
     };
     json!({"name":name,"records":records,"action":action,"now":NOW})
@@ -557,7 +557,7 @@ async fn lifecycle_effect_refusals_preserve_rows_and_projections() {
                     target: "worker".into(),
                 }
             } else {
-                Action::Stop {
+                Action::Pause {
                     target: "worker".into(),
                     descendants: true,
                     reason: None,
@@ -620,7 +620,7 @@ async fn ended_voice_allows_stop_and_delete_clears_saved_voice_in_transaction() 
     }).await.expect("saved voice");
     let result = execute(
         std::sync::Arc::clone(&store),
-        &Action::Stop {
+        &Action::Pause {
             target: "lead".into(),
             descendants: true,
             reason: None,
@@ -844,7 +844,7 @@ async fn incremental_lifecycle_projection_matches_full_rebuild() {
     let epoch = 1;
     for (action, retained) in [
         (
-            Action::Stop {
+            Action::Pause {
                 target: "lead-0001".to_owned(),
                 descendants: true,
                 reason: None,
@@ -953,7 +953,7 @@ async fn lifecycle_projection_benchmark_on_large_state() {
             started.elapsed().as_millis()
         );
         for action in [
-            Action::Stop {
+            Action::Pause {
                 target: "lead-0010".to_owned(),
                 descendants: true,
                 reason: None,

@@ -416,10 +416,15 @@ mod tests {
         let (status, first) = post(&app, None, stop(&id, 1)).await;
         assert_eq!(status, 200, "{first}");
         assert_eq!(first["ref_kind"], "agent");
-        assert_ne!(
+        assert_eq!(
             agent_status(&store).await,
             before,
-            "the stop paused the chat"
+            "the stop does not pause the chat"
+        );
+        assert_eq!(
+            status_of(&store, "a").await,
+            "pending",
+            "the stop does not clear the queue"
         );
         assert_eq!(request_result_count(&store).await, 1);
         let (status, again) = post(&app, None, stop(&id, 1)).await;

@@ -283,6 +283,64 @@ fn terminal_error_records_keep_unknown_extensions_and_only_known_policy_blocks()
     }
 }
 
+#[test]
+fn an_interrupted_turn_leaves_the_chat_active_and_the_queued_message_is_claimed_next() {
+    // A stop only interrupts: the epoch, `autoWake` and the queue stay, so the
+    // turn settles as the current attempt and the queue goes on.
+    let mut connection = database();
+    put(
+        &connection,
+        json!({
+            "status":"running","autoWake":true,"inFlight":true,"turnId":"turn-now","turnEpoch":0,
+            "startAttempt":{"id":"now","epoch":0,"submitted":true,"turnId":"turn-now",
+                "observedTurnId":"turn-now","threadId":"thread","accountKey":ACCOUNT,
+                "events":["message"],"connectionGeneration":1,"requestTicket":"ticket"}
+        }),
+    );
+    connection
+        .execute_batch(
+            "INSERT INTO runtime_events VALUES('message','agent','user','message','dispatching',2,0,NULL,NULL);\
+             INSERT INTO runtime_events VALUES('queued','agent','user','queued','pending',3,0,NULL,NULL);",
+        )
+        .expect("events write");
+    assert!(with(&mut connection, |tx| {
+        SchedulerRepository::settle_terminal(
+            tx,
+            AGENT,
+            0,
+            "now",
+            "turn-now",
+            AgentStatus::Interrupted,
+            None,
+            "interrupted",
+            None,
+            &[],
+        )
+        .expect("interrupted settlement")
+    }));
+    let agent = stored(&connection);
+    assert_eq!(agent["status"], "queued", "the chat is not paused");
+    assert_eq!(agent["autoWake"], true);
+    assert_eq!(agent["epoch"], 0);
+    let status = |id: &str| -> String {
+        connection
+            .query_row(
+                "SELECT status FROM runtime_events WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("event status")
+    };
+    assert_eq!(status("message"), "delivered");
+    assert_eq!(status("queued"), "pending", "the queue is not cleared");
+    let next = with(&mut connection, |tx| {
+        SchedulerRepository::claim(tx, AGENT, 0, "next", 11.0, 1)
+            .expect("claim")
+            .expect("the queued message is claimed")
+    });
+    assert_eq!(next.events[0].id.0, "queued");
+}
+
 fn restart_and_reconnect(connection: &mut Connection, generation: u64) {
     with(connection, |tx| {
         SchedulerRepository::recover_submitted(tx).expect("startup recovery runs")
