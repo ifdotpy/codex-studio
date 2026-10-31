@@ -5,7 +5,6 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
 use studio_runtime_schema::DeliveryMoment;
-use studio_runtime_store::python_json_utf8 as python_json;
 use studio_runtime_store::{
     AnalyticsRepository, RuntimeStore, TranscriptRepository, system_reads as records,
 };
@@ -560,7 +559,7 @@ fn apply_tool_result(
         return Ok(());
     };
     let mut content = result.get("contentItems").cloned().unwrap_or(json!([]));
-    let encoded = python_json(&content);
+    let encoded = content.to_string();
     let limit = if projected { 20000 } else { 12000 };
     if encoded.chars().count() > limit {
         content = json!([{"type":"inputText","text":format!("{}\n[Result truncated]",encoded.chars().take(limit).collect::<String>())}]);
@@ -570,7 +569,7 @@ fn apply_tool_result(
     payload["status"] = item["toolStatus"].clone();
     payload["success"] = json!(success);
     payload["contentItems"] = content;
-    item["text"] = json!(python_json(&payload));
+    item["text"] = json!(payload.to_string());
     Ok(())
 }
 
@@ -753,6 +752,22 @@ pub(crate) fn observed_at() -> Result<f64, TranscriptError> {
 #[cfg(test)]
 mod delivery_tests {
     use super::*;
+
+    #[test]
+    fn tool_result_projection_uses_compact_json() {
+        let mut item = json!({"text":"{}"});
+        apply_tool_result(
+            json!({"success":true,"contentItems":[{"type":"inputText","text":"雪"}]}),
+            &mut item,
+            0.0,
+            false,
+        )
+        .expect("project result");
+        assert_eq!(
+            item["text"],
+            r#"{"contentItems":[{"text":"雪","type":"inputText"}],"status":"completed","success":true}"#
+        );
+    }
 
     #[test]
     fn transcript_reasoning_decodes_each_row_before_fetching_the_next() {

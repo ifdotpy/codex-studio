@@ -4,9 +4,9 @@
 // The client makes the command id and numbers its commands. The server keeps the highest
 // applied number of each client (the watermark), so the number must never go down. Both
 // values are saved before the request, so a retry after a lost response reuses them.
-import type { components } from "./generated/api";
-import type { PendingCommands } from "./pendingCommands";
-import { randomUUID } from "./uuid";
+import type { components } from "./generated/api.ts";
+import type { PendingCommands } from "./pendingCommands.ts";
+import { randomUUID } from "./uuid.ts";
 
 export type CommandRequest = components["schemas"]["CommandRequest"];
 export type CommandResponse = components["schemas"]["CommandResponse"];

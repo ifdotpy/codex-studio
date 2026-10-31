@@ -318,12 +318,12 @@ fn final_receipt(raw: &str) -> StoreResult<bool> {
 
 /// Reuse validated receipt evidence while applying committed usage mutations by revision.
 /// The cache belongs to the retained read-only connection and its transaction snapshot.
-fn partition_journal_receipts_cached(
+fn partition_journal_receipts_cached<'a>(
     db: &Connection,
-    receipts: &BTreeSet<CostReceipt>,
+    receipts: &BTreeSet<(&str, &str, &str)>,
     members: &[(String, CostMember)],
-    cache: &mut JournalReceiptCache,
-) -> StoreResult<JournalPartition> {
+    cache: &'a mut JournalReceiptCache,
+) -> StoreResult<&'a JournalPartition> {
     let scopes = receipt_scopes(members);
     let revision: i64 = db.query_row(
         "SELECT revision FROM analytics_usage_revision_clock",
@@ -332,21 +332,40 @@ fn partition_journal_receipts_cached(
     )?;
     let rebuild = cache.entry.revision.is_none_or(|old| old > revision)
         || cache.entry.scopes != scopes
-        || !cache.entry.receipts.is_subset(receipts);
+        || !cache
+            .entry
+            .receipts
+            .iter()
+            .all(|(a, t, r)| receipts.contains(&(a.as_str(), t.as_str(), r.as_str())));
     let added = if rebuild {
-        receipts.clone()
-    } else {
         receipts
-            .difference(&cache.entry.receipts)
-            .cloned()
+            .iter()
+            .map(|&(a, t, r)| (a.to_owned(), t.to_owned(), r.to_owned()))
+            .collect::<BTreeSet<CostReceipt>>()
+    } else {
+        let mut previous = cache.entry.receipts.iter().peekable();
+        receipts
+            .iter()
+            .filter_map(|&(a, t, r)| {
+                while previous
+                    .peek()
+                    .is_some_and(|(x, y, z)| (x.as_str(), y.as_str(), z.as_str()) < (a, t, r))
+                {
+                    previous.next();
+                }
+                if previous
+                    .peek()
+                    .is_some_and(|(x, y, z)| (x.as_str(), y.as_str(), z.as_str()) == (a, t, r))
+                {
+                    None
+                } else {
+                    Some((a.to_owned(), t.to_owned(), r.to_owned()))
+                }
+            })
             .collect()
     };
-    if !rebuild
-        && cache.entry.revision == Some(revision)
-        && added.is_empty()
-        && cache.entry.receipts == *receipts
-    {
-        return Ok(cache.entry.partition.clone());
+    if !rebuild && cache.entry.revision == Some(revision) && added.is_empty() {
+        return Ok(&cache.entry.partition);
     }
     cache.entry.deltas = None;
     let mut updates: HashMap<String, Vec<(CostReceipt, bool)>> = HashMap::new();
@@ -392,7 +411,11 @@ fn partition_journal_receipts_cached(
                     .filter(|(a, _, t)| a == &agent && t == &thread)
                 {
                     let receipt = (account.clone(), thread.clone(), response.clone());
-                    if receipts.contains(&receipt) {
+                    if receipts.contains(&(
+                        receipt.0.as_str(),
+                        receipt.1.as_str(),
+                        receipt.2.as_str(),
+                    )) {
                         let final_evidence = final_receipt(
                             row.get_ref(5)?.as_str().map_err(rusqlite::Error::from)?,
                         )?;
@@ -407,7 +430,7 @@ fn partition_journal_receipts_cached(
         cache.facts.clear();
         cache.final_counts.clear();
         cache.entry.partition = JournalPartition {
-            accepted: receipts.clone(),
+            accepted: added,
             superseded: BTreeSet::new(),
         };
     } else {
@@ -438,9 +461,12 @@ fn partition_journal_receipts_cached(
         }
     }
     cache.entry.scopes = scopes;
-    cache.entry.receipts = receipts.clone();
+    cache.entry.receipts = receipts
+        .iter()
+        .map(|&(a, t, r)| (a.to_owned(), t.to_owned(), r.to_owned()))
+        .collect();
     cache.entry.revision = Some(revision);
-    Ok(cache.entry.partition.clone())
+    Ok(&cache.entry.partition)
 }
 
 /// Read response evidence for exactly these agents in stable observation order.
@@ -1224,23 +1250,26 @@ pub fn cost_group_adjustments(
 }
 
 /// Partition receipts and use the delta tied to that exact cache marker.
-pub fn journal_partition_and_adjustments_cached(
+pub fn journal_partition_and_adjustments_cached<'a>(
     db: &Connection,
     root: &str,
-    receipts: &BTreeSet<CostReceipt>,
+    receipts: &BTreeSet<(&str, &str, &str)>,
     members: &[(String, CostMember)],
-    cache: &mut JournalReceiptCache,
-) -> StoreResult<(JournalPartition, CostGroupAdjustments)> {
-    let partition = partition_journal_receipts_cached(db, receipts, members, cache)?;
+    cache: &'a mut JournalReceiptCache,
+) -> StoreResult<(&'a JournalPartition, CostGroupAdjustments)> {
+    partition_journal_receipts_cached(db, receipts, members, cache)?;
     if cache.entry.root.as_deref() != Some(root) {
         cache.entry.root = Some(root.to_owned());
         cache.entry.deltas = None;
     }
     if cache.entry.deltas.is_none() {
-        cache.entry.deltas = Some(journal_group_deltas(db, root, &partition)?);
+        cache.entry.deltas = Some(journal_group_deltas(db, root, &cache.entry.partition)?);
     }
     let deltas = cache.entry.deltas.as_ref().expect("calculated deltas");
-    Ok((partition, adjustments_for_deltas(db, root, deltas)?))
+    Ok((
+        &cache.entry.partition,
+        adjustments_for_deltas(db, root, deltas)?,
+    ))
 }
 
 fn adjustments_for_deltas(
@@ -1337,12 +1366,29 @@ fn journal_group_deltas(
 
 #[cfg(test)]
 mod tests {
+    fn borrowed_receipts(
+        receipts: &std::collections::BTreeSet<super::CostReceipt>,
+    ) -> std::collections::BTreeSet<(&str, &str, &str)> {
+        receipts
+            .iter()
+            .map(|(a, t, r)| (a.as_str(), t.as_str(), r.as_str()))
+            .collect()
+    }
+
+    fn partition_journal_receipts_cached<'a>(
+        db: &rusqlite::Connection,
+        receipts: &std::collections::BTreeSet<super::CostReceipt>,
+        members: &[(String, super::CostMember)],
+        cache: &'a mut super::JournalReceiptCache,
+    ) -> crate::StoreResult<&'a super::JournalPartition> {
+        super::partition_journal_receipts_cached(db, &borrowed_receipts(receipts), members, cache)
+    }
     fn partition_journal_receipts(
         db: &rusqlite::Connection,
         receipts: &std::collections::BTreeSet<super::CostReceipt>,
         members: &[(String, super::CostMember)],
     ) -> crate::StoreResult<super::JournalPartition> {
-        super::partition_journal_receipts_cached(db, receipts, members, &mut Default::default())
+        partition_journal_receipts_cached(db, receipts, members, &mut Default::default()).cloned()
     }
     #[tokio::test]
     async fn provider_identity_orphan_legacy_cost_is_invalid_but_typed_fact_is_preserved() {
@@ -1915,13 +1961,27 @@ mod tests {
         let mut receipts = [("acct".into(), "thread".into(), "response".into())].into();
         let mut members = receipt_members();
         super::JOURNAL_DELTA_RUNS.take();
+        let cached_partition = std::ptr::addr_of!(cache.entry.partition);
         let (partition, first) = super::journal_partition_and_adjustments_cached(
-            &db, "root", &receipts, &members, &mut cache,
+            &db,
+            "root",
+            &borrowed_receipts(&receipts),
+            &members,
+            &mut cache,
         )
         .expect("first");
+        assert!(
+            std::ptr::eq(partition, cached_partition),
+            "the caller should borrow the cached partition instead of cloning its receipt keys"
+        );
+        let partition = partition.clone();
         assert_eq!(super::JOURNAL_DELTA_RUNS.take(), 1);
         let (_, second) = super::journal_partition_and_adjustments_cached(
-            &db, "root", &receipts, &members, &mut cache,
+            &db,
+            "root",
+            &borrowed_receipts(&receipts),
+            &members,
+            &mut cache,
         )
         .expect("repeat");
         assert_eq!(
@@ -1940,13 +2000,21 @@ mod tests {
         super::JOURNAL_DELTA_RUNS.take();
         receipts.insert(("acct".into(), "thread".into(), "another".into()));
         super::journal_partition_and_adjustments_cached(
-            &db, "root", &receipts, &members, &mut cache,
+            &db,
+            "root",
+            &borrowed_receipts(&receipts),
+            &members,
+            &mut cache,
         )
         .expect("receipt change");
         assert_eq!(super::JOURNAL_DELTA_RUNS.take(), 1);
         members[0].1.thread_id = Some("other-thread".into());
         super::journal_partition_and_adjustments_cached(
-            &db, "root", &receipts, &members, &mut cache,
+            &db,
+            "root",
+            &borrowed_receipts(&receipts),
+            &members,
+            &mut cache,
         )
         .expect("scope change");
         assert_eq!(super::JOURNAL_DELTA_RUNS.take(), 1);
@@ -1961,7 +2029,11 @@ mod tests {
             .await
             .expect("advance revision");
         super::journal_partition_and_adjustments_cached(
-            &db, "root", &receipts, &members, &mut cache,
+            &db,
+            "root",
+            &borrowed_receipts(&receipts),
+            &members,
+            &mut cache,
         )
         .expect("revision change");
         assert_eq!(super::JOURNAL_DELTA_RUNS.take(), 1);
@@ -1985,28 +2057,18 @@ mod tests {
         let mut cache = super::JournalReceiptCache::default();
         let receipts = [("acct".into(), "thread".into(), "response".into())].into();
         assert_eq!(
-            super::partition_journal_receipts_cached(
-                &db,
-                &receipts,
-                &receipt_members(),
-                &mut cache
-            )
-            .expect("first partition")
-            .superseded
-            .len(),
+            partition_journal_receipts_cached(&db, &receipts, &receipt_members(), &mut cache)
+                .expect("first partition")
+                .superseded
+                .len(),
             1
         );
         super::RECEIPT_READS.take();
         assert_eq!(
-            super::partition_journal_receipts_cached(
-                &db,
-                &receipts,
-                &receipt_members(),
-                &mut cache
-            )
-            .expect("second partition")
-            .superseded
-            .len(),
+            partition_journal_receipts_cached(&db, &receipts, &receipt_members(), &mut cache)
+                .expect("second partition")
+                .superseded
+                .len(),
             1
         );
         assert_eq!(
@@ -2018,13 +2080,9 @@ mod tests {
             tx.execute("UPDATE analytics_usage SET record=json_set(record,'$.studioUsage.evidence','legacy') WHERE id='receipt'", [])?;
             Ok(())
         }).await.expect("update usage in place");
-        let updated = super::partition_journal_receipts_cached(
-            &db,
-            &receipts,
-            &receipt_members(),
-            &mut cache,
-        )
-        .expect("updated partition");
+        let updated =
+            partition_journal_receipts_cached(&db, &receipts, &receipt_members(), &mut cache)
+                .expect("updated partition");
         assert_eq!(
             updated.accepted, receipts,
             "legacy evidence accepts the journal"
@@ -2039,13 +2097,8 @@ mod tests {
             Ok(())
         }).await.expect("corrupt usage in place");
         assert!(
-            super::partition_journal_receipts_cached(
-                &db,
-                &receipts,
-                &receipt_members(),
-                &mut cache
-            )
-            .is_err(),
+            partition_journal_receipts_cached(&db, &receipts, &receipt_members(), &mut cache)
+                .is_err(),
             "changed malformed evidence must fail closed"
         );
         store
@@ -2055,13 +2108,9 @@ mod tests {
             })
             .await
             .expect("delete usage");
-        let deleted = super::partition_journal_receipts_cached(
-            &db,
-            &receipts,
-            &receipt_members(),
-            &mut cache,
-        )
-        .expect("deleted partition");
+        let deleted =
+            partition_journal_receipts_cached(&db, &receipts, &receipt_members(), &mut cache)
+                .expect("deleted partition");
         assert_eq!(
             deleted.accepted, receipts,
             "deleted evidence accepts the journal"
@@ -2087,13 +2136,9 @@ mod tests {
             .expect("reader");
         let mut cache = super::JournalReceiptCache::default();
         let receipts = [("acct".into(), "thread".into(), "response".into())].into();
-        let first = super::partition_journal_receipts_cached(
-            &db,
-            &receipts,
-            &receipt_members(),
-            &mut cache,
-        )
-        .expect("initial");
+        let first =
+            partition_journal_receipts_cached(&db, &receipts, &receipt_members(), &mut cache)
+                .expect("initial");
         assert_eq!(first.superseded, receipts);
         for (id, remaining) in [("one", true), ("two", false)] {
             store
@@ -2103,13 +2148,9 @@ mod tests {
                 })
                 .await
                 .expect("delete duplicate");
-            let cached = super::partition_journal_receipts_cached(
-                &db,
-                &receipts,
-                &receipt_members(),
-                &mut cache,
-            )
-            .expect("cached");
+            let cached =
+                partition_journal_receipts_cached(&db, &receipts, &receipt_members(), &mut cache)
+                    .expect("cached");
             let fresh =
                 partition_journal_receipts(&db, &receipts, &receipt_members()).expect("fresh");
             assert_eq!(cached.accepted, fresh.accepted);

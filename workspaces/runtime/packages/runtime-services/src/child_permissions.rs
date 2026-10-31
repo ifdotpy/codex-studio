@@ -7,23 +7,15 @@ pub(crate) fn inherit_claude_permissions(
     child: &mut Value,
     parent: &Value,
     root: &Value,
-    spec: &Value,
+    requested: Option<studio_runtime_schema::claude_permissions::PermissionMode>,
 ) -> Result<(), &'static str> {
     if child["provider"] != ProviderKind::Claude.key() {
-        if spec.get("permission_mode").is_some() {
+        if requested.is_some() {
             return Err("permission_mode requires a Claude child");
         }
         return Ok(());
     }
-    let requested = spec
-        .get("permission_mode")
-        .map(|value| {
-            value
-                .as_str()
-                .filter(|mode| crate::claude_controls::PERMISSION_MODES.contains(mode))
-                .ok_or("Invalid Claude permission_mode")
-        })
-        .transpose()?;
+    let requested = requested.map(|mode| mode.as_str());
     let inherited = if parent["provider"] == ProviderKind::Claude.key() {
         match parent.pointer("/claudeOptions/permissionMode") {
             Some(value) => value

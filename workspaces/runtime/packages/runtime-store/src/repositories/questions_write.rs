@@ -87,7 +87,7 @@ impl QuestionsWriteRepository {
         transaction: &Transaction<'_>,
         record: &crate::ComplaintRecord,
     ) -> StoreResult<()> {
-        let encoded = studio_runtime_schema::json_compat::python_json_serialized(record)?;
+        let encoded = serde_json::to_string(record)?;
         transaction.execute(
             "INSERT INTO runtime_complaints(id,record) VALUES (?1,?2) \
              ON CONFLICT(id) DO UPDATE SET record=excluded.record",
@@ -111,7 +111,7 @@ mod complaint_tests {
     use rusqlite::Connection;
 
     #[test]
-    fn typed_complaint_write_keeps_python_fingerprint_bytes() {
+    fn typed_complaint_write_uses_native_json() {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch(
             "CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
@@ -128,9 +128,12 @@ mod complaint_tests {
                 |row| row.get(0),
             )
             .unwrap();
+        assert!(stored.contains("é😀"));
         assert_eq!(
-            stored,
-            r#"{"author": "user", "created": 1.0, "id": "c", "leadId": "l", "readAt": null, "recipient": "lead", "responses": [], "status": "open", "text": "\u00e9\ud83d\ude00", "updated": 1.0, "version": 1}"#
+            serde_json::from_str::<ComplaintRecord>(&stored)
+                .unwrap()
+                .id(),
+            "c"
         );
     }
 }

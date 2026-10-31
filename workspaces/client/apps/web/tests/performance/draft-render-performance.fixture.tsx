@@ -70,7 +70,7 @@ export async function mountDraftFixture({
       updated: 1,
     }),
   }));
-  await db.drafts.bulkInsert(docs);
+  await db.drafts.hydrate(docs);
   const r = await importWithRetry(() => import("react")),
     d = await importWithRetry(() => import("react-dom/client"));
   const React = r.default || r,

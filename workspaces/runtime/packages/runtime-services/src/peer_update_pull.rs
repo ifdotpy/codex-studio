@@ -756,7 +756,10 @@ fn request(effect: RemoteEffect, record: &StepRecord) -> Option<(&'static str, V
             json!({"export": record.export.as_ref()?.export}),
             SHORT_REQUEST,
         ),
-        _ => return None,
+        RemoteEffect::AccessRequest
+        | RemoteEffect::ServerFetch
+        | RemoteEffect::ServerRequest
+        | RemoteEffect::FederationMessage => return None,
     })
 }
 

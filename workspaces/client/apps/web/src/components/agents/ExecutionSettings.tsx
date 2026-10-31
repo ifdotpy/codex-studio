@@ -3,7 +3,6 @@ import {
   AgentStatus,
   AccountTransferScope,
   AccountTransferStatus as GeneratedAccountTransferStatus,
-  TransferScope,
 } from "../../generated/api";
 import { randomUUID } from "../../uuid";
 import { ProviderKind, providerLabel } from "../../generated/providerKind.ts";
@@ -135,7 +134,6 @@ type SettingsProps = {
   onAccountChange?: (key: string) => void;
   accountDisabled?: boolean;
   accountModalOpen?: boolean;
-  transferOpenRequest?: number;
   onDraftChange?: (patch: Partial<ConversationBody>) => void;
 };
 const accountOf = (agent: Pick<Agent, "accountKey">) =>
@@ -419,9 +417,6 @@ function ExecutionSettingsController(props: ControllerProps) {
   );
   const [opened, setOpened] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
-  useEffect(() => {
-    if (props.transferOpenRequest) setTransferOpen(true);
-  }, [props.transferOpenRequest]);
   const triggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if ((props.openRequest || 0) > 0) {
@@ -557,7 +552,6 @@ function ScopedExecutionSettings({
   roleSwitchId,
   catalog: parentCatalog,
   accounts = [],
-  team,
   refresh,
   teamDefaults = false,
   nextTurnSupported,
@@ -696,7 +690,6 @@ function ScopedExecutionSettings({
     value: TransferResponse;
     baseline: string;
   } | null>(null);
-  const [retryTarget, setRetryTarget] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState<{
     kind: "saving" | "saved" | "accepted";
@@ -786,13 +779,6 @@ function ScopedExecutionSettings({
     true,
   );
   const catalogReader = useModelCatalogReader();
-  const existingElsewhere = (team || []).filter(
-    (member) =>
-      member.rootId === agent.id &&
-      member.id !== agent.id &&
-      !member.deletedAt &&
-      accountOf(member) !== current.account_key,
-  );
 
   useEffect(() => {
     // Keep the confirmed default until the snapshot carries the change.
@@ -1142,73 +1128,6 @@ function ScopedExecutionSettings({
         model: next.worker_defaults?.model ?? null,
       });
   };
-  // Moving existing subagents is a separate, explicit action.
-  const moveExisting = async (target: string) => {
-    if (saveLock.current || onDraftChange) return;
-    // A lost response is retried with the same request id.
-    const subagentTransferReceiptKey = `subagent-account-transfer:${JSON.stringify([agent.id, target])}`;
-    const previous = saved<{ target?: string; request_id?: string } | null>(
-      subagentTransferReceiptKey,
-      null,
-    );
-    const requestId =
-      previous && previous.target === target && previous.request_id
-        ? previous.request_id
-        : randomUUID();
-    save(subagentTransferReceiptKey, { target, request_id: requestId });
-    saveLock.current = true;
-    setTransferOpen(true);
-    const previousPending = accountPending;
-    setSaving(true);
-    setError("");
-    setStatus({ kind: "saving", text: "" });
-    const generation = ++refreshGeneration.current;
-    try {
-      const op = await post(
-        "/api/agents/account-transfer",
-        {
-          id: agent.id,
-          account_key: target,
-          request_id: requestId,
-          scope: TransferScope.subagents,
-        },
-        { timeoutMs: 30000 },
-      );
-      const transferResult = confirmedTransfer(
-        op,
-        requestId,
-        agent.id,
-        target,
-        TransferScope.subagents,
-      );
-      save(subagentTransferReceiptKey, null);
-      if (!mounted.current) return;
-      setAccountPending({ target, baseline: stored.account_key ?? null });
-      setTransfer({
-        value: transferResult,
-        baseline: JSON.stringify(snapshotTransfer),
-      });
-      setStatus({ kind: "accepted", text: "Account transfer accepted." });
-    } catch (failure) {
-      if (!mounted.current) return;
-      setAccountPending(previousPending);
-      setStatus(null);
-      appendAppLog({
-        at: Date.now(),
-        level: "error",
-        title: "Account transfer failed",
-        reason: errorText(failure),
-      });
-      setError(errorText(failure));
-      setRetryTarget(target);
-      return;
-    } finally {
-      saveLock.current = false;
-      if (mounted.current) setSaving(false);
-    }
-    setRetryTarget(null);
-    refreshConfirmed(generation, "Account transfer accepted.");
-  };
   const checkedModel = useRef("");
   useEffect(() => {
     if (
@@ -1276,6 +1195,8 @@ function ScopedExecutionSettings({
       });
     }
   }, [shownTransfer]);
+  // A move shows only when it cannot go on. The chat shows its new account at once.
+  const blockedTransfer = (shownTransfer?.blocked?.length ?? 0) > 0;
   const shownTransferTarget = accounts.find(
     (account) => account.id === shownTransfer?.targetAccountKey,
   );
@@ -1740,46 +1661,23 @@ function ScopedExecutionSettings({
               : "For new subagents. Existing subagents keep their account and model."}
           </p>
         )}
-      {role === "worker" &&
-        teamDefaults &&
-        !onDraftChange &&
-        !!current.account_key &&
-        !crossProvider &&
-        existingElsewhere.length > 0 &&
-        shownTransfer?.status !== GeneratedAccountTransferStatus.pending && (
-          <Button
-            size="compact-xs"
-            variant="subtle"
-            disabled={saving}
-            onClick={() => void moveExisting(current.account_key!)}
-          >
-            Move {existingElsewhere.length} existing subagent
-            {existingElsewhere.length === 1 ? "" : "s"} to{" "}
-            {setupAccountName(activeAccount)}
-          </Button>
-        )}
-      {!readOnlyReason &&
-        (teamDefaults || agent.isLead) &&
-        (shownTransfer || transferOpen) && (
-          <AccountTransferStatus
-            opened={transferOpen}
-            onClose={() => setTransferOpen(false)}
-            transfer={shownTransfer}
-            targetLabel={
-              teamDefaults
-                ? setupAccountName(shownTransferTarget)
-                : shownTransferTarget?.email ||
-                  setupAccountName(shownTransferTarget)
-            }
-            error={error}
-            retryStart={
-              retryTarget ? () => void moveExisting(retryTarget) : undefined
-            }
-            pending={saving}
-            onAction={(action) => void runTeamTransferAction(action)}
-          />
-        )}
-      {shownTransfer && !transferOpen && (
+      {!readOnlyReason && (blockedTransfer || transferOpen) && (
+        <AccountTransferStatus
+          opened={transferOpen}
+          onClose={() => setTransferOpen(false)}
+          transfer={shownTransfer}
+          targetLabel={
+            teamDefaults
+              ? setupAccountName(shownTransferTarget)
+              : shownTransferTarget?.email ||
+                setupAccountName(shownTransferTarget)
+          }
+          error={error}
+          pending={saving}
+          onAction={(action) => void runTeamTransferAction(action)}
+        />
+      )}
+      {blockedTransfer && !transferOpen && (
         <Button
           size="compact-xs"
           variant="subtle"
@@ -1835,16 +1733,6 @@ function ScopedExecutionSettings({
       {error && (
         <p className="execution-error" role="alert">
           {error}
-          {retryTarget && (
-            <Button
-              variant="subtle"
-              size="compact-xs"
-              disabled={saving}
-              onClick={() => void moveExisting(retryTarget)}
-            >
-              Retry
-            </Button>
-          )}
         </p>
       )}
     </>

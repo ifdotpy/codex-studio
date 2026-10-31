@@ -171,19 +171,24 @@ export async function run(shrink = false): Promise<number> {
   });
   const exit = once(child, "close");
   const scan = collector();
-  let failure: unknown;
+  const failures: unknown[] = [];
   for await (const line of createInterface({ input: child.stdout })) {
-    if (!failure) {
-      try {
-        scan.add(line);
-      } catch (error) {
-        failure = error;
-      }
+    try {
+      scan.add(line);
+    } catch (error) {
+      failures.push(error);
     }
   }
   const [status] = await exit;
   if (status !== 0) throw new Error(`cargo clippy exited ${status}`);
-  if (failure) throw failure;
+  if (failures.length)
+    throw new Error(
+      failures
+        .map((error) =>
+          error instanceof Error ? error.message : String(error),
+        )
+        .join("\n\n"),
+    );
   const found = scan.finish();
   const baseline = readBaseline();
   if (shrink) {

@@ -17,11 +17,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::OptionalExtension;
+use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
 
 mod clone_ffi;
 mod command;
 pub mod lifecycle;
+mod operation;
 mod protocol;
 mod slots;
 mod transfer;
@@ -101,7 +103,7 @@ const READ_METHODS: [&str; 6] = [
 ];
 
 /// One operation record (`host-operations/<key>/status.json`).
-pub(crate) type Op = Map<String, Value>;
+use operation::{Op, State};
 
 #[derive(serde::Deserialize)]
 struct IncomingFrame {
@@ -109,6 +111,18 @@ struct IncomingFrame {
     token: Option<Box<serde_json::value::RawValue>>,
     method: Option<Box<serde_json::value::RawValue>>,
     params: Option<Box<serde_json::value::RawValue>>,
+}
+
+#[derive(serde::Serialize)]
+struct Response<'a, T: serde::Serialize> {
+    id: &'a str,
+    result: T,
+}
+
+#[derive(serde::Serialize)]
+struct ErrorResponse<'a, I: serde::Serialize> {
+    id: I,
+    error: &'a HostExecError,
 }
 
 #[derive(serde::Deserialize)]
@@ -342,6 +356,20 @@ enum FrameParams {
     ResultManifest(ResultManifestParams),
 }
 
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum DispatchResult {
+    Operation(Op),
+    Attach(AttachResult),
+    Other(Value),
+}
+
+#[derive(serde::Serialize)]
+struct AttachResult {
+    events: Vec<Value>,
+    status: Op,
+}
+
 fn receipt_digest(method: &str, params: &str) -> String {
     protocol::key(&format!("{method}\0{params}"))
 }
@@ -358,7 +386,7 @@ pub(crate) struct ChildHandle {
 
 #[derive(Default)]
 pub(crate) struct Inner {
-    active: HashMap<String, tokio::sync::watch::Receiver<Option<Value>>>,
+    active: HashMap<String, tokio::sync::watch::Receiver<Option<String>>>,
     pub(crate) commands: HashSet<String>,
     pub(crate) children: HashMap<String, ChildHandle>,
     /// Per project folder: the bytes of the last walk plus the files written since then.
@@ -438,23 +466,6 @@ pub(crate) fn remove_entry(path: &Path) -> std::io::Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
     }
-}
-
-pub(crate) fn text<'a>(op: &'a Op, field: &str) -> &'a str {
-    op.get(field).and_then(Value::as_str).unwrap_or_default()
-}
-
-pub(crate) fn string_list(op: &Op, field: &str) -> Vec<String> {
-    op.get(field)
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// A JSON integer: not a boolean and not a fraction.
@@ -581,25 +592,18 @@ impl HostService {
             "The host command does not exist",
             "not_found",
         )?;
-        let Value::Object(mut value) = protocol::read_json(&path)? else {
-            return Err(Failure::Unexpected(
-                "The host command status is not an object".into(),
-            ));
-        };
-        if value.get("state").and_then(Value::as_str) == Some("running")
-            && !self.inner().commands.contains(identity)
-        {
-            value.insert("state".into(), json!("unknown"));
-            value.insert("reason".into(), json!("host_owner_lost"));
+        let mut value: Op = serde_json::from_str(&fs::read_to_string(path)?).map_err(|_| {
+            HostExecError::new("invalid_status", "The host command status is invalid")
+        })?;
+        if value.state == State::Running && !self.inner().commands.contains(identity) {
+            value.state = State::Unknown;
+            value.reason = Some("host_owner_lost".into());
         }
         Ok(value)
     }
 
     pub(crate) fn save(&self, identity: &str, op: &Op) -> Outcome<()> {
-        protocol::atomic(
-            &self.opdir(identity).join("status.json"),
-            &Value::Object(op.clone()),
-        )?;
+        protocol::atomic(&self.opdir(identity).join("status.json"), op)?;
         Ok(())
     }
 
@@ -721,9 +725,7 @@ impl HostService {
     }
 
     pub(crate) fn budget_of(&self, op: &Op) -> u64 {
-        op.get("diskBudget")
-            .and_then(Value::as_u64)
-            .unwrap_or(self.default_budget)
+        op.disk_budget
     }
 
     /// A page of a saved manifest. The sorted entries stay in memory until the last page.
@@ -768,39 +770,43 @@ impl HostService {
             || inner.reading > 0
     }
 
-    async fn dispatch_frame(self: &Arc<Self>, params: &FrameParams) -> Outcome<Value> {
-        match params {
+    async fn dispatch_frame(self: &Arc<Self>, params: &FrameParams) -> Outcome<DispatchResult> {
+        let result = match params {
             FrameParams::Release(params) => {
                 let op = self.load(&params.common.operation_id)?;
                 require(
-                    text(&op, "agentId") == params.common.agent_id,
+                    op.agent_id.as_str() == params.common.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
                 let slot = self.slot(&op)?;
-                self.release(&params.common.operation_id, op, &slot, params)
-                    .map(Value::Object)
+                return self
+                    .release(&params.common.operation_id, op, &slot, params)
+                    .map(DispatchResult::Operation);
             }
-            FrameParams::Acquire(params) => self.acquire(params).await.map(Value::Object),
+            FrameParams::Acquire(params) => {
+                return self.acquire(params).await.map(DispatchResult::Operation);
+            }
             FrameParams::List(params) => self.operations(&params.agent_id),
             FrameParams::Recover(params) => self.recover(&params.owner),
             FrameParams::Run(params) => {
                 let op = self.load(&params.operation_id)?;
                 require(
-                    text(&op, "agentId") == params.agent_id,
+                    op.agent_id.as_str() == params.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
                 let slot = self.slot(&op)?;
-                let mac_only = string_list(&op, "macOnly");
-                self.run(&params.operation_id, op, slot, mac_only, params)
+                let mac_only = op.mac_only.clone();
+                return self
+                    .run(&params.operation_id, op, slot, mac_only, params)
                     .await
-                    .map(Value::Object)
+                    .map(DispatchResult::Operation);
             }
             FrameParams::Manifest(params) => {
                 let op = self.load(&params.operation_id)?;
                 require(
-                    text(&op, "agentId") == params.agent_id,
+                    op.agent_id.as_str() == params.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
@@ -808,7 +814,7 @@ impl HostService {
                 self.held_manifest(
                     &params.operation_id,
                     &slot,
-                    string_list(&op, "macOnly"),
+                    op.mac_only.clone(),
                     &params.after,
                 )
                 .await
@@ -816,7 +822,7 @@ impl HostService {
             FrameParams::Prime(params) => {
                 let op = self.load(&params.operation_id)?;
                 require(
-                    text(&op, "agentId") == params.agent_id,
+                    op.agent_id.as_str() == params.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
@@ -827,18 +833,18 @@ impl HostService {
             FrameParams::SyncMode(params) => {
                 let op = self.load(&params.operation_id)?;
                 require(
-                    text(&op, "agentId") == params.agent_id,
+                    op.agent_id.as_str() == params.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
                 let slot = self.slot(&op)?;
-                self.sync_mode(&op, &slot, string_list(&op, "macOnly"), &params.items)
+                self.sync_mode(&op, &slot, op.mac_only.clone(), &params.items)
                     .await
             }
             FrameParams::SyncClone(params) => {
                 let op = self.load(&params.operation_id)?;
                 require(
-                    text(&op, "agentId") == params.agent_id,
+                    op.agent_id.as_str() == params.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
@@ -854,18 +860,18 @@ impl HostService {
                 };
                 let op = self.load(&common.operation_id)?;
                 require(
-                    text(&op, "agentId") == common.agent_id,
+                    op.agent_id.as_str() == common.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
                 let slot = self.slot(&op)?;
-                let mac_only = string_list(&op, "macOnly");
+                let mac_only = op.mac_only.clone();
                 self.sync_operation(&common.operation_id, &op, &slot, &mac_only, params)
             }
             FrameParams::SyncBatch(params) => {
                 let op = self.load(&params.common.operation_id)?;
                 require(
-                    text(&op, "agentId") == params.common.agent_id,
+                    op.agent_id.as_str() == params.common.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
@@ -875,41 +881,44 @@ impl HostService {
             FrameParams::Status(params) => {
                 let op = self.load(&params.operation_id)?;
                 require(
-                    text(&op, "agentId") == params.agent_id,
+                    op.agent_id.as_str() == params.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
-                Ok(Value::Object(op))
+                return Ok(DispatchResult::Operation(op));
             }
             FrameParams::Cancel(params) => {
                 let mut op = self.load(&params.operation_id)?;
                 require(
-                    text(&op, "agentId") == params.agent_id,
+                    op.agent_id.as_str() == params.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
-                self.cancel(&params.operation_id, &mut op)
+                return self
+                    .cancel(&params.operation_id, &mut op)
                     .await
-                    .map(Value::Object)
+                    .map(DispatchResult::Operation);
             }
             FrameParams::Attach(params) => {
                 let op = self.load(&params.common.operation_id)?;
                 require(
-                    text(&op, "agentId") == params.common.agent_id,
+                    op.agent_id.as_str() == params.common.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
-                self.attach(
-                    &params.common.operation_id,
-                    params.after_seq,
-                    params.wait_seconds,
-                )
-                .await
+                return self
+                    .attach(
+                        &params.common.operation_id,
+                        params.after_seq,
+                        params.wait_seconds,
+                    )
+                    .await
+                    .map(DispatchResult::Attach);
             }
             FrameParams::Read(params) => {
                 let op = self.load(&params.common.operation_id)?;
                 require(
-                    text(&op, "agentId") == params.common.agent_id,
+                    op.agent_id.as_str() == params.common.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
@@ -918,13 +927,13 @@ impl HostService {
             FrameParams::ResultManifest(params) => {
                 let op = self.load(&params.operation_id)?;
                 require(
-                    text(&op, "agentId") == params.agent_id,
+                    op.agent_id.as_str() == params.agent_id,
                     "The command belongs to another agent",
                     "forbidden",
                 )?;
                 let area = params.area.as_str();
                 require(
-                    ["exited", "released"].contains(&text(&op, "state")),
+                    matches!(op.state, State::Exited | State::Released),
                     "The command has no final files",
                     "outcome_unknown",
                 )?;
@@ -940,10 +949,11 @@ impl HostService {
             FrameParams::Health | FrameParams::Retire(_) => {
                 Err(HostExecError::new(INVALID, "Invalid request").into())
             }
-        }
+        }?;
+        Ok(DispatchResult::Other(result))
     }
 
-    async fn attach(&self, identity: &str, after: i64, wait: f64) -> Outcome<Value> {
+    async fn attach(&self, identity: &str, after: i64, wait: f64) -> Outcome<AttachResult> {
         require(after >= 0, "Invalid event cursor", INVALID)?;
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs_f64(wait.clamp(0.0, ATTACH_MAX_SECONDS));
@@ -954,13 +964,16 @@ impl HostService {
             tokio::time::sleep(std::time::Duration::from_millis(ATTACH_POLL_MS)).await;
         }
         let events = self.events_after(identity, after)?;
-        Ok(json!({"events": events, "status": self.load(identity)?}))
+        Ok(AttachResult {
+            events,
+            status: self.load(identity)?,
+        })
     }
 
     fn read_result(&self, identity: &str, op: &Op, params: &ReadParams) -> Outcome<Value> {
         use std::io::{Read, Seek, SeekFrom};
         require(
-            ["exited", "released"].contains(&text(op, "state")),
+            matches!(op.state, State::Exited | State::Released),
             "The command has no final files",
             "outcome_unknown",
         )?;
@@ -982,22 +995,31 @@ impl HostService {
     /// One request frame: its answer, or `None` when the frame is not an object.
     #[cfg(test)]
     pub(crate) async fn request(self: &Arc<Self>, request: &Value) -> Option<Value> {
-        self.request_frame(&serde_json::to_vec(request).ok()?).await
+        let response = self
+            .request_frame(&serde_json::to_vec(request).ok()?)
+            .await?;
+        serde_json::from_str(&response).ok()
     }
 
-    async fn request_frame(self: &Arc<Self>, bytes: &[u8]) -> Option<Value> {
+    async fn request_frame(self: &Arc<Self>, bytes: &[u8]) -> Option<String> {
         let request: IncomingFrame = serde_json::from_slice(bytes).ok()?;
         let identity = request.id.clone();
-        Some(match self.answer(request).await {
-            Ok(value) => value,
-            Err(Failure::Refused(error)) => json!({"id": identity, "error": error.object()}),
-            Err(Failure::Unexpected(_)) => {
-                json!({"id": identity, "error": {"code": "invalid_request", "message": "Invalid host request"}})
-            }
-        })
+        match self.answer(request).await {
+            Ok(value) => Some(value),
+            Err(Failure::Refused(error)) => serde_json::to_string(&ErrorResponse {
+                id: identity,
+                error: &error,
+            })
+            .ok(),
+            Err(Failure::Unexpected(_)) => serde_json::to_string(&ErrorResponse {
+                id: identity,
+                error: &HostExecError::new("invalid_request", "Invalid host request"),
+            })
+            .ok(),
+        }
     }
 
-    async fn answer(self: &Arc<Self>, request: IncomingFrame) -> Outcome<Value> {
+    async fn answer(self: &Arc<Self>, request: IncomingFrame) -> Outcome<String> {
         let id = request
             .id
             .as_ref()
@@ -1116,9 +1138,12 @@ impl HostService {
                 let inner = self.inner();
                 (inner.commands.len(), inner.active.len())
             };
-            return Ok(json!({"id": id, "result": {
+            return Ok(serde_json::to_string(&Response {
+                id: &id,
+                result: json!({
                 "protocol": PROTOCOL, "buildId": self.build_id, "pid": std::process::id(),
-                "activeCommands": commands, "activeRequests": active, "busy": self.busy()}}));
+                "activeCommands": commands, "activeRequests": active, "busy": self.busy()}),
+            })?);
         }
         require(
             !self.inner().retiring,
@@ -1137,14 +1162,20 @@ impl HostService {
                 "busy",
             )?;
             self.inner().retiring = true;
-            return Ok(json!({"id": id, "result": {
-                "state": "retiring", "buildId": self.build_id, "pid": std::process::id()}}));
+            return Ok(serde_json::to_string(&Response {
+                id: &id,
+                result: json!({
+                "state": "retiring", "buildId": self.build_id, "pid": std::process::id()}),
+            })?);
         }
         if READ_METHODS.contains(&method.as_str()) {
             self.inner().reading += 1;
             let result = self.dispatch_frame(&params).await;
             self.inner().reading -= 1;
-            return Ok(json!({"id": id, "result": result?}));
+            return Ok(serde_json::to_string(&Response {
+                id: &id,
+                result: result?,
+            })?);
         }
         let saved = {
             let db = self.db();
@@ -1172,7 +1203,9 @@ impl HostService {
             let running = self.inner().active.get(&id).cloned();
             if let Some(mut running) = running {
                 return match running.wait_for(Option::is_some).await {
-                    Ok(value) => Ok(value.clone().unwrap_or(Value::Null)),
+                    Ok(value) => value.clone().ok_or_else(|| {
+                        Failure::Unexpected("The request has no proven result".into())
+                    }),
                     Err(_) => Err(HostExecError::new(
                         "outcome_unknown",
                         "The request has no proven result; inspect its operation",
@@ -1186,7 +1219,8 @@ impl HostService {
                     "The request has no proven result; inspect its operation",
                 )
             })?;
-            return Ok(serde_json::from_str(&response)?);
+            serde_json::from_str::<&RawValue>(&response)?;
+            return Ok(response);
         }
         let (sender, mut receiver) = tokio::sync::watch::channel(None);
         self.inner().active.insert(id.clone(), receiver.clone());
@@ -1194,24 +1228,38 @@ impl HostService {
         let task_id = id.clone();
         tokio::spawn(async move {
             let result = match service.dispatch_frame(&params).await {
-                Ok(value) => json!({"id": task_id, "result": value}),
-                Err(Failure::Refused(error)) => json!({"id": task_id, "error": error.object()}),
-                Err(Failure::Unexpected(message)) => {
-                    json!({"id": task_id, "error": {"code": "outcome_unknown", "message": truncate(&message)}})
-                }
+                Ok(value) => serde_json::to_string(&Response {
+                    id: &task_id,
+                    result: value,
+                }),
+                Err(Failure::Refused(error)) => serde_json::to_string(&ErrorResponse {
+                    id: &task_id,
+                    error: &error,
+                }),
+                Err(Failure::Unexpected(message)) => serde_json::to_string(&ErrorResponse {
+                    id: &task_id,
+                    error: &HostExecError::new("outcome_unknown", truncate(&message)),
+                }),
             };
-            let saved = service.db().execute(
-                "UPDATE receipts SET response=?1 WHERE id=?2",
-                rusqlite::params![result.to_string(), task_id],
-            );
-            if saved.is_ok() {
+            let saved = result.as_ref().ok().is_some_and(|result| {
+                service
+                    .db()
+                    .execute(
+                        "UPDATE receipts SET response=?1 WHERE id=?2",
+                        rusqlite::params![result, task_id],
+                    )
+                    .is_ok()
+            });
+            if let (true, Ok(result)) = (saved, result) {
                 sender.send_replace(Some(result));
             }
             // A failed save keeps the receipt without an answer: an unknown outcome.
             service.inner().active.remove(&task_id);
         });
         match receiver.wait_for(Option::is_some).await {
-            Ok(value) => Ok(value.clone().unwrap_or(Value::Null)),
+            Ok(value) => value
+                .clone()
+                .ok_or_else(|| Failure::Unexpected("The request has no proven result".into())),
             Err(_) => Err(HostExecError::new(
                 "outcome_unknown",
                 "The request has no proven result; inspect its operation",

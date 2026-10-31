@@ -233,31 +233,28 @@ test("corruption stays scoped and draft versions retain conflict alternatives", 
     ): Promise<DraftVersion> =>
       JSON.parse(
         (
-          await draftConflictHandler.resolve(
-            {
-              realMasterState: {
-                id: master.id,
-                payload: JSON.stringify({
-                  device: "device",
-                  session: "chat",
-                  ...master,
-                } satisfies DraftVersion),
-                seq: 0,
-                _deleted: false,
-              },
-              newDocumentState: {
-                id: fork.id,
-                payload: JSON.stringify({
-                  device: "device",
-                  session: "chat",
-                  ...fork,
-                } satisfies DraftVersion),
-                seq: 0,
-                _deleted: false,
-              },
+          await draftConflictHandler.resolve({
+            realMasterState: {
+              id: master.id,
+              payload: JSON.stringify({
+                device: "device",
+                session: "chat",
+                ...master,
+              } satisfies DraftVersion),
+              seq: 0,
+              _deleted: false,
             },
-            "fixture conflict",
-          )
+            newDocumentState: {
+              id: fork.id,
+              payload: JSON.stringify({
+                device: "device",
+                session: "chat",
+                ...fork,
+              } satisfies DraftVersion),
+              seq: 0,
+              _deleted: false,
+            },
+          })
         ).payload,
       );
     const alternatives = await merge(

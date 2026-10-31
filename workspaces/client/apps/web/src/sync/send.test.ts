@@ -14,6 +14,11 @@ vi.mock("../api", async (importOriginal) => ({
   syncGet,
   refreshSession,
   syncPost,
+  // The command path sends through the same transport.
+  command: {
+    send: (body: unknown, options: unknown) =>
+      syncPost("/api/commands", body, options),
+  },
 }));
 vi.mock("./client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./client")>()),

@@ -292,7 +292,8 @@ pub async fn run<M: OnlineMigration>(
             Err(error) => {
                 let message = error.to_string();
                 let name = progress_name::<M>();
-                let _ =
+                // The original error is the one to return; a failed status write is only logged.
+                if let Err(status_error) =
                     store
                         .transaction(move |tx| {
                             tx.execute(
@@ -302,7 +303,10 @@ pub async fn run<M: OnlineMigration>(
                         )?;
                             Ok::<(), StoreError>(())
                         })
-                        .await;
+                        .await
+                {
+                    eprintln!("The migration failure was not recorded: {status_error}");
+                }
                 return Err(error);
             }
         }

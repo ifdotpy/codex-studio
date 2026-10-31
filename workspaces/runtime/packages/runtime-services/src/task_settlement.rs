@@ -81,9 +81,7 @@ fn owner_settles(agent: &Value) -> bool {
 }
 
 fn completed_turn(tx: &rusqlite::Connection, agent: &str, turn: &str) -> StoreResult<bool> {
-    Ok(studio_runtime_store::domain::turn_completed(
-        tx, agent, turn,
-    )?)
+    studio_runtime_store::domain::turn_completed(tx, agent, turn)
 }
 
 fn stored_agent(tx: &rusqlite::Connection, id: &str) -> StoreResult<Option<Value>> {

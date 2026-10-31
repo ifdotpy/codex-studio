@@ -21,6 +21,8 @@ readonly STABLE_SECONDS=30
 readonly KEPT_RELEASES=3
 # Recent completed invocation identity records retained, plus any still in use.
 readonly KEPT_INVOCATION_RECORDS=20
+# Bound glibc allocation arenas to reduce retained memory; unit: arenas.
+readonly SERVER_MALLOC_ARENA_MAX=2
 # First systemd version supporting --expand-environment=no.
 readonly MIN_SYSTEMD_VERSION=254
 # Namespace for independently managed delivery services.
@@ -254,8 +256,11 @@ start() {
   ln -sfn "$1" "$current.next"
   mv -T "$current.next" "$current"
   mkdir -p "$(dirname "$dropin")"
-  node -e 'const binary=process.argv[1]; if(/[\r\n\0]/.test(binary)) throw Error("invalid service executable path"); const quoted=binary.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"").replaceAll("%", "%%").replaceAll("$", "$$$$"); process.stdout.write(`[Service]\nExecStart=\nExecStart="${quoted}" --port ${process.argv[2]}\n`)' \
-    "$current/$binary" "$PORT" >"$dropin"
+  {
+    node -e 'const binary=process.argv[1]; if(/[\r\n\0]/.test(binary)) throw Error("invalid service executable path"); const quoted=binary.replaceAll("\\", "\\\\").replaceAll("\"", "\\\"").replaceAll("%", "%%").replaceAll("$", "$$$$"); process.stdout.write(`[Service]\nExecStart=\nExecStart="${quoted}" --port ${process.argv[2]}\n`)' \
+      "$current/$binary" "$PORT"
+    printf 'Environment="MALLOC_ARENA_MAX=%s"\n' "$SERVER_MALLOC_ARENA_MAX"
+  } >"$dropin"
   systemctl --user daemon-reload
   systemctl --user restart "$UNIT"
 }

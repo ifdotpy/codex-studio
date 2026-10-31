@@ -44,10 +44,6 @@ impl HostExecError {
             message: message.into(),
         }
     }
-
-    pub(crate) fn object(&self) -> Value {
-        json!({"code": self.code, "message": self.message})
-    }
 }
 
 /// A handler result: an explicit refusal, or a failure without a protocol code
@@ -102,11 +98,6 @@ pub(crate) fn key(value: &str) -> String {
 
 pub(crate) fn hex(bytes: &[u8]) -> String {
     data_encoding::HEXLOWER.encode(bytes)
-}
-
-/// The text of Python `json.dumps(value, sort_keys=True)`, which the guest hashes.
-pub(crate) fn sorted_json(value: &Value) -> String {
-    studio_runtime_store::python_json(value)
 }
 
 /// Write `value` as JSON to `path` through a synced temporary file and a rename.
@@ -401,10 +392,63 @@ pub(crate) fn scan(
 /// The digest that the guest sends as `manifestSha256` for the same tree.
 /// The VM guest's host_exec.py hashes Python `json.dumps(sort_keys=True)`, so
 /// its wire contract requires this serializer's matching bytes.
-pub(crate) fn manifest_digest(manifest: &Manifest) -> Result<String, serde_json::Error> {
-    Ok(key(
-        &studio_runtime_schema::json_compat::python_json_serialized(manifest)?,
-    ))
+fn manifest_quote(value: &str) -> String {
+    let mut output = String::from("\"");
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{8}' => output.push_str("\\b"),
+            '\u{c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            c if c < ' ' || c == '\u{7f}' => output.push_str(&format!("\\u{:04x}", c as u32)),
+            c if c as u32 <= 0x7e => output.push(c),
+            c if c as u32 <= 0xffff => output.push_str(&format!("\\u{:04x}", c as u32)),
+            c => {
+                let n = c as u32 - 0x10000;
+                output.push_str(&format!(
+                    "\\u{:04x}\\u{:04x}",
+                    0xd800 + (n >> 10),
+                    0xdc00 + (n & 0x3ff)
+                ));
+            }
+        }
+    }
+    output.push('"');
+    output
+}
+
+fn manifest_entry_json(entry: &ManifestEntry) -> String {
+    match entry {
+        ManifestEntry::Directory => "{\"kind\": \"directory\"}".into(),
+        ManifestEntry::Link { target } => format!(
+            "{{\"kind\": \"link\", \"target\": {}}}",
+            manifest_quote(target)
+        ),
+        ManifestEntry::File {
+            bytes,
+            mode,
+            sha256,
+        } => format!(
+            "{{\"bytes\": {bytes}, \"kind\": \"file\", \"mode\": {mode}, \"sha256\": {}}}",
+            manifest_quote(sha256)
+        ),
+    }
+}
+
+pub(crate) fn manifest_json(manifest: &Manifest) -> String {
+    let entries = manifest
+        .iter()
+        .map(|(path, entry)| format!("{}: {}", manifest_quote(path), manifest_entry_json(entry)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{{entries}}}")
+}
+
+pub(crate) fn manifest_digest(manifest: &Manifest) -> String {
+    key(&manifest_json(manifest))
 }
 
 /// The entries of a sorted manifest after the path `after` (guest `page`) and
@@ -417,8 +461,9 @@ pub(crate) fn page(
     let mut entries = BTreeMap::new();
     let mut size = 0_usize;
     for (path, entry) in items.iter().skip(start).take(PAGE_ENTRIES) {
-        let encoded = studio_runtime_schema::json_compat::python_json_serialized(entry)
-            .map_err(|_| HostExecError::new(INVALID, "Invalid manifest entry"))?;
+        let encoded = entry
+            .as_ref()
+            .map_or_else(|| "null".into(), manifest_entry_json);
         size += path.len() + encoded.len() + 8;
         if !entries.is_empty() && size > PAGE_BYTES {
             break;

@@ -42,6 +42,16 @@ vi.mock("../api", () => ({
   },
   syncGet: mocks.syncGet,
   syncPost: mocks.syncPost,
+  command: {
+    send: async (body: unknown, options: unknown) => ({
+      rows: [
+        {
+          collection: "messageReceipt",
+          payload: await mocks.syncPost("/api/commands", body, options),
+        },
+      ],
+    }),
+  },
   refreshSession: mocks.refreshSession,
   errorText: (error: unknown) =>
     error instanceof Error ? error.message : String(error),

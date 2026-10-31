@@ -154,7 +154,7 @@ fn events(store: &RuntimeStore) -> Vec<(String, String)> {
 }
 fn projection(store: &RuntimeStore) -> Vec<String> {
     let db = store.test_reader().expect("store read");
-    ["SELECT json_group_array(json_array(collection,id,seq,hash,payload,deleted)) FROM (SELECT * FROM sync_entities ORDER BY collection,id)","SELECT json_group_array(json_array(key,value)) FROM (SELECT * FROM sync_entity_meta ORDER BY key)"]
+    ["SELECT json_group_array(json_array(collection,id,seq,hash,payload,deleted)) FROM (SELECT * FROM sync_entities ORDER BY collection,id)","SELECT json_group_array(json_array(key,value)) FROM (SELECT * FROM sync_entity_meta WHERE key!='migration_catalog' ORDER BY key)"]
         .iter().map(|sql|db.query_row(sql,[],|row|row.get(0)).expect("projection read")).collect()
 }
 #[tokio::test]
@@ -1222,6 +1222,37 @@ async fn task_absence_consumer_matches_python_lost_and_persists_named_hold() {
 #[tokio::test]
 async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
     use studio_runtime_services::{recovery_absence::*, task_recovery::*, task_recovery_store::*};
+    async fn copy_fixture(bytes: &[Vec<u8>; 2]) -> tempfile::TempDir {
+        let root = tempfile::tempdir().expect("recovery case");
+        for (name, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+            .into_iter()
+            .zip(bytes)
+        {
+            tokio::fs::write(root.path().join(name), bytes)
+                .await
+                .expect("copy fixture");
+        }
+        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3"))
+            .expect("fixture identity");
+        db.execute_batch("DELETE FROM sync_identity; INSERT INTO sync_identity(id) VALUES(lower(hex(randomblob(16))))").expect("fresh identity");
+        drop(db);
+        root
+    }
+    let template = fixture();
+    let store = open_store(template.path()).await;
+    store
+        .checkpoint_wal_passive()
+        .await
+        .expect("checkpoint template");
+    drop(store);
+    let bytes = [
+        tokio::fs::read(template.path().join("canvas.sqlite3"))
+            .await
+            .expect("canvas template"),
+        tokio::fs::read(template.path().join("analytics.sqlite3"))
+            .await
+            .expect("analytics template"),
+    ];
     let case = &frozen_cases(Corpus::Absence)[0];
     for mode in ["lost", "hold"] {
         for (table, timing) in [
@@ -1235,7 +1266,7 @@ async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
             if mode == "hold" && table == "runtime_items" {
                 continue;
             }
-            let root = fixture();
+            let root = copy_fixture(&bytes).await;
             let store = open_store(root.path()).await;
             seed_task(&store, case).await;
             let before = TaskRecoverySnapshot::from_records(
@@ -1282,7 +1313,7 @@ async fn task_absence_failpoints_and_stale_proofs_preserve_rows() {
         "reserved",
         "connection",
     ] {
-        let root = fixture();
+        let root = copy_fixture(&bytes).await;
         let store = open_store(root.path()).await;
         seed_task(&store, case).await;
         let before = TaskRecoverySnapshot::from_records(

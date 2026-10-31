@@ -89,7 +89,7 @@ pub(crate) async fn restore(
     // child cannot be cancelled by dropping its awaiting future.
     tokio::spawn(async move {
         let wake = state.event_wake.clone();
-        let result = restore_owned(state, body).await;
+        let result = Box::pin(restore_owned(state, body)).await;
         wake.notify_one();
         result
     })

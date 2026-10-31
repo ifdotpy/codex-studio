@@ -77,15 +77,11 @@ pub fn account_cost_snapshot(
     }
     let account_id = json!(account.account_id);
     let home_text = home.to_string_lossy().into_owned();
-    let account_identity =
-        crate::event_write::python_json(&json!([account_key, account_id, home_text]));
+    let account_identity = json!([account_key, account_id, home_text]).to_string();
     let account_root = state_dir
         .join("account-costs")
         .join(digest(&account_identity));
-    let cache_identity = crate::event_write::python_json(&json!([
-        home_text,
-        account_root.to_string_lossy().as_ref()
-    ]));
+    let cache_identity = json!([home_text, account_root.to_string_lossy().as_ref()]).to_string();
     let cache_scope = digest(&cache_identity);
     let cache_path = account_root.join("local-costs.json");
     let saved = read_json(&cache_path);
@@ -289,13 +285,11 @@ where
     }
     let account_id = json!(account.account_id);
     let home_text = home.to_string_lossy().into_owned();
-    let account_identity =
-        crate::event_write::python_json(&json!([account_key, account_id, home_text]));
+    let account_identity = json!([account_key, account_id, home_text]).to_string();
     let cache_root = state_dir
         .join("account-costs")
         .join(digest(&account_identity));
-    let cache_identity =
-        crate::event_write::python_json(&json!([home_text, cache_root.to_string_lossy().as_ref()]));
+    let cache_identity = json!([home_text, cache_root.to_string_lossy().as_ref()]).to_string();
     let scope = digest(&cache_identity);
     if let Err(error) = create_private_dir(&cache_root) {
         return (false, Err(error));
@@ -405,7 +399,7 @@ fn cost_fingerprint(data: &Value) -> String {
         )
     })
     .collect::<serde_json::Map<_, _>>();
-    crate::event_write::python_json(&Value::Object(content))
+    Value::Object(content).to_string()
 }
 
 fn refresh_claude_costs(
@@ -467,10 +461,7 @@ impl Drop for CostRefreshGuard {
 }
 
 fn account_refresh_key(state_dir: &Path, account_key: &str) -> String {
-    digest(&crate::event_write::python_json(&json!([
-        state_dir,
-        account_key
-    ])))
+    digest(&json!([state_dir, account_key]).to_string())
 }
 
 fn begin_cost_refresh(key: String) -> Option<CostRefreshGuard> {
@@ -1364,8 +1355,7 @@ mod tests {
         let account = account_fixture(
             json!({"provider":"codex","id":key,"accountId":"acct","home":home,"status":"ready"}),
         );
-        let account_identity =
-            crate::event_write::python_json(&json!([key, "acct", home.to_string_lossy().as_ref()]));
+        let account_identity = json!([key, "acct", home.to_string_lossy().as_ref()]).to_string();
         let cache_root = state_dir
             .join("account-costs")
             .join(super::digest(&account_identity));
@@ -1392,25 +1382,27 @@ mod tests {
     }
 
     #[test]
-    fn reads_python_shaped_local_cache_without_starting_a_refresh() {
+    fn cost_fingerprint_uses_compact_json() {
+        assert!(!super::cost_fingerprint(&json!({"coverage": "雪"})).contains("\\u96ea"));
+    }
+
+    #[test]
+    fn reads_local_cache_without_starting_a_refresh() {
         let directory = tempfile::tempdir().expect("owned test directory");
         let root = directory.path().to_path_buf();
         let home = root.join("profile");
         let account_root = root.join("state/account-costs");
         let key = "default";
         let account_id = "account-雪";
-        assert!(crate::event_write::python_json(&json!(account_id)).contains("\\u96ea"));
-        let account_identity = crate::event_write::python_json(&json!([
-            key,
-            account_id,
-            home.to_string_lossy().as_ref()
-        ]));
+        let account_identity =
+            json!([key, account_id, home.to_string_lossy().as_ref()]).to_string();
         let account_hash = super::digest(&account_identity);
         let cache = account_root.join(account_hash);
-        let cache_identity = crate::event_write::python_json(&json!([
+        let cache_identity = json!([
             home.to_string_lossy().as_ref(),
             cache.to_string_lossy().as_ref()
-        ]));
+        ])
+        .to_string();
         let scope = super::digest(&cache_identity);
         std::fs::create_dir_all(&cache).expect("fixture directory");
         std::fs::write(
@@ -1443,16 +1435,14 @@ mod tests {
         let key = "default";
         let account_id = "account-1";
         let account_root = root.join("state/account-costs");
-        let account_identity = crate::event_write::python_json(&json!([
-            key,
-            account_id,
-            home.to_string_lossy().as_ref()
-        ]));
+        let account_identity =
+            json!([key, account_id, home.to_string_lossy().as_ref()]).to_string();
         let cache = account_root.join(super::digest(&account_identity));
-        let scope_identity = crate::event_write::python_json(&json!([
+        let scope_identity = json!([
             home.to_string_lossy().as_ref(),
             cache.to_string_lossy().as_ref()
-        ]));
+        ])
+        .to_string();
         let scope = super::digest(&scope_identity);
         std::fs::create_dir_all(&cache).expect("fixture directory");
         std::fs::write(

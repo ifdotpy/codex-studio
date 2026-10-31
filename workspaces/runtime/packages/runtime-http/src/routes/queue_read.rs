@@ -12,10 +12,6 @@ pub(super) fn api_error(error: QueueWriteError) -> ApiError {
         QueueWriteError::InvalidRequest(message) | QueueWriteError::Conflict(message) => {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
-        QueueWriteError::HeldByTurn => ApiError::new(
-            StatusCode::CONFLICT,
-            QueueWriteError::HeldByTurn.to_string(),
-        ),
         QueueWriteError::InvalidStoredObject { object, id } => {
             ApiError::invalid_stored(object, &id)
         }

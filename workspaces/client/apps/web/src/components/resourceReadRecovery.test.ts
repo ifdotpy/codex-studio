@@ -139,6 +139,7 @@ vi.mock("../sync/localDraft", async (importOriginal) => ({
 }));
 vi.mock("../sync/send", () => ({ reconcileOutboxReceipts: reconcile }));
 vi.mock("../sync/resume", () => ({ onResume: () => () => {} }));
+vi.mock("../usePendingCommands", () => ({ usePendingCommands: () => [] }));
 vi.mock("../sync/subscriptions", () => ({
   useSubscription: subscription,
 }));
@@ -450,7 +451,7 @@ describe("resource read callers", () => {
   it("retains a request on signature conflict and clears an ordinary refusal", async () => {
     const key = "studio-queue-change:scope:lead";
     const request = {
-      action: "cancel",
+      action: "send_now",
       agent: "lead",
       id: "a",
       expectedText: "text",

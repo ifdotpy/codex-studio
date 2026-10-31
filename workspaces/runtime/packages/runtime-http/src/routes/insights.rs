@@ -101,7 +101,7 @@ async fn analytics_read(
 async fn session_cost(
     State(state): State<HttpState>,
     query: QueryParams,
-) -> Result<Json<crate::generated::SessionCostResponse>, ApiError> {
+) -> Result<Json<costs::SessionCost>, ApiError> {
     let agent = query.nonempty_str("agent").unwrap_or_default().to_owned();
     session_cost_for_agent(state, agent).await
 }
@@ -109,7 +109,7 @@ async fn session_cost(
 pub(super) async fn session_cost_for_agent(
     state: HttpState,
     agent: String,
-) -> Result<Json<crate::generated::SessionCostResponse>, ApiError> {
+) -> Result<Json<costs::SessionCost>, ApiError> {
     if agent.is_empty() || !valid_agent_id(&agent) {
         return Err(ApiError::new(StatusCode::BAD_REQUEST, "Select a chat"));
     }
@@ -134,9 +134,7 @@ pub(super) async fn session_cost_for_agent(
     .await
     .map_err(|_| ApiError::internal_with_cause(InternalErrorKind::StoreConcurrency))?
     .map_err(map_costs_error)?;
-    Ok(Json(super::generated_json::<
-        crate::generated::SessionCostResponse,
-    >(value)?))
+    Ok(Json(value))
 }
 
 fn cost_dependency(dependency: &'static str) -> ApiError {

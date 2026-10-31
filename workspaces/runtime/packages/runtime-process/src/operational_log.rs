@@ -232,7 +232,7 @@ mod tests {
         const BACKUPS: usize = 3;
         let directory = tempdir().expect("isolated test directory");
         let path = directory.path().join("provider-frames.log");
-        let writer = OperationalLog::open(path.clone(), MAX_BYTES, BACKUPS, 4096).expect("log");
+        let writer = OperationalLog::open(path, MAX_BYTES, BACKUPS, 4096).expect("log");
         for index in 0..500 {
             writer.write_line(format!("frame {index} {}\n", "x".repeat(40)).as_bytes());
         }

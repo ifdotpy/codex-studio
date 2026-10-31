@@ -107,9 +107,32 @@ impl Outbox {
         id: &str,
         kind: OutboxKind,
     ) -> Result<Vec<OutboxRow<P>>> {
-        let mut query = tx.prepare_cached("SELECT id,kind,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,payload,created FROM runtime_outbox WHERE owner_kind=?1 AND owner_id=?2 AND kind=?3 ORDER BY id")?;
+        Self::owned(tx, owner, id, kind, None)
+    }
+
+    /// Like `for_owner`, but only rows whose payload object has the `tag`
+    /// key. Several writers share one owner and kind, each with its own
+    /// payload shape; a reader decodes only the shape that carries its tag.
+    pub fn for_owner_tagged<P: DeserializeOwned>(
+        tx: &Connection,
+        owner: OwnerKind,
+        id: &str,
+        kind: OutboxKind,
+        tag: &str,
+    ) -> Result<Vec<OutboxRow<P>>> {
+        Self::owned(tx, owner, id, kind, Some(tag))
+    }
+
+    fn owned<P: DeserializeOwned>(
+        tx: &Connection,
+        owner: OwnerKind,
+        id: &str,
+        kind: OutboxKind,
+        tag: Option<&str>,
+    ) -> Result<Vec<OutboxRow<P>>> {
+        let mut query = tx.prepare_cached("SELECT id,kind,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,payload,created FROM runtime_outbox WHERE owner_kind=?1 AND owner_id=?2 AND kind=?3 AND (?4 IS NULL OR json_type(payload,'$.' || ?4) IS NOT NULL) ORDER BY id")?;
         query
-            .query_map(params![owner, id, kind], Self::decode)?
+            .query_map(params![owner, id, kind, tag], Self::decode)?
             .collect::<rusqlite::Result<_>>()
             .map_err(|error| {
                 if let rusqlite::Error::FromSqlConversionFailure(index, ty, source) = error {

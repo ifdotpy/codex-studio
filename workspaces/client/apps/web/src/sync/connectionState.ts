@@ -32,7 +32,11 @@ export const reconnectReasons: Record<ReconnectCause, string> = {
 };
 
 export type ConnectingActivity =
-  "stopped" | "preparing" | "waiting-owner" | "connecting" | "open";
+  | "stopped"
+  | "preparing"
+  | "waiting-owner"
+  | "connecting"
+  | "open";
 export type ReconnectingActivity = ConnectingActivity | "retry-scheduled";
 
 export type ConnectionState =
@@ -52,7 +56,12 @@ export type ConnectionState =
 
 /** Coarse health is the existing cross-tab wire representation. */
 export type ConnectionHealth =
-  "connecting" | "live" | "degraded" | "offline" | "paused" | "schema-mismatch";
+  | "connecting"
+  | "live"
+  | "degraded"
+  | "offline"
+  | "paused"
+  | "schema-mismatch";
 export type ConnectionActivity =
   | ReconnectingActivity
   /** The open stream waits for a local write that outlasted its deadline. */
