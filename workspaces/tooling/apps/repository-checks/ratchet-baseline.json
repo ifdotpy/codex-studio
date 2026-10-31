@@ -3384,10 +3384,6 @@
       "fingerprint": "550ac06d3398d0d7cac3adb12ba747a74c5214b0b13e2b289340e2d025c23806:0"
     },
     {
-      "file": "workspaces/client/apps/web/src/sync/resourceEvents.test.ts",
-      "fingerprint": "8fb58d8c21c7b7caa4638a04e14322c27ba9c34f91b6ed97884e6ea4a8d70f39:0"
-    },
-    {
       "file": "workspaces/client/apps/web/src/sync/subscriptions/entityData.test.ts",
       "fingerprint": "3bb98627034015a6c9c2681586705c9458f99c21aa24865f243f728b4aea1ed1:0"
     },
