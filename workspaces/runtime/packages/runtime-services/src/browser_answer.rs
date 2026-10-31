@@ -47,12 +47,11 @@ pub struct BrowserAnswerResult {
     pub replayed: bool,
 }
 
-pub struct BrowserAnswerContext<V> {
+pub struct BrowserAnswerContext {
     pub local_window: bool,
     pub guest: Arc<dyn crate::linux_vm_guest::GuestRpc>,
     pub local_forwarder: Option<Arc<crate::browser::BrowserForwarder>>,
     pub now: f64,
-    pub validate: V,
     /// Test provider origins that may use http (`browser_policy`). Production passes none.
     pub http_providers: std::collections::BTreeSet<String>,
 }
@@ -66,46 +65,41 @@ pub async fn is_host_source(store: &RuntimeStore, id: String) -> Result<bool, Br
     let Some(raw) = raw else {
         return Ok(false);
     };
-    let record: Value = serde_json::from_str(&raw)
+    let record: studio_runtime_store::RequestRecord = serde_json::from_str(&raw)
         .map_err(|_| BrowserAnswerError::Invalid("The sign-in request is invalid"))?;
-    Ok(record
-        .get("params")
-        .and_then(crate::browser_cards::BrowserParams::read)
-        .and_then(|params| params.source)
-        .as_deref()
-        == Some("host"))
+    if record.method != studio_runtime_schema::request_record::RequestMethod::BrowserOpen {
+        return Ok(false);
+    }
+    let params = crate::browser_cards::BrowserParams::read(&record.params).ok_or(
+        BrowserAnswerError::Invalid("The sign-in request is invalid"),
+    )?;
+    Ok(params.source.as_deref() == Some("host"))
 }
 
 /// The guest owns the sign-in request. A stable request ID lets its durable
 /// receipt resolve an unknown transport outcome without delivering twice.
-pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
+pub async fn answer(
     store: &RuntimeStore,
     id: &str,
     data: &Value,
-    context: BrowserAnswerContext<V>,
+    context: BrowserAnswerContext,
 ) -> Result<Option<BrowserAnswerResult>, BrowserAnswerError> {
     let BrowserAnswerContext {
         local_window,
         guest,
         local_forwarder,
         now,
-        validate,
         http_providers,
     } = context;
-    let validate = Arc::new(validate);
-    let validate_for_read = Arc::clone(&validate);
     let id_for_read = id.to_owned();
     let Some(record) = store
         .read_async("runtime-services/browser_answer", move |tx| {
-            load_optional(tx, &id_for_read, validate_for_read.as_ref())
+            load_optional(tx, &id_for_read)
         })
         .await?
     else {
         return Ok(None);
     };
-    if record.get("method").and_then(Value::as_str) != Some("browser/open") {
-        return Ok(None);
-    }
     let decision = data
         .get("decision")
         .and_then(Value::as_str)
@@ -120,7 +114,6 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
             PasteContext {
                 guest,
                 now,
-                validate,
                 http_providers,
             },
         )
@@ -134,15 +127,7 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
     let paste_mode =
         decision == "accept" && data.get("paste").and_then(Value::as_bool) == Some(true);
     let signature = crate::provider_callbacks::answer_signature(&json!({"decision":decision}));
-    let params_value = record.get("params").ok_or(BrowserAnswerError::Invalid(
-        "The sign-in request is invalid",
-    ))?;
-    let params = params_value.as_object().ok_or(BrowserAnswerError::Invalid(
-        "The sign-in request is invalid",
-    ))?;
-    let parsed = crate::browser_cards::BrowserParams::read(params_value).ok_or(
-        BrowserAnswerError::Invalid("The sign-in request is invalid"),
-    )?;
+    let parsed = &record.params;
     let bridge_id = parsed
         .bridge_id
         .as_deref()
@@ -153,9 +138,9 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
     let url = parsed.url.as_deref().ok_or(BrowserAnswerError::Invalid(
         "The sign-in request is invalid",
     ))?;
-    let has_redirect = params.get("redirect").is_some_and(Value::is_object);
-    if record.get("status").and_then(Value::as_str) == Some("pending")
-        && parsed.phase.as_deref() == Some(crate::browser_cards::WAITING)
+    let has_redirect = parsed.redirect.is_some();
+    if record.record.status == studio_runtime_schema::persistence::RequestCardStatus::Pending
+        && parsed.phase == Some(crate::browser_cards::BrowserPhase::Waiting)
     {
         if decision == "accept" {
             if paste_mode {
@@ -169,17 +154,17 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
             ));
         }
         let host = parsed.host.as_deref().unwrap_or_default().to_owned();
-        return cancel(store, id, bridge_id, &host, guest, now, validate)
+        return cancel(store, id, bridge_id, &host, guest, now)
             .await
             .map(Some);
     }
-    if let Some(previous) = record.get("answerSignature").and_then(Value::as_str) {
+    if let Some(previous) = record.record.answer_signature.as_deref() {
         if previous != signature {
             return Err(BrowserAnswerError::Conflict(
                 "This request already has a different answer",
             ));
         }
-        if record.get("status").and_then(Value::as_str) == Some("answered") {
+        if record.record.status == studio_runtime_schema::persistence::RequestCardStatus::Answered {
             return Ok(Some(BrowserAnswerResult {
                 response: if decision == "accept" && (local_window || (paste_mode && !has_redirect))
                 {
@@ -192,7 +177,7 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         }
         return Err(BrowserAnswerError::Unknown);
     }
-    if record.get("status").and_then(Value::as_str) != Some("pending") {
+    if record.record.status != studio_runtime_schema::persistence::RequestCardStatus::Pending {
         return Err(BrowserAnswerError::Invalid("Request is no longer pending"));
     }
     let remote = decision == "accept"
@@ -215,7 +200,7 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         && !paste_mode
         && parsed.source.as_deref() == Some("vm")
     {
-        if let Some(redirect) = params.get("redirect").filter(|value| value.is_object()) {
+        if let Some(redirect) = parsed.redirect.as_ref() {
             let forwarder = local_forwarder.ok_or(BrowserAnswerError::Unknown)?;
             let input = crate::browser::ForwardInput::new(
                 store
@@ -223,27 +208,9 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
                     .ok_or(BrowserAnswerError::Unknown)?,
                 bridge_id.to_owned(),
                 format!("local-browser-forward:{bridge_id}"),
-                redirect
-                    .get("host")
-                    .and_then(Value::as_str)
-                    .ok_or(BrowserAnswerError::Invalid(
-                        "The sign-in request is invalid",
-                    ))?
-                    .to_owned(),
-                redirect
-                    .get("port")
-                    .and_then(Value::as_u64)
-                    .and_then(|port| u16::try_from(port).ok())
-                    .ok_or(BrowserAnswerError::Invalid(
-                        "The sign-in request is invalid",
-                    ))?,
-                redirect
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .ok_or(BrowserAnswerError::Invalid(
-                        "The sign-in request is invalid",
-                    ))?
-                    .to_owned(),
+                redirect.host.clone(),
+                redirect.port,
+                redirect.path.clone(),
                 now + LOCAL_FORWARD_SECONDS as f64,
             );
             forwarder.open(input, now, None).await?;
@@ -278,9 +245,8 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
                 drop(forwarder.close(bridge_id).await);
             }
             let id = id.to_owned();
-            let validate = Arc::clone(&validate);
             store
-                .transaction_with_error(move |tx| expire(tx, &id, validate.as_ref()))
+                .transaction_with_error(move |tx| expire(tx, &id))
                 .await?;
             return Err(BrowserAnswerError::Stale);
         }
@@ -301,11 +267,14 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         let id = id.to_owned();
         store
             .transaction_with_error(move |tx| {
-                let mut record = load(tx, &id, validate.as_ref())?;
-                if record.get("status").and_then(Value::as_str) == Some("pending") {
-                    record["params"]["phase"] = json!(crate::browser_cards::WAITING);
-                    record["params"]["waiting"] = json!({"expiresAt": expires_at});
-                    put(tx, &id, &record, validate.as_ref())?;
+                let mut record = load(tx, &id)?;
+                if record.record.status
+                    == studio_runtime_schema::persistence::RequestCardStatus::Pending
+                {
+                    record.params.phase = Some(crate::browser_cards::BrowserPhase::Waiting);
+                    record.params.waiting =
+                        Some(crate::browser_cards::BrowserWaiting { expires_at });
+                    put(tx, &mut record)?;
                 }
                 Ok::<_, BrowserAnswerError>(())
             })
@@ -315,9 +284,7 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
             replayed: false,
         }));
     }
-    let forward = if remote
-        && let Some(redirect) = params.get("redirect").filter(|value| value.is_object())
-    {
+    let (forward, forward_state) = if remote && let Some(redirect) = parsed.redirect.as_ref() {
         let expires_at = answered
             .as_ref()
             .and_then(|value| value.pointer("/lease/expiresAt"))
@@ -329,51 +296,32 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         let server = store
             .local_server_id()?
             .ok_or(BrowserAnswerError::Unknown)?;
-        let redirect_host =
-            redirect
-                .get("host")
-                .and_then(Value::as_str)
-                .ok_or(BrowserAnswerError::Invalid(
-                    "The sign-in request is invalid",
-                ))?;
-        let redirect_port =
-            redirect
-                .get("port")
-                .and_then(Value::as_u64)
-                .ok_or(BrowserAnswerError::Invalid(
-                    "The sign-in request is invalid",
-                ))?;
-        let redirect_path =
-            redirect
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or(BrowserAnswerError::Invalid(
-                    "The sign-in request is invalid",
-                ))?;
+        let redirect_host = &redirect.host;
+        let redirect_port = redirect.port;
+        let redirect_path = &redirect.path;
         let forward_state = crate::browser_cards::BrowserForward {
             token_hash: Some(studio_runtime_store::sha256_hex(token.as_bytes())),
-            expires_at: json!(expires_at),
+            expires_at: Some(expires_at),
+            extra: Default::default(),
         };
-        Some(json!({
-            "server":server,
-            "bridgeId":bridge_id,
-            "host":redirect_host,
-            "port":redirect_port,
-            "path":redirect_path,
-            "expiresAt":expires_at,
-            "token":token,
-            "_forwardState":forward_state
-        }))
+        (
+            Some(json!({
+                "server":server,
+                "bridgeId":bridge_id,
+                "host":redirect_host,
+                "port":redirect_port,
+                "path":redirect_path,
+                "expiresAt":expires_at,
+                "token":token
+            })),
+            Some(forward_state),
+        )
     } else {
-        None
+        (None, None)
     };
     let id = id.to_owned();
     let signature = signature.to_owned();
     let decision = decision.to_owned();
-    let forward_state = forward
-        .as_ref()
-        .and_then(|value| value.get("_forwardState"))
-        .cloned();
     let decision_for_write = decision.clone();
     store
         .transaction_with_error(move |tx| {
@@ -384,16 +332,11 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
                 &decision_for_write,
                 forward_state.as_ref(),
                 now,
-                validate.as_ref(),
             )
         })
         .await?;
     let response = if let Some(forward) = forward {
-        let mut spec = forward;
-        spec.as_object_mut()
-            .expect("forward spec object")
-            .remove("_forwardState");
-        json!({"status":"answered","openUrl":url,"forward":spec})
+        json!({"status":"answered","openUrl":url,"forward":forward})
     } else if decision == "accept" {
         json!({"status":"answered","openUrl":url})
     } else {
@@ -408,65 +351,69 @@ pub async fn answer<V: Fn(&Value) -> bool + Send + Sync + 'static>(
 fn load(
     tx: &Transaction<'_>,
     id: &str,
-    validate: &impl Fn(&Value) -> bool,
-) -> Result<Value, BrowserAnswerError> {
-    load_optional(tx, id, validate)?.ok_or(BrowserAnswerError::Invalid("Unknown request"))
+) -> Result<crate::browser_cards::BrowserCard, BrowserAnswerError> {
+    load_optional(tx, id)?.ok_or(BrowserAnswerError::Invalid("Unknown request"))
 }
-
 fn load_optional(
     tx: &Transaction<'_>,
     id: &str,
-    validate: &impl Fn(&Value) -> bool,
-) -> Result<Option<Value>, BrowserAnswerError> {
-    let raw = QuestionsWriteRepository::request(tx, id)?
-        .ok_or(BrowserAnswerError::Invalid("Unknown request"));
-    let raw = match raw {
-        Ok(raw) => raw,
-        Err(_) => return Ok(None),
+) -> Result<Option<crate::browser_cards::BrowserCard>, BrowserAnswerError> {
+    let Some(raw) = QuestionsWriteRepository::request(tx, id)? else {
+        return Ok(None);
     };
-    let record: Value = serde_json::from_str(&raw)
+    let record: studio_runtime_store::RequestRecord = serde_json::from_str(&raw)
         .map_err(|_| BrowserAnswerError::Invalid("The sign-in request is invalid"))?;
-    if record.get("id").and_then(Value::as_str) != Some(id) || !validate(&record) {
+    if record.id != id {
         return Err(BrowserAnswerError::Invalid(
             "The sign-in request is invalid",
         ));
     }
-    Ok(Some(record))
+    if record.method != studio_runtime_schema::request_record::RequestMethod::BrowserOpen {
+        return Ok(None);
+    }
+    let params = crate::browser_cards::BrowserParams::read(&record.params).ok_or(
+        BrowserAnswerError::Invalid("The sign-in request is invalid"),
+    )?;
+    Ok(Some(crate::browser_cards::BrowserCard { record, params }))
 }
-
-fn expire(
+fn put(
     tx: &Transaction<'_>,
-    id: &str,
-    validate: &impl Fn(&Value) -> bool,
+    card: &mut crate::browser_cards::BrowserCard,
 ) -> Result<(), BrowserAnswerError> {
-    let mut record = load(tx, id, validate)?;
-    if record.get("status").and_then(Value::as_str) == Some("pending") {
-        record["status"] = json!("expired");
-        record["closeReason"] = json!("stale");
-        put(tx, id, &record, validate)?;
+    crate::browser_cards::put_request(tx, card)
+        .map_err(|_| BrowserAnswerError::Invalid("The sign-in request is invalid"))
+}
+fn expire(tx: &Transaction<'_>, id: &str) -> Result<(), BrowserAnswerError> {
+    let mut card = load(tx, id)?;
+    if card.record.status == studio_runtime_schema::persistence::RequestCardStatus::Pending {
+        card.record.status = studio_runtime_schema::persistence::RequestCardStatus::Expired;
+        card.record.close_reason = Some("stale".into());
+        put(tx, &mut card)?;
     }
     Ok(())
 }
-
-fn mark_answered(record: &mut Value, decision: &str, now: f64) {
-    record["answerSignature"] = json!(crate::provider_callbacks::answer_signature(
-        &json!({"decision":decision})
+fn mark_answered(
+    card: &mut crate::browser_cards::BrowserCard,
+    decision: studio_runtime_schema::request_record::RequestDecision,
+    now: f64,
+) {
+    card.record.answer_signature = Some(crate::provider_callbacks::answer_signature(
+        &json!({"decision":decision}),
     ));
-    record["answeredBy"] = json!("user");
-    record["answeredAt"] = json!(now);
-    record["decision"] = json!(decision);
-    record["deferred"] = json!(false);
+    card.record.answered_by = Some("user".into());
+    card.record.answered_at = Some(now);
+    card.record.decision = Some(decision);
+    card.record.deferred = Some(false);
 }
 
 /// Decline in the waiting phase: close the guest request; no result can pass.
-async fn cancel<V: Fn(&Value) -> bool + Send + Sync + 'static>(
+async fn cancel(
     store: &RuntimeStore,
     id: &str,
     bridge_id: &str,
     host: &str,
     guest: Arc<dyn crate::linux_vm_guest::GuestRpc>,
     now: f64,
-    validate: Arc<V>,
 ) -> Result<BrowserAnswerResult, BrowserAnswerError> {
     crate::browser_cards::close_guest(guest, bridge_id, "cancelled").await;
     let id = id.to_owned();
@@ -475,21 +422,22 @@ async fn cancel<V: Fn(&Value) -> bool + Send + Sync + 'static>(
     );
     store
         .transaction_with_error(move |tx| {
-            let mut record = load(tx, &id, validate.as_ref())?;
-            if record.get("status").and_then(Value::as_str) != Some("pending") {
+            let mut record = load(tx, &id)?;
+            if record.record.status
+                != studio_runtime_schema::persistence::RequestCardStatus::Pending
+            {
                 return Err(BrowserAnswerError::Invalid("Request is no longer pending"));
             }
-            record["status"] = json!("answered");
-            record["params"]["outcome"] = json!("cancelled");
-            mark_answered(&mut record, "decline", now);
-            put(tx, &id, &record, validate.as_ref())?;
-            if let Some(agent_id) = record.get("agent").and_then(Value::as_str)
-                && let Ok(agent) = crate::event_write::checked_agent(tx, agent_id)
-            {
-                let bridge_id = record
-                    .pointer("/params/bridgeId")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+            record.record.status = studio_runtime_schema::persistence::RequestCardStatus::Answered;
+            record.params.outcome = Some("cancelled".into());
+            mark_answered(
+                &mut record,
+                studio_runtime_schema::request_record::RequestDecision::Decline,
+                now,
+            );
+            put(tx, &mut record)?;
+            if let Ok(agent) = crate::event_write::checked_agent(tx, &record.record.agent) {
+                let bridge_id = record.params.bridge_id.as_deref().unwrap_or_default();
                 crate::event_write::enqueue_event(
                     tx,
                     &agent,
@@ -511,10 +459,9 @@ async fn cancel<V: Fn(&Value) -> bool + Send + Sync + 'static>(
     })
 }
 
-struct PasteContext<V> {
+struct PasteContext {
     guest: Arc<dyn crate::linux_vm_guest::GuestRpc>,
     now: f64,
-    validate: Arc<V>,
     http_providers: std::collections::BTreeSet<String>,
 }
 
@@ -541,33 +488,33 @@ fn relay_status(result: &Value) -> Option<u16> {
 
 /// Relay the address that the person pasted after a sign-in in paste mode, once
 /// (docs/vm-browser-bridge.md, section 6.3). Studio stores no pasted address.
-async fn paste<V: Fn(&Value) -> bool + Send + Sync + 'static>(
+async fn paste(
     store: &RuntimeStore,
     id: &str,
     text: &str,
-    context: PasteContext<V>,
+    context: PasteContext,
 ) -> Result<BrowserAnswerResult, BrowserAnswerError> {
     let PasteContext {
         guest,
         now,
-        validate,
         http_providers,
     } = context;
     let read_id = id.to_owned();
-    let read_validate = Arc::clone(&validate);
     let record = store
         .read_async("runtime-services/browser_answer_paste", move |tx| {
-            load(tx, &read_id, read_validate.as_ref())
+            load(tx, &read_id)
         })
         .await?;
-    let params = &record["params"];
-    let waiting = record.get("status").and_then(Value::as_str) == Some("pending")
-        && params.get("phase").and_then(Value::as_str) == Some(crate::browser_cards::WAITING);
+    let params = &record.params;
+    let waiting = record.record.status
+        == studio_runtime_schema::persistence::RequestCardStatus::Pending
+        && params.phase == Some(crate::browser_cards::BrowserPhase::Waiting);
     if !waiting {
-        if params.get("paste").is_some_and(|mark| !mark.is_null())
+        if params.paste.is_some()
             && matches!(
-                record.get("status").and_then(Value::as_str),
-                Some("answered" | "uncertain")
+                record.record.status,
+                studio_runtime_schema::persistence::RequestCardStatus::Answered
+                    | studio_runtime_schema::persistence::RequestCardStatus::Uncertain
             )
         {
             return Ok(BrowserAnswerResult {
@@ -579,55 +526,41 @@ async fn paste<V: Fn(&Value) -> bool + Send + Sync + 'static>(
             "This sign-in does not wait for a pasted address.".into(),
         ));
     }
-    let state = crate::browser_policy::provider(
-        params
-            .get("url")
-            .and_then(Value::as_str)
-            .unwrap_or_default(),
-        &http_providers,
-    )
-    .map_err(|error| BrowserAnswerError::Refused(error.0))?
-    .state;
-    let port = params
-        .pointer("/redirect/port")
-        .and_then(Value::as_u64)
-        .and_then(|port| u16::try_from(port).ok())
-        .ok_or(BrowserAnswerError::Invalid(
-            "The sign-in request is invalid",
-        ))?;
-    let path = params
-        .pointer("/redirect/path")
-        .and_then(Value::as_str)
-        .ok_or(BrowserAnswerError::Invalid(
-            "The sign-in request is invalid",
-        ))?;
+    let state =
+        crate::browser_policy::provider(params.url.as_deref().unwrap_or_default(), &http_providers)
+            .map_err(|error| BrowserAnswerError::Refused(error.0))?
+            .state;
+    let redirect = params.redirect.as_ref().ok_or(BrowserAnswerError::Invalid(
+        "The sign-in request is invalid",
+    ))?;
+    let port = redirect.port;
+    let path = redirect.path.as_str();
     let callback = crate::browser_policy::pasted(text, port, path, state.as_deref())
         .map_err(|error| BrowserAnswerError::Refused(error.0))?;
     let bridge_id = params
-        .get("bridgeId")
-        .and_then(Value::as_str)
+        .bridge_id
+        .as_deref()
         .ok_or(BrowserAnswerError::Invalid(
             "The sign-in request is invalid",
         ))?
         .to_owned();
     let mark_id = id.to_owned();
-    let mark_validate = Arc::clone(&validate);
     store
         .transaction_with_error(move |tx| {
-            let mut record = load(tx, &mark_id, mark_validate.as_ref())?;
-            let params = &record["params"];
-            if record.get("status").and_then(Value::as_str) != Some("pending")
-                || params.get("phase").and_then(Value::as_str)
-                    != Some(crate::browser_cards::WAITING)
-                || params.get("paste").is_some_and(|mark| !mark.is_null())
+            let mut record = load(tx, &mark_id)?;
+            let params = &record.params;
+            if record.record.status
+                != studio_runtime_schema::persistence::RequestCardStatus::Pending
+                || params.phase != Some(crate::browser_cards::BrowserPhase::Waiting)
+                || params.paste.is_some()
             {
                 return Err(BrowserAnswerError::Refused(
                     "Studio already sends a pasted address for this sign-in.".into(),
                 ));
             }
             // The mark comes before the relay: a second paste never sends a second code.
-            record["params"]["paste"] = json!({"at": now});
-            put(tx, &mark_id, &record, mark_validate.as_ref())
+            record.params.paste = Some(crate::browser_cards::BrowserPaste { at: now });
+            put(tx, &mut record)
         })
         .await?;
     let request_id = format!("browser-callback:{}", uuid::Uuid::new_v4().simple());
@@ -648,12 +581,12 @@ async fn paste<V: Fn(&Value) -> bool + Send + Sync + 'static>(
         let retry_id = id.to_owned();
         store
             .transaction_with_error(move |tx| {
-                let mut record = load(tx, &retry_id, validate.as_ref())?;
-                if record.get("status").and_then(Value::as_str) == Some("pending")
-                    && let Some(params) = record["params"].as_object_mut()
+                let mut record = load(tx, &retry_id)?;
+                if record.record.status
+                    == studio_runtime_schema::persistence::RequestCardStatus::Pending
                 {
-                    params.remove("paste");
-                    put(tx, &retry_id, &record, validate.as_ref())?;
+                    record.params.paste = None;
+                    put(tx, &mut record)?;
                 }
                 Ok::<_, BrowserAnswerError>(())
             })
@@ -689,21 +622,26 @@ async fn paste<V: Fn(&Value) -> bool + Send + Sync + 'static>(
     let final_id = id.to_owned();
     store
         .transaction_with_error(move |tx| {
-            let mut record = load(tx, &final_id, validate.as_ref())?;
-            record["params"]["outcome"] = json!(outcome);
-            record["params"]["outcomeHttp"] = json!(http_status);
+            let mut record = load(tx, &final_id)?;
+            record.params.outcome = Some(outcome.into());
+            record.params.outcome_http = http_status;
             if outcome == "expired" {
-                record["status"] = json!("expired");
-                record["closeReason"] = json!("stale");
+                record.record.status =
+                    studio_runtime_schema::persistence::RequestCardStatus::Expired;
+                record.record.close_reason = Some("stale".into());
             } else {
-                record["status"] = json!(if outcome == "unknown" {
-                    "uncertain"
+                record.record.status = if outcome == "unknown" {
+                    studio_runtime_schema::persistence::RequestCardStatus::Uncertain
                 } else {
-                    "answered"
-                });
-                mark_answered(&mut record, "answer", now);
+                    studio_runtime_schema::persistence::RequestCardStatus::Answered
+                };
+                mark_answered(
+                    &mut record,
+                    studio_runtime_schema::request_record::RequestDecision::Answer,
+                    now,
+                );
             }
-            put(tx, &final_id, &record, validate.as_ref())?;
+            put(tx, &mut record)?;
             crate::browser_cards::outcome_event(tx, &record, now);
             Ok::<_, BrowserAnswerError>(())
         })
@@ -731,12 +669,11 @@ fn finish(
     id: &str,
     signature: &str,
     decision: &str,
-    forward: Option<&Value>,
+    forward: Option<&crate::browser_cards::BrowserForward>,
     now: f64,
-    validate: &impl Fn(&Value) -> bool,
 ) -> Result<(), BrowserAnswerError> {
-    let mut record = load(tx, id, validate)?;
-    if let Some(previous) = record.get("answerSignature").and_then(Value::as_str) {
+    let mut card = load(tx, id)?;
+    if let Some(previous) = card.record.answer_signature.as_deref() {
         if previous != signature {
             return Err(BrowserAnswerError::Conflict(
                 "This request already has a different answer",
@@ -744,28 +681,27 @@ fn finish(
         }
         return Ok(());
     }
-    if record.get("status").and_then(Value::as_str) != Some("pending") {
+    if card.record.status != studio_runtime_schema::persistence::RequestCardStatus::Pending {
         return Err(BrowserAnswerError::Invalid("Request is no longer pending"));
     }
-    record["status"] = json!("answered");
-    record["answerSignature"] = json!(signature);
-    record["answeredBy"] = json!("user");
-    record["answeredAt"] = json!(now);
-    record["decision"] = json!(decision);
-    record["deferred"] = json!(false);
+    card.record.status = studio_runtime_schema::persistence::RequestCardStatus::Answered;
+    card.record.answer_signature = Some(signature.into());
+    card.record.answered_by = Some("user".into());
+    card.record.answered_at = Some(now);
+    card.record.decision = Some(
+        decision
+            .parse()
+            .map_err(|_| BrowserAnswerError::Invalid("Invalid decision"))?,
+    );
+    card.record.deferred = Some(false);
     if let Some(forward) = forward {
-        record["params"]["forward"] = forward.clone();
+        card.params.forward = Some(forward.clone());
     }
-    put(tx, id, &record, validate)?;
-    if decision == "decline"
-        && let Some(agent_id) = record.get("agent").and_then(Value::as_str)
-    {
-        let agent = crate::event_write::checked_agent(tx, agent_id)
+    put(tx, &mut card)?;
+    if decision == "decline" {
+        let agent = crate::event_write::checked_agent(tx, &card.record.agent)
             .map_err(|_| BrowserAnswerError::Invalid("Unknown request"))?;
-        let bridge_id = record
-            .pointer("/params/bridgeId")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let bridge_id = card.params.bridge_id.as_deref().unwrap_or_default();
         crate::event_write::enqueue_event(
             tx,
             &agent,
@@ -776,22 +712,6 @@ fn finish(
         )
         .map_err(|_| BrowserAnswerError::Invalid("The declined sign-in could not be recorded"))?;
     }
-    Ok(())
-}
-
-fn put(
-    tx: &Transaction<'_>,
-    id: &str,
-    record: &Value,
-    validate: &impl Fn(&Value) -> bool,
-) -> Result<(), BrowserAnswerError> {
-    if !validate(record) {
-        return Err(BrowserAnswerError::Invalid(
-            "The sign-in request is invalid",
-        ));
-    }
-    QuestionsWriteRepository::put_request(tx, id, &studio_runtime_store::python_json_utf8(record))?;
-    crate::browser_cards::publish_request(tx, id)?;
     Ok(())
 }
 
@@ -856,7 +776,7 @@ mod tests {
                         "id":request_id,
                         "agent":"browser-answer-agent",
                         "method":"browser/open",
-                        "status":"pending",
+                        "status":"pending", "createdAt":1.0,
                         "params":{"bridgeId":"0123456789abcdef0123456789abcdef","url":"https://login.example.test/"}
                     })),
                 )
@@ -867,30 +787,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_source_preserves_partial_and_duplicate_params() {
+    async fn host_source_rejects_invalid_and_duplicate_params() {
         let (_dir, store, id) = store_with_browser_request().await;
-        for (raw, expected) in [
-            ("null", false),
-            (r#"{"params":null}"#, false),
-            (r#"{"params":{"source":false}}"#, false),
-            (
-                r#"{"params":{"source":"vm","source":"host","unknown":{}}}"#,
-                true,
-            ),
+        for (params, expected) in [
+            ("null", None),
+            (r#"{"source":false}"#, None),
+            (r#"{"source":"vm","source":"host"}"#, None),
+            (r#"{"source":"host","unknown":{}}"#, Some(true)),
+            (r#"{"source":"vm"}"#, Some(false)),
         ] {
             let key = id.clone();
+            let raw = format!(
+                r#"{{"id":"browser-answer-test","agent":"agent","method":"browser/open","status":"pending","createdAt":1,"params":{params}}}"#
+            );
             store
                 .transaction_with(move |tx| {
-                    studio_runtime_store::QuestionsWriteRepository::put_request(tx, &key, raw)
+                    studio_runtime_store::QuestionsWriteRepository::put_request(tx, &key, &raw)
                 })
                 .await
                 .expect("request");
-            assert_eq!(
-                super::is_host_source(&store, id.clone())
-                    .await
-                    .expect("source"),
-                expected
-            );
+            let actual = super::is_host_source(&store, id.clone()).await.ok();
+            assert_eq!(actual, expected);
         }
     }
 
@@ -911,7 +828,6 @@ mod tests {
                 guest: guest.clone(),
                 local_forwarder: None,
                 now: 10.0,
-                validate: |_: &serde_json::Value| true,
                 http_providers: Default::default(),
             },
         )
@@ -929,7 +845,6 @@ mod tests {
                 guest: guest.clone(),
                 local_forwarder: None,
                 now: 11.0,
-                validate: |_: &serde_json::Value| true,
                 http_providers: Default::default(),
             },
         )
@@ -958,7 +873,6 @@ mod tests {
                     guest: guest.clone(),
                     local_forwarder: None,
                     now: 10.0,
-                    validate: |_: &serde_json::Value| true,
                     http_providers: Default::default(),
                 },
             )
@@ -989,7 +903,6 @@ mod tests {
                 guest: guest.clone(),
                 local_forwarder: None,
                 now: 11.0,
-                validate: |_: &serde_json::Value| true,
                 http_providers: Default::default(),
             },
         )
@@ -1026,7 +939,7 @@ mod tests {
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     [
                         "browser-answer-agent",
-                        &json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"browser-answer-agent","rootId":"browser-answer-agent",
+                        &json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"browser-answer-agent","rootId":"browser-answer-agent",
                                  "epoch":1,"status":"idle","autoWake":true})
                         .to_string(),
                     ],
@@ -1058,7 +971,6 @@ mod tests {
                 guest,
                 local_forwarder: None,
                 now: 10.0,
-                validate: |_: &serde_json::Value| true,
                 http_providers: Default::default(),
             },
         )

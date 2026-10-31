@@ -30,7 +30,6 @@ const MOVE_FIELDS: &[(&str, &[&str])] = &[
     ("runtime_annotations", &["rootId"]),
     ("runtime_complaints", &["leadId"]),
     ("runtime_event_meta", &["rootId", "leadId"]),
-    ("runtime_rules", &["rootId"]),
 ];
 
 /// Called only by the authenticated user HTTP route, never by model tools.
@@ -161,9 +160,19 @@ pub async fn convert(
                 if !fields.iter().any(|field|record[*field]==source) {continue;}
                 for field in *fields { if record[*field]==source {record[*field]=json!(target);} }
                 if *table=="runtime_complaints" && record.get("leadName").is_some() {record["leadName"]=dst.get("name").filter(|v|truthy(Some(v))).cloned().unwrap_or(json!(target));}
-                if *table=="runtime_rules" && record["agent"]==source {record["status"]=json!("paused");record["epoch"]=json!(src["epoch"].as_u64().unwrap_or(0).checked_add(1).ok_or(ProjectsError::Invalid("agent epoch exhausted"))?);record["error"]=json!("The lead became a subagent. Resume this watch explicitly.");}
                 put(db,table,&record)?;
             }
+        }
+        for mut rule in studio_runtime_store::Table::<studio_runtime_store::RuleRecord>::new(db).list()? {
+            if rule.root_id.as_deref() != Some(source.as_str()) { continue; }
+            rule.root_id = Some(target.clone());
+            if rule.agent == source {
+                let epoch = src["epoch"].as_i64().unwrap_or(0).checked_add(1).ok_or(ProjectsError::Invalid("agent epoch exhausted"))?;
+                rule.epoch = epoch.try_into().map_err(|_| ProjectsError::Invalid("agent epoch exhausted"))?;
+                rule.status = studio_runtime_schema::rule_record::RuleStatus::Paused;
+                rule.error = Some("The lead became a subagent. Resume this watch explicitly.".into());
+            }
+            studio_runtime_store::Table::new(db).put(&rule)?;
         }
         for mut room in affected {
             if room["rootId"]==source {

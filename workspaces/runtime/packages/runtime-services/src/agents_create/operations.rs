@@ -2,7 +2,7 @@
 use super::*;
 use crate::account_driver::{AccountDriver, AccountDriverError, AccountStatus};
 use crate::account_policy::AccountPolicyState;
-use crate::event_write::{python_json, python_strip, truthy};
+use crate::event_write::{python_strip, truthy};
 use crate::host_worker_create::{AccountIdentity, ExecutionSettings};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -124,42 +124,73 @@ struct SettingsReply {
 }
 
 fn next_turn_signature(request: &Conversation, request_id: &str) -> String {
-    let mut body = json!({
-        "operation":AgentMutation::NextTurn.operation(), "agent":request.id, "id":request.id,
-        "next_turn":true, "request_id":request_id,
-    });
-    for (field, value) in [
-        ("model", request.model.as_ref().map(|value| json!(value))),
-        ("effort", request.effort.wire_value()),
-        (
-            "fast_mode",
-            request.fast_mode.as_ref().map(|value| json!(value)),
-        ),
-        (
-            "daybreak_enabled",
-            request.daybreak_enabled.value().map(|value| json!(value)),
-        ),
-        (
-            "expected_account_key",
-            request.expected_account.as_ref().map(|value| json!(value)),
-        ),
-    ] {
-        if let Some(value) = value {
-            body[field] = value;
-        }
+    #[derive(Serialize)]
+    struct Signature<'a> {
+        operation: &'static str,
+        agent: &'a str,
+        id: &'a str,
+        next_turn: bool,
+        request_id: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<&'a str>,
+        #[serde(skip_serializing_if = "NullableSetting::is_missing")]
+        effort: &'a NullableSetting<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        fast_mode: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        daybreak_enabled: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_account_key: Option<&'a str>,
     }
-    crate::event_write::request_signature(&body)
+    typed_signature(&Signature {
+        operation: AgentMutation::NextTurn.operation(),
+        agent: &request.id,
+        id: &request.id,
+        next_turn: true,
+        request_id,
+        model: request.model.as_deref(),
+        effort: &request.effort,
+        fast_mode: request.fast_mode,
+        daybreak_enabled: request.daybreak_enabled.value().copied(),
+        expected_account_key: request.expected_account.as_deref(),
+    })
 }
 
 fn permissions_signature(request: &Conversation) -> String {
-    crate::event_write::request_signature(&json!({
-        "operation":AgentMutation::Permissions.operation(), "agent":request.id,
-        "yolo":request.yolo_mode, "account":request.expected_account,
-        "cwd":request.cwd, "model":request.model,
-        "effort":[request.effort.is_present(), request.effort.wire_value()],
-        "fastMode":request.fast_mode, "daybreak":request.daybreak_enabled.value(),
-        "excluded":request.excluded,
-    }))
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Signature<'a> {
+        operation: &'static str,
+        agent: &'a str,
+        yolo: Option<bool>,
+        account: Option<&'a str>,
+        cwd: Option<&'a str>,
+        model: Option<&'a str>,
+        effort: (bool, Option<&'a str>),
+        fast_mode: Option<bool>,
+        daybreak: Option<bool>,
+        excluded: Option<&'a [String]>,
+    }
+    typed_signature(&Signature {
+        operation: AgentMutation::Permissions.operation(),
+        agent: &request.id,
+        yolo: request.yolo_mode,
+        account: request.expected_account.as_deref(),
+        cwd: request.cwd.as_deref(),
+        model: request.model.as_deref(),
+        effort: (
+            request.effort.is_present(),
+            request.effort.value().map(String::as_str),
+        ),
+        fast_mode: request.fast_mode,
+        daybreak: request.daybreak_enabled.value().copied(),
+        excluded: request.excluded.as_deref(),
+    })
+}
+
+fn typed_signature(body: &impl Serialize) -> String {
+    let body = serde_json::to_vec(body).expect("signature fields are serializable");
+    data_encoding::HEXLOWER.encode(&Sha256::digest(body))
 }
 
 /// A nullable setting retains wire presence without permitting contradictory flags.
@@ -181,8 +212,11 @@ impl<T> From<Option<Option<T>>> for NullableSetting<T> {
 }
 
 impl<T> NullableSetting<T> {
+    fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
     fn is_present(&self) -> bool {
-        !matches!(self, Self::Missing)
+        !self.is_missing()
     }
     fn value(&self) -> Option<&T> {
         match self {
@@ -190,15 +224,11 @@ impl<T> NullableSetting<T> {
             Self::Missing | Self::Null => None,
         }
     }
-    fn wire_value(&self) -> Option<Value>
-    where
-        T: Serialize,
-    {
-        match self {
-            Self::Missing => None,
-            Self::Null => Some(Value::Null),
-            Self::Value(value) => Some(json!(value)),
-        }
+}
+
+impl<T: Serialize> Serialize for NullableSetting<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.value().serialize(serializer)
     }
 }
 
@@ -520,44 +550,31 @@ async fn prepare_new_agent_admission(
     // Python resolves the parent delegation/profile before deciding whether a
     // catalog is needed (`codex_runtime.py:4853-4888`). A profile contributes
     // only non-null model/effort values that the request did not override.
-    let validate = std::sync::Arc::clone(&context.validate);
     let profile_id = request.profile.clone().filter(|id| !id.is_empty());
     let profile = context
         .store
         .read_async::<_, OperationError>("runtime-services/agents_create/read", move |read| {
             profile_id
                 .map(|id| {
-                    load_record(
-                        read,
-                        "runtime_profiles",
-                        "ProfileRecord",
-                        &id,
-                        &|schema, value| validate(schema, value),
-                    )?
-                    .ok_or(OperationError::Invalid("Unknown worker profile"))
+                    load_profile(read, &id)?
+                        .ok_or(OperationError::Invalid("Unknown worker profile"))
                 })
                 .transpose()
         })
         .await?;
     let explicit = request.intent.as_object();
-    let profile_model_value = profile
-        .as_ref()
-        .and_then(|profile| profile.get("model"))
-        .filter(|value| !value.is_null());
-    let profile_model = profile_model_value.and_then(Value::as_str);
-    let profile_effort = profile
-        .as_ref()
-        .and_then(|profile| profile.get("effort"))
-        .filter(|value| !value.is_null());
+    let profile_model = profile.as_ref().map(|profile| profile.model.as_str());
     let model = explicit
         .and_then(|body| body.get("model"))
         .and_then(Value::as_str)
         .or(profile_model)
         .map(str::to_owned);
     let profile_supplies_model =
-        explicit.is_none_or(|body| !body.contains_key("model")) && profile_model_value.is_some();
-    let profile_supplies_effort =
-        explicit.is_none_or(|body| !body.contains_key("effort")) && profile_effort.is_some();
+        explicit.is_none_or(|body| !body.contains_key("model")) && profile.is_some();
+    let profile_supplies_effort = explicit.is_none_or(|body| !body.contains_key("effort"))
+        && profile
+            .as_ref()
+            .is_some_and(|profile| profile.effort.is_some());
     // Python's `needs_catalog` is based on the merged data keys, not on the
     // mere presence of `profile_id` (`codex_runtime.py:4875-4888`).
     let needs_catalog = agent_needs_catalog(
@@ -602,19 +619,30 @@ fn agent_needs_catalog(
         || profile_supplies_effort
 }
 
-fn merge_profile_catalog_fields(intent: &mut Value, original: &Value, profile: &Value) -> bool {
-    let mut needs_catalog = false;
-    for field in ["model", "effort"] {
-        let supplied = !original
-            .as_object()
-            .is_some_and(|body| body.contains_key(field))
-            && profile.get(field).is_some_and(|value| !value.is_null());
-        if supplied {
-            intent[field] = profile[field].clone();
-            needs_catalog = true;
-        }
+fn merge_profile_catalog_fields(
+    intent: &mut Value,
+    original: &Value,
+    profile: &studio_runtime_store::ProfileRecord,
+) -> bool {
+    let fields = original.as_object();
+    let model = fields.is_none_or(|body| !body.contains_key("model"));
+    let effort = fields.is_none_or(|body| !body.contains_key("effort")) && profile.effort.is_some();
+    if model {
+        intent["model"] = json!(profile.model);
     }
-    needs_catalog
+    if effort {
+        intent["effort"] = json!(profile.effort);
+    }
+    model || effort
+}
+
+fn load_profile(
+    connection: &Connection,
+    id: &str,
+) -> Result<Option<studio_runtime_store::ProfileRecord>, MutationError> {
+    studio_runtime_store::Table::<studio_runtime_store::ProfileRecord>::new(connection)
+        .get(&id.to_owned())
+        .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -661,7 +689,7 @@ mod agent_catalog_requirement_tests {
         // Python's `{profile fields, **data}` merge keeps both profile values
         // when the request omitted them (`codex_runtime.py:4859-4872`).
         let original = json!({"profile_id": "execution-profile"});
-        let profile = json!({"model": "gpt-6-luna", "effort": "high"});
+        let profile: studio_runtime_store::ProfileRecord = serde_json::from_str(r#"{"id":"p","name":"Profile","role":"reviewer","model":"gpt-6-luna","effort":"high","instructions":""}"#).unwrap();
         let mut effective = original.clone();
         assert!(merge_profile_catalog_fields(
             &mut effective,
@@ -750,14 +778,8 @@ async fn create(
             })?;
             let profile = profile_id
                 .map(|id| {
-                    load_record(
-                        read,
-                        "runtime_profiles",
-                        "ProfileRecord",
-                        &id,
-                        &|schema, value| read_validate(schema, value),
-                    )?
-                    .ok_or(OperationError::Invalid("Unknown worker profile"))
+                    load_profile(read, &id)?
+                        .ok_or(OperationError::Invalid("Unknown worker profile"))
                 })
                 .transpose()?;
             Ok((previous, profile))
@@ -765,10 +787,13 @@ async fn create(
         .await?;
     if let Some(profile) = &profile {
         if request.role.is_none() {
-            request.role = profile
-                .get("role")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
+            request.role = Some(
+                match profile.role {
+                    studio_runtime_store::ProfileRole::Reviewer => "reviewer",
+                    studio_runtime_store::ProfileRole::Implementer => "implementer",
+                }
+                .to_owned(),
+            );
         }
         request.catalog |= merge_profile_catalog_fields(&mut request.intent, &intent, profile);
     }
@@ -1055,7 +1080,7 @@ async fn create(
     record["cyberAccessProgram"] = json!(settings.cyber_access_program);
     record["profileId"] = json!(request.profile);
     if let Some(profile) = profile {
-        record["profileInstructions"] = profile["instructions"].clone();
+        record["profileInstructions"] = json!(profile.instructions);
     }
     if !draft {
         record["creationIntent"] = intent.clone();
@@ -1211,7 +1236,7 @@ async fn create_child(
     request: &Creation,
     id: &str,
     creation_intent: &Value,
-    profile: Option<&Value>,
+    profile: Option<&studio_runtime_store::ProfileRecord>,
     validate: PersistedRecordValidator,
 ) -> Result<Value, OperationError> {
     let parent_id = request.parent.as_deref().ok_or(OperationError::Internal)?;
@@ -1292,11 +1317,6 @@ async fn create_child(
         .ok_or(OperationError::Unavailable(
             "account-driver/managed-child-account",
         ))?;
-    let profile: Option<studio_runtime_store::ProfileRecord> = profile
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|_| OperationError::Internal)?;
     let account_load = context
         .store
         .read_async("runtime-services/agents_create/read", |read| {
@@ -1310,7 +1330,7 @@ async fn create_child(
             parent: &parent,
             root: &root,
             spec: creation_intent,
-            profile: profile.as_ref(),
+            profile,
             role,
             requested_account_key: request.account.as_deref(),
             account_load: &account_load,
@@ -1426,7 +1446,7 @@ async fn create_child(
     }
     record["creationIntent"] = creation_intent.clone();
     record["profileId"] = json!(request.profile);
-    if let Some(profile) = &profile {
+    if let Some(profile) = profile {
         record["profileInstructions"] = json!(profile.instructions);
     }
     record["provider"] = json!(provider);
@@ -1633,10 +1653,20 @@ pub async fn configure(
         if !SUBAGENT_CONCURRENCY.contains(&limit) {
             return Err(OperationError::Invalid(CONCURRENCY_REFUSAL));
         }
-        let signature = crate::event_write::request_signature(&json!({
-            "operation":AgentMutation::Concurrency.operation(),"agent":request.id,
-            "concurrency":limit,"expectedRevision":revision
-        }));
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Signature<'a> {
+            operation: &'static str,
+            agent: &'a str,
+            concurrency: i64,
+            expected_revision: i64,
+        }
+        let signature = typed_signature(&Signature {
+            operation: AgentMutation::Concurrency.operation(),
+            agent: &request.id,
+            concurrency: limit,
+            expected_revision: revision,
+        });
         let validate = std::sync::Arc::clone(&validate);
         return mutate(context, move |tx| {
             let validate = |schema: &str, value: &Value| validate(schema, value);
@@ -2426,11 +2456,18 @@ pub async fn rename_operation(
         replayed: false,
     })
 }
-fn rename_signature(id: &str, name: Option<&str>) -> String {
-    let body = python_json(
-        &json!({"chat": id, "name": name, "operation": AgentMutation::Rename.operation()}),
-    );
-    data_encoding::HEXLOWER.encode(&Sha256::digest(body.as_bytes()))
+pub(super) fn rename_signature(id: &str, name: Option<&str>) -> String {
+    #[derive(Serialize)]
+    struct Signature<'a> {
+        chat: &'a str,
+        name: Option<&'a str>,
+        operation: &'static str,
+    }
+    typed_signature(&Signature {
+        chat: id,
+        name,
+        operation: AgentMutation::Rename.operation(),
+    })
 }
 
 fn previous_lead(
@@ -2476,8 +2513,9 @@ fn account_snapshot(
 fn project_for_cwd(
     connection: &Connection,
     cwd: &str,
-    filter: fn(&Value) -> bool,
-) -> Result<Option<Value>, OperationError> {
+    filter: fn(&studio_runtime_schema::project_record::ProjectAccountPreference) -> bool,
+) -> Result<Option<studio_runtime_schema::project_record::ProjectAccountPreference>, OperationError>
+{
     let mut statement = connection
         .prepare("SELECT id,record FROM runtime_projects")
         .map_err(|_| OperationError::Internal)?;
@@ -2486,35 +2524,29 @@ fn project_for_cwd(
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|_| OperationError::Internal)?;
-    let mut selected: Option<(usize, Value)> = None;
+    let mut selected: Option<(
+        usize,
+        studio_runtime_schema::project_record::ProjectAccountPreference,
+    )> = None;
     for row in rows {
         let (id, raw) = row.map_err(|_| OperationError::Internal)?;
         let invalid = || MutationError::InvalidStoredObject {
             table: "runtime_projects",
             id: id.clone(),
         };
-        let record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-        if !record.is_object() || record.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+        let record: studio_runtime_schema::project_record::ProjectRecord =
+            serde_json::from_str(&raw).map_err(|_| invalid())?;
+        if record.id != id {
             return Err(invalid().into());
         }
-        let project_path = record
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(invalid)?;
-        if !matches!(
-            record.get("accountKey"),
-            None | Some(Value::Null | Value::String(_))
-        ) {
-            return Err(invalid().into());
-        }
-        let path = PathBuf::from(project_path);
-        if PathBuf::from(cwd).starts_with(&path) && filter(&record) {
+        let path = PathBuf::from(&record.path);
+        if PathBuf::from(cwd).starts_with(&path) && filter(&record.preference) {
             let depth = path.components().count();
             if selected
                 .as_ref()
                 .is_none_or(|(old_depth, _)| depth > *old_depth)
             {
-                selected = Some((depth, record));
+                selected = Some((depth, record.preference));
             }
         }
     }
@@ -2540,16 +2572,10 @@ async fn account_key(
         .read_async::<_, OperationError>(
             "runtime-services/agents_create/account_key",
             move |connection| {
-                let project = project_for_cwd(connection, &cwd, |record| {
-                    record.get("accountKey").and_then(Value::as_str).is_some()
-                })?;
+                let project =
+                    project_for_cwd(connection, &cwd, |record| record.account_key.is_some())?;
                 Ok(project
-                    .and_then(|record| {
-                        record
-                            .get("accountKey")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    })
+                    .and_then(|record| record.account_key)
                     .unwrap_or(default))
             },
         )
@@ -3079,7 +3105,7 @@ fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> Stri
     if let Some(cwd) = cwd {
         settings["cwd"] = json!(cwd);
     }
-    python_json(&settings)
+    serde_json::to_string(&settings).expect("creation settings are serializable")
 }
 
 fn reusable_previous_workspace(prior: &Value, _workspace: &str, _cwd: &str) -> bool {
@@ -3171,52 +3197,58 @@ mod tests {
     use super::*;
     use crate::host_worker_create::CreationCatalog as _;
 
+    #[tokio::test]
+    async fn profile_admission_refuses_a_malformed_stored_profile() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_profiles(id,record) VALUES(?1,?2)", ("profile", r#"{"id":"profile","name":"Bad","role":"reviewer","model":null,"effort":null,"instructions":""}"#))?;
+            Ok(())
+        }).await.unwrap();
+        let context = Context {
+            store,
+            accounts: None,
+            driver: None,
+            catalog: None,
+            managed_creation_environment: None,
+            validate: std::sync::Arc::new(|_, _| true),
+        };
+        let request = Creation {
+            parent: Some("root".into()),
+            profile: Some("profile".into()),
+            intent: json!({}),
+            ..Creation::default()
+        };
+        assert!(
+            prepare_new_agent_admission(&context, &request)
+                .await
+                .is_err()
+        );
+    }
+
     #[test]
-    fn conversation_signatures_preserve_nullable_setting_identity() {
-        for effort in [None, Some(None), Some(Some("high".to_owned()))] {
-            for daybreak in [None, Some(None), Some(Some(true))] {
-                let request = Conversation {
-                    id: "agent".into(),
-                    expected_account: Some("account".into()),
-                    excluded: None,
-                    cwd: None,
-                    yolo_mode: Some(true),
-                    model: None,
-                    effort: effort.clone().into(),
-                    fast_mode: None,
-                    daybreak_enabled: daybreak.into(),
-                    next_turn: Some(Some(true)),
-                    request_id: Some(Some("request".into())),
-                    mode_settings: false,
-                    mode_limit: None,
-                    mode_revision: None,
-                    mode_request_id: None,
-                    worker_settings: false,
-                    worker_defaults: None,
-                    review_defaults: None,
-                    non_defaults: true,
-                };
-                let expected_permissions = json!({
-                    "operation": AgentMutation::Permissions.operation(), "agent":"agent",
-                    "yolo":true, "account":"account", "cwd":null, "model":null,
-                    "effort":[effort.is_some(), effort], "fastMode":null, "daybreak":daybreak.flatten(), "excluded":null,
-                });
-                assert_eq!(
-                    permissions_signature(&request),
-                    crate::event_write::request_signature(&expected_permissions)
-                );
-                let mut expected_next = json!({"operation":AgentMutation::NextTurn.operation(), "agent":"agent", "id":"agent", "next_turn":true, "request_id":"request", "expected_account_key":"account"});
-                if let Some(value) = effort.as_ref() {
-                    expected_next["effort"] = json!(value);
-                }
-                if let Some(value) = daybreak.flatten() {
-                    expected_next["daybreak_enabled"] = json!(value);
-                }
-                assert_eq!(
-                    next_turn_signature(&request, "request"),
-                    crate::event_write::request_signature(&expected_next)
-                );
-            }
+    fn project_selection_rejects_ambiguous_and_malformed_records() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute(
+                "CREATE TABLE runtime_projects(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+        for raw in [
+            r#"{"id":"project","path":"/project","peerTeams":[],"accountKey":"one","accountKey":"two"}"#,
+            r#"{"id":"project","path":"/project","peerTeams":[],"accountGroups":["team",42]}"#,
+        ] {
+            connection
+                .execute("DELETE FROM runtime_projects", [])
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                    ("project", raw),
+                )
+                .unwrap();
+            assert!(project_for_cwd(&connection, "/project/child", |_| true).is_err());
         }
     }
 
@@ -3249,7 +3281,7 @@ mod tests {
                 studio_runtime_store::receipt_schema::create(tx)?;
                 AgentRepository::put(
                     tx,
-                    &AgentRecord::from_value(json!({
+                    &AgentRecord::from_value(json!({"compactions":0,
                         "provider":"codex", "id":"lead", "rootId":"lead", "epoch":0,
                         "status":"idle", "autoWake":true, "isLead":true, "accountKey":"default",
                         "cwd":cwd, "model":"first", "yoloMode":true,
@@ -3368,7 +3400,7 @@ mod tests {
                 studio_runtime_store::receipt_schema::create(tx)?;
                 AgentRepository::put(
                     tx,
-                    &AgentRecord::from_value(json!({"accountKey":"default",
+                    &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
                         "provider":"codex", "id":"lead", "rootId":"lead", "epoch":0,
                         "status":"idle", "autoWake":true, "isLead":true, "concurrency":1,
                         "maxAgents":8, "subagentConcurrencyVersion":2, "agentModeRevision":0
@@ -4350,7 +4382,8 @@ mod tests {
                         json!({
                             "id": project_path_for_write,
                             "path": project_path_for_write,
-                            "accountKey": "project-account"
+                            "accountKey": "project-account",
+                            "peerTeams": []
                         })
                         .to_string()
                     ],
@@ -4425,7 +4458,8 @@ mod tests {
                             "id": write_path,
                             "path": write_path,
                             "accountKey": "codex-work",
-                            "accountGroups": ["work", "own"]
+                            "accountGroups": ["work", "own"],
+                            "peerTeams": []
                         })
                         .to_string()
                     ],

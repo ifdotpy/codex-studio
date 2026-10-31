@@ -55,7 +55,6 @@ pub(super) fn claim(
     else {
         return Ok(None);
     };
-    let field = |key: &str| claimed.agent.extra.get(key).and_then(Value::as_str);
     let intent = TurnIntent {
         agent_id: agent_id.into(),
         epoch,
@@ -66,8 +65,8 @@ pub(super) fn claim(
         )
         .map_err(|_| StoreError::RecordContract("agent provider"))?,
         thread_id: Some(claimed.thread_id.clone()),
-        cwd: field("cwd").map(str::to_owned),
-        model: field("model").map(str::to_owned),
+        cwd: claimed.agent.cwd.clone(),
+        model: claimed.agent.model.clone(),
         events: claimed
             .events
             .iter()

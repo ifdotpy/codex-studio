@@ -603,7 +603,7 @@ pub(crate) fn settle_terminal_in_transaction(
     )?;
     if result {
         if agent.as_ref().is_some_and(|record| {
-            record.extra.get("workspaceMode").and_then(Value::as_str) == Some("layr-native")
+            record.workspace_mode == Some(studio_runtime_schema::records::WorkspaceMode::LayrNative)
                 && record.extra.get("layrReady").and_then(Value::as_bool) == Some(true)
         }) {
             crate::layr_native::stage_turn_save(transaction, &identity.agent_id, turn_id)?;
@@ -805,19 +805,18 @@ pub(crate) fn claim_selected_event_in_transaction(
     if let Some(reason) = claimed.refusal_reason {
         return Err(SchedulerError::PolicyRefused(reason));
     }
-    let field = |key| claimed.agent.extra.get(key).and_then(Value::as_str);
     let intent = TurnIntent {
         agent_id: agent_id.to_owned(),
         epoch,
         attempt_id: attempt_id.to_owned(),
         account_key: claimed.agent.account_key.clone(),
-        provider: studio_runtime_providers::ProviderKind::of_field(
-            claimed.agent.extra.get("provider"),
-        )
-        .map_err(|_| StoreError::RecordContract("agent provider"))?,
+        provider: claimed
+            .agent
+            .provider
+            .ok_or(StoreError::RecordContract("agent provider"))?,
         thread_id: claimed.agent.thread_id.clone(),
-        cwd: field("cwd").map(str::to_owned),
-        model: field("model").map(str::to_owned),
+        cwd: claimed.agent.cwd.clone(),
+        model: claimed.agent.model.clone(),
         events: claimed
             .events
             .iter()
@@ -867,19 +866,18 @@ fn claim_intent_selected(
     if let Some(reason) = claimed.refusal_reason {
         return Err(SchedulerError::PolicyRefused(reason));
     }
-    let field = |key| claimed.agent.extra.get(key).and_then(Value::as_str);
     let intent = TurnIntent {
         agent_id: agent_id.to_owned(),
         epoch,
         attempt_id: attempt_id.to_owned(),
         account_key: claimed.agent.account_key.clone(),
-        provider: studio_runtime_providers::ProviderKind::of_field(
-            claimed.agent.extra.get("provider"),
-        )
-        .map_err(|_| StoreError::RecordContract("agent provider"))?,
+        provider: claimed
+            .agent
+            .provider
+            .ok_or(StoreError::RecordContract("agent provider"))?,
         thread_id: claimed.agent.thread_id.clone(),
-        cwd: field("cwd").map(str::to_owned),
-        model: field("model").map(str::to_owned),
+        cwd: claimed.agent.cwd.clone(),
+        model: claimed.agent.model.clone(),
         events: claimed
             .events
             .iter()
@@ -1011,7 +1009,7 @@ mod invalid_record_recovery_tests {
             .transaction(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES('bad',?1)",
-                    [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                    [json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"bad", "rootId":17, "epoch":1, "status":"running",
                         "autoWake":true, "inFlight":true,
                         "startAttempt":{"id":"attempt","epoch":1,"submitted":true,"events":[]}
@@ -1033,7 +1031,7 @@ mod invalid_record_recovery_tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES('healthy',?1)",
                     [
-                        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                        json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"healthy", "rootId":"healthy", "epoch":1,
                             "status":"running", "autoWake":true, "inFlight":true,
                             "startAttempt":{"id":"live-attempt","submitted":true,
@@ -1087,6 +1085,13 @@ mod child_turn_parent_tests {
 
     const TURN: &str = "turn-1";
 
+    #[tokio::test]
+    async fn claim_intent_keeps_typed_cwd_and_model() {
+        let (_directory, _store, intent) = seeded("codex").await;
+        assert_eq!(intent.cwd.as_deref(), Some("/work"));
+        assert_eq!(intent.model.as_deref(), Some("model"));
+    }
+
     async fn seeded(provider: &str) -> (tempfile::TempDir, RuntimeStore, TurnIntent) {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = RuntimeStore::open(Some(directory.path()))
@@ -1096,10 +1101,10 @@ mod child_turn_parent_tests {
         store
             .transaction(move |tx| {
                 for record in [
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"completed",
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"completed",
                         "isLead":true,"autoWake":true,"name":"Lead","cwd":"/work",
                         "concurrency":4}),
-                    json!({"id":"child","rootId":"lead","parentId":"lead","epoch":1,
+                    json!({"compactions":0,"id":"child","rootId":"lead","parentId":"lead","epoch":1,
                         "status":"queued","autoWake":true,"name":"Worker","cwd":"/work",
                         "branch":"work","provider":provider,"accountKey":"default",
                         "threadId":"thread","model":"model","lastAnswer":"done"}),
@@ -1201,13 +1206,13 @@ mod child_turn_parent_tests {
                     for key in ["first", "second"] {
                         let monitor = crate::monitor_policy::create_record(
                             &actor.value(),
-                            &json!({"command":"true"}),
+                            &serde::Deserialize::deserialize(&json!({"command":"true"})).unwrap(),
                             key,
                             &log_root,
                             2.0,
                         )
                         .expect("monitor admission");
-                        studio_runtime_store::monitor_runtime::put(tx, monitor)?;
+                        studio_runtime_store::monitor_runtime::put(tx, &monitor)?;
                     }
                     Ok(())
                 })
@@ -1261,13 +1266,13 @@ mod child_turn_parent_tests {
                         AgentRepository::get(tx, &AgentId::from("child"))?.expect("child");
                     let monitor = crate::monitor_policy::create_record(
                         &agent.value(),
-                        &json!({"command":"true"}),
+                        &serde::Deserialize::deserialize(&json!({"command":"true"})).unwrap(),
                         "recovery-monitor",
                         &log_root,
                         2.0,
                     )
                     .expect("monitor");
-                    studio_runtime_store::monitor_runtime::put(tx, monitor)?;
+                    studio_runtime_store::monitor_runtime::put(tx, &monitor)?;
                     agent.status = AgentStatus::Completed;
                     agent.turn_id = None;
                     agent.in_flight = Some(false);
@@ -1829,7 +1834,7 @@ mod child_result_coalesce_tests {
         let provider = provider.to_owned();
         store
             .transaction(move |tx| {
-                let lead = json!({"id":"lead","rootId":"lead","epoch":1,"status":"completed",
+                let lead = json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,"status":"completed",
                     "isLead":true,"autoWake":true,"name":"Lead","cwd":"/work",
                     "provider":provider,"accountKey":"default","threadId":"lead-thread"});
                 AgentRepository::put(
@@ -1837,7 +1842,7 @@ mod child_result_coalesce_tests {
                     &studio_runtime_store::AgentRecord::from_value(lead).expect("lead"),
                 )?;
                 for id in CHILDREN {
-                    let child = json!({"id":id,"rootId":"lead","parentId":"lead","epoch":1,
+                    let child = json!({"compactions":0,"id":id,"rootId":"lead","parentId":"lead","epoch":1,
                         "status":"queued","autoWake":true,"name":id,"cwd":"/work",
                         "provider":provider,"accountKey":"default",
                         "threadId":format!("thread-{id}"),"lastAnswer":format!("{id} done")});

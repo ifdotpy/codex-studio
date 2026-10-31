@@ -192,7 +192,7 @@ pub(crate) fn operation_note(operation: &str) -> String {
 /// tool request ID, used when the caller supplies no `request_id`.
 pub(crate) fn guest_request(
     actor_id: &str,
-    actor_cwd: Option<&Value>,
+    actor_cwd: Option<&str>,
     args: &Value,
     request_id: &str,
 ) -> Result<GuestRequest, String> {
@@ -244,8 +244,8 @@ pub(crate) fn guest_request(
         params.insert(
             "cwd".into(),
             args.get("cwd")
-                .or(actor_cwd)
                 .cloned()
+                .or_else(|| actor_cwd.map(|cwd| json!(cwd)))
                 .unwrap_or(Value::Null),
         );
         params.insert("timeoutSeconds".into(), timeout);
@@ -305,7 +305,7 @@ pub(crate) async fn run(
     {
         return refused(VM_ONLY_REFUSAL.into());
     }
-    let request = match guest_request(&record.id.0, record.extra.get("cwd"), args, request_id) {
+    let request = match guest_request(&record.id.0, record.cwd.as_deref(), args, request_id) {
         Ok(request) => request,
         Err(message) => return refused(message),
     };

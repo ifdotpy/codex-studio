@@ -2,6 +2,17 @@ use serde_json::{Value, json};
 use std::path::Path;
 use studio_runtime_store::{AgentRecord, AgentRepository, MonitorRecord, RuntimeStore, Table};
 
+pub fn monitor(root: &Path) -> MonitorRecord {
+    let mut record: MonitorRecord = serde_json::from_str(r#"{"id":"f8fc5c50-e4e4-50bc-8ff5-885105058c9d","agent":"agent","epoch":2,"turnId":null,"requestId":"monitor-corpus","command":"printf marker","cwd":"/","timeout_ms":3600000,"stallTimeoutSeconds":1800,"livenessCommand":"","activityAt":2000.0,"activityGeneration":0,"stallWakeGeneration":-1,"wakeOn":"exit","successExitCodes":[0,2],"outputPatterns":[],"outputEventSequence":0,"outputEventCount":0,"outputEventIds":[],"status":"running","created":2000.0,"tail":"","bytes":0,"interactive":false,"log":"/monitor.log","operation":{"agent":"agent","epoch":2,"accountKey":"default","connectionId":"connection"},"cancelRequested":false}"#).expect("monitor fixture");
+    record.cwd = root.to_string_lossy().into_owned();
+    record.log = root
+        .join("monitor-logs")
+        .join(format!("{}.log", record.id))
+        .to_string_lossy()
+        .into_owned();
+    record
+}
+
 /// The monitor cases the recovery witnesses start from: one running command
 /// of agent `agent`, and the exit event its successful finish must queue.
 pub fn corpus(root: &Path) -> Vec<Value> {
@@ -16,9 +27,9 @@ pub fn corpus(root: &Path) -> Vec<Value> {
         "livenessCommand":"","activityAt":2000.0,"activityGeneration":0,"stallWakeGeneration":-1,
         "wakeOn":"exit","successExitCodes":[0,2],"outputPatterns":[],"outputEventSequence":0,
         "outputEventCount":0,"outputEventIds":[],"status":"running","created":2000.0,
-        "exitCode":null,"tail":"","bytes":0,"interactive":false,"ruleId":null,"log":log,
+        "tail":"","bytes":0,"interactive":false,"log":log,
         "operation":operation,"cancelRequested":false});
-    let actor = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":2,"autoWake":true,"status":"idle",
+    let actor = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":2,"autoWake":true,"status":"idle",
         "cwd":cwd,"accountKey":"default"});
     let events = json!([{"id":format!("monitor:{id}"),"agent":"agent","kind":"monitor_exit",
         "text":{"id":id,"command":"printf marker","status":"completed","exitCode":0,"error":null,
@@ -28,7 +39,6 @@ pub fn corpus(root: &Path) -> Vec<Value> {
     after["status"] = json!("completed");
     after["exitCode"] = json!(0);
     after["outputUtf8Pending"] = json!({});
-    after["error"] = Value::Null;
     after["finished"] = json!(2000.0);
     after["configurationPending"] = json!(false);
     vec![
@@ -47,7 +57,7 @@ pub async fn store(root: &Path, name: &str) -> RuntimeStore {
         .expect("monitor fixture")
 }
 
-pub async fn seed(store: &RuntimeStore, case: &Value) {
+pub async fn seed(store: &RuntimeStore, case: &Value, monitor: MonitorRecord) {
     let case = case.clone();
     store
         .transaction(move |tx| {
@@ -58,8 +68,10 @@ pub async fn seed(store: &RuntimeStore, case: &Value) {
                     tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES(?,?,?,?,?,?,?,?,?)", rusqlite::params![e["id"].as_str(),e["agent"].as_str(),e["kind"].as_str(),serde_json::to_string(&e["text"]).expect("event"),e["status"].as_str(),e["created"].as_f64(),e["epoch"].as_i64(),e["turn_id"].as_str(),e["error"].as_str()])?;
                 }
             }
-            AgentRepository::put(tx, &AgentRecord::from_value(case["actor"].clone())?)?;
-            Table::new(tx).put(&MonitorRecord::from_value(case["before"].clone())?)
+            let mut actor = case["actor"].clone();
+            actor.as_object_mut().expect("actor fixture").entry("compactions").or_insert(json!(0));
+            AgentRepository::put(tx, &AgentRecord::from_value(actor)?)?;
+            Table::new(tx).put(&monitor)
         })
         .await
         .expect("monitor fixture");
@@ -83,4 +95,22 @@ pub fn tempdir() -> tempfile::TempDir {
             .expect("isolated monitor fixture root"),
         None => tempfile::tempdir().expect("monitor fixture"),
     }
+}
+
+/// Decode a legacy-shaped test input before invoking the typed snapshot.
+pub fn checked(
+    record: Value,
+    actor: Value,
+) -> Result<
+    studio_runtime_services::monitor_policy::MonitorSnapshot,
+    studio_runtime_services::monitor_policy::MonitorError,
+> {
+    let id = record["id"].as_str().unwrap_or("?").to_owned();
+    let typed = serde_path_to_error::deserialize(record).map_err(|error| {
+        studio_runtime_services::monitor_policy::MonitorError::InvalidStored {
+            id,
+            location: format!("/{}", error.path()),
+        }
+    })?;
+    studio_runtime_services::monitor_policy::MonitorSnapshot::checked_stored(&typed, actor)
 }

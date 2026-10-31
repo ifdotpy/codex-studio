@@ -1,9 +1,53 @@
 {
+  "$defs": {
+    "ComplaintRecipient": {
+      "enum": ["user", "lead"],
+      "type": "string"
+    },
+    "ComplaintResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "at": {
+          "format": "double",
+          "type": "number"
+        },
+        "author": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/ComplaintResponseStatus"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": ["at", "author", "id", "status", "text"],
+      "type": "object"
+    },
+    "ComplaintResponseStatus": {
+      "enum": ["in_progress", "resolved", "declined"],
+      "type": "string"
+    },
+    "ComplaintSource": {
+      "enum": ["message", "user_task"],
+      "type": "string"
+    },
+    "ComplaintStatus": {
+      "enum": ["open", "in_progress", "resolved", "declined"],
+      "type": "string"
+    }
+  },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "author": {
       "type": ["string", "null"]
+    },
+    "created": {
+      "type": ["number", "null"]
     },
     "id": {
       "type": "string"
@@ -11,14 +55,57 @@
     "leadId": {
       "type": ["string", "null"]
     },
+    "readAt": {
+      "type": ["number", "null"]
+    },
+    "recipient": {
+      "$ref": "#/$defs/ComplaintRecipient"
+    },
+    "responses": {
+      "items": {
+        "$ref": "#/$defs/ComplaintResponse"
+      },
+      "type": "array"
+    },
+    "sourceType": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ComplaintSource"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "status": {
-      "type": ["string", "null"]
+      "$ref": "#/$defs/ComplaintStatus"
     },
     "text": {
       "type": ["string", "null"]
+    },
+    "title": {
+      "type": ["string", "null"]
+    },
+    "updated": {
+      "type": ["number", "null"]
+    },
+    "version": {
+      "type": ["integer", "null"]
     }
   },
-  "required": ["id"],
+  "required": [
+    "id",
+    "author",
+    "leadId",
+    "status",
+    "text",
+    "created",
+    "readAt",
+    "recipient",
+    "responses",
+    "updated",
+    "version"
+  ],
   "title": "ComplaintRecord",
   "type": "object"
 }

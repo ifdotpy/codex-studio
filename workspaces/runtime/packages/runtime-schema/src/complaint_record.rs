@@ -1,51 +1,110 @@
 //! Typed persisted complaints and their generated schema.
 
-use crate::queue_command::Field;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ComplaintStatus {
+    Open,
+    InProgress,
+    Resolved,
+    Declined,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ComplaintRecipient {
+    User,
+    Lead,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ComplaintSource {
+    Message,
+    UserTask,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ComplaintResponse {
+    pub at: f64,
+    pub author: String,
+    pub id: String,
+    pub status: crate::complaints::ComplaintResponseStatus,
+    pub text: String,
+}
+
+fn required_nullable<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    Option::deserialize(d)
+}
+
+fn nullable_string(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type":["string","null"]})
+}
+fn nullable_number(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type":["number","null"]})
+}
+fn nullable_integer(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type":["integer","null"]})
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComplaintRecord {
-    id: String,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(with = "Option<String>")]
-    author: Field<String>,
-    #[serde(rename = "leadId", default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(with = "Option<String>")]
-    lead_id: Field<String>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(with = "Option<String>")]
-    status: Field<String>,
-    #[serde(default, skip_serializing_if = "Field::is_missing")]
-    #[schemars(with = "Option<String>")]
-    text: Field<String>,
-    #[serde(flatten)]
-    extra: BTreeMap<String, Value>,
+    pub id: String,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required, schema_with = "nullable_string")]
+    pub author: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required, schema_with = "nullable_string")]
+    pub lead_id: Option<String>,
+    pub status: ComplaintStatus,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required, schema_with = "nullable_string")]
+    pub text: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required, schema_with = "nullable_number")]
+    pub created: Option<f64>,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required, schema_with = "nullable_number")]
+    pub read_at: Option<f64>,
+    pub recipient: ComplaintRecipient,
+    pub responses: Vec<ComplaintResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_type: Option<ComplaintSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required, schema_with = "nullable_number")]
+    pub updated: Option<f64>,
+    #[serde(deserialize_with = "required_nullable")]
+    #[schemars(required, schema_with = "nullable_integer")]
+    pub version: Option<i64>,
 }
 
 impl ComplaintRecord {
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
-        serde_json::from_value(value)
+        Self::deserialize(value)
     }
     pub fn id(&self) -> &String {
         &self.id
     }
     pub fn author(&self) -> Option<&str> {
-        self.author.value().map(String::as_str)
+        self.author.as_deref()
     }
     pub fn lead_id(&self) -> Option<&str> {
-        self.lead_id.value().map(String::as_str)
-    }
-    pub fn status(&self) -> Option<&str> {
-        self.status.value().map(String::as_str)
+        self.lead_id.as_deref()
     }
     pub fn text(&self) -> Option<&str> {
-        self.text.value().map(String::as_str)
+        self.text.as_deref()
     }
     pub fn into_value(self) -> Value {
-        // Every member is already JSON data or a serializable scalar.
-        serde_json::to_value(self).expect("complaint fields are JSON serializable")
+        self.serialize(serde_json::value::Serializer)
+            .expect("complaint fields are JSON serializable")
     }
 }
 
@@ -72,21 +131,54 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn complaint_schema_and_serde_preserve_legacy_shapes() {
+    fn canonical_complaint_rejects_missing_fields_and_unknown_status() {
+        let raw = r#"{"id":"c","leadId":"l","author":"a","text":"raw text","recipient":"lead","version":1,"status":"open","created":1.0,"updated":1.0,"readAt":null,"responses":[]}"#;
+        assert!(serde_json::from_str::<ComplaintRecord>(raw).is_ok());
+        assert!(serde_json::from_str::<ComplaintRecord>(r#"{"id":"c"}"#).is_err());
+        assert!(serde_json::from_str::<ComplaintRecord>(&raw.replace("open", "unknown")).is_err());
+    }
+
+    #[test]
+    fn complaint_receipt_serialization_keeps_historical_field_order() {
+        let raw = r#"{"id":"c","leadId":"l","author":"user","text":"hello","recipient":"lead","version":1,"status":"open","created":1.0,"updated":1.0,"readAt":null,"responses":[]}"#;
+        let record: ComplaintRecord = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            serde_json::to_string(&record).unwrap(),
+            r#"{"id":"c","author":"user","leadId":"l","status":"open","text":"hello","created":1.0,"readAt":null,"recipient":"lead","responses":[],"updated":1.0,"version":1}"#
+        );
+        let raw = r#"{"id":"c","leadId":"l","author":"user","text":"hello","recipient":"lead","version":1,"status":"open","created":1.0,"updated":1.0,"readAt":null,"responses":[{"id":"r","author":"a","text":"done","status":"resolved","at":2.0}]}"#;
+        let record: ComplaintRecord = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            serde_json::to_string(&record).unwrap(),
+            r#"{"id":"c","author":"user","leadId":"l","status":"open","text":"hello","created":1.0,"readAt":null,"recipient":"lead","responses":[{"at":2.0,"author":"a","id":"r","status":"resolved","text":"done"}],"updated":1.0,"version":1}"#
+        );
+    }
+
+    #[test]
+    fn complaint_schema_and_serde_match() {
         check_schema_parity().unwrap();
+        let good = json!({"id":"c","author":null,"leadId":"l","text":null,"status":"open","recipient":"lead","version":1,"created":1.0,"updated":1.0,"readAt":null,"responses":[]});
         for (value, valid) in [
-            (json!({"id":"c"}), true),
+            (good.clone(), true),
+            (json!({"id":"c"}), false),
             (
-                json!({"id":"c","author":null,"leadId":"l","text":null,"status":"future","extra":[1]}),
-                true,
+                {
+                    let mut value = good.clone();
+                    value["status"] = json!("future");
+                    value
+                },
+                false,
             ),
-            (json!({"id":"c","status":null}), true),
-            (json!({"id":"c","author":1}), false),
-            (json!({"id":"c","status":false}), false),
-            (json!(["c"]), false),
-            (json!({}), false),
+            (
+                {
+                    let mut value = good;
+                    value["future"] = json!(true);
+                    value
+                },
+                false,
+            ),
         ] {
-            let parsed = serde_json::from_value::<ComplaintRecord>(value.clone());
+            let parsed: Result<ComplaintRecord, _> = serde_json::from_str(&value.to_string());
             assert_eq!(parsed.is_ok(), valid, "{value}");
             assert_eq!(
                 crate::validate("PersistedComplaintRecord", &value).unwrap(),

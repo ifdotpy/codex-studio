@@ -122,10 +122,7 @@ guest is not upgraded: a VM upgrade restarts VM chats and needs the user's conse
 
 `autoUpdate` is in the access settings next to `autoPair` (Settings, Servers). It is on by
 default and stored in the table `runtime_peer_update_settings`. A `settings` request of
-`POST /api/multi-server` sets `autoPair`, `autoUpdate` or both. `GET /api/desktop` shows
-`peerUpdate`: the local build (`build`), the time of the last check (`checkedAt`), the last pull
-(`lastPull`), the staged update (`pending`) and the last install (`lastInstall`), each with its
-outcome and reason.
+`POST /api/multi-server` sets `autoPair`, `autoUpdate` or both.
 
 ## Trust
 

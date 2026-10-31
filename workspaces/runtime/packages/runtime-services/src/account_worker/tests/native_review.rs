@@ -25,7 +25,7 @@ async fn queue_review_child(state: &State) {
                     tx,
                     &AgentRecord::from_value(lead).map_err(StoreError::from)?,
                 )?;
-                row.extra.insert("parentId".into(), json!("review-lead"));
+                row.parent_id = Some(("review-lead").to_string());
                 row.in_flight = Some(false);
 row.auto_wake = Some(true);
 row.thread_id = None;
@@ -47,8 +47,12 @@ for (key, value) in [
                             "actionRequestId":studio_runtime_schema::persistence::RequestIdentity::issue_root(),
                             "status":"pending","response":{}}),
                     ),
-                ] { row.extra.insert(key.into(), value); }
-                row.extra.remove("startAttempt");
+                ] { match key {
+                    "startAttempt" => row.start_attempt = Some(serde::Deserialize::deserialize(value).unwrap()),
+                    "disconnectRecovery" => row.disconnect_recovery = Some(Box::new(serde::Deserialize::deserialize(value).unwrap())),
+                    _ => { row.extra.insert(key.into(), value); }
+                } }
+                row.start_attempt.take();
                 AgentRepository::put(tx, &row)?;
                 Ok(())
             })
@@ -221,7 +225,11 @@ for (key, value) in [
                             "requestId":"lead:review:r1","actorId":"lead","args":{},
                             "status":"started","response":{}}),
                     ),
-                ] { row.extra.insert(key.into(), value); }
+                ] { match key {
+                    "startAttempt" => row.start_attempt = Some(serde::Deserialize::deserialize(value).unwrap()),
+                    "disconnectRecovery" => row.disconnect_recovery = Some(Box::new(serde::Deserialize::deserialize(value).unwrap())),
+                    _ => { row.extra.insert(key.into(), value); }
+                } }
                 AgentRepository::put(tx, &row)?;
                 Ok(())
             })

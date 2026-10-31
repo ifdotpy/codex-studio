@@ -26,7 +26,7 @@ pub fn tables() -> Value {
 }
 
 pub fn agent() -> Value {
-    json!({"id":"a","name":"Agent","rootId":"a","parentId":null,"accountKey":"default","accountHistory":[],"provider":"codex","threadId":"thread","turnId":"turn","model":"gpt-5","effort":"high","fastMode":false,"daybreakEnabled":false,"cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,"epoch":0,"status":"running"})
+    json!({"compactions":0,"id":"a","name":"Agent","rootId":"a","parentId":null,"accountKey":"default","accountHistory":[],"provider":"codex","threadId":"thread","turnId":"turn","model":"gpt-5","effort":"high","fastMode":false,"daybreakEnabled":false,"cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,"epoch":0,"status":"running"})
 }
 
 /// Creates the schema with the Rust store, then seeds the agent in both databases.

@@ -172,7 +172,7 @@ async fn seeded_store(agent: &str) -> (tempfile::TempDir, Arc<studio_runtime_sto
             .await
             .expect("test step"),
     );
-    let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":agent,"rootId":agent,"epoch":1,"status":"running","autoWake":true,
+    let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":agent,"rootId":agent,"epoch":1,"status":"running","autoWake":true,
                         "threadId":"thread-1","executionMode":"host"})
     .to_string();
     let agent = agent.to_owned();
@@ -198,10 +198,7 @@ fn card(store: &studio_runtime_store::RuntimeStore) -> Value {
     serde_json::from_str(&raw).expect("test step")
 }
 
-fn answer_context(
-    guest: Arc<dyn GuestRpc>,
-    providers: &BTreeSet<String>,
-) -> BrowserAnswerContext<impl Fn(&Value) -> bool + Send + Sync + 'static> {
+fn answer_context(guest: Arc<dyn GuestRpc>, providers: &BTreeSet<String>) -> BrowserAnswerContext {
     BrowserAnswerContext {
         local_window: false,
         guest,
@@ -210,7 +207,6 @@ fn answer_context(
             .duration_since(std::time::UNIX_EPOCH)
             .expect("test step")
             .as_secs_f64(),
-        validate: |_: &Value| true,
         http_providers: providers.clone(),
     }
 }
@@ -688,7 +684,7 @@ async fn a_new_host_card_is_published_to_clients_and_pushed_to_the_phone() {
     use studio_runtime_services::web_push;
     let agent = "2c9a4e1b-7d3f-4b6a-9e8c-5f1d2a3b4c5d";
     let (dir, store) = seeded_store(agent).await;
-    let named = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":agent,"rootId":agent,"epoch":1,"status":"running","autoWake":true,
+    let named = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":agent,"rootId":agent,"epoch":1,"status":"running","autoWake":true,
                        "threadId":"thread-1","executionMode":"host","name":"Infra"})
     .to_string();
     let id = agent.to_owned();

@@ -158,7 +158,7 @@ async fn ui_child_permissions_inherit_override_review_and_refuse_escalation() {
             "bypassPermissions",
         ),
     ] {
-        let parent = json!({"id":LEAD,"rootId":LEAD,"epoch":0,"status":"idle","isLead":true,"name":"Lead","cwd":cwd,"hostProjectPath":cwd,"accountKey":"default","provider":"claude","model":"claude-haiku-4-5","autoWake":true,"yoloMode":true,"workspaceMode":"worktree","workerDefaults":{"accountKey":"default","model":"claude-haiku-4-5"},"claudeOptions":{"permissionMode":mode,"thinking":false}});
+        let parent = json!({"compactions":0,"id":LEAD,"rootId":LEAD,"epoch":0,"status":"idle","isLead":true,"name":"Lead","cwd":cwd,"hostProjectPath":cwd,"accountKey":"default","provider":"claude","model":"claude-haiku-4-5","autoWake":true,"yoloMode":true,"workspaceMode":"worktree","workerDefaults":{"accountKey":"default","model":"claude-haiku-4-5"},"claudeOptions":{"permissionMode":mode,"thinking":false}});
         let projected =
             studio_runtime_services::sync_views::project_persisted_record("agent", &parent)
                 .unwrap();
@@ -264,7 +264,7 @@ async fn automatic_http_child_warms_higher_priority_catalog_before_selection() {
             "claude-parent":{"id":"claude-parent","home":claude_home,"label":"Claude","source":"Fixture","provider":"claude","status":"signedOut","claudeOptions":{"binaryPath":missing_cli}}},
         "logins":{},"deleteReceipts":{}}).to_string()).unwrap();
     let store = Arc::new(RuntimeStore::open(Some(state_root.path())).await.unwrap());
-    let lead = json!({"id":LEAD,"rootId":LEAD,"epoch":0,"status":"idle","isLead":true,
+    let lead = json!({"compactions":0,"id":LEAD,"rootId":LEAD,"epoch":0,"status":"idle","isLead":true,
         "name":"Lead","cwd":cwd,"hostProjectPath":cwd,"accountKey":"default","provider":"codex",
         "model":"gpt-6-luna","autoWake":true,"yoloMode":true,"workspaceMode":"shared",
         "concurrency":4,"maxAgents":20,"workerDefaults":{"model":"gpt-6-luna"}});
@@ -303,7 +303,7 @@ async fn automatic_http_child_warms_higher_priority_catalog_before_selection() {
     assert_eq!(status, 200, "{response}");
     assert_eq!(response["accountKey"], "a-priority");
     let claude_lead_id = "af2eeb40-0cc8-44ef-a4e8-aa321b4d7331";
-    let claude_lead = json!({"id":claude_lead_id,"rootId":claude_lead_id,"epoch":0,"status":"idle","isLead":true,
+    let claude_lead = json!({"compactions":0,"id":claude_lead_id,"rootId":claude_lead_id,"epoch":0,"status":"idle","isLead":true,
         "name":"Claude lead","cwd":cwd,"hostProjectPath":cwd,"accountKey":"claude-parent","provider":"claude",
         "model":"claude-haiku-4-5","autoWake":true,"yoloMode":true,"workspaceMode":"shared",
         "concurrency":4,"maxAgents":20,"workerDefaults":{}});

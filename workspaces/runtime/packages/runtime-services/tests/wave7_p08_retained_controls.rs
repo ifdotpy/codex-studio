@@ -316,7 +316,7 @@ impl ControlStorage for NoWrites {
 }
 #[tokio::test(start_paused = true)]
 async fn controls_caller_supplies_scope_and_bounds_the_retained_request_deadline() {
-    let agent = json!({"id":"agent","rootId":"agent","provider":"claude","epoch":2,"accountKey":"account","cwd":"/fixture","status":"paused","threadId":"thread"});
+    let agent = json!({"compactions":0,"id":"agent","rootId":"agent","provider":"claude","epoch":2,"accountKey":"account","cwd":"/fixture","status":"paused","threadId":"thread"});
     for fault in ["none", "deadline"] {
         let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let port = port(fault);
@@ -359,7 +359,7 @@ async fn opaque_stop_ids_have_distinct_stable_request_identities() {
         ("a:b", "c", &first),
         ("a:b", "c", &third),
     ] {
-        let agent = json!({"id":"agent","rootId":"agent","provider":"claude","epoch":2,"accountKey":"account","cwd":"/fixture","status":"paused","threadId":thread});
+        let agent = json!({"compactions":0,"id":"agent","rootId":"agent","provider":"claude","epoch":2,"accountKey":"account","cwd":"/fixture","status":"paused","threadId":thread});
         let body = json!({"action":"stop_task","task_id":task,"request_id":request});
         controls
             .read_or_stop(&agent, &body, None)

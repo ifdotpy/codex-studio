@@ -2033,7 +2033,10 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           ? { drawerZIndex: layoutValues.layers.navigation }
           : {})}
         onEntered={() => {
-          if (lastOpened.current)
+          if (
+            lastOpened.current &&
+            document.getElementById("sidebar")?.contains(document.activeElement)
+          )
             document
               .querySelector<HTMLElement>(
                 `#sidebar [data-chat="${CSS.escape(lastOpened.current)}"]`,

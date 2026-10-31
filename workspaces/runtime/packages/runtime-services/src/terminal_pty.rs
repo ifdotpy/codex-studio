@@ -384,14 +384,11 @@ impl TerminalSession for PtyTerminalSession {
     }
 
     fn cleanup_orphan(&self, identity: &Value) -> Result<bool, SessionError> {
-        if identity.is_null() {
-            return Ok(false);
-        }
         // Only a complete, typed identity can authorize signalling a persisted
         // process. Python restart recovery marks these rows exited without
         // interpreting this Rust-only metadata, so an invalid legacy value is
         // left untouched at the OS boundary and reconciled as unavailable.
-        let Ok(identity) = serde_json::from_value::<PtyIdentity>(identity.clone()) else {
+        let Ok(identity) = <PtyIdentity as serde::Deserialize>::deserialize(identity) else {
             return Ok(false);
         };
         cleanup_persisted_identity(&identity)

@@ -561,9 +561,8 @@ pub async fn show_blocked(
             {
                 continue;
             }
-            let value = serde_json::to_value(wait)?;
-            if record.extra.get(WAIT_FIELD) != Some(&value) {
-                record.extra.insert(WAIT_FIELD.into(), value);
+            if record.start_wait.as_ref() != Some(&wait) {
+                record.start_wait = Some(wait);
                 AgentRepository::put(tx, &record)?;
             }
         }
@@ -617,7 +616,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("state directory");
         let store = RuntimeStore::open(Some(dir.path())).await.expect("store");
         store.transaction_with(|tx| {
-            let agent = AgentRecord::from_value(json!({"accountKey":"default","provider":"codex", "id":"worker", "rootId":"worker", "epoch":4, "status":"queued", "autoWake":true})).expect("agent");
+            let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":"codex", "id":"worker", "rootId":"worker", "epoch":4, "status":"queued", "autoWake":true})).expect("agent");
             AgentRepository::put(tx, &agent)
         }).await.expect("seed");
         super::show_wait(

@@ -29,8 +29,10 @@ fn p06_empty_deltas_arm_timer_and_coalesce_without_refusal() {
                         generation: 7,
                         cursor,
                     },
-                    observed_at: 1234.5,
-                    provider_at: 1234.5,
+                    observed_at: crate::notification_dispatch::ObservationTime::new(1234.5)
+                        .unwrap(),
+                    provider_at: crate::notification_dispatch::ObservationTime::new(1234.5)
+                        .unwrap(),
                 },
             )
             .expect("analytics never refuses empty delta");

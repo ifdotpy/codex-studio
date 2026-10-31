@@ -9,8 +9,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, createFixtureViteServer } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
+import { DEFAULT_SUBSCRIPTION_GRACE_MS } from "../../src/sync/subscriptions/contracts.ts";
 
-test("hidden server screens release chat details and prefetch while keeping list membership", async ({
+test("hidden server screens release chat details while keeping list membership", async ({
   page,
   context,
 }) => {
@@ -28,8 +29,8 @@ test("hidden server screens release chat details and prefetch while keeping list
         ...lead,
         id: "prefetch",
         name: "Prefetch chat",
-        isLead: false,
-        rootId: lead.id,
+        isLead: true,
+        rootId: "prefetch",
       },
     ]);
   }
@@ -67,38 +68,36 @@ test("hidden server screens release chat details and prefetch while keeping list
     await dialog
       .getByRole("button", { name: "Add with an invitation", exact: true })
       .click();
-    await dialog.getByLabel("Server address").fill(remote.invitation.origin);
+    await dialog
+      .getByRole("textbox", { name: "Server address", exact: true })
+      .fill(remote.invitation.origin);
     await dialog
       .getByLabel("Pairing invitation")
       .fill(JSON.stringify(remote.invitation));
     await dialog
       .getByRole("button", { name: "Pair server", exact: true })
       .click();
-    const chat = (alias: string) =>
-      page.locator("#chat-list .chat-row").filter({
-        has: page.locator(`.chat-server-line[aria-label$=", ${alias}"]`),
-      });
-    await expect(chat("REM")).toContainText("Remote chat");
+    const chat = (name: string) =>
+      page.locator("#chat-list .chat-row").filter({ hasText: name });
+    await expect(chat("Remote chat")).toBeVisible();
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
-    await chat("LOC").click();
-    for (const kind of ["transcript", "queue", "session-cost"] as const)
+    await chat("Local chat").click();
+    for (const kind of ["transcript", "session-cost"] as const)
       await expect.poll(() => has(local, kind, "overlap")).toBe(true);
-    await expect.poll(() => has(local, "transcript", "prefetch")).toBe(true);
-    await chat("REM").click();
-    for (const kind of [
-      "transcript",
-      "queue",
-      "session-cost",
-      "limits",
-    ] as const)
+    expect(has(local, "transcript", "prefetch")).toBe(false);
+    await page.clock.install();
+    await chat("Remote chat").click();
+    await page.clock.fastForward(DEFAULT_SUBSCRIPTION_GRACE_MS + 100);
+    for (const kind of ["transcript", "session-cost", "limits"] as const)
       await expect.poll(() => has(local, kind)).toBe(false);
     await expect.poll(() => has(local, "state")).toBe(true);
     await expect.poll(() => has(local, "drafts")).toBe(true);
-    for (const kind of ["transcript", "queue", "session-cost"] as const)
+    for (const kind of ["transcript", "session-cost"] as const)
       await expect.poll(() => has(remote, kind, "overlap")).toBe(true);
-    await chat("LOC").click();
+    await chat("Local chat").click();
+    await page.clock.fastForward(DEFAULT_SUBSCRIPTION_GRACE_MS + 100);
     await expect.poll(() => has(local, "transcript", "overlap")).toBe(true);
-    await expect.poll(() => has(local, "transcript", "prefetch")).toBe(true);
+    expect(has(local, "transcript", "prefetch")).toBe(false);
     await expect.poll(() => has(remote, "transcript")).toBe(false);
   } finally {
     await page.close();

@@ -88,10 +88,11 @@ async fn fixture_records_are_readable_and_writable_in_rust() {
     let task = TaskRepository::get(&reader, &TaskId::from("cross-task"))
         .expect("cross-runtime test operation succeeds")
         .expect("record fixture contains the task");
-    assert_eq!(task.value()["kind"], json!("command"));
-    assert_eq!(task.value()["interactive"], json!(true));
-    assert_eq!(task.value()["exitCode"].as_i64(), Some(7));
-    assert_eq!(task.value()["created"].as_f64(), Some(1e-7));
+    let task_projection = studio_runtime_store::projection_value(&task);
+    assert_eq!(task_projection["kind"], json!("command"));
+    assert_eq!(task_projection["interactive"], json!(true));
+    assert_eq!(task.exit_code, Some(7));
+    assert_eq!(task.created(), 1e-7);
     let work = Table::<WorkItemRecord>::new(&reader)
         .get(&TaskId::from("cross-work"))
         .expect("work-board record reads")
@@ -165,7 +166,7 @@ async fn fixture_records_are_readable_and_writable_in_rust() {
             AgentRepository::put(transaction, &agent)?;
             let mut task = TaskRepository::get(transaction, &TaskId::from("cross-task"))?
                 .expect("record fixture contains the task");
-            task.set_status("running");
+            task.set_status(studio_runtime_schema::task_record::TaskStatus::Running);
             TaskRepository::put(transaction, &task)?;
             let work_table = Table::<WorkItemRecord>::new(transaction);
             let mut work = work_table
@@ -216,8 +217,11 @@ async fn fixture_records_are_readable_and_writable_in_rust() {
     let task = TaskRepository::get(&reader, &TaskId::from("cross-task"))
         .expect("cross-runtime test operation succeeds")
         .expect("Rust-written task remains readable in Rust");
-    assert_eq!(task.value()["exitCode"], json!(7));
-    assert_eq!(task.value()["status"], json!("running"));
+    assert_eq!(task.exit_code, Some(7));
+    assert_eq!(
+        task.status(),
+        studio_runtime_schema::task_record::TaskStatus::Running
+    );
     let work = Table::<WorkItemRecord>::new(&reader)
         .get(&TaskId::from("cross-work"))
         .expect("work-board read succeeds")

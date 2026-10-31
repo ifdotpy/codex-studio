@@ -136,12 +136,20 @@ async fn unwritten_thread_receipt_after_restart(shape: Orphan) {
             scheduler::lifecycle_transaction_with(&store, move |tx| {
                 let mut agent =
                     AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
-                agent.extra.insert(
-                    "disconnectRecovery".into(),
-                    json!({"accountKey":"default","epoch":epoch,"autoWake":true,
-                        "threadId":"fake-thread-0","turnId":"turn",
-                        "startAttempt":finished.clone()}),
-                );
+                agent.disconnect_recovery = Some(Box::new(
+                    studio_runtime_schema::recovery_record::RecoveryFields {
+                        account_key: Some("default".into()),
+                        epoch: studio_runtime_schema::recovery_record::SafeInteger::from_i64(epoch),
+                        auto_wake: Some(true),
+                        thread_id: Some("fake-thread-0".into()),
+                        turn_id: Some("turn".into()),
+                        start_attempt: Some(Box::new(
+                            serde::Deserialize::deserialize(finished.clone())
+                                .expect("typed fixture"),
+                        )),
+                        ..Default::default()
+                    },
+                ));
                 if shape != Orphan::StaleRecord {
                     // As the earlier restart left ecd0da59: the unsent claim's
                     // input back in the queue, and the finished attempt live.
@@ -150,7 +158,8 @@ async fn unwritten_thread_receipt_after_restart(shape: Orphan) {
                          WHERE agent=?1 AND status='reserved'",
                         [agent_id.as_str()],
                     )?;
-                    agent.extra.insert("startAttempt".into(), finished);
+                    agent.start_attempt =
+                        Some(serde::Deserialize::deserialize(finished).expect("typed fixture"));
                     agent.status = studio_runtime_store::AgentStatus::Queued;
                     agent.in_flight = Some(false);
                 }

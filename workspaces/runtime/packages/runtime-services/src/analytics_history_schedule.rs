@@ -1392,6 +1392,7 @@ mod tests {
         let mut valid = agent("paused");
         valid["rootId"] = json!("history-agent");
         valid["epoch"] = json!(0);
+        valid["compactions"] = json!(0);
         let actor =
             studio_runtime_store::AgentRecord::from_value(valid.clone()).expect("store record");
         let mut schedule = HistorySchedule::default();
@@ -1399,9 +1400,7 @@ mod tests {
             .refresh_ordered(&[10], &[actor])
             .expect("valid roster");
         valid["model"] = json!({"invalid":true});
-        let invalid = studio_runtime_store::AgentRecord::from_value(valid)
-            .expect("store accepts extra field");
-        assert!(schedule.update_rows(&[(10, Some(invalid))]).is_err());
+        assert!(studio_runtime_store::AgentRecord::from_value(valid).is_err());
         assert_eq!(schedule.next(0.).expect("selection"), Some(10));
     }
 }

@@ -243,7 +243,7 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
         args: &'a Value,
         request_id: &'a str,
         now: f64,
-    ) -> BoxFuture<'a, Result<Value, Error>> {
+    ) -> BoxFuture<'a, Result<Box<serde_json::value::RawValue>, Error>> {
         Box::pin(async move {
             let wait_ms = match args.get("wait_timeout_ms") {
                 None => 0,
@@ -300,7 +300,8 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
                         None,
                     )
                     .await
-                    .map_err(monitor_error);
+                    .map_err(monitor_error)
+                    .and_then(|value| monitor_reply(&value));
             }
             let log_root = crate::monitor_output::log_root(store.root());
             let log_root = log_root
@@ -309,7 +310,11 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
             let actor_id = actor.record().id.0.as_str().to_owned();
             let epoch = actor.record().epoch;
             let request_id = request_id.to_owned();
-            let request = args.clone();
+            let request =
+                <crate::monitor_policy::MonitorCreateInput as serde::Deserialize>::deserialize(
+                    args,
+                )
+                .map_err(|_| Error::Invalid("Invalid monitor input"))?;
             let admission = crate::monitor_runtime::MonitorAdmission {
                 actor_id: &actor_id,
                 epoch,
@@ -317,7 +322,7 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
                 request: &request,
                 log_root,
             };
-            if let Some(mut value) =
+            if let Some(value) =
                 crate::monitor_runtime::stored_create_result(store, &admission, now)
                     .await
                     .map_err(monitor_error)?
@@ -328,10 +333,17 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
                 let _slot = match self.runtime.observation_slot(wait_ms) {
                     Ok(slot) => slot,
                     Err(_) => {
-                        value["observationError"] = json!(
-                            "Monitor wait capacity is full; the existing command remains recorded"
-                        );
-                        return Ok(value);
+                        #[derive(serde::Serialize)]
+                        #[serde(rename_all = "camelCase")]
+                        struct Capacity<'a> {
+                            #[serde(flatten)]
+                            record: &'a studio_runtime_store::MonitorRecord,
+                            observation_error: &'static str,
+                        }
+                        return monitor_reply(&Capacity {
+                            record: &value,
+                            observation_error: "Monitor wait capacity is full; the existing command remains recorded",
+                        });
                     }
                 };
                 return self.observe_created(actor, value, deadline).await;
@@ -388,15 +400,13 @@ impl ManagedMonitorCreateAdapter {
     async fn observe_created(
         &self,
         actor: &Actor,
-        record: Value,
+        record: studio_runtime_store::MonitorRecord,
         deadline: Option<tokio::time::Instant>,
-    ) -> Result<Value, Error> {
+    ) -> Result<Box<serde_json::value::RawValue>, Error> {
         if deadline.is_none() {
-            return Ok(record);
+            return monitor_reply(&record);
         }
-        let Some(id) = record["id"].as_str() else {
-            return Ok(record);
-        };
+        let id = record.id.as_str();
         let account = actor.record().account_key.as_str();
         match self
             .runtime
@@ -406,16 +416,21 @@ impl ManagedMonitorCreateAdapter {
                 account,
                 id,
                 deadline,
-                Some(record["outputEventSequence"].as_u64().unwrap_or(0)),
+                Some(record.output_event_sequence.unwrap_or(0)),
             )
             .await
         {
-            Ok(value) => Ok(value),
-            Err(error) => Ok(
-                json!({"id":id,"status":"unknown","outcome":"unknown","observationError":error.to_string().chars().take(1000).collect::<String>()}),
+            Ok(value) => monitor_reply(&value),
+            Err(error) => monitor_reply(
+                &json!({"id":id,"status":"unknown","outcome":"unknown","observationError":error.to_string().chars().take(1000).collect::<String>()}),
             ),
         }
     }
+}
+
+fn monitor_reply(value: &impl serde::Serialize) -> Result<Box<serde_json::value::RawValue>, Error> {
+    serde_json::value::to_raw_value(value)
+        .map_err(|_| Error::Invalid("Monitor serialization failed"))
 }
 
 fn child_creation_error(error: crate::managed_child_create::Error) -> Error {

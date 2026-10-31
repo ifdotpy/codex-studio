@@ -7,6 +7,20 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+#[test]
+fn browser_params_preserve_raw_extensions_and_reject_duplicate_keys() {
+    let raw = r#"{"bridgeId":"id","phase":"waiting","provider":{"z":  1, "a":2}}"#;
+    let params: super::BrowserParams = serde_json::from_str(raw).unwrap();
+    let encoded = serde_json::to_string(&params).unwrap();
+    assert!(encoded.contains(r#"{"z":  1, "a":2}"#));
+    assert!(
+        serde_json::from_str::<super::BrowserParams>(r#"{"phase":"waiting","phase":"waiting"}"#)
+            .is_err()
+    );
+    assert!(serde_json::from_str::<super::BrowserParams>(r#"{"other":1,"other":2}"#).is_err());
+    assert!(serde_json::from_str::<super::BrowserParams>(r#"{"phase":"future"}"#).is_err());
+}
+
 struct WaitGuest {
     batches: Mutex<VecDeque<Value>>,
     calls: Mutex<Vec<(String, Value)>>,
@@ -61,7 +75,7 @@ async fn store() -> (tempfile::TempDir, studio_runtime_store::RuntimeStore) {
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 [
                     VM_AGENT,
-                    &json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":VM_AGENT,"rootId":VM_AGENT,"epoch":1,"status":"running","autoWake":true,
+                    &json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":VM_AGENT,"rootId":VM_AGENT,"epoch":1,"status":"running","autoWake":true,
                              "executionMode":"vm","layrProjectId":"p1"})
                     .to_string(),
                 ],
@@ -592,7 +606,7 @@ async fn seed_agent(store: &studio_runtime_store::RuntimeStore, id: &str) {
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 [
                     id.as_str(),
-                    &json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"running","autoWake":true,
+                    &json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"running","autoWake":true,
                              "executionMode":"vm","layrProjectId":"p1"})
                     .to_string(),
                 ],

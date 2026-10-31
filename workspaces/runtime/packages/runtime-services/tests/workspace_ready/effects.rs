@@ -61,7 +61,7 @@ impl Fixture {
         );
         let cwd = repo.join("project");
         store.transaction(move |tx| {
-            let actor = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"workspace-fixture","rootId":"workspace-fixture","epoch":0,"status":"queued","cwd":cwd,"autoWake":true,"worktree":true,"worktreeReady":false,"workspaceMode":"worktree"});
+            let actor = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"workspace-fixture","rootId":"workspace-fixture","epoch":0,"status":"queued","cwd":cwd,"autoWake":true,"worktree":true,"worktreeReady":false,"workspaceMode":"worktree"});
             AgentRepository::put(tx, &AgentRecord::from_value(actor.clone())?)?;
             tx.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('agent','workspace-fixture',1,'fixture',?1,0)", [json!({"collection":"agent","id":"workspace-fixture","value":actor}).to_string()])?;
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('workspace-input','workspace-fixture','user','fixture','pending',1,0)", [])?;
@@ -98,9 +98,15 @@ impl Fixture {
         let snapshot = CheckpointsRepository::reservation_snapshot(&connection, &self.id)
             .expect("snapshot")
             .unwrap_or_else(|| WorkspaceSnapshot {
-                agent: studio_runtime_store::StoredCheckpointObject {
-                    id: self.id.clone(),
-                    record: plan.source.clone(),
+                agent: {
+                    let mut record = plan.source.clone();
+                    record["id"] = json!(self.id);
+                    record["rootId"] = json!(self.id);
+                    record["provider"] = json!("codex");
+                    record["accountKey"] = json!("default");
+                    record["compactions"] = json!(0);
+                    record["status"] = json!("queued");
+                    studio_runtime_store::AgentRecord::from_value(record).expect("fixture agent")
                 },
                 parent_checkpoint: None,
                 agents: Vec::new(),
@@ -135,7 +141,7 @@ impl Fixture {
         snapshot(&self.store, &self.id)
             .expect("snapshot")
             .agent
-            .record
+            .value()
     }
     async fn patch(&self, key: &str, value: Value) {
         let store = std::sync::Arc::clone(&self.store);
@@ -438,7 +444,7 @@ async fn partial_or_dirty_effect_is_never_adopted_reset_or_cleaned() {
 #[tokio::test]
 async fn late_completion_never_attaches_to_deleted_stopped_replaced_or_new_epoch_actor() {
     for (key, value) in [
-        ("deletedAt", json!(10)),
+        ("deletedAt", json!(10.0)),
         ("autoWake", json!(false)),
         ("epoch", json!(999)),
         ("cwd", json!("/var/tmp/changed")),
@@ -1529,7 +1535,7 @@ async fn public_probe_child() {
     if expected == "recovery" {
         assert_recovery(result);
         assert_eq!(
-            snapshot(&store, &id).expect("actor").agent.record["worktreeReady"],
+            snapshot(&store, &id).expect("actor").agent.value()["worktreeReady"],
             false
         );
     } else {
@@ -1550,7 +1556,7 @@ async fn public_probe_child() {
         }
         if expected == "ref-conflict" {
             assert!(
-                snapshot(&store, &id).expect("actor").agent.record["checkpointError"]
+                snapshot(&store, &id).expect("actor").agent.value()["checkpointError"]
                     .as_str()
                     .expect("ref conflict")
                     .contains("Checkpoint reference already names a different commit")
@@ -1998,7 +2004,7 @@ async fn reservation_snapshot_yields_the_reservations_of_the_full_snapshot() {
         let light = CheckpointsRepository::reservation_snapshot(&db, &id)
             .expect("light")
             .expect("agent");
-        assert_eq!(full.agent.record, light.agent.record, "{id}");
+        assert_eq!(full.agent.value(), light.agent.value(), "{id}");
         // Row order differs (rowid scan versus index); every consumer is order-independent.
         let sorted = |snapshot: &WorkspaceSnapshot| {
             let mut all = studio_runtime_store::workspace_ready::reservations(snapshot);
@@ -2015,7 +2021,7 @@ async fn unrelated_reservation_started_after_path_capture_does_not_refuse_ready_
     let other = tempfile::tempdir().expect("unrelated workspace");
     let other_cwd = other.path().to_string_lossy().into_owned();
     fixture.store.transaction(move |tx| {
-        studio_runtime_store::AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+        studio_runtime_store::AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"unrelated","rootId":"unrelated","epoch":1,"status":"idle","autoWake":true,"cwd":other_cwd
         }))?)?;
         Ok(())

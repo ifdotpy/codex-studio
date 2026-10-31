@@ -108,7 +108,7 @@
   "workspaces/runtime/packages/runtime-http/src/routes/host_secrets.rs": [
     "br#\"{\"projectId\":\"p1\",\"source\":\"/tmp/Project One\"}\"#,",
     "br#\"{\"projectId\":\"p1\",\"source\":\"/tmp/Project One\"}\"#,",
-    "\"if [ \\\"$1\\\" = unlock ]; then\\n  [ \\\"$2\\\" = --site ] && [ \\\"$3\\\" = https://desk.example/ ] || exit 91\\n  [ \\\"$4\\\" = --project ] && [ \\\"$5\\\" = project-one ] && [ \\\"$6\\\" = --paper-file ] && [ \\\"$7\\\" = - ] || exit 92\\n  [ \\\"$(cat)\\\" = 'fixture paper words' ] || exit 93\\nelif [ \\\"$1\\\" = service ] && [ \\\"$2\\\" = status ]; then\\n  printf '%s\\\\n' '{\\\"installed\\\":true,\\\"site\\\":\\\"https://desk.example\\\",\\\"at\\\":\\\"/tmp\\\"}'\\nelif [ \\\"$1\\\" = status ] && [ \\\"$2\\\" = --site ] && [ \\\"$3\\\" = https://desk.example/ ] && [ \\\"$4\\\" = --json ]; then\\n  printf '%s\\\\n' '{\\\"projects\\\":[{\\\"name\\\":\\\"project-one\\\",\\\"unlocked\\\":true}]}'\\nelse\\n  exit 94\\nfi\",",
+    "\"if [ \\\"$1\\\" = unlock ]; then\\n  [ \\\"$2\\\" = --site ] && [ \\\"$3\\\" = https://desk.example/ ] || exit 91\\n  [ \\\"$4\\\" = --project ] && [ \\\"$5\\\" = project-one ] && [ \\\"$6\\\" = --paper-file ] && [ \\\"$7\\\" = - ] || exit 92\\n  [ \\\"$(cat)\\\" = 'fixture paper words' ] || exit 93\\nelif [ \\\"$1\\\" = service ] && [ \\\"$2\\\" = status ]; then\\n  printf '%s\\\\n' '{\\\"installed\\\":true,\\\"site\\\":\\\"https://desk.example\\\",\\\"at\\\":\\\"/tmp\\\"}'\\nelif [ \\\"$1\\\" = status ] && [ \\\"$2\\\" = --site ] && [ \\\"$3\\\" = https://desk.example/ ] && [ \\\"$4\\\" = --json ]; then\\n  printf '%s\\\\n' '{\\\"projects\\\":[null,[],{\\\"name\\\":1,\\\"unlocked\\\":true},{\\\"name\\\":\\\"project-one\\\",\\\"unlocked\\\":true}]}'\\nelse\\n  exit 94\\nfi\",",
     "assert_eq!(mac, json!({\"unlocked\":true,\"disk\":\"/tmp/project-one\"}));"
   ],
   "workspaces/runtime/packages/runtime-process/src/provider_task_tests.rs": [
@@ -132,12 +132,12 @@
     "\"provider\":\"codex\",\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\",",
     "skills_root: PathBuf::from(\"/tmp/skills\"),",
     "account_home: \"/tmp/source\".into(),",
-    "\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\"}))",
+    "\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\"}),",
     "json!({\"id\":\"source\",\"home\":\"/tmp/source\",\"provider\":\"codex\"}),",
     "json!({\"id\":\"target\",\"home\":\"/tmp/target\",\"provider\":\"codex\"}),",
     "skills_root: PathBuf::from(\"/tmp/skills\"),",
     "account_home: \"/tmp/target\".into(),",
-    "\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\"}))",
+    "\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\"}),",
     "json!({\"id\":\"source\",\"home\":\"/tmp/source\",\"provider\":\"codex\"}),",
     "json!({\"id\":\"target\",\"home\":\"/tmp/target\",\"provider\":\"codex\"}),",
     "skills_root: PathBuf::from(\"/tmp/skills\"),",
@@ -181,9 +181,6 @@
   ],
   "workspaces/runtime/packages/runtime-services/tests/provider_session_task.rs": [
     "launch: ProviderLaunchSpec::new(vec![\"fake\".into()], BTreeMap::new(), \"/tmp\".into()),"
-  ],
-  "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs": [
-    "\"params\":{\"command\":\"printf safe\", \"cwd\":\"/tmp\"}"
   ],
   "workspaces/runtime/packages/runtime-services/tests/workspace_ready/effects.rs": [
     "(\"cwd\", json!(\"/var/tmp/changed\")),"

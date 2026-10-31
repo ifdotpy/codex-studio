@@ -15,6 +15,7 @@ pub(crate) const AGENT_SUMMARY_ATTENTION_FIELDS: [&str; 3] =
 
 /// Maximum last-answer text retained in an agent sync view. Unit: Unicode scalar values.
 pub(crate) const AGENT_SYNC_LAST_ANSWER_CHARS: usize = 4_000;
+pub(crate) const SYNC_TEXT_CHARS: usize = 12_000;
 
 const AGENT_SHORT_STRING_OBJECTS: &[&str] = &[
     "activity",
@@ -111,22 +112,23 @@ fn schema_projection_properties() -> &'static SchemaProjectionProperties {
     })
 }
 
+pub(crate) fn bound_sync_text(text: &str, field: &str, agent_short_strings: bool) -> String {
+    let limit = if agent_short_strings {
+        2_000
+    } else {
+        match field {
+            "overview" => 9_000,
+            "error" | "tail" | "description" | "command" | "query" => 2_000,
+            "lastAnswer" => AGENT_SYNC_LAST_ANSWER_CHARS,
+            "text" => 4_000,
+            _ => SYNC_TEXT_CHARS,
+        }
+    };
+    text.chars().take(limit).collect()
+}
 fn bound_sync_value(value: &Value, field: &str, agent_short_strings: bool) -> Value {
     match value {
-        Value::String(text) => {
-            let limit = if agent_short_strings {
-                2_000
-            } else {
-                match field {
-                    "overview" => 9_000,
-                    "error" | "tail" | "description" | "command" | "query" => 2_000,
-                    "lastAnswer" => AGENT_SYNC_LAST_ANSWER_CHARS,
-                    "text" => 4_000,
-                    _ => 12_000,
-                }
-            };
-            Value::String(text.chars().take(limit).collect())
-        }
+        Value::String(text) => Value::String(bound_sync_text(text, field, agent_short_strings)),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
             value.clone()
         }
@@ -377,17 +379,6 @@ pub(crate) fn agent_start_wait(
             }
         }
     }
-    #[derive(serde::Deserialize)]
-    struct WaitEpoch {
-        epoch: i64,
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(untagged)]
-    enum StoredWait {
-        Known(studio_runtime_schema::agent_progress::LegacyStartWait),
-        Unusable(WaitEpoch),
-        Invalid(serde::de::IgnoredAny),
-    }
     // Agent records are open documents; this typed projection reads only wait ownership.
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -400,7 +391,13 @@ pub(crate) fn agent_start_wait(
         #[serde(default)]
         native_failure_hold: Option<NativeHold>,
         account_transfer_id: Option<String>,
-        start_wait: Option<StoredWait>,
+        #[serde(default, deserialize_with = "present_wait")]
+        start_wait: Option<AgentStartWait>,
+    }
+    fn present_wait<'de, D: serde::Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<AgentStartWait>, D::Error> {
+        <AgentStartWait as serde::Deserialize>::deserialize(d).map(Some)
     }
     let source: Source = serde_json::from_value(record.clone())?;
     if !matches!(
@@ -431,15 +428,9 @@ pub(crate) fn agent_start_wait(
             return Ok(hold);
         }
     }
-    let persisted = match source.start_wait {
-        Some(StoredWait::Known(wait)) if wait.epoch == source.epoch => match wait.into_fresh() {
-            Some(wait) => Some(wait),
-            None => return Ok(None),
-        },
-        Some(StoredWait::Unusable(wait)) if wait.epoch != source.epoch => None,
-        Some(StoredWait::Unusable(_)) | Some(StoredWait::Invalid(_)) => return Ok(None),
-        Some(StoredWait::Known(_)) | None => None,
-    };
+    let persisted = source
+        .start_wait
+        .filter(|wait| wait.epoch() == source.epoch);
     if source.status == Some(studio_runtime_store::AgentStatus::Starting) {
         return Ok(persisted);
     }

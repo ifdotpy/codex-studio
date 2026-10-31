@@ -49,6 +49,7 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
         .flag("--running")
         .flag("--force")
         .flag("--caches")
+        .value("--cache")
         .removed("--layers", "--caches")
         .flag("--all-lines")
         .flag("-q|--quiet");
@@ -73,10 +74,28 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let msg = a.get("--note").unwrap_or("").to_string();
     for l in lines {
         repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
+        #[cfg(target_os = "macos")]
+        if a.has("--caches") {
+            prepare_cache_copies(repo, &l)?;
+        } else {
+            repo.prepare_save(&l)?;
+        }
         let _lock = repo.p.lock()?;
         let l = repo.line(&l.id)?;
         crate::repo::recover_cache_replacements(&repo.working(&l))?;
-        let (caches, versioned) = if a.has("--caches") { repo.line_cache_paths(&l)? } else { Default::default() };
+        let (mut caches, mut versioned) = if a.has("--caches") { repo.line_cache_paths(&l)? } else { Default::default() };
+        // `--cache <path>` saves one cache only. A big cache (build output) costs a minute to save.
+        if let Some(only) = a.get("--cache") {
+            if !a.has("--caches") {
+                return Err(exit(2, "--cache selects a cache path for --caches."));
+            }
+            let only = only.trim_matches('/');
+            caches.retain(|p| p == only);
+            versioned.retain(|p| p == only);
+            if caches.is_empty() && versioned.is_empty() {
+                return Err(exit(1, format!("error: '{only}' is no cache path of the line (see layr overlay list)")));
+            }
+        }
         let st = if a.has("--caches") {
             // A cache folder that a tool made again as a plain folder becomes a cache first, so
             // its files stay out of the state. A folder with versioned files is no cache; one
@@ -109,6 +128,8 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
                             outln!(ctx, "{p}: overlay {name} {}", ids::short(&id));
                         }
                     }
+                    // Retention when caches are made, not only in gc: no daemon has to run.
+                    trash_excess_caches(repo)?;
                 }
                 if !a.has("-q") {
                     outln!(ctx, "{} {}", l.name, ids::display(&s.id));
@@ -121,8 +142,33 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 }
             }
         }
+        #[cfg(target_os = "macos")]
+        for p in btrfs::take_prepared() {
+            repo.p.trash(&p)?;
+        }
     }
     Ok(0)
+}
+
+/// On APFS a snapshot copies every file, and a save with caches took minutes under the store
+/// lock for build output. This copies the line's caches before the lock: one copy for the
+/// state's cache (none when the head already has it) and one for the cache overlay. Under the
+/// lock a snapshot takes a copy with one rename, and unused copies go to the trash.
+#[cfg(target_os = "macos")]
+fn prepare_cache_copies(repo: &Repo, l: &Line) -> Result<()> {
+    let w = repo.working(l);
+    for p in repo.line_cache_paths(l)?.0 {
+        let cp = fsutil::safe_join(&w, &p)?;
+        if !btrfs::is_subvolume(&cp) {
+            continue;
+        }
+        let name = format!("{}@{}", l.head, p.replace('/', "%2F"));
+        let copies = if repo.p.cache_path(&l.head, &name).exists() { 1 } else { 2 };
+        for _ in 0..copies {
+            btrfs::prepare_snapshot(&cp, &repo.p.work_dir(), true)?;
+        }
+    }
+    Ok(())
 }
 
 /// Snapshot the caches at `paths` of a working folder (`w`) as the caches of `state` and record
@@ -470,7 +516,7 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
             (None, Some(l)) if alive => {
                 // The operation created the line: delete it (content saved first).
                 wb = repo.working_state(ctx, l, "before undo")?;
-                btrfs::delete_tree(&repo.working(l))?;
+                repo.p.trash(&repo.working(l))?;
                 repo.drop_stage(l)?;
             }
             _ => {}
@@ -950,14 +996,14 @@ pub fn run_gc(ctx: &Ctx, repo: &Repo, dry: bool) -> Result<Vec<String>> {
         let s = repo.p.db.state(id)?;
         if let Some(s) = &s {
             for snap in s.caches.values() {
-                let _ = btrfs::delete_tree(&repo.p.cache_path(id, snap));
+                let _ = repo.p.trash(&repo.p.cache_path(id, snap));
             }
         }
         if repo.p.delete_state(id).is_ok() {
             deleted.push(id.clone());
         }
     }
-    let caches = prune_caches(repo)?;
+    let caches = trash_excess_caches(repo)?;
     // Overlays with a history limit and folder overlays with an LRU limit (docs/cache-overlays.md).
     for name in repo.overlay_names()? {
         repo.after_overlay_move(ctx, &name);
@@ -1006,7 +1052,7 @@ pub fn run_gc(ctx: &Ctx, repo: &Repo, dry: bool) -> Result<Vec<String>> {
                     .map(|t| t.elapsed().map(|x| x.as_secs() > 3600).unwrap_or(false))
                     .unwrap_or(false);
                 if old {
-                    let _ = btrfs::delete_tree(&e.path());
+                    let _ = repo.p.trash(&e.path());
                 }
             }
         }
@@ -1016,8 +1062,8 @@ pub fn run_gc(ctx: &Ctx, repo: &Repo, dry: bool) -> Result<Vec<String>> {
 
 /// Cache snapshots (build output) are large and only the newest ones warm new lines: they stay
 /// for the heads of lines and for the newest `retention.caches` (5) states with caches. The
-/// states themselves stay; only their cache snapshots go.
-fn prune_caches(repo: &Repo) -> Result<Vec<String>> {
+/// states themselves stay; only their cache snapshots go. Returns `(state, snapshot name)`.
+pub fn excess_caches(repo: &Repo) -> Result<Vec<(String, String)>> {
     let keep_n = repo.p.config_u64("retention.caches", 5) as usize;
     let mut heads: BTreeSet<String> = repo.p.db.lines()?.into_iter().map(|l| l.head).collect();
     heads.extend(repo.p.db.refs("", ids::now_ms())?.into_iter().map(|r| r.target));
@@ -1031,18 +1077,23 @@ fn prune_caches(repo: &Repo) -> Result<Vec<String>> {
         }
     }
     with_caches.sort_by_key(|x| std::cmp::Reverse(x.0));
-    let mut deleted = Vec::new();
+    let mut out = Vec::new();
     for (_, id, snaps) in with_caches.into_iter().skip(keep_n) {
-        if heads.contains(&id) {
-            continue;
-        }
-        for n in snaps {
-            if btrfs::delete_tree(&repo.p.cache_path(&id, &n)).is_ok() {
-                deleted.push(n);
-            }
+        if !heads.contains(&id) {
+            out.extend(snaps.into_iter().map(|n| (id.clone(), n)));
         }
     }
-    Ok(deleted)
+    Ok(out)
+}
+
+/// Move the cache snapshots that retention lets go into the trash. Returns their names.
+pub fn trash_excess_caches(repo: &Repo) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for (id, name) in excess_caches(repo)? {
+        repo.p.trash(&repo.p.cache_path(&id, &name))?;
+        out.push(name);
+    }
+    Ok(out)
 }
 
 pub fn gc(ctx: &Ctx, args: &[String]) -> Result<i32> {
@@ -1064,6 +1115,13 @@ pub fn gc(ctx: &Ctx, args: &[String]) -> Result<i32> {
         outln!(ctx, "{verb} {} state(s)", v.len());
         for id in v.iter().take(50) {
             outln!(ctx, "\t{}", ids::short(id));
+        }
+        if a.has("-n") {
+            let caches = excess_caches(&h.repo)?;
+            outln!(ctx, "would delete {} cache(s)", caches.len());
+            for (_, name) in caches.iter().take(50) {
+                outln!(ctx, "\t{name}");
+            }
         }
     }
     Ok(0)
