@@ -133,6 +133,7 @@ pub(crate) use callback_fixtures::frozen as recovery_fixtures;
 #[path = "test_support/agent_views.rs"]
 pub(crate) mod agent_view_fixtures;
 
+<<<<<<< head
 fn rule_snapshot(
     rule: &serde_json::Value,
     owner: serde_json::Value,
@@ -151,3 +152,7 @@ fn rule_snapshot(
 }
 
 pub(crate) use callback_fixtures::normalize_agent_nulls;
+||||||| base
+=======
+extern crate studio_test_deps;
+>>>>>>> 26183e1

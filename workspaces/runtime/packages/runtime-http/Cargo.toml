@@ -39,7 +39,12 @@ openapi-to-rust = { version = "=0.22.0", default-features = false }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+<<<<<<< head
 studio-runtime-services = { path = "../runtime-services", features = ["test-support"] }
+||||||| base
+=======
+studio-test-deps = { path = "../test-deps" }
+>>>>>>> 26183e1
 studio-runtime-store = { path = "../runtime-store", features = ["test-support"] }
 tempfile = { workspace = true }
 rusqlite = { workspace = true }

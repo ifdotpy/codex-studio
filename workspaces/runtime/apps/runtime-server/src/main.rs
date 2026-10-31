@@ -3066,3 +3066,6 @@ mod startup_registry_tests {
         drop(store);
     }
 }
+
+#[cfg(test)]
+extern crate studio_test_deps;

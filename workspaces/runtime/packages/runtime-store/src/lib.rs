@@ -5167,3 +5167,6 @@ mod projection_adapter_tests {
         assert_eq!(projected, serde_json::json!({"name":"sample", "count":3}));
     }
 }
+
+#[cfg(test)]
+extern crate studio_test_deps;

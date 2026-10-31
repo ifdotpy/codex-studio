@@ -32,3 +32,6 @@ pub use session::{BookError, PendingBook, RequestState, ResponseMatch};
 pub use studio_runtime_schema::provider_diagnostics;
 
 pub use studio_runtime_schema::supervisor_contract;
+
+#[cfg(test)]
+extern crate studio_test_deps;

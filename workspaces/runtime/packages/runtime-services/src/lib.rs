@@ -337,3 +337,6 @@ mod registration_tests {
         assert_eq!(declared_modules(include_str!("lib.rs")), source_modules);
     }
 }
+
+#[cfg(test)]
+extern crate studio_test_deps;

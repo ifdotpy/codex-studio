@@ -35,3 +35,6 @@ fn main() -> std::process::ExitCode {
         std::process::ExitCode::FAILURE
     }
 }
+
+#[cfg(test)]
+extern crate studio_test_deps;

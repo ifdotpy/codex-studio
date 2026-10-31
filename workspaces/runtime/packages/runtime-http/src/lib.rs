@@ -28,3 +28,6 @@ pub mod generated {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+extern crate studio_test_deps;

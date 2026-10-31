@@ -6,4 +6,11 @@ pub mod handover;
 #[cfg(unix)]
 pub mod host_runtime;
 pub mod provider_ports;
+<<<<<<< head
 pub mod startup_gate;
+||||||| base
+=======
+
+#[cfg(test)]
+extern crate studio_test_deps;
+>>>>>>> 26183e1

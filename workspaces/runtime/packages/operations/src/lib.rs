@@ -795,3 +795,6 @@ pub fn transition(state: &State, event: &Event) -> Decision {
     }
     decision
 }
+
+#[cfg(test)]
+extern crate studio_test_deps;
