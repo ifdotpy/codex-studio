@@ -419,9 +419,8 @@ pub fn execute_sync(
                 | Principal::Federated { .. }
                 | Principal::Policy => (None, None),
             };
-            // TODO(#630): a stop pauses the chat and clears its queue (today's lifecycle).
-            // The rule "stop does not pause and does not clear the queue" needs the Turn
-            // table of the domain model.
+            // A stop only interrupts the running turn; it does not pause the chat or
+            // clear its queue.
             let action = Action::Stop {
                 target: target.clone(),
                 descendants: body.descendants,

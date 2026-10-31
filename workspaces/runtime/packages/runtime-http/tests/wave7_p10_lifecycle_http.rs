@@ -29,6 +29,8 @@ use tower::ServiceExt;
 struct InterruptBroker {
     store: Arc<RuntimeStore>,
     scope: ConnectionScope,
+    /// The agent status that the request must find: a stop leaves it, a delete pauses it.
+    status: &'static str,
     calls: Mutex<Vec<ProviderRequest>>,
 }
 
@@ -51,7 +53,7 @@ impl AccountSessionPort for InterruptBroker {
             )
             .expect("stopped agent exists");
         let agent: Value = serde_json::from_str(&raw).expect("agent record");
-        assert_eq!(agent["status"], "paused");
+        assert_eq!(agent["status"], self.status);
         let interrupt = &agent["startAttempt"]["interrupt"];
         if request.method == Method::TurnInterrupt {
             assert_eq!(interrupt["outcome"], "unknown");
@@ -144,6 +146,7 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
             connection: "fixture-connection".into(),
             generation: 7,
         },
+        status: "running",
         calls: Mutex::new(Vec::new()),
     });
     let ports: Arc<dyn LifecyclePorts> = Arc::new(ProductionLifecyclePorts::new(
@@ -301,6 +304,7 @@ async fn production_delete_route_interrupts_and_settles_active_turn() {
             connection: "fixture-connection".into(),
             generation: 7,
         },
+        status: "paused",
         calls: Mutex::new(Vec::new()),
     });
     let ports: Arc<dyn LifecyclePorts> = Arc::new(ProductionLifecyclePorts::new(
