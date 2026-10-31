@@ -1235,7 +1235,6 @@ mod tests {
         );
     }
 
-<<<<<<< head
     fn attempt_columns(
         db: &Connection,
         chat: &str,
@@ -1320,8 +1319,8 @@ mod tests {
         assert_eq!(turns[0].state, TurnState::Interrupted);
         assert_eq!(turns[0].provider_turn.as_deref(), Some("p9"));
         assert_eq!(attempt_columns(&db, "c"), [(None, None, None, Some(1))]);
-||||||| base
-=======
+    }
+
     #[test]
     fn the_legacy_completed_turn_table_keeps_its_rows_and_refuses_writes() {
         let db = crate::fresh_state::test_canvas();
@@ -1351,6 +1350,5 @@ mod tests {
         assert_eq!(kept, 1);
         complete_turn(&db, "c", "p9").unwrap();
         assert!(turn_completed(&db, "c", "p9").unwrap());
->>>>>>> 5eb4737b6eca613235619da66e85ed86583926f6
     }
 }
