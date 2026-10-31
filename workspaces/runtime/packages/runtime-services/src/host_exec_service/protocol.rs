@@ -398,6 +398,8 @@ pub(crate) fn scan(
 }
 
 /// The digest that the guest sends as `manifestSha256` for the same tree.
+/// The VM guest's host_exec.py hashes Python `json.dumps(sort_keys=True)`, so
+/// its wire contract requires this serializer's matching bytes.
 pub(crate) fn manifest_digest(manifest: &Manifest) -> Result<String, serde_json::Error> {
     Ok(key(
         &studio_runtime_schema::json_compat::python_json_serialized(manifest)?,
