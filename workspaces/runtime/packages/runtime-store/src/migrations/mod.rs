@@ -15,7 +15,6 @@ mod m2026_10_27_scheduler_indexes;
 mod m2026_10_28_agent_account;
 mod m2026_10_28_agent_fields;
 mod m2026_10_28_group_revision;
-mod m2026_10_30_text_blobs;
 mod m2026_10_28_receipts_account_worker;
 mod m2026_10_28_receipts_actions;
 mod m2026_10_28_receipts_checks;
@@ -54,6 +53,7 @@ mod m2026_10_30_retire_graph_agents;
 mod m2026_10_30_rule_monitor_records;
 mod m2026_10_30_start_wait;
 mod m2026_10_30_task_records;
+mod m2026_10_30_text_blobs;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
@@ -123,15 +123,11 @@ const OCTOBER_29: MigrationDate = MigrationDate {
     month: 10,
     day: 29,
 };
-<<<<<<< head
-||||||| base
-=======
 const OCTOBER_31: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
     day: 31,
 };
->>>>>>> origin/main
 const OCTOBER_30: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
@@ -758,16 +754,6 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
-<<<<<<< head
-            id: "2026-10-30-text-blobs",
-            introduced: OCTOBER_30,
-            target: MigrationTarget::Canvas,
-            supported_source: "State without runtime_item_blobs",
-            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
-        },
-        apply: |c| m2026_10_30_text_blobs::apply(c.transaction),
-||||||| base
-=======
             id: "2026-10-30-rule-monitor-records",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
@@ -819,7 +805,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_request_record::apply(c.transaction),
->>>>>>> origin/main
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-text-blobs",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "State without runtime_item_blobs",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_text_blobs::apply(c.transaction),
     },
     &RegistryMigration,
     &SqlMigration {

@@ -13,7 +13,6 @@ use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::TRANSCRIPT_MAX_TOMBSTONES;
 use thiserror::Error;
 
-<<<<<<< head
 const BOOTSTRAP_TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_item_fulltext",
@@ -24,23 +23,6 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[
         columns: &["id", "hash", "size"],
     },
 ];
-const TRANSCRIPT_PAGE_SIZE: usize = 120;
-// Keep each IN query below SQLite's legacy 999-variable default, reserving one slot for the agent.
-const TRANSCRIPT_IN_QUERY_ID_CHUNK_SIZE: usize = 900;
-||||||| base
-const BOOTSTRAP_TABLES: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_item_fulltext",
-    columns: &["id", "body"],
-}];
-const TRANSCRIPT_PAGE_SIZE: usize = 120;
-// Keep each IN query below SQLite's legacy 999-variable default, reserving one slot for the agent.
-const TRANSCRIPT_IN_QUERY_ID_CHUNK_SIZE: usize = 900;
-=======
-const BOOTSTRAP_TABLES: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_item_fulltext",
-    columns: &["id", "body"],
-}];
->>>>>>> origin/main
 const SEARCH_NEXT_META_TABLES: &[TableRequirement] = &[TableRequirement {
     name: "runtime_search_next_meta",
     columns: &["id", "agent", "kind", "search_rowid"],
@@ -1000,21 +982,9 @@ fn search_phase(connection: &Connection) -> TranscriptStoreResult<String> {
 
 #[cfg(test)]
 mod tests {
-<<<<<<< head
-    use std::cell::RefCell;
-
     use crate::text_blobs;
-    use rusqlite::trace::{TraceEvent, TraceEventCodes};
     use rusqlite::Connection;
     use serde_json::Value;
-||||||| base
-    use std::cell::RefCell;
-
-    use rusqlite::Connection;
-    use rusqlite::trace::{TraceEvent, TraceEventCodes};
-=======
-    use rusqlite::Connection;
->>>>>>> origin/main
     use serde_json::json;
 
     use super::{TranscriptRepository, TranscriptStoreError};
