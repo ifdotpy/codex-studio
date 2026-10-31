@@ -10,6 +10,15 @@ use studio_runtime_store::{RuntimeStore, Transaction, agent_management as reposi
 
 const NOW: f64 = 1_234_567.5;
 
+/// A request fixture in the legacy shape, as the typed approval row the store keeps.
+fn approval_row(row: &serde_json::Value) -> serde_json::Value {
+    let id = row["id"].as_str().expect("request id");
+    serde_json::to_value(
+        studio_runtime_store::approvals::from_legacy_record(id, row).expect("typed approval"),
+    )
+    .expect("approval json")
+}
+
 fn seed() -> Value {
     let mut lead = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":3,"status":"idle","name":"Lead","cwd":"/fixture","isLead":true,"autoWake":true,"inFlight":false,"created":1.0});
     let mut worker = lead.clone();
@@ -333,8 +342,10 @@ async fn archive_is_refused_while_the_worker_has_pending_work() {
             json!({"id":"pending","agent":"worker","epoch":8,"status":"pending"}),
         ),
         (
-            "runtime_requests",
-            json!({"id":"question","agent":"worker","status":"pending","method":"agent/asyncQuestion","createdAt":1,"params":{}}),
+            "approvals",
+            approval_row(
+                &json!({"id":"question","agent":"worker","status":"pending","method":"agent/asyncQuestion","createdAt":1,"params":{}}),
+            ),
         ),
         (
             "runtime_monitors",

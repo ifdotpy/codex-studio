@@ -15,6 +15,15 @@ use studio_runtime_services::{
 use studio_runtime_store::{RuntimeStore, Transaction, agent_management};
 use tokio::sync::Notify;
 
+/// A request fixture in the legacy shape, as the typed approval row the store keeps.
+fn approval_row(row: &serde_json::Value) -> serde_json::Value {
+    let id = row["id"].as_str().expect("request id");
+    serde_json::to_value(
+        studio_runtime_store::approvals::from_legacy_record(id, row).expect("typed approval"),
+    )
+    .expect("approval json")
+}
+
 fn monitor_fixture(fields: &Value) -> Value {
     let mut monitor = json!({"epoch":1,"requestId":"test","turnId":null,"activityAt":1.0,
         "activityGeneration":0,"bytes":0,"command":"","created":1.0,"cwd":"/",
@@ -108,7 +117,7 @@ fn case(name: &str) -> Value {
         }
         "stop-True" => {
             records["tables"]["runtime_events"] = json!([{"id":"pending","agent":"lead","epoch":3,"status":"pending"},{"id":"uncertain","agent":"lead","epoch":3,"status":"uncertain"}]);
-            records["tables"]["runtime_requests"] = json!([{"id":"question","agent":"lead","status":"pending","method":"agent/asyncQuestion","createdAt":1.0,"params":{}},{"id":"approval","agent":"lead","status":"pending","method":"monitor/approve","createdAt":1.0,"params":{}}]);
+            records["tables"]["approvals"] = json!(json!([{"id":"question","agent":"lead","status":"pending","method":"agent/asyncQuestion","createdAt":1.0,"params":{}},{"id":"approval","agent":"lead","status":"pending","method":"monitor/approve","createdAt":1.0,"params":{}}]).as_array().expect("rows").iter().map(approval_row).collect::<Vec<_>>());
             records["tables"]["runtime_agents"][0]
                 .as_object_mut()
                 .expect("lead")
@@ -278,7 +287,7 @@ async fn stop_failures_roll_back_rows_and_projections_after_restart() {
         "stop-True",
         &[
             "runtime_agents",
-            "runtime_requests",
+            "approvals",
             "runtime_events",
             "sync_entities",
         ],

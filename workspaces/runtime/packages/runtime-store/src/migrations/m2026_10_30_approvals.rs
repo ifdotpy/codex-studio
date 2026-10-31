@@ -544,7 +544,15 @@ pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
             .collect::<Result<Vec<_>, _>>()?
     };
     for (id, record) in rows {
-        let row = convert(&id, legacy_of(&id, &record)?)?;
+        // A record that is not a request (no agent, no time) stays in the legacy table,
+        // which is kept read-only. It is reported, never converted by guessing.
+        let row = match legacy_of(&id, &record).and_then(|legacy| convert(&id, legacy)) {
+            Ok(row) => row,
+            Err(error) => {
+                eprintln!("approvals migration skipped a request: {error}");
+                continue;
+            }
+        };
         approvals::insert(tx, &row).map_err(|error| bad(&id, &error.to_string()))?;
     }
     Ok(())
@@ -575,9 +583,9 @@ mod tests {
             json!({"id":"q2","method":"item/tool/requestUserInput","agent":"a","status":"deleted","createdAt":1.0,"deletedAt":9.0,"deletedBy":"user",
                 "params":{"turnId":"t","questions":[]}}),
             json!({"id":"x1","method":"item/commandExecution/requestApproval","agent":"a","status":"expired","createdAt":1.0,"params":{"turnId":"t"}}),
-            json!({"id":"m1","method":"monitor/approve","agent":"a","status":"answered","params":{"monitorId":"m","command":"c"}}),
-            json!({"id":"b1","method":"browser/open","agent":"a","status":"expired","closeReason":"stale","params":{"url":"https://x","bridgeId":"b","host":"x"}}),
-            json!({"id":"f1","method":"item/fileChange/requestApproval","agent":"a","status":"resolved","params":{"itemId":"i","turnId":"t"},"preview":{"changes":[{"path":"/p"}]}}),
+            json!({"id":"m1","method":"monitor/approve","agent":"a","createdAt":1.0,"status":"answered","params":{"monitorId":"m","command":"c"}}),
+            json!({"id":"b1","method":"browser/open","agent":"a","createdAt":1.0,"status":"expired","closeReason":"stale","params":{"url":"https://x","bridgeId":"b","host":"x"}}),
+            json!({"id":"f1","method":"item/fileChange/requestApproval","agent":"a","createdAt":1.0,"status":"resolved","params":{"itemId":"i","turnId":"t"},"preview":{"changes":[{"path":"/p"}]}}),
         ];
         for row in &rows {
             db.execute(
@@ -686,12 +694,12 @@ mod tests {
             params
         };
         let rows = [
-            json!({"id":"p","method":"browser/open","agent":"a","status":"pending","params":card(json!({}))}),
-            json!({"id":"w","method":"browser/open","agent":"a","status":"pending",
+            json!({"id":"p","method":"browser/open","agent":"a","createdAt":1.0,"status":"pending","params":card(json!({}))}),
+            json!({"id":"w","method":"browser/open","agent":"a","createdAt":1.0,"status":"pending",
                 "params":card(json!({"phase":"waiting","waiting":{"expiresAt":7.0}}))}),
-            json!({"id":"d","method":"browser/open","agent":"a","status":"answered","decision":"answer","answeredBy":"user","answeredAt":5.0,
+            json!({"id":"d","method":"browser/open","agent":"a","createdAt":1.0,"status":"answered","decision":"answer","answeredBy":"user","answeredAt":5.0,
                 "params":card(json!({"phase":"waiting","waiting":{"expiresAt":7.0},"paste":{"at":4.0},"outcome":"signed-in","outcomeHttp":200}))}),
-            json!({"id":"u","method":"browser/open","agent":"a","status":"uncertain","decision":"answer","answeredBy":"user","answeredAt":5.0,
+            json!({"id":"u","method":"browser/open","agent":"a","createdAt":1.0,"status":"uncertain","decision":"answer","answeredBy":"user","answeredAt":5.0,
                 "params":card(json!({"phase":"waiting","waiting":{"expiresAt":7.0},"paste":{"at":4.0},"outcome":"unknown","outcomeHttp":null}))}),
         ];
         for row in &rows {
@@ -747,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn a_browser_field_the_card_cannot_hold_fails_the_migration() {
+    fn a_browser_field_the_card_cannot_hold_leaves_the_row_in_the_legacy_table() {
         for params in [
             json!({"bridgeId":"b","url":"u","host":"h","phase":"bogus"}),
             json!({"bridgeId":"b","url":"u","host":"h","forward":{"tokenHash":null}}),
@@ -761,16 +769,23 @@ mod tests {
             .unwrap();
             db.execute(
                 "INSERT INTO runtime_requests VALUES ('b',?1)",
-                [json!({"id":"b","method":"browser/open","agent":"a","status":"pending","params":params}).to_string()],
+                [json!({"id":"b","method":"browser/open","agent":"a","createdAt":1.0,"status":"pending","params":params}).to_string()],
             )
             .unwrap();
             let tx = db.transaction().unwrap();
-            assert!(apply(&tx).is_err(), "{params}");
+            apply(&tx).unwrap();
+            assert_eq!(
+                tx.query_row("SELECT count(*) FROM approvals", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "{params}"
+            );
         }
     }
 
     #[test]
-    fn agent_level_rows_keep_no_turn_and_a_turnless_exec_fails() {
+    fn agent_level_rows_keep_no_turn_and_a_turnless_exec_is_not_converted() {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL); INSERT INTO runtime_requests VALUES('m','{\"id\":\"m\",\"method\":\"monitor/approve\",\"agent\":\"a\",\"status\":\"pending\",\"params\":{}}')").unwrap();
         let tx = db.transaction().unwrap();
@@ -785,15 +800,26 @@ mod tests {
         drop(tx);
         db.execute_batch("INSERT INTO runtime_requests VALUES('e','{\"id\":\"e\",\"method\":\"item/commandExecution/requestApproval\",\"agent\":\"a\",\"status\":\"pending\",\"params\":{}}')").unwrap();
         let tx = db.transaction().unwrap();
-        assert!(apply(&tx).is_err());
+        apply(&tx).unwrap();
+        assert!(
+            approvals::get(&tx, &ApprovalId("e".into()))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
-    fn a_field_the_converter_cannot_place_fails_the_migration() {
+    fn a_field_the_converter_cannot_place_leaves_the_row_in_the_legacy_table() {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL); INSERT INTO runtime_requests VALUES('m','{\"id\":\"m\",\"method\":\"monitor/approve\",\"agent\":\"a\",\"status\":\"pending\",\"params\":{},\"surprise\":1}')").unwrap();
         let tx = db.transaction().unwrap();
-        assert!(apply(&tx).is_err());
+        apply(&tx).unwrap();
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM approvals", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -836,10 +862,16 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_legacy_method_fails_the_migration() {
+    fn an_unknown_legacy_method_leaves_the_row_in_the_legacy_table() {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL); INSERT INTO runtime_requests VALUES('z','{\"id\":\"z\",\"method\":\"new/thing\",\"status\":\"pending\"}')").unwrap();
         let tx = db.transaction().unwrap();
-        assert!(apply(&tx).is_err());
+        apply(&tx).unwrap();
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM approvals", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 }

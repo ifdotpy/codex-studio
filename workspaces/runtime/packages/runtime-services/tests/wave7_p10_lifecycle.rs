@@ -103,8 +103,9 @@ async fn seed(store: &RuntimeStore, records: Records) {
                         params![row["id"].as_str(), row["agent"].as_str(), row["ended"].as_f64(), row["state"].as_str()],
                     )?;
                 } else if table == "runtime_requests" {
-                    let request: studio_runtime_store::RequestRecord = serde_json::from_str(&row.to_string())?;
-                    studio_runtime_store::Table::<studio_runtime_store::RequestRecord>::new(tx).put(&request)?;
+                    let id = row["id"].as_str().expect("request id");
+                    let approval = studio_runtime_store::approvals::from_legacy_record(id, &row).expect("typed approval");
+                    studio_runtime_store::approvals::put(tx, &approval).expect("approval row");
                 } else { agent_management::write(tx, &table, &row)?; }
             }
         }
@@ -1236,7 +1237,7 @@ async fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
     drop(store);
     for (table, operation) in [
         ("runtime_agents", "UPDATE"),
-        ("runtime_requests", "UPDATE"),
+        ("approvals", "UPDATE"),
         ("runtime_events", "UPDATE"),
         // Seeded projections exist, so the action updates entity rows.
         ("sync_entities", "UPDATE"),

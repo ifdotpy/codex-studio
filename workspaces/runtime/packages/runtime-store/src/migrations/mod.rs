@@ -40,7 +40,6 @@ mod m2026_10_29_request_results_v2;
 mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
 mod m2026_10_30_approvals;
-mod m2026_10_30_outbox_reopen;
 mod m2026_10_30_branch_phase;
 mod m2026_10_30_capture_errors;
 mod m2026_10_30_command_path;
@@ -52,6 +51,7 @@ pub(crate) mod m2026_10_30_monitor_queue;
 pub(crate) mod m2026_10_30_monitor_status;
 mod m2026_10_30_one_nonce_table;
 mod m2026_10_30_one_outbox;
+mod m2026_10_30_outbox_reopen;
 mod m2026_10_30_project_teams;
 mod m2026_10_30_radio_room;
 mod m2026_10_30_request_record;
@@ -71,9 +71,9 @@ pub use m2026_10_20_agents::migrate_2026_10_20;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::prepare_columns;
 pub use m2026_10_26_provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
-pub(crate) use m2026_10_30_approvals::approval_from_record;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_26_provider_identity::migrate_canvas_2026_10_26;
+pub(crate) use m2026_10_30_approvals::approval_from_record;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_30_branch_phase::apply as migrate_branch_phase;
 #[cfg(any(test, feature = "test-support"))]

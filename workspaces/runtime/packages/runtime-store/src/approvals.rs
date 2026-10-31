@@ -339,6 +339,17 @@ fn select(
 /// their fixtures with it.
 #[cfg(any(test, feature = "test-support"))]
 pub fn from_legacy_record(id: &str, record: &serde_json::Value) -> crate::StoreResult<Approval> {
+    // Old fixtures leave out the time and the turn of a provider request.
+    let mut record = record.clone();
+    if record.get("createdAt").is_none() {
+        record["createdAt"] = serde_json::json!(0.0);
+    }
+    let provider_turn = record["method"]
+        .as_str()
+        .is_some_and(|method| method.starts_with("item/") || method.starts_with("mcpServer/"));
+    if provider_turn && record.get("turnId").is_none() && record["params"].get("turnId").is_none() {
+        record["turnId"] = serde_json::json!("turn-0");
+    }
     crate::migrations::approval_from_record(id, &record.to_string())
 }
 
