@@ -17,6 +17,11 @@ import type { PostBody, PostResult } from "../../src/api.ts";
 import type { ApiPostPath } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "../misc-fixture.ts";
 import { waitForFixturePort } from "../fixture-readiness.ts";
+declare global {
+  interface Window {
+    originalSetItem: Storage["setItem"];
+  }
+}
 test("project pointer and keyboard order persist, and a click collapses the project", async ({
   page: runnerPage,
 }) => {

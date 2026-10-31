@@ -26,10 +26,14 @@ test("queue identity lock preserves the first request across tabs", async ({
             await import("/src/browserPersistence.ts");
           const update = createQueueOutbox(localStorage, "queue-outbox-test");
           try {
-            return await update("scope:agent", null, (current) => {
-              if (current !== null) throw new Error("pending");
-              return { request_id: `request-${index}` };
-            });
+            return await update<{ request_id: string } | null>(
+              "scope:agent",
+              null,
+              (current) => {
+                if (current !== null) throw new Error("pending");
+                return { request_id: `request-${index}` };
+              },
+            );
           } catch {
             return null;
           }

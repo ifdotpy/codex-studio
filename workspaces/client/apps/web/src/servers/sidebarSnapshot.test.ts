@@ -7,6 +7,7 @@ import {
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../types";
+import { preferenceMemory } from "./storage";
 import { navigationSnapshot } from "./navigation";
 import { sidebarProjectChat, sidebarSnapshot } from "./sidebarSnapshot";
 
@@ -39,6 +40,7 @@ let records: Map<string, string>;
 let getItem: ReturnType<typeof vi.fn>;
 let setItem: ReturnType<typeof vi.fn>;
 beforeEach(() => {
+  preferenceMemory.clear();
   records = new Map();
   getItem = vi.fn((key: string) => records.get(key) ?? null);
   setItem = vi.fn();
@@ -221,23 +223,23 @@ describe("server sidebar projection", () => {
       [itemGroup]: ["lead", "folder:nested"],
       [legacyGroup]: ["second"],
     };
-    records.set(
+    preferenceMemory.setItem(
       `codex-project-compact:${data.stateDir}`,
       JSON.stringify(compact),
     );
-    records.set(
+    preferenceMemory.setItem(
       `codex-project-tree:${data.stateDir}`,
       JSON.stringify(collapsed),
     );
     records.set(`codex-sidebar-order:${data.stateDir}`, JSON.stringify(groups));
-    records.set(
+    preferenceMemory.setItem(
       "codex-project-compact:/state/different",
       JSON.stringify({ "/work": true }),
     );
     // Edit times of this server's sidebar fields go with the snapshot; other keys do not.
     const field = (key: string, name: string) => JSON.stringify([key, name]);
     const own = field(`codex-project-tree:${data.stateDir}`, folderKey);
-    records.set(
+    preferenceMemory.setItem(
       "studio-ui-preference-fields-v1:server",
       JSON.stringify({
         [own]: { value: false, timestamp: 7, writer: "frame" },
@@ -261,12 +263,10 @@ describe("server sidebar projection", () => {
     expect(projected.collapsed).toEqual(collapsed);
     expect(projected.savedOrder).toEqual(groups);
     expect(projected.sidebarOrder).toBeUndefined();
+    // Preference records come from streamed memory; only the saved order reads storage.
     expect(getItem.mock.calls.map(([key]) => key).sort()).toEqual(
       [
-        `codex-project-compact:${data.stateDir}`,
-        `codex-project-tree:${data.stateDir}`,
         `codex-sidebar-order:${data.stateDir}`,
-        "studio-ui-preference-fields-v1:server",
       ].sort(),
     );
     expect(setItem).not.toHaveBeenCalled();

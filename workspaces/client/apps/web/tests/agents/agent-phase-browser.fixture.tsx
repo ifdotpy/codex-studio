@@ -161,7 +161,6 @@ function scope(ownerId: string, hold = false) {
       receiveResourceTokenRates: () => true,
       getWorkspaceTokenRates: () => ({ records: [] }),
     },
-    storageName: (name) => ownerId + ":" + name,
     openEvents: (url) => {
       const source = new Source(url);
       sources.push(source);

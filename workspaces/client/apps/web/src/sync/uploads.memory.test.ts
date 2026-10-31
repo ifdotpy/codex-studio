@@ -52,7 +52,7 @@ it("does not restore an upload removed while its request is in flight", async ()
     databaseName: "test",
     syncDatabase: async () => ({ workspaceId: "workspace" }),
     syncGet: async () => ({ workspaceId: "workspace" }),
-    refreshSession: vi.fn(),
+    refreshSession: vi.fn(async () => ({ token: "session" })),
     syncPost: post,
   };
   const uploads = createUploads(options);

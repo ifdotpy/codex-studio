@@ -74,6 +74,7 @@ export default function HistoryWindow({rows, render}) { return <div>{rows.map(ro
                 ),
                 map: null,
               };
+            return null;
           },
           configureServer(s) {
             s.middlewares.use("/audit", (_q, r) => {
@@ -85,6 +86,7 @@ export default function HistoryWindow({rows, render}) { return <div>{rows.map(ro
           },
           resolveId(id) {
             if (id === "/history-comparison.tsx") return entry;
+            return null;
           },
         },
       ],

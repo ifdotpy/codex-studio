@@ -49,11 +49,8 @@ export function mount() {
         notify,
       );
       const recovery = useUploadRecovery("fixture", scope, setAttachments);
-      const [profile, setProfile] = useFormDraft(
-        "fixture-profile:" + scope,
-        notify,
-      );
-      const [rule, setRule] = useFormDraft("fixture-rule:" + scope, notify);
+      const [profile, setProfile] = useFormDraft("fixture-profile:" + scope);
+      const [rule, setRule] = useFormDraft("fixture-rule:" + scope);
       window.uploadRecoveryBrowserFixture = {
         attachments,
         setAttachments,

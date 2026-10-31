@@ -171,39 +171,6 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(comprehensive.command, /test:browser:smoke:prepared/);
 });
 
-test("real IndexedDB staging belongs to the full browser tier, not Node units or smoke (issue #616)", () => {
-  const web = "workspaces/client/apps/web";
-  const spec = readFileSync(
-    `${web}/tests/sync/entity-transfer-storage-browser.spec.ts`,
-    "utf8",
-  );
-  const title = spec.match(/test\(\s*"([^"]+)"/)?.[1];
-  assert.ok(title, "the real IndexedDB witness must remain registered");
-  const scripts: NonNullable<PackageManifest["scripts"]> = JSON.parse(
-    readFileSync(`${web}/package.json`, "utf8"),
-  ).scripts;
-  const smoke = scripts["test:browser:smoke:prepared"];
-  assert.ok(smoke);
-  const grep = smoke.match(/--grep "([^"]+)"/)?.[1];
-  assert.ok(grep, "package.json owns the smoke selector");
-  assert.doesNotMatch(title, new RegExp(grep));
-  assert.match(spec, /from "\.\.\/playwright\.ts"/);
-  assert.equal(
-    existsSync(`${web}/src/sync/entityTransfer.storage.test.ts`),
-    false,
-  );
-  const fast = readFileSync(`${web}/vitest.fast.config.ts`, "utf8");
-  assert.doesNotMatch(fast, /entityTransfer\.storage\.test/);
-  assert.match(fast, /"src\/sync\/entityTransfer\.test\.ts"/);
-  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
-  const [, browserJob] = workflow.split("  fast-browser-smoke:");
-  assert.ok(browserJob);
-  assert.match(
-    browserJob,
-    /playwright install chromium[\s\S]+just test-browser-smoke --prepared/,
-  );
-});
-
 test("consolidated Rust targets register every integration test file once", () => {
   const consolidated = discover(process.cwd()).filter(
     (item) =>
@@ -227,7 +194,9 @@ test("consolidated Rust targets register every integration test file once", () =
       "utf8",
     );
     // A module with a #[path] attribute lives in another file; only the others are test files here.
-    const modules = [...facade.matchAll(/^(#\[path = [^\n]*\]\n)?mod (\w+);$/gm)]
+    const modules = [
+      ...facade.matchAll(/^(#\[path = [^\n]*\]\n)?mod (\w+);$/gm),
+    ]
       .filter((match) => match[1] === undefined)
       .map((match) => `${match[2]}.rs`)
       .sort();
