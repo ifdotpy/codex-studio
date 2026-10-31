@@ -546,7 +546,7 @@ mod bulk_read_tests {
                     "INSERT INTO runtime_agents VALUES(?1,?2)",
                     (
                         id,
-                        json!({"accountKey":"default","id":id,"provider":"codex","rootId":"a","epoch":0,"status":"idle","tail":"legacy"})
+                        json!({"compactions":0,"accountKey":"default","id":id,"provider":"codex","rootId":"a","epoch":0,"status":"idle","tail":"legacy"})
                             .to_string(),
                     ),
                 )

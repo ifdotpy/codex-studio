@@ -59,7 +59,7 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
             }
             for index in 0..30 {
                 let id = format!("worker-{index:02}");
-                AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({
+                AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,
                     "id":id,"rootId":"lead","parentId":"lead","isLead":false,"epoch":1,"status":"running",
                     "name":format!("Worker {index}"),"autoWake":true,"cwd":"/work","provider":provider,
                     "accountKey":"default"})).expect("worker fixture deserializes"))?;

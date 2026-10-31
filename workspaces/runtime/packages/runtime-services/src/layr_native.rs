@@ -697,7 +697,7 @@ mod turn_save_tests {
             .await
             .expect("fixture operation succeeds");
         store.transaction_with(|tx| -> Result<(), StoreError> {
-            let record = json!({"accountKey":"default","provider":"codex","id":"native-save-agent","rootId":"native-save-agent","epoch":0,
+            let record = json!({"compactions":0,"accountKey":"default","provider":"codex","id":"native-save-agent","rootId":"native-save-agent","epoch":0,
                 "status":"idle","autoWake":true,"workspaceMode":"layr-native","layrReady":true,"cwd":"/native/main"});
             AgentRepository::put(tx,&AgentRecord::from_value(record).map_err(StoreError::from)?)?;
             stage_turn_save(tx,"native-save-agent","turn-1")?;

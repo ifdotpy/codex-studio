@@ -769,7 +769,7 @@ mod tests {
         connection.execute_batch("CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);").expect("settings and sync metadata");
         let tx = connection.transaction().expect("transaction");
-        let record = json!({"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle","name":"Before","isLead":true,"autoWake":true,"cwd":"/project","serverId":"server"});
+        let record = json!({"compactions":0,"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle","name":"Before","isLead":true,"autoWake":true,"cwd":"/project","serverId":"server"});
         super::save_agent(&tx, &record, &|_, _| true).expect("agent");
         let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let first = super::rename(
@@ -876,7 +876,7 @@ mod tests {
     fn agent_creation_is_atomic_replayable_and_publishes_sync_projection() {
         let mut connection = database();
         let tx = connection.transaction().expect("transaction starts");
-        let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+        let record = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"agent-a", "rootId":"agent-a", "epoch":0, "status":"queued",
             "name":"Agent A", "prompt":"Start the task", "cwd":"/project",
             "accountKey":"default", "serverId":"server-a", "isLead":true, "needsTitle":false, "autoWake":true,
@@ -1034,7 +1034,7 @@ mod tests {
                      BEGIN SELECT RAISE(ABORT,'injected creation failure'); END;"
                 ))
                 .expect("install targeted failpoint");
-            let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+            let record = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"agent-failpoint", "rootId":"parent", "parentId":"parent", "epoch":0,
                 "status":"queued", "name":"Agent", "prompt":"Task", "cwd":"/project",
                 "accountKey":"default", "isLead":false, "role":"implementer",

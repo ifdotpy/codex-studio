@@ -12,7 +12,7 @@ async fn current_provider_scope_reads_host_and_vm_owners() {
         .unwrap();
     store.transaction(|tx| {
         for (id, mode) in [("host", "native"), ("vm", "vm")] {
-            let agent = studio_runtime_store::AgentRecord::from_value(json!({"id":id,"rootId":id,"epoch":0,"status":"idle","provider":"codex","accountKey":"default","executionMode":mode})).unwrap();
+            let agent = studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,"id":id,"rootId":id,"epoch":0,"status":"idle","provider":"codex","accountKey":"default","executionMode":mode})).unwrap();
             assert!(studio_runtime_store::account_state::current_provider_scope(tx, &agent).is_err());
             studio_runtime_store::AgentRepository::put(tx, &agent)?;
         }

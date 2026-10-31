@@ -2268,13 +2268,13 @@ mod tests {
         let store = RuntimeStore::open(Some(root.path())).await.unwrap();
         store.transaction_with(|tx| {
             for (agent, provider, model) in [("claude-agent", "claude", "claude-test"), ("codex-agent", "codex", "gpt-test")] {
-                AgentRepository::put(tx, &AgentRecord::from_value(json!({
+                AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,
                     "id":agent,"rootId":"root","epoch":1,"status":"running","threadId":agent,
                     "accountKey":provider,"provider":provider,"model":model,"turnId":"turn",
                     "inFlight":true,"autoWake":false,"created":0,"activeTools":[],"events":0
                 })).unwrap())?;
             }
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"root","rootId":"root","epoch":1,"status":"idle","accountKey":"codex","provider":"codex"})).unwrap())
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"id":"root","rootId":"root","epoch":1,"status":"idle","accountKey":"codex","provider":"codex"})).unwrap())
         }).await.unwrap();
         let rates = crate::token_rate::TokenRateHub::new();
         // The scheduler has already started this turn; seed its committed rate observation.
@@ -2487,7 +2487,7 @@ mod tests {
             .transaction_with(|tx| {
                 AgentRepository::put(
                     tx,
-                    &AgentRecord::from_value(json!({
+                    &AgentRecord::from_value(json!({"compactions":0,
                         "id":"agent","rootId":"agent","epoch":1,"status":"running",
                         "threadId":"thread","accountKey":"default","provider":"claude",
                         "turnId":"turn","inFlight":true,"autoWake":false,"created":0,
@@ -2794,7 +2794,7 @@ mod tests {
             .transaction_with(|tx| {
                 AgentRepository::put(
                     tx,
-                    &AgentRecord::from_value(json!({
+                    &AgentRecord::from_value(json!({"compactions":0,
                         "id":"agent","rootId":"agent","epoch":1,"status":"running",
                         "threadId":"thread","accountKey":"default","provider":"codex",
                         "turnId":"turn","inFlight":true,"autoWake":false,
@@ -2866,7 +2866,7 @@ mod tests {
                 .transaction_with(move |tx| {
                     AgentRepository::put(
                         tx,
-                        &AgentRecord::from_value(json!({
+                        &AgentRecord::from_value(json!({"compactions":0,
                             "id":"agent","rootId":"agent","epoch":1,"status":"running",
                             "threadId":"thread","accountKey":"default","provider":provider,
                             "turnId":"turn","inFlight":true,"autoWake":false,
@@ -2951,7 +2951,7 @@ mod tests {
             .await
             .unwrap();
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",[json!({
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",[json!({"compactions":0,
                 "id":"agent","rootId":"agent","epoch":1,"status":"running","threadId":"thread",
                 "accountKey":"default","provider":"codex","turnId":"turn","inFlight":true,"autoWake":true,
                 "activeTools":[],"events":0
@@ -2994,7 +2994,7 @@ mod tests {
                     .to_string_lossy()
                     .into_owned();
                 store.transaction_with(move |tx| {
-                    tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({
+                    tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"compactions":0,
                         "id":"agent","rootId":"agent","epoch":1,"status":"running","threadId":"thread",
                         "accountKey":"default","provider":"claude","turnId":"turn","inFlight":true,
                         "autoWake":true,"activeTools":[],"events":0
@@ -3064,7 +3064,7 @@ mod tests {
             .transaction_with(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
-                    [json!({
+                    [json!({"compactions":0,
                         "id":"agent","rootId":"agent","epoch":1,"status":"running","threadId":"thread",
                         "accountKey":"default","provider":"claude","turnId":"turn","inFlight":true,
                         "autoWake":true,"activeTools":[],"events":0,"isLead":true
@@ -3162,7 +3162,7 @@ mod tests {
         .to_string();
         store
             .transaction(move |tx| {
-                let agent = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                let agent = AgentRecord::from_value(json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                     "id":"agent",
                     "rootId":"agent",
                     "epoch":1,
@@ -4188,7 +4188,7 @@ mod tests {
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 [
                     "foreign",
-                    &json!({"id":"foreign","provider":studio_runtime_schema::ProviderKind::Codex,"rootId":"other-team","epoch":1,"status":"running","threadId":"other","accountKey":"default","events":0}).to_string(),
+                    &json!({"compactions":0,"id":"foreign","provider":studio_runtime_schema::ProviderKind::Codex,"rootId":"other-team","epoch":1,"status":"running","threadId":"other","accountKey":"default","events":0}).to_string(),
                 ],
             )
             .expect("foreign agent creates");
@@ -4241,7 +4241,7 @@ mod tests {
                 "UPDATE runtime_agents SET record=?2 WHERE id='agent'",
                 params![
                     "agent",
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                    json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"agent","rootId":"agent","epoch":1,"status":"running",
                         "threadId":"thread","accountKey":"default","turnId":"turn",
                         "inFlight":true,"events":0,"activeTools":[],"autoWake":false,

@@ -37,7 +37,7 @@ pub(super) async fn running_store() -> (tempfile::TempDir, Arc<RuntimeStore>) {
             .await
             .expect("store"),
     );
-    let agent = AgentRecord::from_value(json!({
+    let agent = AgentRecord::from_value(json!({"compactions":0,
         "id":"agent","name":"Agent","rootId":"agent","epoch":4,"status":"running",
         "accountHistory":[],"model":"gpt-5","effort":"high","fastMode":false,
         "daybreakEnabled":false,"cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,"events":0,"activeTools":[],

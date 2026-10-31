@@ -257,7 +257,7 @@ mod tests {
             json!({"id":"task","owner":"worker","status":"running","updated":10}),
         )
         .expect("test fixture value");
-        let mut agent = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":0,"status":"completed","activeExecution":{"runId":"current","attemptId":"attempt"}});
+        let mut agent = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":0,"status":"completed","activeExecution":{"runId":"current","attemptId":"attempt"}});
         let mut tasks = vec![task];
         let progress = derive(&connection, &agent, &tasks).expect("test fixture value");
         assert_eq!(
@@ -437,7 +437,7 @@ mod tests {
             .await
             .expect("test fixture value");
         store.transaction_with(|tx| {
-            let actor = AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"worker","epoch":0,"status":"running","autoWake":true})).expect("test fixture value");
+            let actor = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"worker","epoch":0,"status":"running","autoWake":true})).expect("test fixture value");
             AgentRepository::put(tx,&actor)?;
             let record = json!({"id":"m","agent":"worker","epoch":0,"status":"running","command":"just test-fast","created":5,"tail":"first","requestId":"request","activityAt":5,"activityGeneration":0,"bytes":0,"cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("m.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"timeout_ms":3600000,"wakeOn":"exit"});
             let raw = format!(r#"{{"id":"m","agent":"worker","epoch":0,"status":"running","command":"just test-fast","created":5,"tail":"first","requestId":"request","activityAt":5,"activityGeneration":0,"bytes":0,"cwd":{},"interactive":false,"livenessCommand":"","log":{},"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"timeout_ms":3600000,"wakeOn":"exit"}}"#, serde_json::to_string(&std::env::temp_dir()).expect("cwd"), serde_json::to_string(&std::env::temp_dir().join("m.log")).expect("log"));

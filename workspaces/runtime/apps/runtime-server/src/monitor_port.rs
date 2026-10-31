@@ -2309,7 +2309,7 @@ mod tests {
     }
 
     fn owner(root: &Path, auto_wake: bool) -> Value {
-        json!({"id":"owner","rootId":"owner","epoch":0,"status":"waiting",
+        json!({"compactions":0,"id":"owner","rootId":"owner","epoch":0,"status":"waiting",
             "autoWake":auto_wake,"cwd":root.to_string_lossy(),"accountKey":"default",
             "provider":"codex"})
     }
@@ -4235,9 +4235,9 @@ mod tests {
         let root = tempfile::tempdir().expect("state root");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let cwd = root.path().to_string_lossy().into_owned();
-        let owner = json!({"id":"owner","rootId":"owner","epoch":0,"status":"waiting",
+        let owner = json!({"compactions":0,"id":"owner","rootId":"owner","epoch":0,"status":"waiting",
             "autoWake":true,"cwd":cwd,"accountKey":"default","provider":"codex"});
-        let rule = json!({"accountKey":"default","id":"rule","agent":"owner","rootId":"owner","epoch":0,
+        let rule = json!({"compactions":0,"accountKey":"default","id":"rule","agent":"owner","rootId":"owner","epoch":0,
             "name":"watch","kind":"interval","intervalSeconds":240,"nextAt":2.0,"at":1.0,
             "path":null,"event":"worker_completed","command":"true","text":"Report.",
             "status":"active","created":1.0,"inFlight":true,"checks":7,"wakes":0,
@@ -4272,9 +4272,9 @@ mod tests {
 
     async fn seed_in_flight_rule(store: &RuntimeStore, root: &Path) -> RuleCheck {
         let cwd = root.to_string_lossy().into_owned();
-        let owner = json!({"id":"owner","rootId":"owner","epoch":0,"status":"waiting",
+        let owner = json!({"compactions":0,"id":"owner","rootId":"owner","epoch":0,"status":"waiting",
             "autoWake":true,"cwd":cwd,"accountKey":"default","provider":"codex"});
-        let mut rule = json!({"accountKey":"default","id":"rule","agent":"owner","rootId":"owner","epoch":0,
+        let mut rule = json!({"compactions":0,"accountKey":"default","id":"rule","agent":"owner","rootId":"owner","epoch":0,
             "name":"watch","kind":"interval","intervalSeconds":240,"nextAt":2.0,"at":1.0,
             "path":null,"event":"worker_completed","command":"sleep 3600","text":"Report.",
             "status":"active","created":1.0,"inFlight":true,"checks":7,"wakes":0,

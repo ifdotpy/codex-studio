@@ -175,7 +175,7 @@ mod tests {
             .await
             .expect("publisher");
         store.transaction_with(|tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"chat","rootId":"chat","epoch":1,"status":"completed","name":"List chat","threadId":"thread","lastCompletedTurn":"turn","lastCompletedTurnStatus":"completed","lastAnswer":"Detailed answer","tail":"Detailed output"}))?)
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"chat","rootId":"chat","epoch":1,"status":"completed","name":"List chat","threadId":"thread","lastCompletedTurn":"turn","lastCompletedTurnStatus":"completed","lastAnswer":"Detailed answer","tail":"Detailed output"}))?)
         }).await.expect("source commit publishes both views");
         let workspace = store
             .test_read_transaction(|tx| SyncDocumentsRepository::workspace_id(tx))
@@ -195,7 +195,7 @@ mod tests {
             serde_json::from_value(json!({"kind":"agentDetail","agentId":"chat"}))
                 .expect("detail ref");
         store.transaction_with(|tx| {
-            AgentRepository::put(tx,&AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"chat","parentId":"chat","epoch":1,"status":"idle"}))?)?;
+            AgentRepository::put(tx,&AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"chat","parentId":"chat","epoch":1,"status":"idle"}))?)?;
             tx.execute("INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",rusqlite::params!["worker-command",json!({"id":"worker-command","agent":"worker","kind":"command","status":"running","created":1}).to_string()])?;
             Ok::<_, StoreError>(())
         }).await.expect("worker command source");

@@ -67,7 +67,8 @@ fn malformed_native_items_never_authorize_completion() {
 
 #[test]
 fn recovery_record_typed_boundary_matches_schema() {
-    let base = serde_json::json!({"id":"a","rootId":"a","epoch":1,"status":"running"});
+    let base =
+        serde_json::json!({"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"running"});
     for (field, values) in [
         (
             "epoch",
@@ -120,7 +121,7 @@ fn recovery_record_typed_boundary_matches_schema() {
 
 #[test]
 fn snapshot_rejects_object_encoded_request_state() {
-    let mut record = serde_json::json!({"id":"a","rootId":"a","epoch":1,"status":"running",
+    let mut record = serde_json::json!({"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"running",
         "connectionRecovery":{"requestState":"pending"}});
     assert!(RecoverySnapshot::from_record(record.clone()).is_ok());
     record["connectionRecovery"]["requestState"] = serde_json::json!({"pending":null});

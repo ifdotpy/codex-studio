@@ -1180,7 +1180,7 @@ mod tests {
             .expect("volatile agent table creates");
         studio_runtime_store::receipt_schema::create(&connection).expect("request results schema");
         for (id, root) in [("lead", "lead"), ("worker", "lead"), ("other", "other")] {
-            let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
+            let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
             connection
                 .execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -1209,7 +1209,7 @@ mod tests {
             .expect("volatile agent table creates");
         studio_runtime_store::receipt_schema::create(&connection).expect("request results schema");
         for (id, root) in [("lead", "lead"), ("worker", "lead")] {
-            let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
+            let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
             connection
                 .execute(
                     "INSERT OR IGNORE INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -2022,7 +2022,7 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES('user',?1)",
-                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
+                [json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
             )
             .expect("user agent fixture inserts");
         let room = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";

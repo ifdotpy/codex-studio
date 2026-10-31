@@ -2545,7 +2545,7 @@ mod tests {
 
     #[test]
     fn agent_effect_records_keep_live_and_current_shapes() {
-        let legacy = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","nativeReviewThread":{"attempt":"attempt","connection":"connection","generation":2,"operation":"operation","requestDigest":"digest","sequence":1,"status":"accepted","threadId":"thread"},"nativeRelease":{"id":"release","phase":"released","resetPending":false}}"#;
+        let legacy = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"nativeReviewThread":{"attempt":"attempt","connection":"connection","generation":2,"operation":"operation","requestDigest":"digest","sequence":1,"status":"accepted","threadId":"thread"},"nativeRelease":{"id":"release","phase":"released","resetPending":false}}"#;
         let agent: AgentRecord = serde_json::from_str(legacy).expect("live review and release");
         assert!(
             agent
@@ -2565,7 +2565,7 @@ mod tests {
         );
         assert_eq!(agent.clone().into_value(), agent.value());
 
-        let current = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","vmLaunch":{"identity":{"agentId":"agent","epoch":1,"handle":"handle","requestId":"request","launchFingerprint":"digest"},"signature":"signature","status":"submitted"},"credentialCopy":{"agentId":"agent","epoch":1,"accountKey":"account","provider":"codex","relativePath":"path","digest":"digest","requestId":"request","signature":"signature","status":"submitted"},"vmAuthBootstrap":{"agentId":"agent","epoch":1,"requestId":"request","rootRequestId":"root","admittedRequest":{"id":"token","signature":"signature","created":1},"fingerprint":"digest","state":"submitted"},"nativeRelease":{"scope":{"account":"account","connection":"connection","generation":2},"admittedRequest":{"id":"token","signature":"signature","created":1},"id":"release"}}"#;
+        let current = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"vmLaunch":{"identity":{"agentId":"agent","epoch":1,"handle":"handle","requestId":"request","launchFingerprint":"digest"},"signature":"signature","status":"submitted"},"credentialCopy":{"agentId":"agent","epoch":1,"accountKey":"account","provider":"codex","relativePath":"path","digest":"digest","requestId":"request","signature":"signature","status":"submitted"},"vmAuthBootstrap":{"agentId":"agent","epoch":1,"requestId":"request","rootRequestId":"root","admittedRequest":{"id":"token","signature":"signature","created":1},"fingerprint":"digest","state":"submitted"},"nativeRelease":{"scope":{"account":"account","connection":"connection","generation":2},"admittedRequest":{"id":"token","signature":"signature","created":1},"id":"release"}}"#;
         let agent: AgentRecord = serde_json::from_str(current).expect("current effect fields");
         let encoded = serde_json::to_string(&agent).expect("serialize current agent");
         assert_eq!(
@@ -2578,7 +2578,12 @@ mod tests {
         );
     }
 
-    fn agent(value: Value) -> AgentRecord {
+    fn agent(mut value: Value) -> AgentRecord {
+        value
+            .as_object_mut()
+            .expect("agent fixture")
+            .entry("compactions")
+            .or_insert(json!(0));
         AgentRecord::from_value(value).expect("agent record has a string id")
     }
 
@@ -2592,7 +2597,7 @@ mod tests {
                 "nativeRequest":{"params":{"vendorExtension":[1,2]}}}),
         ] {
             let mut record = agent(
-                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":attempt}),
+                json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":attempt}),
             );
             let before = record.extra.get("startAttempt").cloned().expect("attempt");
             let view = record.start_attempt().expect("view").expect("attempt");
@@ -2611,7 +2616,7 @@ mod tests {
     fn start_attempt_action_view_rejects_unnormalized_values() {
         for action in ["compact", "review", "capacity", "safety"] {
             let record = agent(
-                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+                json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
             );
             assert!(
                 record
@@ -2631,7 +2636,7 @@ mod tests {
             json!({}),
         ] {
             let record = agent(
-                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+                json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
             );
             assert!(record.start_attempt().is_err());
         }
@@ -2643,7 +2648,7 @@ mod tests {
             json!({"x":1}),
         ] {
             let record = agent(
-                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+                json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
             );
             assert!(record.start_attempt().is_err());
         }
@@ -2652,7 +2657,7 @@ mod tests {
     #[test]
     fn active_execution_view_and_field_writes_preserve_migration_record() {
         let mut record = agent(
-            json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle",
+            json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle",
             "activeExecution":{"runId":"run","attemptId":null,"futureField":{"keep":true}}}),
         );
         let view = record
@@ -2679,7 +2684,7 @@ mod tests {
 
     #[test]
     fn consuming_agent_projection_moves_extra_json() {
-        let record = agent(json!({"accountKey":"default",
+        let record = agent(json!({"compactions":0,"accountKey":"default",
             "id":"agent-1", "provider":"codex", "rootId":"root-1", "epoch":3, "status":"running",
             "futureField":[{"nested":"retained"}]
         }));
@@ -2691,7 +2696,7 @@ mod tests {
 
         assert_eq!(
             projected,
-            json!({
+            json!({"compactions":0,
                 "id":"agent-1", "provider":"codex", "rootId":"root-1", "epoch":3, "status":"running", "accountKey":"default",
                 "futureField":[{"nested":"retained"}]
             })
@@ -2737,7 +2742,7 @@ mod tests {
     #[test]
     fn stored_agent_decodes_typed_execution_fields_and_preserves_extensions() {
         let connection = database();
-        let value = json!({
+        let value = json!({"compactions":0,
             "id":"agent", "rootId":"agent", "epoch":2, "status":"idle",
             "inFlight":true, "autoWake":false, "executionMode":"native", "turnEpoch":2,
             "accountKey":"account", "threadId":"thread", "turnId":"turn", "future":42
@@ -2767,7 +2772,7 @@ mod tests {
 
     #[test]
     fn agent_round_trip_keeps_unknown_json_fields_and_number_kinds() {
-        let value = json!({
+        let value = json!({"compactions":0,
             "id":"agent-1", "provider":"codex", "rootId":"agent-1", "epoch":2, "status":"idle", "accountKey":"default",
             "futureObject":{"number":1.5,"flag":true}, "futureInteger":9007199254740993_i64
         });
@@ -2789,7 +2794,7 @@ mod tests {
             json!({"startOutcomeHold":{"stage":"recovery","epoch":2,"reason":"pending"}}),
             json!({"titleJob":{"requestId":"r","agentId":"agent","rootRequestId":"root","admittedRequest":{"id":"r","signature":"s","created":1},"status":"pending","future":true}}),
         ] {
-            let mut value = json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default"});
+            let mut value = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default"});
             value
                 .as_object_mut()
                 .unwrap()
@@ -2902,7 +2907,7 @@ mod tests {
 
     #[test]
     fn unknown_agent_status_and_fields_survive_carrier_rewrite() {
-        let value = json!({"id":"agent-1","provider":"codex","rootId":"agent-1","epoch":4,"accountKey":"default",
+        let value = json!({"compactions":0,"id":"agent-1","provider":"codex","rootId":"agent-1","epoch":4,"accountKey":"default",
             "status":"future-agent-state","future":{"enabled":true,"count":9007199254740993_i64}});
         let record = agent(value.clone());
         assert_eq!(
@@ -2930,10 +2935,10 @@ mod tests {
         let connection = database();
         let table = Table::<AgentRecord>::new(&connection);
         let first = agent(
-            json!({"accountKey":"default","id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}),
+            json!({"compactions":0,"accountKey":"default","id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}),
         );
         let second = agent(
-            json!({"accountKey":"default","id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}),
+            json!({"compactions":0,"accountKey":"default","id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}),
         );
 
         assert!(table.insert_new(&first).expect("first insert succeeds"));
@@ -2970,7 +2975,7 @@ mod tests {
             .expect("malformed fixture inserts");
         connection
             .execute(
-                "INSERT INTO runtime_agents(id,record) VALUES ('outer-id','{\"id\":\"inner-id\",\"rootId\":\"inner-id\",\"epoch\":0,\"status\":\"idle\",\"accountKey\":\"default\"}')",
+                "INSERT INTO runtime_agents(id,record) VALUES ('outer-id','{\"id\":\"inner-id\",\"rootId\":\"inner-id\",\"epoch\":0,\"status\":\"idle\",\"accountKey\":\"default\",\"compactions\":0}')",
                 [],
             )
             .expect("mismatched fixture inserts");
@@ -3132,7 +3137,7 @@ mod tests {
             .expect("volatile agent table creates");
         let table = Table::<AgentRecord>::new(&connection);
         let blocked = agent(
-            json!({"accountKey":"default","id":"blocked","provider":"codex","rootId":"blocked","epoch":0,"status":"idle"}),
+            json!({"compactions":0,"accountKey":"default","id":"blocked","provider":"codex","rootId":"blocked","epoch":0,"status":"idle"}),
         );
         assert!(matches!(
             table.insert_new(&blocked),
@@ -3399,7 +3404,7 @@ mod agent_projection_tests {
             .expect("agents");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile");
-        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"future","accountKey":null,
+        let raw = json!({"compactions":0,"id":"a","rootId":"r","epoch":1,"status":"future","accountKey":null,
             "activity":false,"titleJob":{"malformed":true},"startOutcomeHold":[null],"vmLaunch":false,
             "vendor":{"nested":[null,true]}});
         db.execute(
@@ -3502,8 +3507,8 @@ mod agent_projection_tests {
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile");
         for value in [
-            json!({"id":"a","rootId":"r","epoch":0,"status":"idle","activity":{"phase":{"secret-value":true}}}),
-            json!({"id":"wrong","rootId":"r","epoch":0,"status":"idle"}),
+            json!({"compactions":0,"id":"a","rootId":"r","epoch":0,"status":"idle","activity":{"phase":{"secret-value":true}}}),
+            json!({"compactions":0,"id":"wrong","rootId":"r","epoch":0,"status":"idle"}),
         ] {
             let error =
                 decode_agent_record(&db, "a", &value.to_string()).expect_err("invalid agent");

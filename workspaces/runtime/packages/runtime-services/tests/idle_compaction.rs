@@ -150,7 +150,7 @@ async fn fixture(path: &std::path::Path, mode: Mode) -> (Arc<RuntimeStore>, Epis
     let store = Arc::new(RuntimeStore::open(Some(path)).await.unwrap());
     let episode=store.transaction(move|tx| {
         OrchestrationSettingsRepository::set_idle_compaction(tx,&Settings { mode,min_tokens:200000 })?;
-        let mut agent=json!({"id":"claude","rootId":"claude","epoch":1,"events":0,"provider":"claude","status":"idle","autoWake":true,"inFlight":false,"cwd":"/work","accountKey":"default","threadId":"thread","startAttempt":{"id":"previous"}});
+        let mut agent=json!({"compactions":0,"id":"claude","rootId":"claude","epoch":1,"events":0,"provider":"claude","status":"idle","autoWake":true,"inFlight":false,"cwd":"/work","accountKey":"default","threadId":"thread","startAttempt":{"id":"previous"}});
         idle::observe(tx,&mut agent,&json!({"requestId":"response","ttl":"1h","warm":true,"lastActivityAt":(idle::wall_now()-3240.0)*1000.0,"contextTokens":210000,"prefix":"prefix"}), None)?;
         AgentRepository::put(tx,&AgentRecord::from_value(agent.clone()).unwrap())?;
         Episode::deserialize(&agent["idleCompactionEpisode"]).map_err(|error|StoreError::SchemaMismatch(error.to_string()))
@@ -748,7 +748,7 @@ async fn default_mode_arms_leads_only_and_an_explicit_mode_wins() {
         let store = store.clone();
         async move {
             store.transaction(move |tx| {
-                let mut agent = json!({"id":"claude","rootId":"claude","epoch":1,"events":0,"provider":"claude","status":"idle","autoWake":true,"inFlight":false,"cwd":"/work","accountKey":"default","threadId":"thread","isLead":lead,"startAttempt":{"id":"previous"}});
+                let mut agent = json!({"compactions":0,"id":"claude","rootId":"claude","epoch":1,"events":0,"provider":"claude","status":"idle","autoWake":true,"inFlight":false,"cwd":"/work","accountKey":"default","threadId":"thread","isLead":lead,"startAttempt":{"id":"previous"}});
                 idle::observe(tx,&mut agent,&json!({"requestId":"response","ttl":"1h","warm":true,"lastActivityAt":(idle::wall_now()-3240.0)*1000.0,"contextTokens":210000,"prefix":"prefix"}),None)?;
                 Ok(agent["idleCompactionEpisode"].is_object())
             }).await.unwrap()

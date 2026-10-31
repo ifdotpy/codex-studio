@@ -145,7 +145,7 @@ mod tests {
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              INSERT INTO runtime_rules VALUES('r2','{\"id\":\"r2\",\"agent\":\"a1\",\"epoch\":0,\"name\":\"Rule\",\"kind\":\"interval\",\"status\":\"active\",\"intervalSeconds\":60,\"nextAt\":1,\"created\":1,\"command\":\"\",\"text\":\"\",\"checks\":0,\"wakes\":0,\"inFlight\":false,\"fileGeneration\":0,\"stallTimeoutSeconds\":1800,\"stallWakeGeneration\":-1,\"livenessCommand\":\"\",\"event\":\"\"}');
              INSERT INTO runtime_rules VALUES('r1','{\"id\":\"r1\",\"agent\":\"a1\",\"epoch\":0,\"name\":\"Rule\",\"kind\":\"interval\",\"status\":\"active\",\"intervalSeconds\":60,\"nextAt\":1,\"created\":1,\"command\":\"\",\"text\":\"\",\"checks\":0,\"wakes\":0,\"inFlight\":false,\"fileGeneration\":0,\"stallTimeoutSeconds\":1800,\"stallWakeGeneration\":-1,\"livenessCommand\":\"\",\"event\":\"\"}');
-             INSERT INTO runtime_agents(id,record) VALUES('a1','{\"id\":\"a1\",\"provider\":\"codex\",\"accountKey\":\"default\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');"),
+             INSERT INTO runtime_agents(id,record) VALUES('a1','{\"id\":\"a1\",\"provider\":\"codex\",\"accountKey\":\"default\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\",\"compactions\":0}');"),
         )
         .expect("declared tables create");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())

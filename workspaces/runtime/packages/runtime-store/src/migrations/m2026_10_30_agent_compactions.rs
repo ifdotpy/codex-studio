@@ -19,7 +19,13 @@ mod tests {
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL); INSERT INTO runtime_agents VALUES('missing','{}'),('unknown','{\"compactions\":null}'),('known','{\"compactions\":4}');").unwrap();
         let tx = db.transaction().unwrap();
         apply(&tx).unwrap();
+        assert_eq!(tx.changes(), 1, "only the missing value is migrated");
         apply(&tx).unwrap();
+        assert_eq!(
+            tx.changes(),
+            0,
+            "canonical rows are not rewritten on reopen"
+        );
         let records = tx
             .prepare("SELECT record FROM runtime_agents ORDER BY id")
             .unwrap()

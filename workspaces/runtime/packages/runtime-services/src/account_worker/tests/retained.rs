@@ -244,7 +244,7 @@ async fn manual_start_authorization(
     let target_id = state.agent.clone();
     let epoch = state.epoch;
     state.bridge.store.transaction(move |tx| {
-        let lead = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead-00000000","rootId":"lead-00000000","parentId":null,"epoch":1,"status":"running","isLead":true,"autoWake":true,"accountKey":"default","threadId":"lead-thread","turnId":"lead-turn"});
+        let lead = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead-00000000","rootId":"lead-00000000","parentId":null,"epoch":1,"status":"running","isLead":true,"autoWake":true,"accountKey":"default","threadId":"lead-thread","turnId":"lead-turn"});
         AgentRepository::put(tx, &AgentRecord::from_value(lead.clone())?)?;
         let mut target = AgentRepository::get(tx, &AgentId::from(target_id.as_str()))?.expect("worker").value();
         target["rootId"] = lead["rootId"].clone();

@@ -69,6 +69,7 @@ fn corpus() -> &'static Value {
                         && fields.contains_key("epoch")
                         && fields.contains_key("status")
                     {
+                        fields.entry("compactions").or_insert(json!(0));
                         for key in [
                             "parentId",
                             "threadId",
@@ -194,10 +195,16 @@ fn db(case: &Value) -> Connection {
     studio_runtime_store::receipt_schema::create(&db).expect("receipt target schema");
     db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
+    let mut agent = case["agent"].clone();
+    agent
+        .as_object_mut()
+        .expect("agent fixture")
+        .entry("compactions")
+        .or_insert(json!(0));
     studio_runtime_store::agent_volatile::put(
         &db,
         case["agent"]["id"].as_str().expect("agent id"),
-        &case["agent"],
+        &agent,
         false,
     )
     .expect("Python-written agent");
@@ -617,6 +624,7 @@ fn review_worker_identity_and_saved_response_match_python() {
             case["result"]
         );
         let mut child = case["child"].clone();
+        child["compactions"] = json!(0);
         child["nativeReview"]["actorId"] = json!("foreign");
         assert!(plan.existing(&child).is_err());
         assert_eq!(

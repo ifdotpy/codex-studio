@@ -679,9 +679,9 @@ mod managed_work_port_tests {
         store
             .transaction(|tx| {
                 for agent in [
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":1,
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":1,
                         "status":"running","autoWake":true,"isLead":true,"name":"lead"}),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","parentId":"lead","epoch":1,
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","parentId":"lead","epoch":1,
                         "status":"running","autoWake":true,"isLead":false,"name":"worker"}),
                 ] {
                     AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;

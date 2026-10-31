@@ -812,7 +812,7 @@ mod tests {
     fn malformed_recovery_turn_does_not_match_missing_run_turn() {
         let raw = r#"{"id":"run","agent":"agent","accountKey":"default","epoch":1,"created":1,"status":"running","turnId":null}"#;
         let mut run = decode("runtime_execution_runs", "run", raw).unwrap();
-        let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":{"turnId":false}})).unwrap();
+        let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":{"turnId":false}})).unwrap();
         merge_recovery(&mut run, &agent);
         assert!(!run.extra.contains_key("disconnectRecovery"));
         for (marker, accepted) in [
@@ -822,7 +822,7 @@ mod tests {
             (json!({"turnId":"other"}), false),
         ] {
             run.extra.clear();
-            let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":marker})).unwrap();
+            let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":marker})).unwrap();
             merge_recovery(&mut run, &agent);
             assert_eq!(run.extra.contains_key("disconnectRecovery"), accepted);
         }
@@ -949,7 +949,7 @@ mod tests {
         let raw = r#"{"id":"run","agent":"agent","accountKey":"default","epoch":1,"created":1,"status":"running","firstAttemptId":false,"rootAttemptId":{"future":true}}"#;
         db.execute("INSERT INTO runtime_execution_runs VALUES('run',?1)", [raw])
             .unwrap();
-        let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":null}})).unwrap();
+        let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":null}})).unwrap();
         assert_eq!(
             crate::repositories::work_items::WorkItemsRepository::submission_identity(&db, &agent)
                 .unwrap(),
@@ -996,7 +996,7 @@ mod tests {
             saved.terminal_repair.as_ref().unwrap().get(),
             r#"{"note": "preserve"}"#
         );
-        let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":"attempt"}})).expect("agent");
+        let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":"attempt"}})).expect("agent");
         let tx = db.transaction().expect("transaction");
         let saved_run = ExecutionHistoryRepository::current_run(&tx, &agent)
             .expect("read")
@@ -1025,7 +1025,7 @@ mod tests {
         .expect("history");
         let tx = db.transaction().expect("transaction");
         let pointer = json!({"runId":"run","attemptId":null});
-        let mut agent=AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","threadId":"destination","activeExecution":pointer})).expect("current owner");
+        let mut agent=AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","threadId":"destination","activeExecution":pointer})).expect("current owner");
         ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("same account/epoch");
         assert_eq!(
             agent.extra["activeExecution"], pointer,

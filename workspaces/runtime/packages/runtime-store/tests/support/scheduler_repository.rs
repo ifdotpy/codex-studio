@@ -75,7 +75,7 @@ fn database() -> Connection {
 #[test]
 fn thread_attempt_rejects_mismatched_physical_agent_id() {
     let connection = database();
-    let record = json!({"id":"other","rootId":"agent","epoch":4,"status":"running",
+    let record = json!({"compactions":0,"id":"other","rootId":"agent","epoch":4,"status":"running",
         "provider":"codex","accountKey":"account","threadId":"thread",
         "turnEpoch":4,"autoWake":true,"inFlight":true,
         "startAttempt":{"id":"attempt","epoch":4,"submitted":true,"accountKey":"account",

@@ -3249,7 +3249,7 @@ mod tests {
                 studio_runtime_store::receipt_schema::create(tx)?;
                 AgentRepository::put(
                     tx,
-                    &AgentRecord::from_value(json!({
+                    &AgentRecord::from_value(json!({"compactions":0,
                         "provider":"codex", "id":"lead", "rootId":"lead", "epoch":0,
                         "status":"idle", "autoWake":true, "isLead":true, "accountKey":"default",
                         "cwd":cwd, "model":"first", "yoloMode":true,
@@ -3368,7 +3368,7 @@ mod tests {
                 studio_runtime_store::receipt_schema::create(tx)?;
                 AgentRepository::put(
                     tx,
-                    &AgentRecord::from_value(json!({"accountKey":"default",
+                    &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
                         "provider":"codex", "id":"lead", "rootId":"lead", "epoch":0,
                         "status":"idle", "autoWake":true, "isLead":true, "concurrency":1,
                         "maxAgents":8, "subagentConcurrencyVersion":2, "agentModeRevision":0

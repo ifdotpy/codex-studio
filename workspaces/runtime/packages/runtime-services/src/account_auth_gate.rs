@@ -353,7 +353,7 @@ mod tests {
         .unwrap();
         for n in 0..20 {
             let id = format!("idle-{n}");
-            let raw = json!({"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default"});
+            let raw = json!({"compactions":0,"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default"});
             db.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 rusqlite::params![id, raw.to_string()],

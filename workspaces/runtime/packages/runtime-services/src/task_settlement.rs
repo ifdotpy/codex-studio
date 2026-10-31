@@ -430,7 +430,7 @@ mod tests {
     }
 
     fn agent(id: &str, fields: Value) -> Value {
-        let mut agent = json!({"id": id, "rootId": id, "epoch": 1, "status": "completed",
+        let mut agent = json!({"compactions":0,"id": id, "rootId": id, "epoch": 1, "status": "completed",
             "accountKey": "default", "provider": "codex", "threadId": format!("{id}-thread"),
             "inFlight": false, "turnId": null, "autoWake": true});
         for (key, value) in fields.as_object().expect("fields") {

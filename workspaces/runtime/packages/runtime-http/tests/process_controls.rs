@@ -382,7 +382,7 @@ async fn transferred_monitor_fixture(
     use studio_runtime_services::monitor_runtime_wiring::MonitorRuntime;
     let (root, app, port) = fixture(behavior).await;
     let mut case = crate::monitor_fixtures::corpus(port.store.root()).remove(0);
-    case["actor"] = json!({"id":"owner","rootId":"owner","epoch":1,"status":"idle","accountKey":"target","provider":"codex","threadId":"target-thread","autoWake":true});
+    case["actor"] = json!({"compactions":0,"id":"owner","rootId":"owner","epoch":1,"status":"idle","accountKey":"target","provider":"codex","threadId":"target-thread","autoWake":true});
     case["before"]["agent"] = json!("owner");
     case["before"]["epoch"] = json!(1);
     case["before"]["interactive"] = json!(true);
@@ -615,7 +615,7 @@ async fn fixture(behavior: &'static str) -> (tempfile::TempDir, axum::Router, Ar
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
     store.transaction_with(move |tx| {
-        let mut owner=json!({"id":"owner","rootId":"owner","epoch":1,"status":"running",
+        let mut owner=json!({"compactions":0,"id":"owner","rootId":"owner","epoch":1,"status":"running",
             "accountKey":"default","provider":if behavior.starts_with("claude") {"claude"} else {"codex"},
             "threadId":"thread","turnId":"turn","inFlight":true,"autoWake":true});
         if behavior.starts_with("claude_held") {

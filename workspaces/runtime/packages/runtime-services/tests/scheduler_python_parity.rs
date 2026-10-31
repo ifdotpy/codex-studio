@@ -379,7 +379,7 @@ async fn startup_recovers_valid_submitted_agent_while_skipping_malformed_neighbo
             .expect("persist submitted attempt")
     );
 
-    let malformed = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+    let malformed = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
         "id": "malformed-submitted",
         "rootId": "malformed-submitted",
         "epoch": "invalid",

@@ -583,7 +583,7 @@ mod studio_input_tests {
         .expect("event metadata inserts");
         let snapshot = |id: &str| {
             CallbackSnapshot::from_record(
-                &json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"running","autoWake":true,
+                &json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"running","autoWake":true,
                 "accountKey":"default","threadId":"thread","turnId":"turn","name":id,"cwd":"/work"})
                 .to_string(),
                 &CallbackContext {

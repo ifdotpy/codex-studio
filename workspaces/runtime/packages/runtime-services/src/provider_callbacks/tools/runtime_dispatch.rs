@@ -1165,10 +1165,12 @@ mod tests {
                 .await
                 .expect("store"),
         );
-        let record = studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default",
-            "provider":"codex", "id":"lead", "rootId":"lead", "epoch":1, "status":"running",
-            "isLead":true, "autoWake":true, "cwd":root.path(), "threadId":"thread"
-        }))
+        let record = studio_runtime_store::AgentRecord::from_value(
+            json!({"compactions":0,"accountKey":"default",
+                "provider":"codex", "id":"lead", "rootId":"lead", "epoch":1, "status":"running",
+                "isLead":true, "autoWake":true, "cwd":root.path(), "threadId":"thread"
+            }),
+        )
         .expect("lead");
         let saved = record.clone();
         store

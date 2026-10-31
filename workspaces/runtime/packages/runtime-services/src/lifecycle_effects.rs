@@ -1702,7 +1702,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
         store.transaction(|tx| {
-            let parent = AgentRecord::from_value(json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"completed","provider":"codex","isLead":true,"autoWake":true,"name":"Lead","cwd":"/work"}))?;
+            let parent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"completed","provider":"codex","isLead":true,"autoWake":true,"name":"Lead","cwd":"/work"}))?;
             AgentRepository::put(tx, &parent)?;
             for (row, work) in [
                 ("first", json!({"owner":"child","rootId":"lead","status":"review","id":{"legacy":1},"updated":"bad","results":[{"agent":"child","id":7}],"decisions":[{"resultId":7,"decision":"reject"}]})),
@@ -1714,7 +1714,7 @@ mod tests {
             }
             Ok(())
         }).await.unwrap();
-        let child = json!({"id":"child","rootId":"lead","parentId":"lead","epoch":1,"status":"failed","name":"Worker","error":"failed"});
+        let child = json!({"compactions":0,"id":"child","rootId":"lead","parentId":"lead","epoch":1,"status":"failed","name":"Worker","error":"failed"});
         let before = json!({"id":"child","turnId":"turn"});
         for mode in ["stop", "start", "hold"] {
             let child = child.clone();

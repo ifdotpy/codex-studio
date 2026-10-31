@@ -1084,9 +1084,9 @@ mod request_tests {
         let cwd = store.root().to_path_buf();
         run_async(store.transaction_with_error(move |tx| {
             for value in [
-                json!({"id":"lead","rootId":"lead","epoch":1,"status":"idle","isLead":true,
+                json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,"status":"idle","isLead":true,
                     "accountKey":"source","provider":"codex","model":"gpt-6-astra","cwd":cwd}),
-                json!({"id":"child","rootId":"lead","epoch":2,"status":"idle","isLead":false,
+                json!({"compactions":0,"id":"child","rootId":"lead","epoch":2,"status":"idle","isLead":false,
                     "accountKey":"source","provider":"codex","model":"gpt-6-astra","cwd":cwd}),
             ] {
                 let agent =
@@ -1103,7 +1103,7 @@ mod request_tests {
         let root = root.to_owned();
         let cwd = store.root().to_path_buf();
         run_async(store.transaction(move |tx| {
-            let template = AgentRecord::from_value(json!({
+            let template = AgentRecord::from_value(json!({"compactions":0,
                 "id":"template", "rootId":root, "epoch":1, "status":"idle",
                 "isLead":false, "accountKey":"source", "provider":"codex",
                 "model":"gpt-6-astra", "cwd":cwd
@@ -1144,10 +1144,11 @@ mod request_tests {
         add_agents(&store, "another-team", 4097);
         let cwd = store.root().to_path_buf();
         run_async(store.transaction(move |tx| {
-            let late =
-                AgentRecord::from_value(json!({"id":"late","rootId":"lead","parentId":"child",
+            let late = AgentRecord::from_value(
+                json!({"compactions":0,"id":"late","rootId":"lead","parentId":"child",
                 "epoch":3,"status":"idle","isLead":false,"accountKey":"source","provider":"codex",
-                "model":"gpt-6-astra","cwd":cwd}))?;
+                "model":"gpt-6-astra","cwd":cwd}),
+            )?;
             AgentRepository::put(tx, &late)
         }))
         .expect("late descendant");
@@ -1190,8 +1191,10 @@ mod request_tests {
         assert_eq!(lead["accountTransfer"]["id"], result["id"]);
         assert_eq!(stored(&store, "child")["accountKey"], "target");
         run_async(store.transaction(|tx| {
-            let late = AgentRecord::from_value(json!({"id":"late", "rootId":"lead", "epoch":3,
-                "status":"idle", "provider":"codex", "accountKey":"source"}))?;
+            let late = AgentRecord::from_value(
+                json!({"compactions":0,"id":"late", "rootId":"lead", "epoch":3,
+                "status":"idle", "provider":"codex", "accountKey":"source"}),
+            )?;
             AgentRepository::put(tx, &late)
         }))
         .expect("late subagent");
@@ -1231,6 +1234,7 @@ mod request_tests {
                 value["epoch"] = json!(3);
                 value["status"] = json!("idle");
                 value["accountKey"] = json!("source");
+                value["compactions"] = json!(0);
                 AgentRepository::put(tx, &AgentRecord::from_value(value)?)?;
             }
             Ok(())
@@ -1352,8 +1356,10 @@ mod request_tests {
         let original =
             request(&store, id, "lead", "target", "team", "codex", 10.0).expect("original request");
         run_async(store.transaction(|tx| {
-            let other = AgentRecord::from_value(json!({"id":"other", "rootId":"other", "epoch":1,
-                "status":"idle", "isLead":true, "provider":"codex", "accountKey":"source"}))?;
+            let other = AgentRecord::from_value(
+                json!({"compactions":0,"id":"other", "rootId":"other", "epoch":1,
+                "status":"idle", "isLead":true, "provider":"codex", "accountKey":"source"}),
+            )?;
             AgentRepository::put(tx, &other)
         }))
         .expect("other lead");
@@ -1429,15 +1435,13 @@ mod request_tests {
         let (_root, store) = store_with_agents();
         let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42291";
         request(&store, id, "lead", "target", "team", "codex", 10.0).expect("initial transfer");
-        run_async(
-            store.transaction(|tx| {
-                let vm = AgentRecord::from_value(
-                    json!({"id":"late-vm", "rootId":"lead", "epoch":3,
+        run_async(store.transaction(|tx| {
+            let vm = AgentRecord::from_value(
+                json!({"compactions":0,"id":"late-vm", "rootId":"lead", "epoch":3,
                 "status":"idle", "provider":"codex", "accountKey":"source", "environment":"linux"}),
-                )?;
-                AgentRepository::put(tx, &vm)
-            }),
-        )
+            )?;
+            AgentRepository::put(tx, &vm)
+        }))
         .expect("late VM fixture");
         let before = Repository::get(&store.test_reader().expect("reader"), id).expect("operation");
         let vm = stored(&store, "late-vm");
@@ -1474,7 +1478,7 @@ mod request_tests {
                             .expect("active transfer");
                     }
                     run_async(store.transaction(move |tx| {
-                        let mut candidate = json!({"id":"candidate", "rootId":"lead", "epoch":3,
+                        let mut candidate = json!({"compactions":0,"id":"candidate", "rootId":"lead", "epoch":3,
                             "status":"idle", "provider":provider, "accountKey":"source"});
                         if vm {
                             candidate["environment"] = json!("linux");
@@ -1535,7 +1539,7 @@ mod request_tests {
             // Each valid row fits the per-record limit; their combined size
             // crosses the snapshot bound before the final oversized sentinel.
             let padding_bytes = studio_runtime_store::MAX_TRANSFER_RECORD_BYTES - 1024 * 1024;
-            let template = json!({"accountKey":"default","id":"padding", "rootId":"lead", "epoch":1, "status":"idle",
+            let template = json!({"compactions":0,"accountKey":"default","id":"padding", "rootId":"lead", "epoch":1, "status":"idle",
                 "provider":"codex", "fixturePadding":"x".repeat(padding_bytes)}).to_string();
             let count = Repository::MAX_SNAPSHOT_BYTES / padding_bytes + 1;
             for index in 0..count {
@@ -1764,9 +1768,11 @@ mod request_tests {
         .expect("test fixture operation succeeds");
         let cwd = store.root().to_path_buf();
         run_async(store.transaction_with_error(move |tx| {
-            let late = AgentRecord::from_value(json!({"id":"late","rootId":"lead","epoch":3,
+            let late = AgentRecord::from_value(
+                json!({"compactions":0,"id":"late","rootId":"lead","epoch":3,
                 "status":"idle","isLead":false,"accountKey":"source","provider":"codex",
-                "model":"gpt-6-astra","cwd":cwd}))
+                "model":"gpt-6-astra","cwd":cwd}),
+            )
             .expect("test fixture operation succeeds");
             AgentRepository::put(tx, &late)
         }))
@@ -1936,7 +1942,7 @@ mod provider_admission_tests {
         if let Some(admission) = admission {
             operation["members"]["agent"]["providerAdmission"] = admission;
         }
-        Snapshot::read(&operation.to_string(),[("agent".into(), json!({"provider":"codex","id":"agent",
+        Snapshot::read(&operation.to_string(),[("agent".into(), json!({"compactions":0,"provider":"codex","id":"agent",
             "rootId":"agent","epoch":0,"status":"idle","accountKey":"target","accountTransferId":"transfer"}).to_string())])
             .expect("transfer owner")
     }

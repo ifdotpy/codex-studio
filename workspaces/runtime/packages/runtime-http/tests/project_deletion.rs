@@ -76,7 +76,7 @@ impl Fixture {
             for path in ["/p","/prefix"] {
                 ProjectsRepository::put_project(tx,&json!({"id":path,"path":path,"name":path,"created":1,"homeServerId":"owner","peerTeams":[],"locations":[{"serverId":"owner","path":path,"projectId":path}]}))?;
             }
-            for agent in agents { AgentRepository::put(tx,&AgentRecord::from_value(agent)?)?; }
+            for mut agent in agents { agent.as_object_mut().expect("agent fixture").entry("compactions").or_insert(json!(0)); AgentRepository::put(tx,&AgentRecord::from_value(agent)?)?; }
             for room in rooms {
                 tx.execute("INSERT INTO runtime_rooms(id,record) VALUES(?1,?2)",rusqlite::params![room["id"].as_str(),room.to_string()])?;
                 SyncDocumentsRepository::put_entity(tx,"room",room["id"].as_str().expect("id"),room.clone(),false)?;
@@ -162,7 +162,7 @@ impl Fixture {
     }
 }
 fn agent(id: &str, parent: Option<&str>, path: &str) -> Value {
-    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":if parent.is_some(){"lead"}else{id},"parentId":parent,"epoch":1,"status":"idle","isLead":parent.is_none(),"autoWake":true,"cwd":path})
+    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":if parent.is_some(){"lead"}else{id},"parentId":parent,"epoch":1,"status":"idle","isLead":parent.is_none(),"autoWake":true,"cwd":path})
 }
 
 #[tokio::test]

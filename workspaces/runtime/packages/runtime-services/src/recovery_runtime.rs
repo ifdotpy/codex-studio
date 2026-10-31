@@ -555,7 +555,7 @@ fn invalid_record(table: &'static str, id: &str) -> RecoveryError {
 mod task_identity_tests {
     #[test]
     fn typed_task_preserves_recovery_key() {
-        let agent = serde_json::json!({"id":"a","rootId":"a","epoch":1,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
+        let agent = serde_json::json!({"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
         let task = serde_json::from_str(r#"{"id":"a:i","agent":"a","created":1,"itemId":"i","turnId":"turn","kind":"command","status":"running","type":"commandExecution","name":"commandExecution"}"#).expect("task fixture");
         let snapshot =
             crate::task_recovery::TaskRecoverySnapshot::from_records(agent, task, vec![], vec![])

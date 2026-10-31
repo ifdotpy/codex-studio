@@ -9,7 +9,7 @@ const ACCOUNT: &str = "acct";
 
 #[test]
 fn transport_recovery_matches_null_and_absent_identity_fields() {
-    let agent = AgentRecord::from_value(json!({"accountKey":"default",
+    let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
         "id":"agent", "rootId":"agent", "epoch":0, "status":"interrupted",
         "inFlight":false, "autoWake":false, "turnId":"turn",
         "error":PROVIDER_DISCONNECTED_TURN_ERROR,
@@ -112,6 +112,7 @@ fn agent_from(record: Value) -> AgentRecord {
         ("id", json!(AGENT)),
         ("rootId", json!(AGENT)),
         ("epoch", json!(0)),
+        ("compactions", json!(0)),
         ("accountKey", json!(ACCOUNT)),
         ("threadId", json!("thread")),
         ("provider", json!("codex")),

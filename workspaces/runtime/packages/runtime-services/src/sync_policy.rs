@@ -2831,7 +2831,7 @@ mod tests {
             store
                 .transaction_with(move |tx| {
                     let actor = AgentRecord::from_value(
-                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"agent", "rootId":"agent", "epoch":1, "autoWake":true,
                             "status":"idle", "cwd":cwd, "accountKey":"default"
                         }),
@@ -3300,7 +3300,7 @@ mod tests {
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("open isolated runtime store");
-        let agent = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle","isLead":true});
+        let agent = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle","isLead":true});
         let snapshot = ProjectVaultSnapshot::default();
 
         store
@@ -3422,7 +3422,7 @@ mod tests {
             .transaction(move |transaction| {
                 for id in ["live", "deleting"] {
                     let agent = studio_runtime_store::AgentRecord::from_value(
-                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id": id,
                             "rootId": id,
                             "epoch": 0,
@@ -3731,7 +3731,7 @@ mod tests {
             .transaction(|transaction| {
                 for id in ["a", "b"] {
                     let agent = studio_runtime_store::AgentRecord::from_value(
-                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id": id, "rootId": id, "epoch": 0, "status": "idle", "accountKey": "default", "isLead": true
                         }),
                     )?;

@@ -62,7 +62,7 @@ mod tests {
              CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_checkpoints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             INSERT INTO runtime_agents(id,record) VALUES('a','{\"id\":\"a\",\"provider\":\"codex\",\"accountKey\":\"default\",\"rootId\":\"a\",\"epoch\":0,\"status\":\"idle\"}');
+             INSERT INTO runtime_agents(id,record) VALUES('a','{\"id\":\"a\",\"provider\":\"codex\",\"accountKey\":\"default\",\"rootId\":\"a\",\"epoch\":0,\"status\":\"idle\",\"compactions\":0}');
              INSERT INTO runtime_requests VALUES('q','{\"id\":\"q\",\"agent\":\"a\",\"method\":\"mcpServer/elicitation/request\",\"status\":\"pending\",\"params\":{\"mode\":\"form\",\"requestedSchema\":{\"properties\":{\"password\":{},\"color\":{}}}}}');
              INSERT INTO runtime_complaints VALUES('c','{\"id\":\"c\",\"leadId\":\"a\",\"author\":\"user\",\"text\":\"Review\",\"status\":\"open\",\"recipient\":\"lead\",\"version\":null,\"created\":1,\"updated\":null,\"readAt\":null,\"responses\":[]}');
              INSERT INTO runtime_checkpoints VALUES('p','{\"id\":\"p\",\"agent\":\"a\",\"created\":1,\"items\":[\"hidden\"]}');"),

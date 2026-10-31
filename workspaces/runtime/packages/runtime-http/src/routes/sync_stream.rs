@@ -2313,7 +2313,7 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction_with(|tx| {
-            let agent = studio_runtime_store::AgentRecord::from_value(json!({
+            let agent = studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,
                 "id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "name":"Original",
                 "provider":"codex", "model":"gpt-6", "prompt":"Title fixture", "cwd":"/fixture",
                 "accountKey":"default", "isLead":false, "needsTitle":true, "manualName":false, "autoWake":false
@@ -3457,7 +3457,7 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('pull-count-fixture',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"pull-count-fixture","rootId":"pull-count-fixture","epoch":0,"status":"running","threadId":"thread","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('pull-count-fixture',?1)", [json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"pull-count-fixture","rootId":"pull-count-fixture","epoch":0,"status":"running","threadId":"thread","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('count-item','pull-count-fixture',?1,1)", [json!({"id":"count-item","role":"assistant","text":"message"}).to_string()])?;
             Ok(())
         }).await.expect("transcript fixture");
@@ -3558,7 +3558,7 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated resume state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('recent',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"recent","rootId":"recent","epoch":0,"status":"running","threadId":"recent","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('recent',?1)", [json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"recent","rootId":"recent","epoch":0,"status":"running","threadId":"recent","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
             for index in 0..20 {
                 let id = format!("recent:{index}");
                 tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'recent',?2,?3)", rusqlite::params![id,json!({"id":id,"role":"assistant","text":"message ".repeat(64)}).to_string(),index])?;
@@ -3667,7 +3667,7 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('small',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"small","rootId":"small","epoch":0,"status":"running","threadId":"small","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('small',?1)", [json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"small","rootId":"small","epoch":0,"status":"running","threadId":"small","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
             for index in 0..120 {
                 let id = format!("small:{index:03}");
                 tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'small',?2,?3)", rusqlite::params![id, json!({"id":id,"role":"assistant","text":"Current answer".repeat(200),"created":index}).to_string(), index])?;
@@ -3886,7 +3886,7 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('large',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"large","rootId":"large","epoch":0,"status":"running","threadId":"large","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('large',?1)", [json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"large","rootId":"large","epoch":0,"status":"running","threadId":"large","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
             for (id, text) in [("large:zlarge", "x".repeat(SYNC_STREAM_EVENT_MAX_BYTES + 1)), ("large:small", "before".to_owned())] {
                 tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'large',?2,1)", rusqlite::params![id, json!({"id":id,"role":"assistant","text":text}).to_string()])?;
             }
@@ -3977,7 +3977,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('open',?1)",
-                [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"open","rootId":"open","epoch":0,"status":"running","threadId":"thread","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+                [json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"open","rootId":"open","epoch":0,"status":"running","threadId":"thread","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('open:answer','open',?1,1)",
                 [json!({"id":"open:answer","role":"assistant","text":"before"}).to_string()])?;
             Ok(())
@@ -4087,7 +4087,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             for agent in ["first", "second", "last"] {
-                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", rusqlite::params![agent, json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":agent,"rootId":agent,"epoch":0,"status":"running","threadId":agent,"accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", rusqlite::params![agent, json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":agent,"rootId":agent,"epoch":0,"status":"running","threadId":agent,"accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
                 tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,1)", rusqlite::params![format!("{agent}:answer"), agent, json!({"id":format!("{agent}:answer"),"role":"assistant","text":"before"}).to_string()])?;
             }
             Ok(())
@@ -4132,7 +4132,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('open',?1)",
-                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"open","rootId":"open","epoch":0,"status":"idle"}).to_string()])?;
+                [json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"open","rootId":"open","epoch":0,"status":"idle"}).to_string()])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('answer','open',?1,1)",
                 [json!({"id":"answer","role":"assistant","text":"before"}).to_string()])?;
             tx.execute_batch("CREATE TABLE transcript_build_witness(count INTEGER NOT NULL);
@@ -5388,7 +5388,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('voice-chat',?1)",
-                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"voice-chat","rootId":"voice-chat","epoch":0,"status":"idle","isLead":true}).to_string()])?;
+                [json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"voice-chat","rootId":"voice-chat","epoch":0,"status":"idle","isLead":true}).to_string()])?;
             tx.execute("INSERT INTO voice_sessions(id,agent,created,state) VALUES('session','voice-chat',1,'ready')", [])?;
             tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('first','voice-chat','session','user','hello','','','{}',1)", [])?;
             Ok(())
@@ -5650,7 +5650,7 @@ mod tests {
                 .expect("store"),
         );
         store.transaction(|tx| {
-            let owner = json!({"id":"owner","rootId":"owner","epoch":1,"status":"interrupted","accountKey":"default","provider":"claude","threadId":"thread","turnId":"turn","inFlight":false,"autoWake":false,"nativeResponseTurn":"turn","restartRecovery":{"stage":"held","epoch":1,"accountKey":"default","threadId":"thread","turnId":null},"disconnectRecovery":{"source":"restart","epoch":1,"accountKey":"default","threadId":"thread"}});
+            let owner = json!({"compactions":0,"id":"owner","rootId":"owner","epoch":1,"status":"interrupted","accountKey":"default","provider":"claude","threadId":"thread","turnId":"turn","inFlight":false,"autoWake":false,"nativeResponseTurn":"turn","restartRecovery":{"stage":"held","epoch":1,"accountKey":"default","threadId":"thread","turnId":null},"disconnectRecovery":{"source":"restart","epoch":1,"accountKey":"default","threadId":"thread"}});
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('owner',?1)", [owner.to_string()])?;
             Ok(())
         }).await.expect("held owner");

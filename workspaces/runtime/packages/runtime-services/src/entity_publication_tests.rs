@@ -695,7 +695,7 @@ async fn summary_entities_publish_at_the_source_write() {
 }
 
 fn chat(extra: Value) -> Value {
-    let mut record = json!({
+    let mut record = json!({"compactions":0,
         "id":CHAT,"rootId":CHAT,"epoch":1,"status":"idle","name":"Published chat",
         "provider":"codex","model":"gpt-6","prompt":"Start","cwd":"/fixture",
         "accountKey":"default","isLead":true,"autoWake":false
@@ -839,7 +839,7 @@ async fn synced_agent_values_recompute_the_view_and_create_a_missing_entity() {
     let store = studio_runtime_store::RuntimeStore::open(Some(dir.path()))
         .await
         .expect("store");
-    let worker = json!({
+    let worker = json!({"compactions":0,
         "id":"sync-worker","rootId":CHAT,"parentId":CHAT,"epoch":1,"status":"running",
         "name":"Worker","provider":"codex","model":"gpt-6","prompt":"Task","cwd":"/fixture",
         "accountKey":"default","isLead":false,"autoWake":false
@@ -1008,7 +1008,7 @@ async fn terminal_source_writes_publish_summary_without_process_identity() {
 async fn retained_worktree_entities_follow_cleanup_even_after_worker_deletion() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let worker = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"retained-worker","rootId":CHAT,"epoch":0,"status":"completed",
+    let worker = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"retained-worker","rootId":CHAT,"epoch":0,"status":"completed",
         "name":"Retained worker","accountKey":"default","deletedAt":1,
         "workspaceCleanupIntent":{"phase":"unknown","effect":{"kind":"remove_worktree","identity":{"cwd":"/fixture/retained"}},"receipt":{"reason":"Modified files"},"requestId":"private"}});
     write(

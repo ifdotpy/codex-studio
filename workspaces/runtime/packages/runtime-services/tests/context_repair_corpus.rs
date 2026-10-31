@@ -125,7 +125,7 @@ async fn stop_then_repair_preserves_historical_attempt_ownership() {
     );
     store.transaction(move |tx| {
         let attempt = json!({"id":"attempt","epoch":1,"events":[],"submitted":true,"turnId":"turn-1"});
-        let agent = json!({"id":"agent","rootId":"agent","isLead":true,"epoch":1,"accountKey":"default","threadId":thread,"provider":"codex","model":"fixture","yoloMode":true,"status":"waiting","autoWake":true,"inFlight":false,"startAttempt":attempt});
+        let agent = json!({"compactions":0,"id":"agent","rootId":"agent","isLead":true,"epoch":1,"accountKey":"default","threadId":thread,"provider":"codex","model":"fixture","yoloMode":true,"status":"waiting","autoWake":true,"inFlight":false,"startAttempt":attempt});
         ContextRepairRepository::put_agent(tx, &agent)?;
         tx.execute("INSERT INTO runtime_execution_runs(id,agent,account,epoch,thread,turn,created,record) VALUES ('run','agent','default',1,?1,'turn-1',1,?2)", rusqlite::params![thread,json!({"id":"run","agent":"agent","accountKey":"default","epoch":1,"threadId":thread,"turnId":"turn-1","status":"completed","created":1.0}).to_string()])?;
         tx.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES ('attempt','run',?1)", [attempt.to_string()])?;
@@ -218,7 +218,7 @@ fn identity() -> ConnectionIdentity {
     }
 }
 fn base_agent() -> Value {
-    json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
+    json!({"compactions":0,"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
         "provider":"codex","model":"gpt-fixture","yoloMode":true,"status":"waiting","autoWake":true,
         "inFlight":false,
         "startAttempt":{"id":"attempt","events":["event"],"submitted":true},

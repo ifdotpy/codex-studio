@@ -367,6 +367,7 @@ async fn queued_active_snapshot(store: &Arc<RuntimeStore>) -> RecoverySnapshot {
         .expect("queued active fixture")["agent"]
         .clone();
     agent["connectionRecovery"]["requestId"] = json!("queued-recovery");
+    agent["compactions"] = json!(0);
     agent["connectionRecovery"]["requestState"] = json!("pending");
     agent["connectionRecovery"]["requestBasis"] = json!([]);
     agent["connectionRecovery"]["requestReceipt"] = serde_json::Value::Null;
@@ -492,6 +493,7 @@ fn frozen_cases(corpus: Corpus) -> Vec<serde_json::Value> {
     // Adapt their agent input and expected agent output, leaving receipts intact.
     for case in &mut cases {
         case["agent"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        case["agent"]["compactions"] = json!(0);
         if let Some(history) = case["agent"]
             .get_mut("accountHistory")
             .and_then(serde_json::Value::as_array_mut)
@@ -502,6 +504,7 @@ fn frozen_cases(corpus: Corpus) -> Vec<serde_json::Value> {
         }
         if agent_output && case["after"].is_object() {
             case["after"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            case["after"]["compactions"] = json!(0);
         }
     }
     cases
@@ -1393,7 +1396,7 @@ async fn an_adopted_turn_that_finished_while_the_worker_was_dead_is_reconciled()
     let attempt = json!({"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread",
         "turnId":"turn","events":["event"],"submitted":true,"connectionGeneration":1,
         "activeAtReservation":false,"created":10});
-    let agent = json!({
+    let agent = json!({"compactions":0,
         "id":"agent","rootId":"agent","epoch":0,"turnEpoch":0,"accountKey":"default",
         "threadId":"thread","turnId":"turn","status":"running","autoWake":true,"inFlight":false,
         "error":null,"provider":"codex","lastCompletedTurn":"earlier",
@@ -1478,7 +1481,7 @@ async fn restart_continues_only_a_confirmed_interruption() {
         let root = fixture();
         let store = open_store(root.path()).await;
         lifecycle_transaction(&store, move |tx| {
-            let agent = json!({
+            let agent = json!({"compactions":0,
                 "id":"agent","rootId":"agent","epoch":0,"turnEpoch":0,"accountKey":"default",
                 "threadId":"thread","turnId":"turn","status":"interrupted","autoWake":false,"inFlight":false,
                 "error":"Server restarted during a turn.","provider":"claude",

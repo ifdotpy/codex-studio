@@ -65,6 +65,7 @@ fn normalize_agent_records(value: &mut Value) {
                 fields
                     .entry("accountKey")
                     .or_insert_with(|| json!("default"));
+                fields.entry("compactions").or_insert_with(|| json!(0));
                 for key in [
                     "threadId",
                     "turnId",
@@ -576,7 +577,7 @@ async fn blob_preview_is_never_mistaken_for_complete_receipt() {
 async fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     let root = fixture();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-    let before = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
+    let before = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
     seed(&store, &before).await;
     let before = agent(&store);
     store.transaction(|tx|{tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','one original input','uncertain',1,0,NULL,NULL)",[])?;Ok(())}).await.expect("unknown input");
@@ -641,7 +642,7 @@ async fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
     ] {
         let root = fixture();
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-        let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
+        let before = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
         seed(&store, &before).await;
         let before = agent(&store);
         let task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"commandExecution","kind":"command","status":"running","created":1.0});
@@ -929,7 +930,7 @@ async fn diagnostic_updates_do_not_reset_connection_backoff() {
 
 #[tokio::test]
 async fn accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt() {
-    let mut before = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
+    let mut before = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
     normalize_agent_records(&mut before);
     let turn = json!({"id":"turn","status":"inProgress","items":[{"id":"input","type":"userMessage","clientId":"event"}]});
     for (table, operation) in [
@@ -1007,7 +1008,7 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
     for change in ["alias", "receipt"] {
         let root = fixture();
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-        let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
+        let before = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
         seed(&store, &before).await;
         let task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","kind":"tool","status":"running","created":1.});
         let root_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();

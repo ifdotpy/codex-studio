@@ -175,8 +175,10 @@ struct RuleEventFixture {
     key: String,
 }
 fn rule_case(name: &str) -> RuleCase {
-    let json = include_str!("rules_engine/expected.json")
-        .replace("\"owner\": {", "\"owner\": {\"provider\":\"codex\",");
+    let json = include_str!("rules_engine/expected.json").replace(
+        "\"owner\": {",
+        "\"owner\": {\"compactions\":0,\"provider\":\"codex\",",
+    );
     let cases: Vec<RuleCaseRaw<'_>> = serde_json::from_str(&json).expect("frozen rule cases");
     let case = cases
         .into_iter()
@@ -869,7 +871,10 @@ async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically()
     let cases: Vec<CompletionCase> = serde_json::from_str(
         &include_str!("wave7_p15_support/completions.json")
             .replace("@FIXTURE_ROOT@", &root.path().to_string_lossy())
-            .replace("\"actor\": {", "\"actor\": {\"provider\":\"codex\","),
+            .replace(
+                "\"actor\": {",
+                "\"actor\": {\"compactions\":0,\"provider\":\"codex\",",
+            ),
     )
     .expect("frozen rule completions");
     assert_eq!(cases.len(), 9);

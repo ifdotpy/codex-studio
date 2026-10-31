@@ -2126,7 +2126,7 @@ mod tests {
             .expect("store");
         store.transaction(|tx| {
             studio_runtime_store::receipt_schema::create(tx)?;
-            let agent=json!({"provider":"codex","id":"agent","rootId":"agent","epoch":2,"status":"idle","isLead":true,"threadId":"thread","accountKey":"account"});
+            let agent=json!({"compactions":0,"provider":"codex","id":"agent","rootId":"agent","epoch":2,"status":"idle","isLead":true,"threadId":"thread","accountKey":"account"});
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",[agent.to_string()])?;
             Ok(())
         }).await.expect("seed voice");

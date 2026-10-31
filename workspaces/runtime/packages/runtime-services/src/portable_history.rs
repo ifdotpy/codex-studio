@@ -1586,7 +1586,7 @@ mod tests {
             Some(json!("future")),
             Some(json!(7)),
         ] {
-            let mut agent = json!({"id":"agent-a","rootId":"agent-a","epoch":2,"status":"idle","accountKey":"default"});
+            let mut agent = json!({"compactions":0,"id":"agent-a","rootId":"agent-a","epoch":2,"status":"idle","accountKey":"default"});
             if let Some(provider) = provider {
                 agent["provider"] = provider;
             }

@@ -4122,7 +4122,7 @@ mod stream_owner_query_tests {
         db.execute_batch("CREATE INDEX runtime_agent_vm_stream_owner ON runtime_agents(account_key,id) WHERE execution_mode='vm' AND hold_status='clear'").unwrap();
         for n in 0..20 {
             let id = format!("host-{n}");
-            let raw = serde_json::json!({"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default","executionMode":"host"});
+            let raw = serde_json::json!({"compactions":0,"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default","executionMode":"host"});
             db.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 rusqlite::params![id, raw.to_string()],
@@ -4171,7 +4171,7 @@ mod pending_preparation_scan_tests {
             .unwrap();
         for n in 0..20 {
             let id = format!("disabled-{n}");
-            let raw = serde_json::json!({"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default","autoWake":false});
+            let raw = serde_json::json!({"compactions":0,"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default","autoWake":false});
             db.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 rusqlite::params![id, raw.to_string()],
@@ -4238,7 +4238,7 @@ mod pending_preparation_scan_tests {
                 serde_json::json!({"startAttempt":{"prepareError":"waiting"}}),
             ),
         ] {
-            let mut row = serde_json::json!({"id":id,"rootId":id,"provider":"codex","epoch":2,"status":"idle","accountKey":account,"autoWake":auto_wake});
+            let mut row = serde_json::json!({"compactions":0,"id":id,"rootId":id,"provider":"codex","epoch":2,"status":"idle","accountKey":account,"autoWake":auto_wake});
             row.as_object_mut()
                 .unwrap()
                 .extend(extra.as_object().unwrap().clone());

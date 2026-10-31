@@ -381,7 +381,7 @@ mod tests {
     use studio_runtime_store::{AgentRecord, CheckpointRecord};
 
     fn agent(id: &str, root: &str, deleted_at: Option<f64>) -> AgentRecord {
-        let mut record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"});
+        let mut record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"});
         if let Some(deleted_at) = deleted_at {
             record["deletedAt"] = json!(deleted_at);
         }

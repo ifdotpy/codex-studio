@@ -623,7 +623,7 @@ mod tests {
         db.execute_batch("CREATE INDEX runtime_idle_compaction_deadline ON runtime_agents(idle_episode_type,idle_episode_fire_at,id,idle_episode_id) WHERE idle_episode_type='object'").unwrap();
         for n in 0..20 {
             let id = format!("codex-{n}");
-            let raw = json!({"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default"});
+            let raw = json!({"compactions":0,"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default"});
             db.execute(
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 rusqlite::params![id, raw.to_string()],
@@ -867,7 +867,7 @@ mod tests {
             mode: Mode::Compact,
             min_tokens: IDLE_COMPACTION_DEFAULT_MIN_TOKENS,
         };
-        let agent = json!({"id":"agent","provider":"claude","epoch":1,"accountKey":"default","threadId":"thread","status":"idle","autoWake":true,"inFlight":false,"startAttempt":{"id":"request"},"idleCache":{"ttl":"1h","requestId":"response"}});
+        let agent = json!({"compactions":0,"id":"agent","provider":"claude","epoch":1,"accountKey":"default","threadId":"thread","status":"idle","autoWake":true,"inFlight":false,"startAttempt":{"id":"request"},"idleCache":{"ttl":"1h","requestId":"response"}});
         let episode = Episode {
             id: "idle-compaction:episode".into(),
             cache: CacheReport {

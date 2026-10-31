@@ -216,7 +216,7 @@ pub(crate) async fn fixture() -> (
     let state_dir = root.path().join("state");
     std::fs::create_dir(&state_dir).unwrap();
     let store = Arc::new(RuntimeStore::open(Some(&state_dir)).await.unwrap());
-    let agent = json!({"id":"agent","rootId":"agent","epoch":2,"cwd":cwd,"provider":"claude","accountKey":"account","threadId":"thread","status":"paused","autoWake":false});
+    let agent = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":2,"cwd":cwd,"provider":"claude","accountKey":"account","threadId":"thread","status":"paused","autoWake":false});
     store
         .transaction(move |tx| {
             tx.execute(

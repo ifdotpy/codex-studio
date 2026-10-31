@@ -160,7 +160,7 @@ fn runtime_database(path: &Path) -> Connection {
     connection
         .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
-    let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"running","autoWake":true,"inFlight":true}).to_string();
+    let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"running","autoWake":true,"inFlight":true}).to_string();
     connection
         .execute(
             "INSERT INTO runtime_agents(id,record) VALUES('lead',?1)",

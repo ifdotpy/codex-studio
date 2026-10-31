@@ -1087,7 +1087,7 @@ mod tests {
         let cwd = std::env::current_dir()?.to_string_lossy().into_owned();
         let agent = StoredCheckpointObject {
             id: "checkpoint-agent".to_owned(),
-            record: json!({
+            record: json!({"compactions":0,
                 "id": "checkpoint-agent",
                 "rootId": "checkpoint-agent", "epoch": 0, "status": "idle", "provider": "codex", "accountKey": "default",
                 "cwd": cwd,

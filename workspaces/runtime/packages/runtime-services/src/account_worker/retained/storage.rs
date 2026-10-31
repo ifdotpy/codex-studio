@@ -1346,6 +1346,7 @@ mod replay_identity_tests {
         struct Agent<'a> {
             id: &'a str,
             root_id: &'a str,
+            compactions: u64,
             epoch: i64,
             status: &'a str,
             auto_wake: bool,
@@ -1392,6 +1393,7 @@ mod replay_identity_tests {
         let agent = studio_runtime_store::projection_value(&Agent {
             id: "agent-1",
             root_id: "agent-1",
+            compactions: 0,
             epoch: 7,
             status: "waiting",
             auto_wake: true,
@@ -1551,7 +1553,7 @@ mod replay_identity_tests {
             request.method = Method::ClaudeShellPolicy;
             request.operation = "shell-policy:agent-1:tick".into();
             request.params = json!({"threadId":"thread-1","settings":studio_runtime_schema::shell_policy::Settings::default(),"eligible":true,"critical":true});
-            let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default","provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
+            let mut agent = studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"threadId":"thread-1","status":"idle","autoWake":true}))?;
             AgentRepository::put(tx,&agent)?;
             assert!(authorize(tx,&request).expect("eligible handoff"));
             agent.in_flight = Some(true); AgentRepository::put(tx,&agent)?;
@@ -1708,9 +1710,9 @@ mod replay_identity_tests {
         store
             .transaction(|tx| {
                 for record in [
-                    json!({"accountKey":"default","id":"stopped","rootId":"stopped","epoch":8,"status":"paused","autoWake":false,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
-                    json!({"accountKey":"default","id":"deleted","rootId":"deleted","epoch":8,"deletedAt":1,"status":"paused","autoWake":false,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
-                    json!({"accountKey":"default","id":"woken","rootId":"woken","epoch":8,"status":"queued","autoWake":true,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
+                    json!({"compactions":0,"accountKey":"default","id":"stopped","rootId":"stopped","epoch":8,"status":"paused","autoWake":false,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
+                    json!({"compactions":0,"accountKey":"default","id":"deleted","rootId":"deleted","epoch":8,"deletedAt":1,"status":"paused","autoWake":false,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
+                    json!({"compactions":0,"accountKey":"default","id":"woken","rootId":"woken","epoch":8,"status":"queued","autoWake":true,"threadId":"thread-1","provider":studio_runtime_schema::ProviderKind::Codex}),
                 ] {
                     AgentRepository::put(
                         tx,
@@ -1792,7 +1794,7 @@ mod replay_identity_tests {
         let root = tempfile::tempdir().expect("root");
         let store = database(root.path()).await;
         store.transaction(|tx| {
-            AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"accountKey":"default","id":"agent-1","rootId":"agent-1","epoch":9,"deletedAt":1,"status":"interrupted","autoWake":false,"provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
+            AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"agent-1","rootId":"agent-1","epoch":9,"deletedAt":1,"status":"interrupted","autoWake":false,"provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
             let mut watch = monitor_fixture();
             watch.cancel_requested = Some(true);
             watch.reattached_connection_id = Some("new-connection".into());
@@ -1891,7 +1893,7 @@ mod replay_identity_tests {
         let store = database(root.path()).await;
         let cwd = root.path().to_owned();
         store.transaction_with(move |tx| {
-            AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(json!({"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"accountKey":"target","status":"queued","autoWake":true})).expect("actor"))?;
+            AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,"provider":"codex","id":"agent-1","rootId":"agent-1","epoch":7,"accountKey":"target","status":"queued","autoWake":true})).expect("actor"))?;
             let original = Call {operation:"monitor:watch".into(),method:Method::CommandExec,params:json!({"processId":"watch","command":["true"],"cwd":cwd}),..call()};
             let key=original.key();
             let request=RecoveredRequest{ticket:RequestTicket{id:RequestId::String(key.clone()),generation:4,method:Method::CommandExec},operation_id:OperationId(key),thread_id:None,lightweight:true,deadline_ms:60000,unknown:true,remote_id:None};

@@ -75,6 +75,19 @@ fn corpus() -> RadioCorpus {
     let mut cases: Vec<Value> = serde_json::from_str(expected).expect("frozen radio corpus");
     for case in &mut cases {
         for side in ["before", "after"] {
+            if let Some(rows) = case[side]["agents"].as_array_mut() {
+                for row in rows {
+                    let mut record: Value =
+                        serde_json::from_str(row["record"].as_str().expect("agent record"))
+                            .expect("agent JSON");
+                    record
+                        .as_object_mut()
+                        .expect("agent object")
+                        .entry("compactions")
+                        .or_insert(json!(0));
+                    row["record"] = json!(record.to_string());
+                }
+            }
             if let Some(rows) = case[side]["rules"].as_array_mut() {
                 for row in rows {
                     let saved: LegacyRule =
@@ -447,7 +460,11 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
                 let [first, second] = case["drafts"].as_array().expect("Python drafts").as_slice() else {
                     panic!("expected two Python drafts");
                 };
-                let drafts = [first, second].map(|value| AgentRecord::from_value(value.clone()).expect("checked Python agent draft"));
+                let drafts = [first, second].map(|value| {
+                    let mut value = value.clone();
+                    value["compactions"] = json!(0);
+                    AgentRecord::from_value(value).expect("checked Python agent draft")
+                });
                 radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await.map(|reply| serde_json::from_str(&serde_json::to_string(&reply).expect("reply encodes")).expect("reply decodes"))
             }
         },

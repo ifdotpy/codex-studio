@@ -1697,7 +1697,7 @@ async fn callback_only_saved_reply_starts_its_account_without_any_pending_input(
             "parent":null,"role":"implementer","isLead":true,"executionMode":null,"moving":false}});
     let saved_response = response.clone();
     store.transaction(move |tx| {
-        let actor = json!({"id":"managed-actor","rootId":"managed-actor","epoch":0,"status":"running","autoWake":true,"inFlight":true,
+        let actor = json!({"compactions":0,"id":"managed-actor","rootId":"managed-actor","epoch":0,"status":"running","autoWake":true,"inFlight":true,
             "provider":"claude","accountKey":"default","threadId":"retained-thread","turnId":"retained-turn","parentId":null,"role":"implementer","isLead":true,
             "turnEpoch":0,"startAttempt":{"id":"retained-attempt","epoch":0,"accountKey":"default",
                 "threadId":"retained-thread","turnId":"retained-turn","submitted":true,"created":1.0,
@@ -2144,7 +2144,7 @@ fn backlog_database(count: usize, each_account: bool) -> (rusqlite::Connection, 
     let mut db = studio_runtime_store::test_canvas();
     let tx = db.transaction().unwrap();
     let agent = studio_runtime_store::AgentRecord::from_value(
-        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+        json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"source", "rootId":"source", "epoch":1, "status":"queued",
             "autoWake":true, "accountKey":"default", "contextRepairWait":"blocked"
         }),
