@@ -120,6 +120,24 @@ pub struct TranscriptAssetView {
     extra: BTreeMap<String, Box<RawValue>>,
 }
 
+impl PartialEq for TranscriptAssetView {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.agent == other.agent
+            && self.name == other.name
+            && self.mime == other.mime
+            && self.image == other.image
+            && self.size == other.size
+            && self.hash == other.hash
+            && self.created == other.created
+            && self.extra.len() == other.extra.len()
+            && self
+                .extra
+                .iter()
+                .all(|(key, value)| other.extra.get(key).is_some_and(|v| v.get() == value.get()))
+    }
+}
+
 #[derive(Default)]
 struct ViewFields {
     id: Option<TranscriptAssetId>,

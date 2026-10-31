@@ -24,6 +24,22 @@ fn present_start_wait<'de, D: serde::Deserializer<'de>>(
     studio_runtime_schema::agent_progress::AgentStartWait::deserialize(d).map(Some)
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDraft {
+    pub text: String,
+    pub prefix_text: String,
+    pub assets: Vec<studio_runtime_schema::transcript_asset::TranscriptAssetView>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+fn present_agent_draft<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Box<AgentDraft>>, D::Error> {
+    AgentDraft::deserialize(d).map(Box::new).map(Some)
+}
+
 macro_rules! string_id {
     ($name:ident) => {
         #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -312,6 +328,12 @@ pub enum AgentSandbox {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRecord {
     pub id: AgentId,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_agent_draft"
+    )]
+    pub draft: Option<Box<AgentDraft>>,
     pub root_id: AgentId,
     #[serde(deserialize_with = "deserialize_agent_epoch")]
     pub epoch: i64,
@@ -682,6 +704,7 @@ impl AgentRecord {
     pub fn test_defaults() -> Self {
         Self {
             id: AgentId::from(""),
+            draft: None,
             root_id: AgentId::from(""),
             epoch: 0,
             status: AgentStatus::Unknown,

@@ -1116,7 +1116,7 @@ async fn copy_branch_history(
                 &message_id,
                 &mut assets,
             )?;
-            child.extra.insert("draft".into(), draft);
+            child.draft = Some(Box::new(draft));
         }
         let value=child.value(); AgentRepository::put(tx,&child)?;
         studio_runtime_services::agents_create::publish_agent(tx,&value)?;
@@ -1179,7 +1179,7 @@ fn branch_draft_payload(
     selected: &studio_runtime_store::TranscriptItem,
     message_id: &str,
     assets: &mut BTreeMap<String, TranscriptAssetView>,
-) -> Result<Value, studio_runtime_store::StoreError> {
+) -> Result<studio_runtime_store::AgentDraft, studio_runtime_store::StoreError> {
     let record = &selected.record;
     let inputs = record.inputs().value();
     let prompt_index = inputs.and_then(|inputs| {
@@ -1215,11 +1215,12 @@ fn branch_draft_payload(
     copy_asset_views(tx, target, &mut prefix_assets, assets)?;
     let mut all_assets = prefix_assets;
     all_assets.extend(prompt_assets);
-    Ok(json!({
-        "text": text,
-        "prefixText": prefix.join("\n\n"),
-        "assets": all_assets,
-    }))
+    Ok(studio_runtime_store::AgentDraft {
+        text: text.to_owned(),
+        prefix_text: prefix.join("\n\n"),
+        assets: all_assets,
+        extra: BTreeMap::new(),
+    })
 }
 
 fn decode_asset_views(
@@ -1387,6 +1388,15 @@ mod tests {
         assert!(decode_asset_views(valid.assets()).is_ok());
     }
 
+    #[test]
+    fn agent_record_rejects_invalid_branch_draft() {
+        let raw = r#"{"id":"agent","rootId":"agent","epoch":0,"status":"idle","accountKey":"default","compactions":0,"draft":{"text":42,"prefixText":"","assets":[]}}"#;
+        assert!(serde_json::from_str::<studio_runtime_store::AgentRecord>(raw).is_err());
+        let value = json!({"id":"agent","rootId":"agent","epoch":0,"status":"idle","accountKey":"default","compactions":0,"draft":{"text":"hello","prefixText":"","assets":[{"id":"asset","vendor":{"x":1}}]}});
+        let agent = studio_runtime_store::AgentRecord::from_value(value).unwrap();
+        assert_eq!(agent.draft.unwrap().assets[0].id(), "asset");
+    }
+
     #[tokio::test]
     async fn copied_asset_views_reuse_projection_without_storage_path() {
         let root = tempfile::tempdir().unwrap();
@@ -1410,9 +1420,10 @@ mod tests {
                 record: serde_json::from_str(r#"{"id":"source:message","role":"user","text":"hello","assets":[{"id":"asset"}]}"#)?,
             };
             let draft = branch_draft_payload(tx, "source", "child", &selected, "source:message", &mut copied)?;
-            assert_eq!(draft["assets"][0]["id"], views[0].id());
-            assert!(draft["assets"][0].get("path").is_none());
-            assert_eq!(draft["assets"][0]["vendor"]["x"], 1);
+            assert_eq!(draft.assets[0].id(), views[0].id());
+            let wire = serde_json::to_string(&draft)?;
+            assert!(!wire.contains("private"));
+            assert!(wire.contains(r#""vendor":{"x":  1}"#));
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.unwrap();
     }
@@ -1622,10 +1633,9 @@ mod tests {
             &mut assets,
         )
         .unwrap();
-        assert_eq!(
-            payload,
-            json!({"text":"second","prefixText":"first","assets":[]})
-        );
+        assert_eq!(payload.text, "second");
+        assert_eq!(payload.prefix_text, "first");
+        assert!(payload.assets.is_empty());
         let parent = branch_draft_payload(
             &tx,
             "agent",
@@ -1635,7 +1645,9 @@ mod tests {
             &mut assets,
         )
         .unwrap();
-        assert_eq!(parent, json!({"text":"parent","prefixText":"","assets":[]}));
+        assert_eq!(parent.text, "parent");
+        assert_eq!(parent.prefix_text, "");
+        assert!(parent.assets.is_empty());
     }
 
     #[test]
