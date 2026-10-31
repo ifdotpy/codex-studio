@@ -851,9 +851,9 @@ pub async fn is_monitor_approval(
             let Some(request) = request else {
                 return Ok(false);
             };
-            let request: Value =
+            let request: studio_runtime_schema::request_record::RequestRecord =
                 serde_json::from_str(&request).map_err(|_| VoiceProviderError::Operation)?;
-            Ok(request.get("method").and_then(Value::as_str) == Some("monitor/approve"))
+            Ok(request.method() == Some("monitor/approve"))
         })
         .await
 }
@@ -2075,6 +2075,36 @@ mod tests {
     use super::*;
     use crate::voice::runtime::VoiceFuture;
     use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn monitor_approval_rejects_invalid_stored_request() {
+        let (_directory, store) = voice_outbox_fixture().await;
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('speech','agent','session','orchestrator','','','',?1,1)", [r#"{"request_id":"r"}"#])?;
+            tx.execute("INSERT INTO runtime_requests(id,record) VALUES('r',?1)", [r#"{"id":"r","method":"monitor/approve","status":false}"#])?;
+            Ok(())
+        }).await.expect("seed approval");
+        assert!(
+            is_monitor_approval(&store, "agent", "speech")
+                .await
+                .is_err()
+        );
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_requests SET record=?1 WHERE id='r'",
+                    [r#"{"id":"r","method":"monitor/approve","status":"pending"}"#],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("repair request");
+        assert!(
+            is_monitor_approval(&store, "agent", "speech")
+                .await
+                .expect("valid request")
+        );
+    }
 
     #[tokio::test]
     async fn voice_outbox_captures_deleted_owner_authority() {
