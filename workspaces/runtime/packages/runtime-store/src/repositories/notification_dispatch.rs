@@ -119,6 +119,7 @@ impl NotificationDispatchRepository {
 
     pub fn agent_record(transaction: &Transaction<'_>, agent: &str) -> StoreResult<Option<Value>> {
         TranscriptRepository::agent(transaction, agent)
+            .map(|record| record.map(crate::AgentRecord::into_value))
             .map_err(|error| map_transcript_error(error, "runtime_agents", agent))
     }
 

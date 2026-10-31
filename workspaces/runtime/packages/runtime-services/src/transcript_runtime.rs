@@ -217,9 +217,10 @@ pub(crate) fn project(
 ) -> Result<Value, TranscriptError> {
     let actor =
         TranscriptRepository::agent(connection, agent)?.ok_or(TranscriptError::UnknownMessage)?;
-    if truthy(actor.get("deletedAt")) {
+    if actor.is_deleted() {
         return Err(TranscriptError::DeletedConversation);
     }
+    let actor = actor.into_value();
     let (rows, mut items): (Vec<_>, Vec<_>) = rows(connection, agent, request)?.into_iter().unzip();
     let has_cursor = [&request.before, &request.around, &request.after]
         .into_iter()
@@ -409,7 +410,7 @@ fn receipts(
                     .ok_or_else(|| invalid("runtime_assets", asset_id))?;
                 let owner = TranscriptRepository::agent(connection, owner_id)?
                     .ok_or(TranscriptError::UnknownAssetOwner)?;
-                if truthy(owner.get("deletedAt")) {
+                if owner.is_deleted() {
                     return Err(TranscriptError::DeletedAssetOwner);
                 }
                 asset

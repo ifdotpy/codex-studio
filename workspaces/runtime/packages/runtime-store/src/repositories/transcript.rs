@@ -124,14 +124,9 @@ impl TranscriptRepository {
         after: i64,
     ) -> TranscriptStoreResult<Value> {
         let actor = Self::agent(transaction, agent)?;
-        let deleted = actor
-            .as_ref()
-            .is_none_or(|record| record.get("deletedAt").is_some_and(stored_truthy));
+        let deleted = actor.as_ref().is_none_or(AgentRecord::is_deleted);
         if let Some(actor) = actor.as_ref()
-            && matches!(
-                actor.get("status").and_then(Value::as_str),
-                Some("running" | "starting" | "approval")
-            )
+            && matches!(actor.status.as_str(), "running" | "starting" | "approval")
         {
             return Err(TranscriptStoreError::ActiveTurn);
         }
@@ -145,7 +140,8 @@ impl TranscriptRepository {
         } else {
             let actor = actor
                 .as_ref()
-                .ok_or_else(|| invalid_record("runtime_agents", agent))?;
+                .ok_or_else(|| invalid_record("runtime_agents", agent))?
+                .value();
             let records = Self::items_for_agent(transaction, agent)?;
             let truncated = records.len() > TRANSCRIPT_PAGE_SIZE;
             let mut items: Vec<Value> = records
@@ -154,7 +150,7 @@ impl TranscriptRepository {
                 .map(|item| item.record.into_value())
                 .collect();
             items.reverse();
-            enrich_persisted_items(transaction, agent, actor, &mut items)?;
+            enrich_persisted_items(transaction, agent, &actor, &mut items)?;
             let mut agent_view = serde_json::Map::new();
             for field in [
                 "id",
@@ -233,16 +229,11 @@ impl TranscriptRepository {
     }
 
     /// The checked agent row for transcript projection.
-    pub fn agent(connection: &Connection, agent: &str) -> TranscriptStoreResult<Option<Value>> {
-        connection
-            .prepare_cached("SELECT record FROM runtime_agents WHERE id=?1")?
-            .query_row([agent], |row| row.get::<_, String>(0))
-            .optional()?
-            .map(|encoded| {
-                crate::records::decode_agent_record(connection, agent, &encoded)
-                    .map(AgentRecord::into_value)
-            })
-            .transpose()
+    pub fn agent(
+        connection: &Connection,
+        agent: &str,
+    ) -> TranscriptStoreResult<Option<AgentRecord>> {
+        crate::AgentRepository::get(connection, &crate::AgentId::from(agent))
             .map_err(map_store_error)
     }
 
@@ -1545,6 +1536,17 @@ mod tests {
             enrich_persisted_items(&connection, "agent", &json!({"status":"idle"}), &mut items),
             Err(TranscriptStoreError::InvalidStoredObject { table: "runtime_event_meta", id }) if id == "e1"
         ));
+    }
+
+    #[test]
+    fn agent_read_returns_checked_record() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch("CREATE TABLE runtime_agents(id TEXT, record TEXT)")
+            .unwrap();
+        let record: Option<crate::AgentRecord> =
+            TranscriptRepository::agent(&connection, "missing").unwrap();
+        assert!(record.is_none());
     }
 
     #[test]
