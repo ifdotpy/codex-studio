@@ -29,6 +29,8 @@ pub(super) const DELETED_SETTINGS_REPORT: &str = "deleted-completed-c:settings";
 pub(super) const DELETED_USER_MESSAGE_REPORT: &str = "deleted-completed-c:user-message";
 const DELETED_MODE_REPORT: &str = "deleted-completed-c:agent-mode";
 const DELETED_WORK_REFUSAL_REPORT: &str = "deleted-completed-c:work-refusal";
+/// Domain receipts whose tool call failed later with an unknown outcome; the tool reply owns the id.
+const DUPLICATE_FAILED_TOOL_REPORT: &str = "deleted-duplicate:failed-tool-receipt";
 /// Inbound location effects of the retired Python backend; no Rust code reads them.
 const DELETED_LOCATION_EFFECT_REPORT: &str = "deleted-completed-c:location-effect";
 /// Closed W2e audit (89dabbd591): these synchronous owners saved only the reply,
@@ -429,7 +431,7 @@ impl ReceiptFamilyMigration for Family {
                 // Another independently registered owner must classify this row.
                 continue;
             }
-            if redundant_tool_result(tx, &row)? {
+            if redundant_tool_result(tx, &row, checkpoint.cutover_ms)? {
                 delete_source(tx, source, row.rowid)?;
                 continue;
             }
@@ -496,7 +498,7 @@ impl ReceiptFamilyMigration for Family {
     }
 }
 
-fn redundant_tool_result(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<bool> {
+fn redundant_tool_result(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<bool> {
     if !crate::receipt_migration_contract::source_exists(tx, "runtime_tool_requests")? {
         return Ok(false);
     }
@@ -536,6 +538,23 @@ fn redundant_tool_result(tx: &Transaction<'_>, row: &SourceReceipt) -> Result<bo
         return Err(invalid());
     };
     let outer: ResultEnvelope<Value> = serde_json::from_str(&result).map_err(|_| invalid())?;
+    // A tool call that failed after its domain effect (old "disk I/O error" rows): the saved
+    // tool reply owns the id and the duplicate domain receipt is counted and dropped.
+    if task["kind"] == "managed_tool"
+        && task["id"] == row.id
+        && task["outcome"] == "unknown"
+        && task["signature"] == signature
+        && token.id() == row.id
+        && token.signature() == signature
+        && outer.actor.as_deref() == task["agent"].as_str()
+        && outer.reply["success"] == false
+    {
+        let mut count = MigrationCheckpoint::begin(tx, ID, DUPLICATE_FAILED_TOOL_REPORT, cutover)?;
+        count.cursor += 1;
+        count.status = MigrationStatus::Complete;
+        count.save(tx, ID, DUPLICATE_FAILED_TOOL_REPORT, cutover)?;
+        return Ok(true);
+    }
     if task["kind"] != "managed_tool"
         || task["id"] != row.id
         || task["stage"] != "completed"
@@ -1850,6 +1869,44 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn receipts_requests_failed_tool_owns_its_message_receipt() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        db.execute_batch(
+            "CREATE TABLE runtime_tool_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        )
+        .expect("owner");
+        insert(&db, "tool-id", &json!({"id":"tool-id","room":"room","deliveries":{"peer":"queued"}}));
+        let admitted = admitted_owner_token("tool-id", "outer-signature", CUTOVER);
+        let task = json!({"id":"tool-id","agent":"agent","tool":"orchestration_message","kind":"managed_tool","stage":"failed","outcome":"unknown","signature":"outer-signature","admitted":admitted});
+        db.execute("INSERT INTO runtime_tool_requests VALUES('tool-id',?1)", [task.to_string()])
+            .expect("task");
+        let outer = json!({"actor":"agent","reply":{"success":false,"contentItems":[{"type":"inputText","text":"disk I/O error"}]},"references":[]}).to_string();
+        db.execute(
+            "INSERT INTO request_results(id,signature,result,created) VALUES('tool-id','outer-signature',?1,?2)",
+            params![outer, CUTOVER],
+        )
+        .expect("outer");
+        let tx = db.transaction().expect("tx");
+        let checkpoint = MigrationCheckpoint::begin(&tx, ID, SOURCE, CUTOVER).expect("checkpoint");
+        Family
+            .move_batch(&tx, SOURCE, &checkpoint)
+            .expect("duplicate receipt is dropped");
+        assert_eq!(
+            tx.query_row("SELECT count(*) FROM runtime_operation_receipts", [], |r| r
+                .get::<_, i64>(0))
+                .expect("source"),
+            0
+        );
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, DUPLICATE_FAILED_TOOL_REPORT)
+                .expect("report")
+                .expect("count")
+                .cursor,
+            1
+        );
     }
     #[test]
     fn receipts_requests_redundant_tool_work_requires_outer_result() {
