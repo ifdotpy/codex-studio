@@ -602,7 +602,7 @@ impl HostService {
         identity: &str,
         mut op: Op,
         slot: &Path,
-        params: &Map<String, Value>,
+        params: &super::ReleaseParams,
     ) -> Outcome<Op> {
         let state = text(&op, "state");
         require(
@@ -610,20 +610,18 @@ impl HostService {
             "A running or unknown command retains its lease",
             INVALID,
         )?;
-        let failure = params
-            .get("preRunError")
-            .filter(|failure| !failure.is_null());
+        let failure = params.pre_run_error.as_ref();
         if let Some(failure) = failure {
             require(
-                text(&op, "state") == "leased" && failure.is_object(),
+                text(&op, "state") == "leased",
                 "Only a failed transfer can release an unstarted command",
                 INVALID,
             )?;
             op.insert("reason".into(), json!("sync_failed"));
-            op.insert("preRunError".into(), failure.clone());
+            op.insert("preRunError".into(), json!(failure));
         }
         let mut abandoned = None;
-        if studio_runtime_store::truthy(params.get("abandon")) {
+        if params.abandon {
             // The agent gives up an operation that no guest request owns any more.
             require(
                 !(text(&op, "state") == "leased" && self.is_locked(&format!("run\0{identity}"))),
@@ -636,7 +634,7 @@ impl HostService {
             identity,
             &mut op,
             slot,
-            studio_runtime_store::truthy(params.get("collected")),
+            params.collected,
             failure.is_some(),
             abandoned,
         )?;

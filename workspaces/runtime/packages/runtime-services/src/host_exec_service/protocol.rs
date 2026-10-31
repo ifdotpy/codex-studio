@@ -30,7 +30,8 @@ pub(crate) const PAGE_BYTES: usize = 1024 * 1024;
 pub(crate) const RACY_NS: i128 = 2_000_000_000;
 
 /// An explicit refusal with a protocol error code (guest `HostExecError`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct HostExecError {
     pub(crate) code: String,
     pub(crate) message: String,

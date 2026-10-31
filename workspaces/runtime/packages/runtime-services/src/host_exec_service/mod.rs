@@ -231,6 +231,18 @@ struct ReadParams {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReleaseParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    pre_run_error: Option<HostExecError>,
+    #[serde(default)]
+    abandon: bool,
+    #[serde(default)]
+    collected: bool,
+}
+
+#[derive(serde::Deserialize)]
 pub(crate) struct SyncPathParams {
     #[serde(flatten)]
     common: TransferCommon,
@@ -318,9 +330,8 @@ enum FrameParams {
     List(ListParams),
     Recover(RecoverParams),
     Acquire(AcquireParams),
+    Release(ReleaseParams),
     ResultManifest(ResultManifestParams),
-    // Existing dispatch until each remaining method has its own typed variant.
-    Legacy(Map<String, Value>),
 }
 
 fn receipt_digest(method: &str, params: &str) -> String {
@@ -774,39 +785,19 @@ impl HostService {
             || inner.reading > 0
     }
 
-    async fn dispatch(
-        self: &Arc<Self>,
-        method: &str,
-        params: &Map<String, Value>,
-    ) -> Outcome<Value> {
-        let identity = params
-            .get("operationId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Failure::Unexpected("'operationId'".into()))?
-            .to_owned();
-        let op = self.load(&identity)?;
-        // The broker sets these fields; the host never accepts a slot path from the caller.
-        require(
-            params.get("agentId") == op.get("agentId"),
-            "The command belongs to another agent",
-            "forbidden",
-        )?;
-        let slot = self.slot(&op)?;
-        match method {
-            "release" => self
-                .release(&identity, op, &slot, params)
-                .map(Value::Object),
-            _ => Err(HostExecError::new(INVALID, "Unknown host method").into()),
-        }
-    }
-
-    async fn dispatch_frame(
-        self: &Arc<Self>,
-        method: &str,
-        params: &FrameParams,
-    ) -> Outcome<Value> {
+    async fn dispatch_frame(self: &Arc<Self>, params: &FrameParams) -> Outcome<Value> {
         match params {
-            FrameParams::Legacy(params) => self.dispatch(method, params).await,
+            FrameParams::Release(params) => {
+                let op = self.load(&params.common.operation_id)?;
+                require(
+                    text(&op, "agentId") == params.common.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                self.release(&params.common.operation_id, op, &slot, params)
+                    .map(Value::Object)
+            }
             FrameParams::Acquire(params) => self.acquire(params).await.map(Value::Object),
             FrameParams::List(params) => self.operations(&params.agent_id),
             FrameParams::Recover(params) => self.recover(&params.owner),
@@ -1114,6 +1105,10 @@ impl HostService {
                 serde_json::from_str(raw)
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
+            "release" => FrameParams::Release(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
             "recover" => FrameParams::Recover(
                 serde_json::from_str(raw)
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
@@ -1130,10 +1125,7 @@ impl HostService {
                 serde_json::from_str(raw)
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
-            _ => FrameParams::Legacy(
-                serde_json::from_str(raw)
-                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
-            ),
+            _ => return Err(HostExecError::new(INVALID, "Unknown host method").into()),
         };
         if method == "health" {
             let (commands, active) = {
@@ -1166,7 +1158,7 @@ impl HostService {
         }
         if READ_METHODS.contains(&method.as_str()) {
             self.inner().reading += 1;
-            let result = self.dispatch_frame(&method, &params).await;
+            let result = self.dispatch_frame(&params).await;
             self.inner().reading -= 1;
             return Ok(json!({"id": id, "result": result?}));
         }
@@ -1217,7 +1209,7 @@ impl HostService {
         let service = Arc::clone(self);
         let task_id = id.clone();
         tokio::spawn(async move {
-            let result = match service.dispatch_frame(&method, &params).await {
+            let result = match service.dispatch_frame(&params).await {
                 Ok(value) => json!({"id": task_id, "result": value}),
                 Err(Failure::Refused(error)) => json!({"id": task_id, "error": error.object()}),
                 Err(Failure::Unexpected(message)) => {

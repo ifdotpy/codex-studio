@@ -493,6 +493,28 @@ async fn receipt_refuses_changed_raw_params_without_reexecution() {
 }
 
 #[tokio::test]
+async fn release_saves_typed_transfer_failure() {
+    let fixture = Fixture::new();
+    let acquire = json!({"operationId":"release-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});
+    fixture
+        .call("release-acquire", "acquire", acquire)
+        .await
+        .unwrap();
+    let failure = json!({"code":"sync_conflict","message":"source changed"});
+    let released = fixture
+        .call(
+            "release-failure",
+            "release",
+            json!({"operationId":"release-test","agentId":"agent","preRunError":failure}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(released["state"], "released");
+    assert_eq!(released["reason"], "sync_failed");
+    assert_eq!(released["preRunError"], failure);
+}
+
+#[tokio::test]
 async fn chunked_transfer_commits_and_deletes_a_typed_entry() {
     let fixture = Fixture::new();
     let acquire = json!({"operationId":"chunk-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});
