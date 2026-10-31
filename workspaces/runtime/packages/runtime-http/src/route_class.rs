@@ -43,11 +43,7 @@ const ROUTES: &[(&str, &str, CommandClass)] = &[
     ("POST", "/api/claude/file-backups", Host),
     ("POST", "/api/claude/profiles", OwnerOnly),
     ("POST", "/api/claude/session", ChatControl),
-<<<<<<< head
     ("POST", "/api/commands", ChatControl),
-||||||| base
-=======
->>>>>>> origin/feat/principal-permissions
     ("POST", "/api/complaints", ChatControl),
     ("POST", "/api/configure", OwnerOnly),
     ("POST", "/api/connection-recovery", ChatControl),
