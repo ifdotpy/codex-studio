@@ -9,7 +9,7 @@ async fn a_safety_retry_receipt_reaches_the_client() {
     let (_dir, store) = store().await;
     seed_chat(
         &store,
-        json!({"id":"safety-chat","rootId":"safety-chat","epoch":1,"status":"failed",
+        json!({"compactions":0,"id":"safety-chat","rootId":"safety-chat","epoch":1,"status":"failed",
             "name":"Safety chat","provider":"codex","model":"gpt-6","prompt":"Start",
             "cwd":"/fixture","accountKey":"default","isLead":true,"autoWake":false}),
     )

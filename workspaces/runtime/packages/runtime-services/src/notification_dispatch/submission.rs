@@ -179,11 +179,15 @@ fn replay_submission(
     }
     let floor = now.saturating_sub(studio_runtime_schema::persistence::REQUEST_RESULT_TTL_MS);
     if admission.created() <= floor {
-        return Err(studio_runtime_store::request_results::RequestResultError::Identity(
-            studio_runtime_schema::persistence::RequestIdentityError::Expired {
-                issued_ms: admission.created(), expired_before_ms: floor,
-            },
-        ).into());
+        return Err(
+            studio_runtime_store::request_results::RequestResultError::Identity(
+                studio_runtime_schema::persistence::RequestIdentityError::Expired {
+                    issued_ms: admission.created(),
+                    expired_before_ms: floor,
+                },
+            )
+            .into(),
+        );
     }
     checked_outcome(owner.publication_outcome.clone())
 }
@@ -579,7 +583,9 @@ mod tests {
     #[test]
     fn legacy_submission_receipt_keeps_its_exact_outcome() {
         use super::{DispatchOutcome, ProviderSubmission, replay_submission};
-        use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
+        use studio_runtime_store::request_results::{
+            AdmittedRequest, RequestResults, ResultEnvelope,
+        };
         let mut db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE request_results(id TEXT PRIMARY KEY,signature TEXT NOT NULL,result TEXT NOT NULL,created INTEGER NOT NULL)").unwrap();
         let now = chrono::Utc::now().timestamp_millis();
@@ -589,12 +595,24 @@ mod tests {
             admission: AdmittedRequest::from_persisted_fields("legacy".into(), "sig".into(), now),
             publication_outcome: DispatchOutcome::Written,
         };
-        let legacy = DispatchOutcome::Ignored { reason: "legacy".into() };
+        let legacy = DispatchOutcome::Ignored {
+            reason: "legacy".into(),
+        };
         let tx = db.transaction().unwrap();
-        RequestResults::settle(&tx, &owner.admission, &ResultEnvelope {
-            actor: Some("agent".into()), reply: legacy.clone(), references: vec!["agent:event".into()],
-        }).unwrap();
-        assert_eq!(replay_submission(&tx, "agent", "agent:event", &owner).unwrap(), legacy);
+        RequestResults::settle(
+            &tx,
+            &owner.admission,
+            &ResultEnvelope {
+                actor: Some("agent".into()),
+                reply: legacy.clone(),
+                references: vec!["agent:event".into()],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            replay_submission(&tx, "agent", "agent:event", &owner).unwrap(),
+            legacy
+        );
         assert!(replay_submission(&tx, "other", "agent:event", &owner).is_err());
     }
 }

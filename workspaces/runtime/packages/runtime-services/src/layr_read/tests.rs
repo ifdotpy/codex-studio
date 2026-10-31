@@ -16,7 +16,7 @@ const NATIVE: &str = "9a4c3b1d-1e2f-4c5d-8e7f-a1b2c3d4e5f6";
 
 fn agent(id: &str, index: usize, mode: &str, role: &str, ready: bool) -> Value {
     let root = if mode == "vm" { LEAD } else { id };
-    json!({
+    json!({"compactions":0,
         "id": id, "rootId": root, "parentId": (root != id).then_some(root),
         "name": format!("agent {index}"), "isLead": root == id, "role": role,
         "accountKey": "default", "provider": "codex", "model": "gpt-6-astra",

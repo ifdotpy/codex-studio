@@ -10,10 +10,6 @@ pub enum Boundary {
     AfterRecord,
     BeforeAgent,
     AfterAgent,
-    BeforeEvent,
-    AfterEvent,
-    BeforeMetadata,
-    AfterMetadata,
     BeforeEffectRead,
     AfterEffectRead,
     BeforeEffect,
@@ -93,8 +89,7 @@ fn apply(
 ) -> Result<()> {
     // Validate all resulting stored records with the same constructor used for reads.
     let proposed = d.record.as_ref().map(|record| record.value());
-    let mut validation = serde_json::json!({"agent":d.agent.as_ref().map_or(&snapshot.agent, |agent| agent.value()),"record":proposed.as_ref().or(snapshot.record.as_ref()),"events":d.events,"ancestors":snapshot.ancestors,"claims":snapshot.claims});
-    validation["metadata"] = serde_json::json!(d.metadata);
+    let validation = serde_json::json!({"agent":d.agent.as_ref().map_or(&snapshot.agent, |agent| agent.value()),"record":proposed.as_ref().or(snapshot.record.as_ref()),"ancestors":snapshot.ancestors,"claims":snapshot.claims});
     let agent = match d.agent.as_ref() {
         Some(agent) => agent.checked(),
         None => snapshot.current_agent_record(),
@@ -186,16 +181,6 @@ fn apply(
         ContinuationRepository::put_checked_agent(tx, checked.agent_record())?;
         fault.at(Boundary::AfterAgent)?;
     }
-    for event in &d.events {
-        fault.at(Boundary::BeforeEvent)?;
-        ContinuationRepository::put_event(tx, event)?;
-        fault.at(Boundary::AfterEvent)?;
-    }
-    for (id, metadata) in &d.metadata {
-        fault.at(Boundary::BeforeMetadata)?;
-        ContinuationRepository::put_metadata(tx, id, metadata)?;
-        fault.at(Boundary::AfterMetadata)?;
-    }
     Ok(())
 }
 
@@ -211,7 +196,7 @@ mod tests {
             .await
             .unwrap();
         store.transaction_with_error(|tx| -> Result<()> {
-            let snapshot = Snapshot::from_records(json!({"agent":{"accountKey":"default","id":"a","rootId":"a","provider":"codex","epoch":1,"status":"running","inFlight":true}}))?;
+            let snapshot = Snapshot::from_records(json!({"agent":{"compactions":0,"accountKey":"default","id":"a","rootId":"a","provider":"codex","epoch":1,"status":"running","inFlight":true}}))?;
             studio_runtime_store::AgentRepository::put(tx, snapshot.agent_record())?;
             let mut proposal = crate::continuation::ProposedAgent::new(&snapshot);
             proposal.failed("excluded");
@@ -230,7 +215,7 @@ mod tests {
             .await
             .unwrap();
         store.transaction_with_error(|tx| -> Result<()> {
-            let agent = json!({"accountKey":"default","id":"a","rootId":"a","provider":"codex","epoch":1,"status":"failed","autoWake":true});
+            let agent = json!({"compactions":0,"accountKey":"default","id":"a","rootId":"a","provider":"codex","epoch":1,"status":"failed","autoWake":true});
             let mut snapshot = Snapshot::from_records(json!({"agent":agent}))?;
             snapshot.agent["autoWake"] = json!(false);
             let decision = Decision { effects: vec![Effect::Followup { id:"follow".into(), text:"continue".into() }], ..Decision::default() };

@@ -66,38 +66,6 @@ where
     }
 }
 
-/// Optional JSON bodies validated by the shared boundary.
-#[cfg(test)]
-pub(crate) struct ApiJsonOptional<T>(pub Option<T>);
-
-#[cfg(test)]
-impl<T, S> FromRequest<S> for ApiJsonOptional<T>
-where
-    T: DeserializeOwned + Send,
-    S: Send + Sync,
-{
-    type Rejection = ApiError;
-
-    async fn from_request(
-        request: axum::extract::Request,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
-        let (parts, _) = request.into_parts();
-        let Some(value) = parts
-            .extensions
-            .get::<ValidatedRequest>()
-            .ok_or_else(ApiError::internal)?
-            .body
-            .clone()
-        else {
-            return Ok(Self(None));
-        };
-        serde_path_to_error::deserialize(value)
-            .map(|value| Self(Some(value)))
-            .map_err(|error| ApiError::validation(serde_location("body", error.path())))
-    }
-}
-
 /// Schema-validated scalar header parameters.
 pub(crate) struct ApiHeaders(pub Arc<serde_json::Map<String, Value>>);
 
@@ -117,13 +85,11 @@ where
 }
 
 /// Raw query pairs plus values validated and typed from the registered schema.
-#[allow(dead_code, reason = "route modules consume shared query extraction")]
 pub(crate) struct QueryParams {
     typed: Arc<serde_json::Map<String, Value>>,
 }
 
 impl QueryParams {
-    #[allow(dead_code, reason = "route modules consume schema-typed query values")]
     pub(crate) fn typed_value(&self, name: &str) -> Option<&Value> {
         self.typed.get(name)
     }

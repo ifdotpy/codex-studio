@@ -1,7 +1,8 @@
 //! Persisted queue metadata. Unknown fields remain open for future producers.
-use crate::{delivery::DeliveryMoment, json_object::JsonObject, queue_command::Field};
+use crate::{delivery::DeliveryMoment, queue_command::Field, raw_json::RawJson};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 
 /// Retains the accepted historical spelling while using the delivery owner for policy.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -34,15 +35,11 @@ impl schemars::JsonSchema for StoredDelivery {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 #[schemars(rename = "RuntimeEventMetadataRecord")]
 pub struct EventMetadataFields {
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "present_assets"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<Value>")]
     pub assets: Option<Vec<Value>>,
     #[serde(default, skip_serializing_if = "Field::is_missing")]
@@ -58,17 +55,66 @@ pub struct EventMetadataFields {
     #[schemars(with = "Option<String>")]
     pub transcript_item_id: Field<String>,
     #[serde(flatten)]
-    pub extensions: Map<String, Value>,
+    #[schemars(with = "BTreeMap<String, Value>")]
+    pub extensions: BTreeMap<String, RawJson>,
 }
-fn present_assets<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<Value>>, D::Error> {
-    Vec::<Value>::deserialize(d).map(Some)
+
+#[derive(Default)]
+struct MetadataFields {
+    assets: Option<Vec<Value>>,
+    delivery: Option<Field<StoredDelivery>>,
+    requested_delivery: Option<Field<StoredDelivery>>,
+    timing: Option<Field<Map<String, Value>>>,
+    transcript_item_id: Option<Field<String>>,
+}
+impl<'de> crate::raw_object::RawObjectFields<'de> for MetadataFields {
+    type Output = EventMetadataRecord;
+    fn field<M: serde::de::MapAccess<'de>>(
+        &mut self,
+        name: &str,
+        map: &mut M,
+    ) -> Result<bool, M::Error> {
+        macro_rules! field {
+            ($wire:literal, $member:ident) => {
+                if name == $wire {
+                    if self.$member.is_some() {
+                        return Err(serde::de::Error::duplicate_field($wire));
+                    }
+                    self.$member = Some(map.next_value()?);
+                    return Ok(true);
+                }
+            };
+        }
+        field!("assets", assets);
+        field!("delivery", delivery);
+        field!("requestedDelivery", requested_delivery);
+        field!("timing", timing);
+        field!("transcriptItemId", transcript_item_id);
+        Ok(false)
+    }
+    fn finish<E: serde::de::Error>(
+        self,
+        extensions: BTreeMap<String, Box<serde_json::value::RawValue>>,
+    ) -> Result<Self::Output, E> {
+        Ok(EventMetadataRecord(EventMetadataFields {
+            assets: self.assets,
+            delivery: self.delivery.unwrap_or_default(),
+            requested_delivery: self.requested_delivery.unwrap_or_default(),
+            timing: self.timing.unwrap_or_default(),
+            transcript_item_id: self.transcript_item_id.unwrap_or_default(),
+            extensions: extensions
+                .into_iter()
+                .map(|(key, value)| (key, RawJson(value)))
+                .collect(),
+        }))
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct EventMetadataRecord(pub EventMetadataFields);
 impl<'de> Deserialize<'de> for EventMetadataRecord {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        JsonObject::<EventMetadataFields>::deserialize(d).map(|object| Self(object.0))
+        crate::raw_object::deserialize::<D, MetadataFields>(d)
     }
 }
 impl std::ops::Deref for EventMetadataRecord {
@@ -84,7 +130,9 @@ impl std::ops::DerefMut for EventMetadataRecord {
 }
 impl EventMetadataRecord {
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
-        serde_json::from_value(value)
+        let encoded = value.to_string();
+        drop(value);
+        serde_json::from_str(&encoded)
     }
     pub fn into_value(self) -> Value {
         let EventMetadataFields {
@@ -115,7 +163,13 @@ impl EventMetadataRecord {
             transcript_item_id,
             Value::String,
         );
-        fields.extend(extensions);
+        fields.extend(extensions.into_iter().map(|(key, value)| {
+            // RawJson contains valid JSON from the shared object decoder.
+            let value = value
+                .serialize(serde_json::value::Serializer)
+                .expect("raw JSON serializes");
+            (key, value)
+        }));
         Value::Object(fields)
     }
 }
@@ -154,6 +208,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn metadata_rejects_duplicate_extensions_and_preserves_raw_bytes() {
+        let raw = r#"{"future":{"z":  1,"a":2}}"#;
+        let record: EventMetadataRecord = serde_json::from_str(raw).unwrap();
+        assert_eq!(serde_json::to_string(&record).unwrap(), raw);
+        assert!(serde_json::from_str::<EventMetadataRecord>(r#"{"future":1,"future":2}"#).is_err());
+    }
+
+    #[test]
     fn consuming_projection_moves_owned_payloads() {
         let record = EventMetadataRecord::from_value(json!({
             "assets":[{"payload":"asset-value"}],
@@ -170,7 +232,6 @@ mod tests {
             .unwrap()
             .as_ptr();
         let transcript = record.transcript_item_id.value().unwrap().as_ptr();
-        let future = record.extensions["future"].as_array().unwrap().as_ptr();
         let expected = json!(&record);
         let result = record.into_value();
         assert_eq!(result, expected);
@@ -188,7 +249,6 @@ mod tests {
             result["transcriptItemId"].as_str().unwrap().as_ptr(),
             transcript
         );
-        assert_eq!(result["future"].as_array().unwrap().as_ptr(), future);
     }
 
     #[test]

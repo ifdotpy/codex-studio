@@ -8550,7 +8550,10 @@ export interface components {
       resource: components["schemas"]["AuthProgressResource"];
       /** Revision */
       revision: number;
-      value: components["schemas"]["ClaudeLoginResponse"] | null;
+      value:
+        | components["schemas"]["ClaudeLoginResponse"]
+        | components["schemas"]["CodexLoginReceipt"]
+        | null;
       /** Workspaceid */
       workspaceId: string;
     };
@@ -12151,8 +12154,6 @@ export interface components {
       /** Mobileprotocol */
       mobileProtocol: number;
       nativeRuntime: components["schemas"]["NativeRuntimeStatus"] | null;
-      /** @default null */
-      peerUpdate?: components["schemas"]["PeerUpdateStatus"] | null | undefined;
       /** Pid */
       pid: number;
       /** Protocol */
@@ -12207,8 +12208,6 @@ export interface components {
       /** Mobileprotocol */
       mobileProtocol: number;
       nativeRuntime: components["schemas"]["NativeRuntimeStatus"] | null;
-      /** @default null */
-      peerUpdate?: components["schemas"]["PeerUpdateStatus"] | null | undefined;
       /** Pid */
       pid: number;
       /** Protocol */
@@ -16963,37 +16962,6 @@ export interface components {
        * @description Format version of the stamp. Always 1.
        */
       version: number;
-    };
-    /** @description The last pull or install attempt of the update puller. */
-    PeerUpdateEvent: {
-      /**
-       * Format: double
-       * @description Time of the pull or install attempt, in seconds since the epoch.
-       */
-      at: number | null;
-      build: components["schemas"]["PeerUpdateBuild"] | null;
-      outcome: string | null;
-      reason: string | null;
-      /** @description The paired server that offered the build. */
-      server: string | null;
-    };
-    /** @description The staged update that the desktop installer takes next. */
-    PeerUpdatePending: {
-      build: components["schemas"]["PeerUpdateBuild"];
-      server: string;
-    };
-    /** @description The update state from a paired server, as `/api/desktop` shows it (`peerUpdate`). */
-    PeerUpdateStatus: {
-      /** @description The build of the installed app; null for a source checkout. */
-      build: components["schemas"]["PeerUpdateBuild"] | null;
-      /**
-       * Format: double
-       * @description Time of the last check, in seconds since the epoch.
-       */
-      checkedAt: number | null;
-      lastInstall: components["schemas"]["PeerUpdateEvent"] | null;
-      lastPull: components["schemas"]["PeerUpdateEvent"] | null;
-      pending: components["schemas"]["PeerUpdatePending"] | null;
     };
     /** PendingSettingsRecordResponse */
     PendingSettingsRecordResponse: {
@@ -22244,29 +22212,96 @@ export interface components {
       | "paused"
       | "native_failure"
       | "account_transfer";
-    /** @description Older persisted and status waits may omit details and carry extensions. */
-    StartWaitRecordResponse: {
-      /** Format: int64 */
-      epoch: number;
-      maxRunningTurns?: (number | null) | null | undefined;
-      /** @enum {string} */
-      reason:
-        | "slot"
-        | "pause"
-        | "start_queue"
-        | "disk"
-        | "model_catalog"
-        | "provider_session"
-        | "dependency"
-        | "dispatch_pending"
-        | "paused"
-        | "native_failure"
-        | "account_transfer";
-      runningTurns?: (number | null) | null | undefined;
-      until?: (number | null) | null | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
+    /**
+     * @description One epoch-scoped wait. `until` is a retry deadline in Unix seconds.
+     *
+     *     ```compile_fail
+     *     use studio_runtime_schema::agent_progress::AgentStartWait;
+     *     let _ = AgentStartWait::Slot { epoch: 1 };
+     *     ```
+     *     ```compile_fail
+     *     use studio_runtime_schema::agent_progress::AgentStartWait;
+     *     let _ = AgentStartWait::Pause { epoch: 1 };
+     *     ```
+     */
+    StartWaitRecordResponse:
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** Format: uint64 */
+          maxRunningTurns: number;
+          /** @constant */
+          reason: "slot";
+          /** Format: uint64 */
+          runningTurns: number;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "pause";
+          /** Format: double */
+          until: number;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "start_queue";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "disk";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "model_catalog";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "provider_session";
+          /**
+           * Format: double
+           * @description The registry knows a deadline during retry backoff, but not initial startup.
+           */
+          until?: number | null | undefined;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "dependency";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "dispatch_pending";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "paused";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "native_failure";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "account_transfer";
+        };
     /** StateResource */
     StateResource: {
       /**
@@ -22628,7 +22663,10 @@ export interface components {
     SubscriptionDataMap: {
       accounts: components["schemas"]["AccountsResponse"];
       agentDetail: components["schemas"]["AgentDetailEntityDto"];
-      "auth-progress": components["schemas"]["ClaudeLoginResponse"] | null;
+      "auth-progress":
+        | components["schemas"]["ClaudeLoginResponse"]
+        | components["schemas"]["CodexLoginReceipt"]
+        | null;
       complaint: components["schemas"]["ComplaintDetailResponse"];
       costs: components["schemas"]["AccountCostResponse"][];
       desktop: components["schemas"]["DesktopResponse"];

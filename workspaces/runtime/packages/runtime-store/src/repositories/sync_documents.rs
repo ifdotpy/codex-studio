@@ -57,10 +57,6 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[
         name: "sync_entity_meta",
         columns: &["key", "value"],
     },
-    TableRequirement {
-        name: "sync_versions",
-        columns: &["seq", "scope", "hash", "deleted", "updated"],
-    },
 ];
 const BOOTSTRAP_TRIGGERS: &[TriggerRequirement] = &[
     TriggerRequirement {
@@ -495,19 +491,34 @@ impl SyncDocumentsRepository {
     }
 
     /// Publish the renderer-owned sync envelope for an entity inside its source write transaction.
-    pub fn put_entity(
+    pub fn put_entity<T: serde::Serialize>(
         transaction: &Transaction<'_>,
         collection: &str,
         id: &str,
-        value: Value,
+        value: T,
         deleted: bool,
     ) -> StoreResult<bool> {
-        let value = if deleted { json!({}) } else { value };
-        let payload = serde_json::to_string(&json!({
-            "collection": collection,
-            "id": id,
-            "value": value,
-        }))?;
+        #[derive(serde::Serialize)]
+        struct Entity<'a, T> {
+            collection: &'a str,
+            id: &'a str,
+            value: T,
+        }
+        #[derive(serde::Serialize)]
+        struct Empty {}
+        let payload = if deleted {
+            serde_json::to_string(&Entity {
+                collection,
+                id,
+                value: Empty {},
+            })?
+        } else {
+            serde_json::to_string(&Entity {
+                collection,
+                id,
+                value,
+            })?
+        };
         Self::put_entity_payload(transaction, collection, id, &payload, deleted)
     }
 
@@ -721,6 +732,7 @@ impl SyncDocumentsRepository {
         payload: &str,
         deleted: bool,
     ) -> StoreResult<bool> {
+        // This hash detects content changes; it is not a request or receipt identity.
         let hash = hash_payload(payload);
         Self::write_entity_hash(
             transaction,
@@ -855,20 +867,16 @@ fn entity_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EntityRow> {
 }
 
 pub(crate) fn hash_payload(payload: &str) -> String {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(payload.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    crate::sha256_hex(payload.as_bytes())
 }
 
 pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {
     connection
         .query_row_cached(
-            "SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM ( \
+            "SELECT MAX(entity_seq,document_seq,generation)+1 FROM ( \
              SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities), \
              (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents), \
-             (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions)",
+             (SELECT COALESCE(MAX(value),0) AS generation FROM sync_generation WHERE id=1)",
             [],
             |row| row.get(0),
         )
@@ -886,6 +894,50 @@ inventory::submit! {
 mod tests {
     use super::SyncDocumentsRepository;
     use rusqlite::Connection;
+
+    #[test]
+    fn payload_hash_preserves_lowercase_sha256_bytes() {
+        for (payload, expected) in [
+            (
+                "",
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            ),
+            (
+                "hello",
+                "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            ),
+            (
+                "żółć",
+                "47ff00909613d05d62e7ba4ae9e6c072d7371dcc16c7eb27edb5d298d21094ec",
+            ),
+        ] {
+            assert_eq!(super::hash_payload(payload), expected);
+        }
+    }
+
+    #[test]
+    fn migrated_legacy_versions_keep_the_sequence_floor() {
+        let mut db = crate::fresh_state::test_canvas();
+        db.execute_batch("CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL UNIQUE,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL)").unwrap();
+        db.execute("INSERT INTO sync_versions(seq,scope,hash,deleted,updated) VALUES(900,'legacy','h',0,0)", []).unwrap();
+        db.execute_batch("DROP TRIGGER IF EXISTS summary_task_delete; CREATE TRIGGER summary_task_delete AFTER DELETE ON runtime_tasks BEGIN SELECT MAX(seq) FROM sync_versions; END;").unwrap();
+        let tx = db.transaction().unwrap();
+        crate::bootstrap::prepare_sync_schema(&tx).unwrap();
+        crate::feature_schema::prepare(&tx).unwrap();
+        assert!(!crate::schema::table_exists(&tx, "sync_versions").unwrap());
+        assert!(super::next_sequence(&tx).unwrap() > 900);
+        let sql: String = tx
+            .query_row(
+                "SELECT sql FROM sqlite_schema WHERE type='trigger' AND name='summary_task_delete'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!sql.contains("sync_versions"));
+        crate::bootstrap::prepare_sync_schema(&tx).unwrap();
+        assert!(super::next_sequence(&tx).unwrap() > 900);
+        tx.rollback().unwrap();
+    }
 
     fn page_scan_fixture() -> Connection {
         let db = Connection::open_in_memory().expect("memory SQLite");
@@ -1390,7 +1442,7 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-             CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
+             CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);",
         ).expect("sync fixture creates");
         let transaction = connection.transaction().expect("transaction begins");
         let value = serde_json::json!({"b":2,"a":1});
@@ -1480,7 +1532,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  INSERT INTO sync_documents VALUES(9,'drafts','d','{}',0);",
             )
             .expect("sync fixture creates");

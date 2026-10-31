@@ -1,4 +1,11 @@
 // Register every integration test module here; the tooling witness checks coverage.
+fn task_record(value: &serde_json::Value) -> studio_runtime_store::TaskRecord {
+    let mut canonical = value.clone();
+    if canonical.get("name").is_none() {
+        canonical["name"] = canonical["type"].clone();
+    }
+    serde_json::from_str(&canonical.to_string()).expect("canonical task fixture")
+}
 mod account_login_registry_cleanup;
 mod account_login_session_start;
 mod account_transfer_corpus;
@@ -125,3 +132,22 @@ pub(crate) use callback_fixtures::frozen as recovery_fixtures;
 
 #[path = "test_support/agent_views.rs"]
 pub(crate) mod agent_view_fixtures;
+
+fn rule_snapshot(
+    rule: &serde_json::Value,
+    owner: serde_json::Value,
+) -> Result<
+    studio_runtime_services::rules_engine::RuleSnapshot,
+    studio_runtime_services::rules_engine::RuleError,
+> {
+    let id = rule["id"].as_str().unwrap_or("?").to_owned();
+    let record = serde_path_to_error::deserialize(rule).map_err(|error| {
+        studio_runtime_services::rules_engine::RuleError::Invalid {
+            object: format!("rules/{id}"),
+            location: format!("/{}", error.path()),
+        }
+    })?;
+    studio_runtime_services::rules_engine::RuleSnapshot::from_stored(&record, owner)
+}
+
+pub(crate) use callback_fixtures::normalize_agent_nulls;

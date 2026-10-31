@@ -451,7 +451,7 @@ fn receive_locked(
         for member in &chat.recipients {
             let agent = AgentRepository::get(tx, &AgentId::from(member.as_str()))?
                 .ok_or(Error::Invalid("room.localMembers"))?;
-            if crate::event_write::truthy(agent.extra.get("deletedAt")) {
+            if agent.is_deleted() {
                 continue;
             }
             let event_id = format!("{}{member}", chat.event_prefix);

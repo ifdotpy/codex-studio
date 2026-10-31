@@ -14,7 +14,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
                 AgentRepository::put(
                     tx,
                     &AgentRecord::from_value(
-                        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                        json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":id, "rootId":id, "epoch":0, "status":"idle", "cwd":cwd,
                             "isLead":true, "autoWake":true,
                         }),
@@ -24,7 +24,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
             ProjectsRepository::put_project(
                 tx,
                 &json!({
-                    "id":"project", "path":cwd, "name":"Before", "created":0,
+                    "id":"project", "path":cwd, "name":"Before", "created":0, "peerTeams":[],
                 }),
             )
         })

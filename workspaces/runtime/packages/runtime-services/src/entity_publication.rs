@@ -76,7 +76,12 @@ pub(crate) mod test_support {
     }
 
     /// Store `record` and publish its client view, as a chat looks before the write under test.
-    pub(crate) async fn seed_chat(store: &RuntimeStore, record: Value) {
+    pub(crate) async fn seed_chat(store: &RuntimeStore, mut record: Value) {
+        record
+            .as_object_mut()
+            .expect("agent fixture")
+            .entry("compactions")
+            .or_insert(serde_json::json!(0));
         store
             .transaction_with(move |tx| {
                 let agent = AgentRecord::from_value(record)?;

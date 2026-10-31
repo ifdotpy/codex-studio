@@ -117,13 +117,13 @@ const BRIDGE: &[u8] = b"{\"id\":\"thread-1\"}";
 const ROLLOUT: &[u8] = b"{\"rollout\":1}\n";
 
 fn records(project: &Path, status: &str) -> Vec<Value> {
-    let lead = json!({"provider":"claude","id":"lead","rootId":"lead","epoch":3,"status":status,
+    let lead = json!({"compactions":0,"provider":"claude","id":"lead","rootId":"lead","epoch":3,"status":status,
         "autoWake":true,"isLead":true,"executionMode":"vm","workspaceMode":"layr",
         "layrReady":true,"layrHome":"/home/u","layrProjectId":"project","layrLine":"main",
         "layrStateId":"s1","environment":"linux","nativeRoleGuidance":"VM text",
         "cwd":"/var/lib/layr/projects/project/lines/main","hostProjectPath":project,
         "threadId":"thread-1","accountKey":"claude-account"});
-    let worker = json!({"provider":"codex","id":"worker","rootId":"lead","parentId":"lead",
+    let worker = json!({"compactions":0,"provider":"codex","id":"worker","rootId":"lead","parentId":"lead",
         "role":"implementer","epoch":1,"status":"idle","autoWake":false,"executionMode":"vm",
         "workspaceMode":"layr","layrReady":true,"layrHome":"/home/u","layrLine":"agent-1",
         "cwd":"/var/lib/layr/projects/project/lines/agent-1","threadId":"thread-2",

@@ -350,18 +350,6 @@ pub fn check_between(ctx: &Ctx, repo: &Repo, old: &Snap, new: &Snap, rev: &str) 
     check_tree(ctx, repo, Some(old), new, rev)
 }
 
-pub fn check_state(ctx: &Ctx, repo: &Repo, state: &str) -> Result<()> {
-    if repo.p.is_overlay() {
-        return Ok(());
-    }
-    let s = repo.state(state)?;
-    let root = repo.state_src(state)?;
-    match s.parents.first() {
-        Some(parent) => check_between(ctx, repo, &repo.state_src(parent)?, &root, state),
-        None => check_tree(ctx, repo, None, &root, state),
-    }
-}
-
 /// One operation uses one current source index, then checks each state's changed files.
 /// This cache never crosses a command boundary or skips a state with inserted secret bytes.
 pub fn check_states<'a>(ctx: &Ctx, repo: &Repo, states: impl IntoIterator<Item = &'a str>) -> Result<()> {
@@ -389,18 +377,23 @@ pub fn check_contents(ctx: &Ctx, repo: &Repo, state: &str) -> Result<()> {
     check_tree(ctx, repo, None, &repo.state_src(state)?, state)
 }
 
-/// Exports include history, so inspect every state that can leave the machine.
+/// Exports include history, so inspect every state that can leave the machine. A state with a
+/// Git commit came from Git or passed this check when it was exported, and so did its ancestors:
+/// the walk stops there. A push then checks its new states with one index, not the whole
+/// history of the line with a new index for each state (minutes in a long history).
 pub fn check_history(ctx: &Ctx, repo: &Repo, state: &str) -> Result<()> {
     let mut pending = vec![state.to_string()];
     let mut seen = BTreeSet::new();
+    let mut new = Vec::new();
     while let Some(id) = pending.pop() {
-        if !seen.insert(id.clone()) {
+        if !seen.insert(id.clone()) || repo.p.db.git_commit_of(&id)?.is_some() {
             continue;
         }
-        check_state(ctx, repo, &id)?;
         pending.extend(repo.state(&id)?.parents);
+        new.push(id);
     }
-    Ok(())
+    let _t = crate::trace::span(format!("secret check of {} new states", new.len()));
+    check_states(ctx, repo, new.iter().map(String::as_str))
 }
 
 pub fn declassify(ctx: &Ctx, repo: &Repo, scope: &str, state: &str) -> Result<crate::model::Record> {

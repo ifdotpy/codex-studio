@@ -2958,7 +2958,9 @@ impl Worker {
                     if auth_attempt == 0 || wait["cause"] != "auth" || wait["status"] != "started" {
                         return Ok(None);
                     }
-                    let attempt = fields.get("startAttempt").unwrap_or(&Value::Null);
+                    let Some(attempt) = row.start_attempt.as_deref() else {
+                        return Err(WorkerError::StaleVmActor);
+                    };
                     let guest_home = fields
                         .get("layrHome")
                         .and_then(Value::as_str)
@@ -2980,13 +2982,13 @@ impl Worker {
                         ]
                         .iter()
                         .any(|key| fields.get(*key).is_some_and(|value| !value.is_null()))
-                        || fields.get("cwd").and_then(Value::as_str) != Some(request.cwd.as_str())
+                        || row.cwd.as_deref() != Some(request.cwd.as_str())
                         || guest_home != request.guest_home
                         || row.thread_id.as_deref() != intent.thread_id.as_deref()
-                        || attempt["id"] != intent.attempt_id
-                        || attempt["epoch"] != request.epoch
-                        || attempt["accountKey"] != request.account_key
-                        || attempt["submitted"] != false
+                        || attempt.id.as_deref() != Some(intent.attempt_id.as_str())
+                        || attempt.epoch != Some(request.epoch)
+                        || attempt.account_key.as_deref() != Some(request.account_key.as_str())
+                        || attempt.submitted != Some(false)
                         || wait["epoch"] != request.epoch
                         || wait["accountKey"] != request.account_key
                         || row.thread_id.as_deref() != wait["threadId"].as_str()
@@ -3061,7 +3063,7 @@ impl Worker {
                         )? {
                             return Ok(None);
                         }
-                        let cwd = record.extra.get("cwd").and_then(Value::as_str);
+                        let cwd = record.cwd.as_deref();
                         if cwd.is_some_and(|value| !value.starts_with('/')) {
                             return Ok(None);
                         }

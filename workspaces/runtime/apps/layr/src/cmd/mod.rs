@@ -193,7 +193,7 @@ Read history:
 Lines and states:
    line new <name> [<rev>] [--count N], line list, line delete, line rename
    save -m <message> [-a] [--amend]
-   save [--note <text>] [--all-lines] [--running] [--force] [--caches]
+   save [--note <text>] [--all-lines] [--running] [--force] [--caches [--cache <path>]]
    park [list/show/pop/apply/drop/clear]
    tag, merge, pick, invert, replay, undo, op, try, bisect run, adopt
    ref set/list/log/delete, release attach/files/get, attest, attestations, change list/show/log/diff

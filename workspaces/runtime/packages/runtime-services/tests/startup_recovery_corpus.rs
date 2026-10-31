@@ -280,6 +280,27 @@ async fn python_constructor_and_rust_startup_match_requests_monitors_events_and_
     );
     redact_registered_agent_differences(&mut rust, &deviations, &held_agent_ids);
     redact_registered_agent_differences(&mut python, &deviations, &held_agent_ids);
+    // Typed monitor records omit nullable fields when they are absent.
+    for snapshot in [&mut rust, &mut python] {
+        for monitor in snapshot["monitors"].as_array_mut().unwrap() {
+            let fields = monitor.as_object_mut().unwrap();
+            for key in ["error", "exitCode", "ruleId"] {
+                if fields.get(key).is_some_and(Value::is_null) {
+                    fields.remove(key);
+                }
+            }
+        }
+        for entity in snapshot["sync_entities"].as_array_mut().unwrap() {
+            if entity["collection"] == "monitor" {
+                let fields = entity["payload"]["value"].as_object_mut().unwrap();
+                for key in ["error", "exitCode", "ruleId"] {
+                    if fields.get(key).is_some_and(Value::is_null) {
+                        fields.remove(key);
+                    }
+                }
+            }
+        }
+    }
     // bb5f67c67 retired the published token count, not the stored agent field.
     // Adapt only the frozen Python agent view and require Rust to omit it.
     for projection in python["sync_entities"]
@@ -306,6 +327,18 @@ async fn python_constructor_and_rust_startup_match_requests_monitors_events_and_
             Some(json!(0)),
             "the frozen Python agent view contains its retired token count"
         );
+    }
+    crate::normalize_agent_nulls(&mut python);
+    crate::normalize_agent_nulls(&mut rust);
+    // Request migration canonicalizes absent and null optional connection metadata.
+    for snapshot in [&mut python, &mut rust] {
+        for request in snapshot["requests"].as_array_mut().unwrap() {
+            for field in ["connectionId", "supervisor"] {
+                if request.get(field) == Some(&Value::Null) {
+                    request.as_object_mut().unwrap().remove(field);
+                }
+            }
+        }
     }
     assert_eq!(rust, python, "complete startup rows and projections differ");
 }

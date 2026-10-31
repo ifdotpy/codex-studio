@@ -20,29 +20,6 @@ pub struct Store {
     pub(crate) connection: Connection,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PreferenceCommand {
-    key: String,
-    value: Value,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DraftCommand {
-    workspace: String,
-    room: String,
-    text: String,
-    base_revision: u64,
-}
-
-#[derive(Default, Deserialize)]
-struct DraftLookup<'a> {
-    #[serde(borrow)]
-    workspace: Option<&'a str>,
-    #[serde(borrow)]
-    room: Option<&'a str>,
-}
 #[derive(Default, Deserialize)]
 struct RawKey<'a> {
     #[serde(borrow)]
@@ -73,18 +50,15 @@ impl Store {
         connection.pragma_update(None, "synchronous", "FULL")?;
         connection.execute_batch(
             "BEGIN IMMEDIATE;
-            CREATE TABLE IF NOT EXISTS client_drafts (
-                workspace TEXT NOT NULL, room TEXT NOT NULL,
-                text TEXT NOT NULL, revision INTEGER NOT NULL,
-                PRIMARY KEY(workspace, room));
             CREATE TABLE IF NOT EXISTS client_receipts (
                 request_id TEXT PRIMARY KEY, method TEXT NOT NULL,
                 params TEXT NOT NULL, response TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS client_preferences (
                 key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            DROP TABLE IF EXISTS client_drafts;
+            DROP TABLE IF EXISTS client_outbox;
             COMMIT;",
         )?;
-        crate::outbox::initialize(&connection)?;
         crate::projections::initialize(&connection)?;
         crate::draft_store::initialize(&connection)?;
         Ok(Self { connection })
@@ -103,75 +77,12 @@ impl Store {
     fn execute(&mut self, request: &Request) -> rusqlite::Result<Response> {
         let id = request.id.clone();
         match request.method.as_str() {
-            "markdown.parse" => Ok(crate::markdown::dispatch(request)),
-            method
-                if method == "system.uuid"
-                    || method == "text.sentences"
-                    || method == "locale.language_name"
-                    || method.starts_with("url.") =>
-            {
-                Ok(crate::platform::dispatch(request))
-            }
             method if method.starts_with("drafts.") => {
                 Ok(crate::draft_store::dispatch(&mut self.connection, request))
             }
             method if method.starts_with("projection.") || method.starts_with("identity.") => {
                 Ok(crate::projections::dispatch(&self.connection, request))
             }
-            method if method.starts_with("actions.") => {
-                Ok(crate::actions::stored(&mut self.connection, request))
-            }
-            method if method.starts_with("outbox.") => {
-                Ok(crate::outbox::dispatch(&mut self.connection, request))
-            }
-            "system.info" => Ok(Response::success(
-                id,
-                json!({
-                    "name": "Codex Studio", "core": "rust", "protocol": 2,
-                    "migration": "in_progress"
-                }),
-            )),
-            "draft.get" => {
-                let lookup: DraftLookup<'_> = project(&request.params);
-                let (Some(workspace), Some(room)) = (lookup.workspace, lookup.room) else {
-                    return Ok(Response::failure(
-                        id,
-                        "invalid_params",
-                        "Workspace and room are required.",
-                    ));
-                };
-                let (text, revision) = self
-                    .connection
-                    .query_row(
-                        "SELECT text, revision FROM client_drafts WHERE workspace=?1 AND room=?2",
-                        params![workspace, room],
-                        |row| Ok((row.get::<_, String>(0)?, crate::store::unsigned(row, 1)?)),
-                    )
-                    .optional()?
-                    .unwrap_or_default();
-                Ok(Response::success(
-                    id,
-                    json!({"text":text,"revision":revision}),
-                ))
-            }
-            "draft.set" => self.set_draft(request),
-            "preferences.get" => {
-                let mut statement = self
-                    .connection
-                    .prepare("SELECT key,value FROM client_preferences ORDER BY key")?;
-                let rows = statement.query_map([], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?;
-                let mut values = serde_json::Map::new();
-                for row in rows {
-                    let (key, encoded) = row?;
-                    if let Ok(value) = serde_json::from_str(&encoded) {
-                        values.insert(key, value);
-                    }
-                }
-                Ok(Response::success(id, Value::Object(values)))
-            }
-            "preferences.set" => self.set_preference(request),
             "preferences.raw_all" => {
                 let mut query = self
                     .connection
@@ -320,101 +231,6 @@ impl Store {
         transaction.commit()?;
         Ok(response)
     }
-
-    fn set_preference(&mut self, request: &Request) -> rusqlite::Result<Response> {
-        let command: PreferenceCommand = match serde_json::from_value(request.params.clone()) {
-            Ok(value) => value,
-            Err(error) => {
-                return Ok(Response::failure(
-                    request.id.clone(),
-                    "invalid_params",
-                    error,
-                ));
-            }
-        };
-        let value = serde_json::to_string(&command.value).expect("JSON value serialization");
-        if command.key.is_empty()
-            || command.key.len() > max_preference_key_bytes()
-            || value.len() > 512 * 1024
-        {
-            return Ok(Response::failure(
-                request.id.clone(),
-                "invalid_params",
-                "Preference fields exceed their limits.",
-            ));
-        }
-        let transaction = self
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some(response) = replay(&transaction, request)? {
-            return Ok(response);
-        }
-        transaction.execute(
-            "INSERT INTO client_preferences(key,value) VALUES(?1,?2)
-            ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            params![command.key, value],
-        )?;
-        let response = Response::success(request.id.clone(), json!({"saved":true}));
-        record(&transaction, request, &response)?;
-        transaction.commit()?;
-        Ok(response)
-    }
-
-    fn set_draft(&mut self, request: &Request) -> rusqlite::Result<Response> {
-        let id = request.id.clone();
-        let command: DraftCommand = match serde_json::from_value(request.params.clone()) {
-            Ok(value) => value,
-            Err(error) => return Ok(Response::failure(id, "invalid_params", error)),
-        };
-        if command.workspace.is_empty()
-            || command.room.is_empty()
-            || command.workspace.len() > 512
-            || command.room.len() > 512
-            || command.text.len() > 512 * 1024
-            || command.base_revision >= i64::MAX as u64
-        {
-            return Ok(Response::failure(
-                id,
-                "invalid_params",
-                "Draft fields exceed their limits.",
-            ));
-        }
-        let transaction = self
-            .connection
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        if let Some(response) = replay(&transaction, request)? {
-            return Ok(response);
-        }
-        let current = transaction
-            .query_row(
-                "SELECT revision FROM client_drafts WHERE workspace=?1 AND room=?2",
-                params![command.workspace, command.room],
-                |row| crate::store::unsigned(row, 0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        let response = if current != command.base_revision {
-            Response::failure(
-                id.clone(),
-                "revision_conflict",
-                "The draft changed. Read its current version before saving.",
-            )
-        } else {
-            let revision = current + 1;
-            transaction.execute(
-                "INSERT INTO client_drafts(workspace,room,text,revision) VALUES (?1,?2,?3,?4)
-                 ON CONFLICT(workspace,room) DO UPDATE SET text=excluded.text,revision=excluded.revision",
-                params![command.workspace, command.room, command.text, i64::try_from(revision).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?],
-            )?;
-            Response::success(
-                id.clone(),
-                json!({"text": command.text, "revision":revision}),
-            )
-        };
-        record(&transaction, request, &response)?;
-        transaction.commit()?;
-        Ok(response)
-    }
 }
 
 pub(crate) fn replay(
@@ -484,6 +300,79 @@ pub(crate) fn unsigned(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_tables_are_removed_on_empty_and_populated_databases() {
+        for populated in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("client.sqlite3");
+            if populated {
+                let db = Connection::open(&path).unwrap();
+                db.execute_batch("CREATE TABLE client_drafts(workspace TEXT NOT NULL, room TEXT NOT NULL, text TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY(workspace,room)); INSERT INTO client_drafts VALUES('w','r','saved',1); CREATE TABLE client_outbox(workspace TEXT NOT NULL, id TEXT NOT NULL, room TEXT NOT NULL, payload TEXT NOT NULL, in_flight INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(workspace,id)); INSERT INTO client_outbox VALUES('w','id','r','saved',1); CREATE TABLE client_preferences(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO client_preferences VALUES('keep','value'); CREATE TABLE client_receipts(request_id TEXT PRIMARY KEY,method TEXT NOT NULL,params TEXT NOT NULL,response TEXT NOT NULL); INSERT INTO client_receipts VALUES('keep','preferences.import','{}','{}'); INSERT INTO client_receipts VALUES('old','draft.set','{}','{}');").unwrap();
+            }
+            let mut store = Store::open(&path).unwrap();
+            for table in ["client_drafts", "client_outbox"] {
+                let exists: bool = store
+                    .connection
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                        [table],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert!(!exists, "{table} still exists");
+            }
+            if populated {
+                let value: String = store
+                    .connection
+                    .query_row(
+                        "SELECT value FROM client_preferences WHERE key='keep'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(value, "value");
+                let methods: Vec<String> = store
+                    .connection
+                    .prepare("SELECT method FROM client_receipts ORDER BY method")
+                    .unwrap()
+                    .query_map([], |row| row.get(0))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+                assert_eq!(methods, ["draft.set", "preferences.import"]);
+                let reply = store.dispatch(Request {
+                    id: "old".into(),
+                    method: "preferences.raw_set".into(),
+                    params: json!({"key":"keep","raw":"changed"}),
+                });
+                assert_eq!(reply.error.unwrap().code, "identity_conflict");
+            }
+            drop(store);
+            Store::open(&path).unwrap();
+        }
+    }
+
+    #[test]
+    fn retired_commands_are_unknown() {
+        let mut store = Store::open(Path::new(":memory:")).unwrap();
+        for method in [
+            "draft.get",
+            "draft.set",
+            "preferences.get",
+            "preferences.set",
+            "outbox.enqueue",
+            "outbox.list",
+            "actions.prepare",
+        ] {
+            let response = store.dispatch(Request {
+                id: "test".into(),
+                method: method.into(),
+                params: json!({}),
+            });
+            assert_eq!(response.error.unwrap().code, "unknown_method", "{method}");
+        }
+    }
 
     #[test]
     fn retired_upload_commands_leave_existing_files_intact() {
@@ -628,12 +517,6 @@ mod tests {
                 .is_none()
         );
         assert_eq!(raw(&mut store), json!({}));
-        let draft = store.dispatch(request(
-            "draft",
-            "draft.get",
-            json!({"workspace":"","room":""}),
-        ));
-        assert_eq!(draft.result, Some(json!({"text":"","revision":0})));
     }
     fn import(id: &str, entries: Value) -> Request {
         Request {
@@ -783,91 +666,5 @@ mod tests {
         future.params["version"] = json!(2);
         assert_eq!(store.dispatch(future).error.unwrap().code, "invalid_params");
         assert_eq!(raw(&mut store), json!({}));
-    }
-
-    #[test]
-    fn old_preference_retry_cannot_replace_a_later_selection() {
-        let mut store = Store::open(Path::new(":memory:")).unwrap();
-        let set = |id: &str, value: &str| Request {
-            id: id.into(),
-            method: "preferences.set".into(),
-            params: json!({"key":"selected-chat","value":value}),
-        };
-        assert!(store.dispatch(set("first", "one")).error.is_none());
-        assert!(store.dispatch(set("second", "two")).error.is_none());
-        assert!(store.dispatch(set("first", "one")).error.is_none());
-        let result = store.dispatch(Request {
-            id: "read".into(),
-            method: "preferences.get".into(),
-            params: Value::Null,
-        });
-        assert_eq!(result.result.unwrap()["selected-chat"], "two");
-        assert_eq!(
-            store.dispatch(set("first", "changed")).error.unwrap().code,
-            "identity_conflict"
-        );
-    }
-    fn save(id: &str, text: &str, revision: u64) -> Request {
-        Request {
-            id: id.into(),
-            method: "draft.set".into(),
-            params: json!({
-                "workspace":"one", "room":"chat", "text":text,"base_revision":revision,
-            }),
-        }
-    }
-
-    #[test]
-    fn lost_response_retry_survives_restart_without_second_write() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("client.sqlite3");
-        let first = Store::open(&path)
-            .unwrap()
-            .dispatch(save("request-1", "Привет 🦀", 0));
-        let mut restarted = Store::open(&path).unwrap();
-        let repeated = restarted.dispatch(save("request-1", "Привет 🦀", 0));
-        assert_eq!(first.result, repeated.result);
-        assert_eq!(repeated.result.unwrap()["revision"], 1);
-        assert_eq!(
-            restarted
-                .dispatch(save("request-1", "changed", 0))
-                .error
-                .unwrap()
-                .code,
-            "identity_conflict"
-        );
-        assert_eq!(
-            restarted
-                .dispatch(save("request-2", "stale", 0))
-                .error
-                .unwrap()
-                .code,
-            "revision_conflict"
-        );
-        assert_eq!(
-            restarted
-                .dispatch(save("request-3", "next", 1))
-                .result
-                .unwrap()["revision"],
-            2
-        );
-        // Retrying a rejected stale command must not become a new write.
-        assert_eq!(
-            restarted
-                .dispatch(save("request-2", "stale", 0))
-                .error
-                .unwrap()
-                .code,
-            "revision_conflict"
-        );
-    }
-
-    #[test]
-    fn workspace_scope_prevents_cross_workspace_draft_updates() {
-        let mut store = Store::open(Path::new(":memory:")).unwrap();
-        store.dispatch(save("one", "workspace one", 0));
-        let mut other = save("two", "workspace two", 0);
-        other.params["workspace"] = json!("two");
-        assert_eq!(store.dispatch(other).result.unwrap()["revision"], 1);
     }
 }

@@ -402,12 +402,8 @@ impl<S: TerminalSession> TerminalDriver<S> {
                 let Some(current_agent) = AgentRepository::get(transaction, &agent_id)? else {
                     return Ok(false);
                 };
-                if current_agent
-                    .extra
-                    .get("deletedAt")
-                    .is_some_and(json_truthy)
-                    || current_agent.extra.get("cwd").and_then(Value::as_str)
-                        != Some(agent_cwd.as_str())
+                if current_agent.is_deleted()
+                    || current_agent.cwd.as_deref() != Some(agent_cwd.as_str())
                 {
                     return Ok(false);
                 }
@@ -1119,17 +1115,6 @@ fn terminal_title(title: &str) -> Result<&str, TerminalError> {
     }
 }
 
-fn json_truthy(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Bool(value) => *value,
-        Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
-        Value::String(value) => !value.is_empty(),
-        Value::Array(value) => !value.is_empty(),
-        Value::Object(value) => !value.is_empty(),
-    }
-}
-
 fn slice_chars(value: &str, start: usize, count: usize) -> String {
     value.chars().skip(start).take(count).collect()
 }
@@ -1345,29 +1330,15 @@ mod tests {
             "provider".to_owned(),
             serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
         );
-        extra.insert("cwd".to_owned(), serde_json::json!(root));
         let agent = AgentRecord {
-            in_flight: None,
             account_key: "default".into(),
-            thread_id: None,
-            turn_id: None,
-            auto_wake: None,
-            usage_resume_enabled: None,
-            execution_mode: None,
-            turn_epoch: None,
-            title_job: None,
-            start_outcome_hold: None,
-            fired_events: Default::default(),
-            native_review_thread: None,
-            vm_launch: None,
-            credential_copy: None,
-            vm_auth_bootstrap: None,
-            native_release: None,
+            cwd: Some(root.to_string_lossy().into_owned()),
             id: AgentId::from("agent"),
             root_id: AgentId::from("agent"),
             epoch: 0,
             status: AgentStatus::Running,
             extra,
+            ..AgentRecord::test_defaults()
         };
         store
             .transaction(move |transaction| AgentRepository::put(transaction, &agent))

@@ -137,13 +137,9 @@ async fn native_action(
     repair: Option<Extension<Arc<dyn NativeContextRepairPort>>>,
     ApiJson(body): ApiJson<generated::NativeActionRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let value = serde_json::to_value(&body).map_err(|_| ApiError::internal())?;
-    if let Some(root) = value["request_id"].as_str() {
-        let root = root.to_owned();
-        let agent_id = value["id"]
-            .as_str()
-            .ok_or_else(ApiError::internal)?
-            .to_owned();
+    if let Some(root) = body.request_id.as_ref().and_then(Option::as_ref) {
+        let root = root.clone();
+        let agent_id = body.id.clone();
         let reserved = state
             .store
             .as_ref()
@@ -240,10 +236,7 @@ async fn run_native_action(
                 let record = AgentRepository::get(tx, &AgentId::from(read_agent.as_str()))?
                     .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "Agent not found"))?;
                 let account = record.account_key.as_str().to_owned();
-                let epoch = record.value()["epoch"]
-                    .as_i64()
-                    .ok_or_else(ApiError::internal)?;
-                Ok::<_, ApiError>((account, epoch))
+                Ok::<_, ApiError>((account, record.epoch))
             })
             .await?;
         let actor = studio_runtime_services::account_worker::retained::RequestActor {
@@ -542,7 +535,7 @@ impl NativeActionPreparationRun {
             .guest
             .clone()
             .ok_or(NativeError::Unavailable("workspace-state/vm-workspace"))?;
-        if agent.extra.get("isLead").and_then(Value::as_bool) == Some(true) {
+        if agent.is_lead == Some(true) {
             studio_runtime_services::vm_preparation::prepare_lead(
                 self.store.as_ref(),
                 guest,
@@ -841,6 +834,48 @@ mod native_review_preflight_tests {
     }
 
     #[tokio::test]
+    async fn native_action_rejects_reserved_idle_request_and_missing_id() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+        let agent = AgentRecord::from_value(json!({"compactions":0,
+            "id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "provider":"codex", "accountKey":"default",
+            "idleCompactionEpisode": {"id":"reserved", "cache":{"requestId":"cache", "ttl":"1h", "warm":true,
+                "lastActivityAt":1.0, "contextTokens":1, "prefix":"prefix"}, "fireAt":2.0, "expiresAt":3.0,
+                "identity":{}, "prefixInputs":[], "attempt":{}}
+        })).unwrap();
+        store
+            .transaction(move |tx| AgentRepository::put(tx, &agent))
+            .await
+            .unwrap();
+        let state = HttpState::new(
+            "token".into(),
+            "fixture".into(),
+            directory.path().display().to_string(),
+            49172,
+            None,
+            Some(store),
+            None,
+        );
+        for (request_id, expected) in [
+            (Some("reserved".to_owned()), "reserved for idle compaction"),
+            (None, "no durable action request ID"),
+        ] {
+            let body = generated::NativeActionRequest {
+                action: generated::NativeActionRequestAction::NativeAction(
+                    generated::NativeAction::Compact,
+                ),
+                id: "agent".into(),
+                context: None,
+                request_id: Some(request_id),
+            };
+            let error = native_action(State(state.clone()), None, None, None, ApiJson(body))
+                .await
+                .unwrap_err();
+            assert!(error.message().contains(expected), "{}", error.message());
+        }
+    }
+
+    #[tokio::test]
     async fn remote_origin_and_vm_review_preflight_use_the_provider_home_owner() {
         let directory = tempfile::tempdir().expect("isolated store directory");
         let store = Arc::new(
@@ -848,7 +883,7 @@ mod native_review_preflight_tests {
                 .await
                 .expect("open store"),
         );
-        let original = AgentRecord::from_value(json!({
+        let original = AgentRecord::from_value(json!({"compactions":0,
             "id":"remote",
             "rootId":"remote",
             "epoch":7,
@@ -1105,7 +1140,7 @@ mod native_review_preflight_tests {
             .await
             .expect("open store");
         let agent = AgentRecord::from_value(
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+            json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"vm-native", "rootId":"vm-native", "epoch":5,
                 "status":"idle", "executionMode":"vm", "accountKey":"vm-account"
             }),
@@ -1208,7 +1243,7 @@ mod native_review_preflight_tests {
         let store = RuntimeStore::open(Some(directory.path()))
             .await
             .expect("open store");
-        let record = AgentRecord::from_value(json!({
+        let record = AgentRecord::from_value(json!({"compactions":0,
             "id":"vm-local-archive-failure", "rootId":"vm-local-archive-failure",
             "epoch":1, "status":"starting", "provider":"codex", "executionMode":"vm", "accountKey":"default",
             "isLead":true, "autoWake":true, "cwd":missing_source,
@@ -1273,7 +1308,7 @@ mod native_review_preflight_tests {
                 .await
                 .expect("open store"),
         );
-        let record = AgentRecord::from_value(json!({
+        let record = AgentRecord::from_value(json!({"compactions":0,
             "id":"vm-lead", "rootId":"vm-lead", "epoch":7, "status":"starting",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
             "cwd":source, "hostProjectPath":source, "projectId":"logical-project-id", "threadId":"thread-vm",
@@ -1392,14 +1427,14 @@ mod native_review_preflight_tests {
                 .await
                 .expect("open store"),
         );
-        let parent = AgentRecord::from_value(json!({
+        let parent = AgentRecord::from_value(json!({"compactions":0,
             "id":"vm-parent", "rootId":"vm-parent", "epoch":2, "status":"idle", "accountKey":"default",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
             "cwd":"/home/studio/project", "layrReady":true,
             "layrProjectId":"project-key", "layrLine":"main"
         }))
         .expect("valid parent");
-        let reviewer = AgentRecord::from_value(json!({
+        let reviewer = AgentRecord::from_value(json!({"compactions":0,
             "id":"vm-reviewer", "rootId":"vm-parent", "parentId":"vm-parent",
             "epoch":4, "status":"starting", "provider":"codex", "executionMode":"vm", "accountKey":"default",
             "isLead":false, "role":"reviewer", "autoWake":true, "layrReady":false,
@@ -1494,7 +1529,7 @@ mod native_review_preflight_tests {
                 .await
                 .expect("open store"),
         );
-        let record = AgentRecord::from_value(json!({
+        let record = AgentRecord::from_value(json!({"compactions":0,
             "id":"vm-unknown", "rootId":"vm-unknown", "epoch":1, "status":"starting", "accountKey":"default",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
             "cwd":source, "hostProjectPath":source, "threadId":"thread-unknown",

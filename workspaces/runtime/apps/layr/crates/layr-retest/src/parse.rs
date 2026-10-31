@@ -139,6 +139,8 @@ pub struct Hunk {
     pub old_len: u32,
     pub new_len: u32,
     pub added: Vec<String>,
+    /// Text of the old lines that the hunk removed.
+    pub removed: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -170,8 +172,12 @@ pub fn parse_hunks(diff: &str) -> Vec<FileChange> {
             in_hunk = false;
             out.extend(cur.take());
         } else if in_hunk && !l.starts_with("@@ ") {
-            if let (Some(t), Some(h)) = (l.strip_prefix('+'), cur.as_mut().and_then(|c| c.hunks.last_mut())) {
-                h.added.push(t.to_string());
+            if let Some(h) = cur.as_mut().and_then(|c| c.hunks.last_mut()) {
+                if let Some(t) = l.strip_prefix('+') {
+                    h.added.push(t.to_string());
+                } else if let Some(t) = l.strip_prefix('-') {
+                    h.removed.push(t.to_string());
+                }
             }
         } else if let Some(p) = l.strip_prefix("rename from ") {
             cur = Some(mk(p));
@@ -186,7 +192,7 @@ pub fn parse_hunks(diff: &str) -> Vec<FileChange> {
             let mut it = h.split(' ');
             let (Some(a), Some(b)) = (it.next(), it.next()) else { continue };
             if let (Some((s, n)), Some((_, m)), Some(c)) = (parse_span(a), parse_span(b), cur.as_mut()) {
-                c.hunks.push(Hunk { old_start: s, old_len: n, new_len: m, added: Vec::new() });
+                c.hunks.push(Hunk { old_start: s, old_len: n, new_len: m, added: Vec::new(), removed: Vec::new() });
             }
         }
     }
@@ -217,6 +223,7 @@ mod tests {
         assert_eq!((h[0].old_start, h[0].old_len, h[0].new_len, h[0].added.len()), (3, 0, 2, 2));
         assert_eq!((h[1].old_start, h[1].old_len, h[1].added.clone()), (10, 1, vec!["new".to_string()]));
         assert_eq!((h[2].old_start, h[2].old_len), (20, 2));
+        assert_eq!((h[1].removed.clone(), h[2].removed.clone()), (vec!["old".to_string()], vec!["x".to_string(), "y".to_string()]));
     }
 
     #[test]

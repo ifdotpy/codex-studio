@@ -95,9 +95,9 @@ async fn retained_worktrees_http_lists_deleted_members_without_private_receipts(
     let store = Arc::new(RuntimeStore::open(Some(dir.path())).await.unwrap());
     store.transaction(|tx| {
         for value in [
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"completed","autoWake":true,"cwd":"/work","tokensUsed":10,"tokenBudget":100}),
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","parentId":"lead","epoch":1,"status":"completed","autoWake":false,"cwd":"/work","tokensUsed":20}),
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"deleted","rootId":"lead","parentId":"lead","epoch":1,"status":"completed","autoWake":false,"cwd":"/work","tokensUsed":30,"deletedAt":1,"name":"Deleted worker","workspaceCleanupIntent":{"phase":"not_sent","effect":{"kind":"remove_worktree","identity":{"cwd":"/kept/worktree"}},"receipt":{"reason":"Submodule vendor has changes","secret":"private"}}}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"completed","autoWake":true,"cwd":"/work","tokensUsed":10,"tokenBudget":100}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","parentId":"lead","epoch":1,"status":"completed","autoWake":false,"cwd":"/work","tokensUsed":20}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"deleted","rootId":"lead","parentId":"lead","epoch":1,"status":"completed","autoWake":false,"cwd":"/work","tokensUsed":30,"deletedAt":1,"name":"Deleted worker","workspaceCleanupIntent":{"phase":"not_sent","effect":{"kind":"remove_worktree","identity":{"cwd":"/kept/worktree"}},"receipt":{"reason":"Submodule vendor has changes","secret":"private"}}}),
         ] { AgentRepository::put(tx, &AgentRecord::from_value(value).unwrap())?; }
         Ok(())
     }).await.unwrap();

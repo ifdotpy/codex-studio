@@ -82,7 +82,7 @@ pub fn action(
     if agent.id.0 != agent_id {
         return Err(invalid_stored("runtime_agents", agent_id));
     }
-    if event_write::truthy(agent.extra.get("deletedAt")) {
+    if agent.is_deleted() {
         return Err(QueueWriteError::InvalidRequest("This agent was deleted"));
     }
     if event_write::truthy(agent.extra.get("remoteWorker"))
@@ -153,9 +153,12 @@ pub fn action(
             QueueWriteRepository::update_text(transaction, target_id, text)?;
             if row.get("text").and_then(Value::as_str) != Some(text) {
                 let mut metadata = read_metadata(transaction, target_id)?;
-                metadata
-                    .extensions
-                    .insert("acceptedAt".into(), json!(unix_time()?));
+                metadata.extensions.insert(
+                    "acceptedAt".into(),
+                    studio_runtime_schema::raw_json::RawJson(serde_json::value::to_raw_value(
+                        &unix_time()?,
+                    )?),
+                );
                 QueueWriteRepository::put_typed_metadata(transaction, target_id, &metadata)?;
             }
         }
@@ -195,7 +198,13 @@ pub fn action(
             if matches!(body, QueueCommand::SendNow(_)) {
                 let mut metadata = read_metadata(transaction, target_id)?;
                 if metadata.requested_delivery.is_missing()
-                    && !event_write::truthy(metadata.extensions.get("sendNow"))
+                    && !event_write::truthy(
+                        metadata
+                            .extensions
+                            .get("sendNow")
+                            .and_then(|raw| serde_json::from_str(raw.0.get()).ok())
+                            .as_ref(),
+                    )
                 {
                     let original = metadata.delivery.value().cloned().unwrap_or_else(|| {
                         studio_runtime_schema::event_metadata::StoredDelivery::canonical(
@@ -210,7 +219,12 @@ pub fn action(
                         studio_runtime_schema::DeliveryMoment::CurrentTurn,
                     ),
                 );
-                metadata.extensions.insert("sendNow".into(), json!(true));
+                metadata.extensions.insert(
+                    "sendNow".into(),
+                    studio_runtime_schema::raw_json::RawJson(serde_json::value::to_raw_value(
+                        &true,
+                    )?),
+                );
                 QueueWriteRepository::put_typed_metadata(transaction, target_id, &metadata)?;
             }
         }
@@ -221,7 +235,7 @@ pub fn action(
     if recover_failed {
         agent.status = AgentStatus::Queued;
         agent.extra.insert("error".into(), Value::Null);
-        agent.extra.remove("startAttempt");
+        agent.start_attempt = None;
     }
     if updated.items != current.items || recover_failed {
         let revision = match agent.extra.get("queueMutationRevision") {
@@ -451,16 +465,7 @@ pub fn queue_snapshot(
 }
 
 pub fn is_live(agent: &AgentRecord) -> bool {
-    !agent
-        .extra
-        .get("deletedAt")
-        .is_some_and(|value| match value {
-            Value::Null | Value::Bool(false) => false,
-            Value::Bool(true) => true,
-            Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
-            Value::String(value) => !value.is_empty(),
-            Value::Array(_) | Value::Object(_) => true,
-        })
+    !agent.is_deleted()
 }
 
 /// Queue collection owner. Every relevant source write calls this before commit.

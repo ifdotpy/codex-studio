@@ -41,7 +41,7 @@ pub use crate::codex_generated::{
 
 impl CodexTurnStatus {
     pub fn observe(turn: &Value) -> Option<Self> {
-        serde_json::from_value(turn.get("status")?.clone()).ok()
+        Self::deserialize(turn.get("status")?).ok()
     }
     pub const fn terminal(self) -> Option<TerminalTurnStatus> {
         match self {
@@ -67,7 +67,7 @@ impl CodexTurnItemsView {
 /// Claude's mirror status has no activeFlags; it is not a CodexThreadStatus.
 impl ThreadActivity {
     pub fn observe(status: &Value) -> Option<Self> {
-        serde_json::from_value(status.clone()).ok()
+        Self::deserialize(status).ok()
     }
     pub const fn is_idle(self) -> bool {
         match self {
@@ -113,12 +113,9 @@ impl<'a> TurnLifecycle<'a> {
         if thread_id.is_empty() {
             return None;
         }
-        let phase = match CodexTurnStatus::observe(turn)? {
-            CodexTurnStatus::InProgress => TurnPhase::Running,
-            CodexTurnStatus::Completed => TurnPhase::Terminal(TerminalTurnStatus::Completed),
-            CodexTurnStatus::Interrupted => TurnPhase::Terminal(TerminalTurnStatus::Interrupted),
-            CodexTurnStatus::Failed => TurnPhase::Terminal(TerminalTurnStatus::Failed),
-        };
+        let phase = CodexTurnStatus::observe(turn)?
+            .terminal()
+            .map_or(TurnPhase::Running, TurnPhase::Terminal);
         Some(Self {
             thread_id,
             turn_id,

@@ -482,8 +482,8 @@ async fn mixed_inputs(state: &State) {
             let mut sender = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
             sender.id = "mixed-child".into();
             sender.status = studio_runtime_store::AgentStatus::Completed;
-            sender.extra.insert("parentId".into(), json!(agent));
-            sender.extra.insert("isLead".into(), json!(false));
+            sender.parent_id = Some((agent).to_string());
+            sender.is_lead = Some(false);
             sender.thread_id = Some("child-thread".to_string());
             AgentRepository::put(tx, &sender)?;
             tx.execute("INSERT INTO runtime_rooms(id,record) VALUES('mixed-room',?1)",
@@ -1465,7 +1465,7 @@ async fn private_answer_waits_while_shared_turn_holds_floor() {
             let account = record.account_key.as_str();
             tx.execute("UPDATE runtime_events SET kind='followup' WHERE id=?1", [INPUT])?;
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id) VALUES('radio-input',?1,'radio_turn','shared','delivered',1,?2,?3)", rusqlite::params![agent,epoch,turn])?;
-            let room = json!({"id":"radio:test","kind":"private","members":[agent,"peer"],"radio":{"teamId":"test","revision":1,"status":"speaking","speaker":agent,"next":[],"active":{"eventId":"radio-input","agentId":agent,"epoch":epoch,"threadId":thread,"identity":[null,1,0],"through":1},"error":null,"seen":{}}});
+            let room = json!({"id":"radio:test","kind":"private","members":[agent,"peer"],"radio":{"teamId":"test","revision":1,"status":"speaking","speaker":agent,"next":[],"active":{"eventId":"radio-input","agentId":agent,"epoch":epoch,"threadId":thread,"identity":[null,1,0],"through":1},"direct":false,"error":null,"seen":{}}});
             tx.execute("INSERT INTO runtime_rooms(id,record) VALUES('radio:test',?1)", [room.to_string()])?;
             assert!(super::super::steer::claim(tx, account, &agent, epoch, "private-steer", 100.0, false)?.is_none(), "private answer must wait for the shared turn to end");
             tx.execute("DELETE FROM runtime_rooms WHERE id='radio:test'", [])?;

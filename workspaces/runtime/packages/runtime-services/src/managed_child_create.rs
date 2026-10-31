@@ -576,7 +576,7 @@ pub(crate) async fn spawn_agents(
             let task = task.as_str().filter(|value| !value.is_empty()).ok_or(
                 crate::managed_host_tools::Error::Invalid("task_id must be a task id"),
             )?;
-            if actor_record.extra.get("isLead").and_then(Value::as_bool) != Some(true) {
+            if actor_record.is_lead != Some(true) {
                 return Err(crate::managed_host_tools::Error::Invalid(
                     "Only the lead can delegate an existing task; ask the lead to assign it",
                 )
@@ -1046,7 +1046,7 @@ fn recheck_actor(
         || current.root_id != actor.root_id
         || current.account_key != actor.account_key
         || current.extra.get("provider") != actor.extra.get("provider")
-        || event_write::truthy(current.extra.get("deletedAt"))
+        || current.is_deleted()
         || current.auto_wake != Some(true)
     {
         return Err(crate::managed_host_tools::Error::Stale);
@@ -1191,7 +1191,7 @@ fn can_delegate(
         if !visited.insert(cursor.id.0.clone()) {
             return Ok(false);
         }
-        let Some(parent_id) = cursor.extra.get("parentId").and_then(Value::as_str) else {
+        let Some(parent_id) = cursor.parent_id.as_deref() else {
             return Ok(false);
         };
         cursor = AgentRepository::get(tx, &AgentId::from(parent_id))?
@@ -1379,7 +1379,7 @@ pub(crate) async fn request_review(
 ) -> Result<crate::managed_host_tools::DispatchedOperation, Error> {
     let actor_record = actor.record().clone();
     if actor_record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm) {
-        if actor_record.extra.get("isLead").and_then(Value::as_bool) != Some(true) {
+        if actor_record.is_lead != Some(true) {
             return Err(crate::managed_host_tools::Error::Invalid(
                 "Only the lead can create a layr reviewer",
             )

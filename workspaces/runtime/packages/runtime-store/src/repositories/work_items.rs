@@ -109,7 +109,7 @@ impl WorkItemsRepository {
             .optional()?;
         let raw = raw.ok_or_else(invalid)?;
         let value: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-        let studio_runtime_schema::json_object::JsonObject(run): studio_runtime_schema::json_object::JsonObject<super::execution_history::ExecutionRun<Value, studio_runtime_schema::records::agent_projection::AgentCounter>> =
+        let studio_runtime_schema::json_object::JsonObject(run): studio_runtime_schema::json_object::JsonObject<super::execution_history::ExecutionRun<Value, studio_runtime_schema::AgentCounter>> =
             serde::Deserialize::deserialize(&value).map_err(|_| {
                 // The older record owner reports malformed JSON or a missing ID at
                 // the agent pointer; schema errors are located at the run row.
@@ -631,7 +631,7 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT,account TEXT,epoch INTEGER,thread TEXT,turn TEXT,created REAL,record TEXT);",
         ).expect("execution table creates");
-        let agent = AgentRecord::from_value(json!({"accountKey":"default",
+        let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
             "id":"worker","provider":"codex","rootId":"lead","epoch":4,"status":"paused",
             "activeExecution":{"runId":"run-1","attemptId":null}
         }))
@@ -683,7 +683,7 @@ mod tests {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,record TEXT);")
             .unwrap();
-        let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"worker","provider":"codex","rootId":"lead","epoch":4,"status":"paused","activeExecution":{"runId":"run","attemptId":null}})).unwrap();
+        let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"worker","provider":"codex","rootId":"lead","epoch":4,"status":"paused","activeExecution":{"runId":"run","attemptId":null}})).unwrap();
         let raw = r#"{"id":"wrong","id":"run","agent":"wrong","agent":"worker","accountKey":"default","epoch":4.0,"epoch":4,"status":"bad","status":"running","created":1}"#;
         db.execute("INSERT INTO runtime_execution_runs VALUES('run',?1)", [raw])
             .unwrap();
@@ -800,7 +800,7 @@ mod receipt_domain_tests {
         )
         .expect("historical execution");
         let mut agent = AgentRecord::from_value(
-            json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","status":"idle","epoch":1}),
+            json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","status":"idle","epoch":1}),
         )
         .expect("agent");
         assert_eq!(

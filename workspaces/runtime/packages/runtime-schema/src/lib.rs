@@ -7,6 +7,8 @@ pub mod agent_progress;
 pub mod annotation_command;
 pub mod annotation_record;
 pub mod api_schema;
+pub mod bounded_integer;
+pub mod bounded_text;
 pub mod checkpoint_record;
 pub mod claude_controls;
 pub mod claude_failure;
@@ -22,7 +24,6 @@ pub mod delivery;
 pub mod desktop;
 pub mod event_metadata;
 pub mod federation_limits;
-pub mod graph_agent_record;
 pub mod idle_compaction;
 pub mod json_compat;
 pub mod json_object;
@@ -35,6 +36,7 @@ pub mod persistence;
 pub mod plan_record;
 pub mod pricing;
 pub mod process_controls;
+pub mod project_record;
 pub mod provider_call_contract;
 pub mod provider_diagnostics;
 pub mod provider_errors;
@@ -45,13 +47,17 @@ pub mod provider_method_policy;
 pub mod provider_rate_limits;
 pub mod question_answers;
 pub mod queue_command;
+pub mod raw_json;
+pub mod raw_object;
 pub mod records;
 pub mod recovery_record;
 pub mod request_record;
 pub mod rule_record;
 pub mod shared_values;
 pub mod shell_policy;
+pub mod start_attempt;
 mod stored_record;
+pub use stored_record::AgentCounter;
 pub mod tool_result;
 pub use stored_record::StoredJsonInteger;
 pub mod string_enum;
@@ -123,8 +129,6 @@ const USAGE_RESUME_RECORD_URI: &str =
 const WORK_ITEM_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-work-item-record.schema.json";
 const RULE_RECORD_URI: &str = "https://codex-studio.invalid/persisted-rule-record.schema.json";
-const GRAPH_AGENT_RECORD_URI: &str =
-    "https://codex-studio.invalid/persisted-graph-agent-record.schema.json";
 const PROFILE_RECORD_URI: &str =
     "https://codex-studio.invalid/persisted-profile-record.schema.json";
 const EXECUTION_RUN_RECORD_URI: &str =
@@ -215,8 +219,6 @@ const USAGE_RESUME_RECORD: &[u8] =
     include_bytes!("schemas/persisted-usage-resume-record.schema.json");
 const WORK_ITEM_RECORD: &[u8] = include_bytes!("schemas/persisted-work-item-record.schema.json");
 const RULE_RECORD: &[u8] = include_bytes!("schemas/persisted-rule-record.schema.json");
-const GRAPH_AGENT_RECORD: &[u8] =
-    include_bytes!("schemas/persisted-graph-agent-record.schema.json");
 const PROFILE_RECORD: &[u8] = include_bytes!("schemas/persisted-profile-record.schema.json");
 const EXECUTION_RUN_RECORD: &[u8] =
     include_bytes!("schemas/persisted-execution-run-record.schema.json");
@@ -317,7 +319,6 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (FEDERATION_ROOM_RECORD_URI, FEDERATION_ROOM_RECORD),
     (FEDERATION_ROOM_URI, FEDERATION_ROOM),
     (FEDERATION_SETTINGS_URI, FEDERATION_SETTINGS),
-    (GRAPH_AGENT_RECORD_URI, GRAPH_AGENT_RECORD),
     (MESSAGE_EVENT_URI, MESSAGE_EVENT),
     (MONITOR_RECORD_URI, MONITOR_RECORD),
     (MONITOR_RESULT_URI, MONITOR_RESULT),
@@ -475,7 +476,6 @@ pub fn validate(schema: &str, value: &Value) -> SchemaResult<bool> {
 /// Return the authoritative persisted schema for a typed runtime table.
 pub fn table_schema(table: &str) -> Option<&'static str> {
     Some(match table {
-        "graph_agents" => "PersistedGraphAgentRecord",
         "runtime_access_clients" | "runtime_access_discovered" => "PersistedAccessClient",
         "runtime_access_invites" => "PersistedAccessInvite",
         "runtime_access_receipts" => "PersistedAccessReceipt",
@@ -943,7 +943,6 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         ("PersistedFederationRoom", FEDERATION_ROOM_URI),
         ("PersistedFederationRoomRecord", FEDERATION_ROOM_RECORD_URI),
         ("PersistedFederationSettings", FEDERATION_SETTINGS_URI),
-        ("PersistedGraphAgentRecord", GRAPH_AGENT_RECORD_URI),
         ("PersistedMessageEvent", MESSAGE_EVENT_URI),
         ("PersistedMonitorRecord", MONITOR_RECORD_URI),
         ("PersistedMonitorResult", MONITOR_RESULT_URI),
@@ -1282,7 +1281,6 @@ mod tests {
             ("runtime_usage_resumes", "PersistedUsageResumeRecord"),
             ("runtime_work", "PersistedWorkItemRecord"),
             ("runtime_rules", "PersistedRuleRecord"),
-            ("graph_agents", "PersistedGraphAgentRecord"),
             ("runtime_assets", "PersistedTranscriptAsset"),
             ("runtime_items", "PersistedTranscriptRecord"),
             ("runtime_event_meta", "RuntimeEventMetadataRecord"),
@@ -1313,7 +1311,7 @@ mod tests {
         assert!(
             validate(
                 "PersistedAgentRecord",
-                &json!({"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle"})
+                &json!({"id":"agent-1","rootId":"agent-1","epoch":0,"status":"idle","compactions":0})
             )
             .expect("persisted agent schema exists")
         );
@@ -1323,6 +1321,7 @@ mod tests {
                 &json!({
                     "id":"agent-1",
                     "rootId":"agent-1",
+                    "compactions":0,
                     "epoch":0,
                     "status":"idle",
                     "sandbox":null,
@@ -1337,6 +1336,7 @@ mod tests {
                 &json!({
                     "id":"agent-1",
                     "rootId":"agent-1",
+                    "compactions":0,
                     "epoch":0,
                     "status":"idle",
                     "sandbox":{},
@@ -1351,6 +1351,7 @@ mod tests {
                 &json!({
                     "id":"agent-1",
                     "rootId":"agent-1",
+                    "compactions":0,
                     "epoch":0,
                     "status":"running",
                     "startAttempt":{
@@ -1375,6 +1376,7 @@ mod tests {
                 &json!({
                     "id":"agent-1",
                     "rootId":"agent-1",
+                    "compactions":0,
                     "epoch":0,
                     "status":"idle",
                     "sandbox":"workspace-write"
@@ -1396,34 +1398,34 @@ mod tests {
         );
         assert!(validate(
             "PersistedTaskRecord",
-            &json!({"id":"t","agent":"a","kind":"command","status":"completed","reattachRecovery":{"attempt":2},"outputPreviewOnly":true})
+            &json!({"id":"t","agent":"a","kind":"command","status":"completed","created":1,"itemId":"i","turnId":"u","type":"commandExecution","name":"commandExecution","outputPreviewOnly":true})
         )
-        .expect("persisted task schema accepts Python state extensions"));
+        .expect("persisted task schema accepts canonical task"));
         assert!(
             validate(
                 "PersistedRequestRecord",
-                &json!({"id":"q","connectionId":null,"agent":null,"status":"pending"})
+                &json!({"id":"q","connectionId":null,"agent":"a","method":"agent/asyncQuestion","status":"pending","createdAt":1,"params":{}})
             )
             .expect("persisted request schema accepts nullable connection identity")
         );
         assert!(
             !validate(
                 "PersistedRequestRecord",
-                &json!({"id":"q","connectionId":7})
+                &json!({"id":"q","connectionId":7,"agent":"a","method":"agent/asyncQuestion","status":"pending","createdAt":1,"params":{}})
             )
             .expect("persisted request schema exists")
         );
         assert!(
             validate(
                 "PersistedTranscriptRecord",
-                &json!({"id":"i","inputs":[{"id":"a"}]})
+                &json!({"id":"i","role":"user","inputs":[{"id":"a"}]})
             )
             .expect("legacy transcript item can be hydrated before response validation")
         );
         assert!(
             validate(
                 "PersistedTranscriptRecord",
-                &json!({"id":"i","text":null,"inputs":[{"text":null}]})
+                &json!({"id":"i","role":"user","text":null,"inputs":[{"text":null}]})
             )
             .expect("nullable transcript text remains readable")
         );

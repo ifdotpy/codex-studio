@@ -776,7 +776,7 @@ pub(crate) fn validation_probe_router(
             == Some(true);
         let handler = match (body_schema.is_some(), required) {
             (true, true) => probe_required_body as ProbeHandler,
-            (true, false) => probe_optional_body as ProbeHandler,
+            (true, false) => probe_without_body as ProbeHandler,
             (false, _) => probe_without_body as ProbeHandler,
         };
         let status = crate::routes::manifest::OperationStatus::Implemented;
@@ -822,14 +822,6 @@ fn probe_required_body(
 }
 
 #[cfg(test)]
-fn probe_optional_body(
-    state: axum::extract::State<HttpState>,
-    request: Request<Body>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
-    Box::pin(async move { probe_echo(state.0, request, 2).await })
-}
-
-#[cfg(test)]
 fn probe_without_body(
     state: axum::extract::State<HttpState>,
     request: Request<Body>,
@@ -862,14 +854,6 @@ async fn probe_echo(state: HttpState, request: Request<Body>, body_kind: u8) -> 
             Ok(value) => Some(value.0),
             Err(error) => return error.into_response(),
         },
-        2 => {
-            match crate::routes::extractors::ApiJsonOptional::<Value>::from_request(request, &state)
-                .await
-            {
-                Ok(value) => value.0,
-                Err(error) => return error.into_response(),
-            }
-        }
         _ => None,
     };
     let mut value = Map::new();
@@ -2012,6 +1996,23 @@ mod tests {
             .await
             .expect("optional body response");
         assert_eq!(optional.status(), StatusCode::OK);
+
+        for (body, expected) in [
+            (r#"{}"#, StatusCode::OK),
+            (r#"{"extra":true}"#, StatusCode::BAD_REQUEST),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(build(
+                    "POST",
+                    "/api/accounts/discover",
+                    Body::from(body),
+                    Some("application/json"),
+                ))
+                .await
+                .expect("optional body response");
+            assert_eq!(response.status(), expected);
+        }
 
         let unknown_length_empty = Body::from_stream(futures_util::stream::empty::<
             Result<axum::body::Bytes, std::convert::Infallible>,

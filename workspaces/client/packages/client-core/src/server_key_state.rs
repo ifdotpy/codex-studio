@@ -2,24 +2,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(untagged)]
 pub enum TextField {
     #[default]
+    #[serde(skip)]
     Missing,
     Text(String),
     Other(Value),
-}
-impl<'de> Deserialize<'de> for TextField {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(match Value::deserialize(deserializer)? {
-            Value::String(text) => Self::Text(text),
-            value @ (Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::Array(_)
-            | Value::Object(_)) => Self::Other(value),
-        })
-    }
 }
 impl Serialize for TextField {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -97,25 +87,11 @@ fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
 ) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum Credential {
     Object(Box<CredentialObject>),
     Other(Value),
-}
-impl<'de> Deserialize<'de> for Credential {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match Value::deserialize(deserializer)? {
-            value @ Value::Object(_) => CredentialObject::deserialize(value)
-                .map(|object| Self::Object(Box::new(object)))
-                .map_err(serde::de::Error::custom),
-            value @ (Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::String(_)
-            | Value::Array(_)) => Ok(Self::Other(value)),
-        }
-    }
 }
 impl Credential {
     pub fn from_value(value: Value) -> Self {
@@ -191,27 +167,11 @@ impl Credential {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum Group {
     Entries(std::collections::BTreeMap<String, Credential>),
     Other(Value),
-}
-impl<'de> Deserialize<'de> for Group {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match Value::deserialize(deserializer)? {
-            value @ Value::Object(_) => {
-                std::collections::BTreeMap::<String, Credential>::deserialize(value)
-                    .map(Self::Entries)
-                    .map_err(serde::de::Error::custom)
-            }
-            value @ (Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::String(_)
-            | Value::Array(_)) => Ok(Self::Other(value)),
-        }
-    }
 }
 impl Group {
     fn into_value(self) -> Value {
@@ -262,25 +222,11 @@ pub struct VaultObject {
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum VaultState {
     Object(VaultObject),
     Other(Value),
-}
-impl<'de> Deserialize<'de> for VaultState {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match Value::deserialize(deserializer)? {
-            value @ Value::Object(_) => VaultObject::deserialize(value)
-                .map(Self::Object)
-                .map_err(serde::de::Error::custom),
-            value @ (Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::String(_)
-            | Value::Array(_)) => Ok(Self::Other(value)),
-        }
-    }
 }
 impl VaultState {
     pub fn from_value(value: Value) -> Self {
@@ -350,6 +296,8 @@ mod tests {
             json!(null),
             json!([1,{"future":true}]),
             json!({}),
+            json!({"drafts":[],"servers":{"a":[],"b":[1],"c":{},"d":false}}),
+            json!({"servers":{"a":{"origin":[1],"serverId":false,"clientId":{"nested":1},"inviteId":"invite"}}}),
             json!({"drafts":null,"servers":{"a":null,"b":42,"c":{"origin":null,"serverId":17,"clientId":"","receipt":null,"rejected":false,"future":[1,{"n":1.0}] }},"imports":null,"future":{"v":true}}),
             json!({"drafts":{"x":{"body":"exact body","privateKey":null}},"servers":false,"imports":[]}),
         ] {

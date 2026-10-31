@@ -25,6 +25,7 @@
 //   FIXTURE_AGENT_STEPS           JSON object: seeded agent name -> provider
 //                                 steps its first turn runs
 //   FIXTURE_SCRIPT                JSON array of provider scripts (prompt, steps)
+//   FIXTURE_PRICING_ARTIFACT      JSON pricing artifact written before agent seeding
 import type { ApiPostPath, PostBody, PostResult } from "../../src/apiTypes.ts";
 import type {
   components,
@@ -604,6 +605,14 @@ async function main() {
     scriptFile,
     controlDirectory,
   });
+  if (process.env.FIXTURE_PRICING_ARTIFACT) {
+    const pricing = join(stateDir, "model-pricing");
+    mkdirSync(pricing, { recursive: true });
+    writeFileSync(
+      join(pricing, "models-dev-v1.json"),
+      process.env.FIXTURE_PRICING_ARTIFACT,
+    );
+  }
   const stop = () => {
     backend.child.kill("SIGTERM");
   };
