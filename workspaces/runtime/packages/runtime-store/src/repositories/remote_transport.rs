@@ -46,10 +46,10 @@ const FEDERATION_IDENTITY: &[TableRequirement] = &[TableRequirement {
     name: "runtime_federation_identity",
     columns: &["id", "record"],
 }];
-const FEDERATION_NONCES: &[TableRequirement] = &[TableRequirement {
-    name: "runtime_federation_nonces",
-    columns: &["peer_id", "nonce", "created"],
-}];
+/// Owner of the namespace that keeps federation peers apart from paired clients
+/// in `runtime_access_nonces`, the one nonce table of the unified signature scheme.
+/// Both id spaces are state ids; the prefix is the principal kind.
+pub const FEDERATION_NONCE_CLIENT_PREFIX: &str = "federation:";
 const FEDERATION_RATE_LIMIT: i64 = 240;
 const FEDERATION_RATE_WINDOW_SECONDS: i64 = 60;
 const NONCE_RETENTION_SECONDS: i64 = 600;
@@ -67,7 +67,6 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
         ACCESS_NONCES[0],
         ACCESS_OUTBOUND[0],
         FEDERATION_IDENTITY[0],
-        FEDERATION_NONCES[0],
     ],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
@@ -110,6 +109,8 @@ impl RemoteTransportRepository {
     }
 
     /// Consume a federation nonce as part of the caller's immediate transaction.
+    /// Federation peers share `runtime_access_nonces` with paired clients, under
+    /// the `federation:` client prefix, and keep their per-minute rate limit.
     pub fn consume_federation_nonce(
         transaction: &Transaction<'_>,
         peer_id: &str,
@@ -117,22 +118,23 @@ impl RemoteTransportRepository {
         signed_timestamp: i64,
         now: i64,
     ) -> StoreResult<bool> {
+        let client = format!("{FEDERATION_NONCE_CLIENT_PREFIX}{peer_id}");
         let stale_before = now.saturating_sub(NONCE_RETENTION_SECONDS);
         transaction.execute(
-            "DELETE FROM runtime_federation_nonces WHERE created < ?1",
+            "DELETE FROM runtime_access_nonces WHERE created < ?1",
             [stale_before],
         )?;
         let recent: i64 = transaction.query_row(
-            "SELECT count(*) FROM runtime_federation_nonces WHERE peer_id=?1 AND created>=?2",
-            params![peer_id, now.saturating_sub(FEDERATION_RATE_WINDOW_SECONDS)],
+            "SELECT count(*) FROM runtime_access_nonces WHERE client=?1 AND created>=?2",
+            params![client, now.saturating_sub(FEDERATION_RATE_WINDOW_SECONDS)],
             |row| row.get(0),
         )?;
         if recent >= FEDERATION_RATE_LIMIT {
             return Ok(false);
         }
         Ok(transaction.execute(
-            "INSERT OR IGNORE INTO runtime_federation_nonces(peer_id,nonce,created) VALUES(?1,?2,?3)",
-            params![peer_id, nonce, signed_timestamp],
+            "INSERT OR IGNORE INTO runtime_access_nonces(client,nonce,created) VALUES(?1,?2,?3)",
+            params![client, nonce, signed_timestamp],
         )? == 1)
     }
 
@@ -169,9 +171,13 @@ impl RemoteTransportRepository {
         if unpaired_attempt {
             let unpaired: i64 = transaction.query_row(
                 "SELECT count(*) FROM runtime_access_nonces n \
-                 WHERE n.created>=?1 AND NOT EXISTS \
+                 WHERE n.created>=?1 AND substr(n.client,1,?2)<>?3 AND NOT EXISTS \
                  (SELECT 1 FROM runtime_access_clients c WHERE c.id=n.client)",
-                [stale_before],
+                params![
+                    stale_before,
+                    FEDERATION_NONCE_CLIENT_PREFIX.len() as i64,
+                    FEDERATION_NONCE_CLIENT_PREFIX
+                ],
                 |row| row.get(0),
             )?;
             if unpaired >= MULTI_SERVER_MAX_UNPAIRED_NONCES {
@@ -373,8 +379,7 @@ mod tests {
     fn nonce_db() -> Connection {
         let db = Connection::open_in_memory().expect("in-memory SQLite opens");
         db.execute_batch(
-            "CREATE TABLE runtime_federation_nonces(peer_id TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(peer_id,nonce));
-             CREATE TABLE runtime_access_nonces(client TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(client,nonce));
+            "CREATE TABLE runtime_access_nonces(client TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(client,nonce));
              CREATE TABLE runtime_access_clients(id TEXT NOT NULL, record TEXT NOT NULL);
              CREATE TABLE runtime_access_outbound(server TEXT NOT NULL, request_id TEXT NOT NULL, hash TEXT NOT NULL, record TEXT NOT NULL, PRIMARY KEY(server,request_id));",
         ).expect("fixture tables create");
@@ -443,13 +448,70 @@ mod tests {
         );
         let created: i64 = tx
             .query_row(
-                "SELECT created FROM runtime_federation_nonces WHERE nonce='new-federation-nonce'",
+                "SELECT created FROM runtime_access_nonces WHERE client='federation:peer-a' AND nonce='new-federation-nonce'",
                 [],
                 |row| row.get(0),
             )
             .expect("signed time is stored");
         assert_eq!(created, now - 61);
         tx.commit().expect("nonce transaction commits");
+    }
+
+    #[test]
+    fn federation_and_client_nonces_share_one_table_without_colliding() {
+        let mut db = nonce_db();
+        let tx = db.transaction().expect("transaction starts");
+        let nonce = "abcdefghijklmnopqrstuvwxyz012345";
+        assert!(
+            RemoteTransportRepository::consume_federation_nonce(
+                &tx, "same-id", nonce, 1_000, 1_000
+            )
+            .expect("federation nonce inserts")
+        );
+        assert!(
+            RemoteTransportRepository::consume_access_nonce(&tx, "same-id", nonce, 1_000, false)
+                .expect("client nonce of the same id and nonce inserts")
+        );
+        assert!(
+            !RemoteTransportRepository::consume_federation_nonce(
+                &tx, "same-id", nonce, 1_000, 1_000
+            )
+            .expect("replay is refused from the one table")
+        );
+        assert!(
+            !RemoteTransportRepository::consume_access_nonce(&tx, "same-id", nonce, 1_000, false)
+                .expect("client replay is refused from the one table")
+        );
+        let rows: i64 = tx
+            .query_row("SELECT count(*) FROM runtime_access_nonces", [], |row| {
+                row.get(0)
+            })
+            .expect("rows count");
+        assert_eq!(rows, 2);
+        tx.rollback().expect("test transaction rolls back");
+    }
+
+    #[test]
+    fn federation_nonces_do_not_fill_the_unpaired_cap() {
+        let mut db = nonce_db();
+        let tx = db.transaction().expect("transaction starts");
+        tx.execute(
+            "WITH RECURSIVE n(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i+1<?1)
+             INSERT INTO runtime_access_nonces SELECT 'federation:peer-'||i,printf('%032d',i),100 FROM n",
+            [MULTI_SERVER_MAX_UNPAIRED_NONCES],
+        )
+        .expect("federation nonce fixture inserts");
+        assert!(
+            RemoteTransportRepository::consume_access_nonce(
+                &tx,
+                "new-client",
+                "new-nonce",
+                200,
+                true
+            )
+            .expect("federation rows are not unpaired clients")
+        );
+        tx.rollback().expect("test transaction rolls back");
     }
 
     #[test]
@@ -539,12 +601,12 @@ mod tests {
     fn refusal_transaction_rolls_back_stale_nonce_cleanup() {
         let mut db = nonce_db();
         db.execute(
-            "INSERT INTO runtime_federation_nonces(peer_id,nonce,created) VALUES('peer-a','stale',1)",
+            "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES('federation:peer-a','stale',1)",
             [],
         ).expect("stale row inserts");
         for index in 0..240 {
             db.execute(
-                "INSERT INTO runtime_federation_nonces(peer_id,nonce,created) VALUES('peer-a',?1,1000)",
+                "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES('federation:peer-a',?1,1000)",
                 [format!("recent-{index}")],
             ).expect("rate row inserts");
         }
@@ -562,7 +624,7 @@ mod tests {
         drop(tx);
         let stale_count: i64 = db
             .query_row(
-                "SELECT count(*) FROM runtime_federation_nonces WHERE nonce='stale'",
+                "SELECT count(*) FROM runtime_access_nonces WHERE nonce='stale'",
                 [],
                 |row| row.get(0),
             )

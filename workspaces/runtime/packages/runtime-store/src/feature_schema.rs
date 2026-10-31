@@ -78,11 +78,6 @@ const FEATURE_SCHEMA: &str = r#"
         CREATE TABLE IF NOT EXISTS runtime_federation_inbox (
           peer_id TEXT NOT NULL, message_id TEXT NOT NULL, record TEXT NOT NULL,
           PRIMARY KEY(peer_id,message_id));
-        CREATE TABLE IF NOT EXISTS runtime_federation_nonces (
-          peer_id TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL,
-          PRIMARY KEY(peer_id,nonce));
-        CREATE INDEX IF NOT EXISTS runtime_federation_nonce_age
-          ON runtime_federation_nonces(created);
             CREATE INDEX IF NOT EXISTS runtime_workspace_operation_agent_phase ON runtime_workspace_operations(json_extract(record,'$.agent'),json_extract(record,'$.phase'));
             CREATE INDEX IF NOT EXISTS runtime_request_agent_status ON runtime_requests(json_extract(record,'$.agent'),json_extract(record,'$.status'));
             CREATE INDEX IF NOT EXISTS runtime_rule_agent_inflight ON runtime_rules(json_extract(record,'$.agent'),json_extract(record,'$.inFlight'));

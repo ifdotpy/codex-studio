@@ -337,6 +337,7 @@ async fn request(
     let url = format!("{}{path}", peer.origin);
     let headers = transport::federation_signed_headers(
         identity,
+        &peer.state_id,
         "POST",
         &url,
         now,
