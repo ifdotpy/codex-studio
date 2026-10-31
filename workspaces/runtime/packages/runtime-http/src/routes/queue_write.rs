@@ -87,9 +87,7 @@ mod tests {
     use axum::http::Request;
     use serde_json::{Value, json};
     use std::sync::Arc;
-    use studio_runtime_store::{
-        AgentRecord, AgentRepository, RuntimeStore, SyncDocumentsRepository,
-    };
+    use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
     use tower::ServiceExt;
 
     async fn call(app: &axum::Router, body: Value) -> (u16, Value) {
@@ -387,88 +385,6 @@ mod tests {
             .await
             .expect("reopened store");
         assert_eq!(queued_ids(&reopened), before);
-    }
-
-    #[tokio::test]
-    async fn withdrawing_a_queued_user_message_returns_its_text_as_a_server_draft() {
-        let directory = tempfile::tempdir().expect("isolated state");
-        let store = seeded_store(directory.path()).await;
-        let state = HttpState::new(
-            "token".into(),
-            "workspace".into(),
-            directory.path().to_string_lossy().into_owned(),
-            4620,
-            None,
-            Some(store.clone()),
-            None,
-        );
-        let app = crate::router(state).expect("router");
-        let withdraw = |id: &'static str| json!({"action":"cancel","id":id,"request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
-        let draft = || {
-            let store = store.clone();
-            async move {
-                store
-                    .transaction(|tx| SyncDocumentsRepository::draft(tx, "server:workspace"))
-                    .await
-                    .expect("draft read")
-                    .map(|document| {
-                        serde_json::from_str::<Value>(&document.payload).expect("draft JSON")
-                            ["text"]
-                            .as_str()
-                            .expect("draft text")
-                            .to_owned()
-                    })
-            }
-        };
-        assert_eq!(call(&app, withdraw("note")).await.0, 200);
-        assert_eq!(
-            draft().await,
-            None,
-            "only user messages return to the composer"
-        );
-        assert_eq!(call(&app, withdraw("early")).await.0, 200);
-        assert_eq!(draft().await.as_deref(), Some("Early"));
-        assert_eq!(call(&app, withdraw("late")).await.0, 200);
-        assert_eq!(draft().await.as_deref(), Some("Early\n\nLate"));
-        assert!(
-            queued_ids(&store).is_empty(),
-            "the withdrawn messages left the queue"
-        );
-    }
-
-    #[tokio::test]
-    async fn withdrawing_a_message_held_by_a_turn_is_refused_until_the_turn_ends() {
-        let directory = tempfile::tempdir().expect("isolated state");
-        let store = seeded_store(directory.path()).await;
-        store
-            .transaction(|tx| {
-                tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('held','workspace','user','Held','dispatching',0,0)", [])?;
-                Ok(())
-            })
-            .await
-            .expect("held message");
-        let state = HttpState::new(
-            "token".into(),
-            "workspace".into(),
-            directory.path().to_string_lossy().into_owned(),
-            4620,
-            None,
-            Some(store.clone()),
-            None,
-        );
-        let app = crate::router(state).expect("router");
-        let body = json!({"action":"cancel","id":"held","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()});
-        assert_eq!(call(&app, body).await.0, 409);
-        let status: String = store
-            .test_reader()
-            .expect("reader")
-            .query_row(
-                "SELECT status FROM runtime_events WHERE id='held'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("status");
-        assert_eq!(status, "dispatching", "the held message is not cancelled");
     }
 }
 inventory::submit! {

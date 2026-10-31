@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use studio_runtime_schema::queue_command::QueueCommand;
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, QueueWriteRepository,
-    SchedulerRepository, StoreError, SyncDocumentsRepository, Transaction, WorkItemsRepository,
+    SchedulerRepository, StoreError, Transaction, WorkItemsRepository,
 };
 use thiserror::Error;
 
