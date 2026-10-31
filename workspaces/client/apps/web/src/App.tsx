@@ -2,11 +2,11 @@ import {
   DeliveryStatus,
   AgentStatus as GeneratedApiAgentStatus,
   AgentSource as GeneratedApiAgentSource,
-  RequestStatus as GeneratedApiRequestStatus,
   AgentRole as GeneratedApiAgentRole,
   WorkspaceMode as GeneratedApiWorkspaceMode,
 } from "./generated/api.ts";
 import { useSubscription } from "./sync/subscriptions";
+import { isDeferred, isPending } from "./approvals";
 import { ProviderKind } from "./generated/providerKind.ts";
 import { submitRename, watchRenameResult } from "./renameRequest";
 import { randomUUID } from "./uuid";
@@ -2446,13 +2446,8 @@ export default function App({ active = true }: { active?: boolean }) {
   const answerIds = awaitingAnswerIds(chatData?.runtime?.requests || []);
   const deferredIds = new Set<string>(
     (chatData?.runtime?.requests || [])
-      .filter(
-        (request) =>
-          request.deferred &&
-          request.status === GeneratedApiRequestStatus.pending,
-      )
-      .map((request) => request.agent)
-      .filter((agentId): agentId is string => typeof agentId === "string"),
+      .filter((request) => isPending(request) && isDeferred(request))
+      .map((request) => request.agent),
   );
   const teamPanel = (
     <TeamPanel

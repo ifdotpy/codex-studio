@@ -1131,8 +1131,7 @@ export type MonitorEntityDto =
   import("../src/generated/api.ts").components["schemas"]["MonitorEntityDto"];
 export type PeerTeamEntityDto =
   import("../src/generated/api.ts").components["schemas"]["PeerTeamEntityDto"];
-export type RequestEntityDto =
-  import("../src/generated/api.ts").components["schemas"]["RequestEntityDto"];
+export type TestApproval = import("../src/approvals.ts").Approval;
 
 export type TestAgent = AgentEntityDto;
 
@@ -1149,7 +1148,7 @@ export type TestRuntimeView = {
   projects: TestProject[];
   events: EventEntityDto[];
   peerTeams: PeerTeamEntityDto[];
-  requests: RequestEntityDto[];
+  requests: TestApproval[];
   rules: RuleEntityDto[];
   work: WorkEntityDto[];
   viewScopedAgents?: boolean;

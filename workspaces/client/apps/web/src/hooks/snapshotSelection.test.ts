@@ -2,6 +2,7 @@ import { AgentSource, AgentStatus } from "../generated/api";
 import { describe, expect, it } from "vitest";
 import { createChatSnapshotSelector } from "./snapshotSelection";
 import type { Agent, Snapshot } from "../types";
+import { simpleRequest } from "../approvalFixtures";
 
 function fixture(): Snapshot {
   const threads: Agent[] = [
@@ -86,12 +87,12 @@ describe("chat snapshot selection", () => {
       ...initial,
       runtime: {
         ...initial.runtime,
-        requests: [{ id: "other-input", agent: "other" }],
+        requests: [simpleRequest({ id: "other-input", agent: "other" })],
       },
     };
     expect(select(another, "lead")).toBe(chosen);
-    const question = { id: "selected-input", agent: "worker" };
-    const globalQuestion = { id: "global-input" };
+    const question = simpleRequest({ id: "selected-input", agent: "worker" });
+    const globalQuestion = simpleRequest({ id: "global-input", agent: "" });
     const monitor = {
       id: "monitor",
       agent: "worker",

@@ -1,3 +1,4 @@
+import { approval, question } from "../../src/approvalFixtures.ts";
 import { required } from "./helpers.ts";
 import { responseJson } from "./helpers.ts";
 import { requestBody } from "./helpers.ts";
@@ -309,17 +310,16 @@ test("messages focused ui", async ({ browser: _browser }) => {
     );
     await stable.evaluate(() => window.observer.disconnect());
     quietState.runtime.requests = [
-      {
+      approval({
         id: "stability-request",
-        createdAt: Date.now() / 1000,
-        method: "agent/asyncQuestion",
+        created: Date.now() / 1000,
         agent: lead.id,
         epoch: 0,
-        status: "pending",
-        params: {
-          questions: [{ id: "0", question: "Review the new result" }],
+        request: {
+          kind: "agent_question",
+          questions: [question("0", "Review the new result")],
         },
-      },
+      }),
     ];
     required(fixture.stdin).write(
       JSON.stringify({

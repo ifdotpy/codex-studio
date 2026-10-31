@@ -1,4 +1,5 @@
 import type { TestAgent } from "../playwright.ts";
+import { simpleRequest } from "../../src/approvalFixtures.ts";
 import { fixturePostBody } from "./helpers.ts";
 import {
   readTestState,
@@ -124,7 +125,7 @@ test("Team panel ui", async ({
     snapshot.threads = [lead, member, active, needsYou, stalled];
     snapshot.runtime.agents = [lead, member, active, needsYou, stalled];
     snapshot.runtime.requests = [
-      { id: "answer", agent: needsYou.id, status: "pending" },
+      simpleRequest({ id: "answer", agent: needsYou.id }),
     ];
     await stubEntityState(
       page,

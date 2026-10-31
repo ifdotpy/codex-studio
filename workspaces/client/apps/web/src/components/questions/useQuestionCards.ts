@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useServerSync } from "../../servers/ServerServicesContext";
-import type { components } from "../../generated/api";
+import type { Approval } from "../../approvals";
 import type { Message } from "../../types";
 import {
   isPendingQuestionRequest,
@@ -12,7 +12,7 @@ import {
   type QuestionLookup,
 } from "./questionCardModel";
 
-type RequestDto = components["schemas"]["RequestEntityDto"];
+type RequestDto = Approval;
 
 /**
  * Question cards for one chat. Pending state comes from live request entities;

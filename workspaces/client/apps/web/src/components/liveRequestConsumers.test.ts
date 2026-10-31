@@ -1,4 +1,5 @@
 import { AgentStatus as GeneratedApiAgentStatus } from "../generated/api.ts";
+import { approval, question as questionField } from "../approvalFixtures.ts";
 import { required } from "./componentTestFixtures.ts";
 import type { ComponentHookCell } from "./componentTestFixtures";
 import type { EffectCallback } from "react";
@@ -117,24 +118,24 @@ it("question history follows projected answers without a request-triggered HTTP 
       runtime: {
         agents: [{ id: "lead", rootId: "lead" }],
         questionHistory: [
-          {
+          approval({
             id: "question",
             agent: "lead",
-            method: "agent/asyncQuestion",
-            status: "answered",
-            itemId: "question-item",
-            questions: [
-              { id: "choice", question: "Continue?", isSecret: false },
-            ],
-            answerHistory: [
-              {
-                id: "choice",
-                question: "Continue?",
-                isSecret: false,
-                answer: ["Yes"],
+            request: {
+              kind: "agent_question",
+              questions: [questionField("choice", "Continue?")],
+            },
+            params: { itemId: "question-item" },
+            state: {
+              kind: "answered",
+              answer: {
+                kind: "answers",
+                answers: [{ id: "choice", answer: ["Yes"] }],
               },
-            ],
-          },
+              by: { kind: "owner" },
+              at: 2,
+            },
+          }),
         ],
       },
     } as unknown as Snapshot);

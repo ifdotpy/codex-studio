@@ -1,4 +1,5 @@
-import { RequestStatus, AgentStatus } from "../generated/api";
+import { AgentStatus } from "../generated/api";
+import { approvalCreated, approvalParams, needsAnswer } from "../approvals";
 import {
   SIGN_IN_ALERT_GRACE_SECONDS,
   SIGN_IN_REMINDER_SECONDS,
@@ -22,7 +23,6 @@ export {
   SIGN_IN_ALERT_GRACE_SECONDS,
   SIGN_IN_REMINDER_SECONDS,
 } from "../generated/sharedValues";
-const SIGN_IN_METHOD = "browser/open";
 
 type SignInTimes = { host: string; alertAt: number; reminderAt: number | null };
 
@@ -30,19 +30,10 @@ type SignInTimes = { host: string; alertAt: number; reminderAt: number | null };
 function signInTimes(
   request: Snapshot["runtime"]["requests"][number],
 ): SignInTimes | null {
-  if (
-    request.method !== SIGN_IN_METHOD ||
-    request.status !== RequestStatus.pending ||
-    request.deferred
-  )
+  if (request.request.kind !== "browser_open" || !needsAnswer(request))
     return null;
-  const params = (request.params ?? {}) as {
-    host?: unknown;
-    expiresAt?: unknown;
-    phase?: unknown;
-  };
-  const created = request.createdAt ?? request.created ?? request.at;
-  if (typeof created !== "number") return null;
+  const params = approvalParams(request);
+  const created = approvalCreated(request);
   const alertAt = created + SIGN_IN_ALERT_GRACE_SECONDS;
   const expiresAt =
     typeof params.expiresAt === "number" ? params.expiresAt : null;
@@ -155,7 +146,7 @@ export function desktopAlerts(
       );
   }
   for (const request of data.runtime.requests) {
-    if (request.method === SIGN_IN_METHOD) {
+    if (request.request.kind === "browser_open") {
       const times = signInTimes(request);
       if (!times || now < times.alertAt) continue;
       add(
@@ -167,8 +158,7 @@ export function desktopAlerts(
         times.alertAt,
         true,
       );
-      const expiresAt = (request.params as { expiresAt?: unknown } | undefined)
-        ?.expiresAt;
+      const expiresAt = approvalParams(request).expiresAt;
       if (
         times.reminderAt !== null &&
         typeof expiresAt === "number" &&
@@ -186,15 +176,19 @@ export function desktopAlerts(
         );
       continue;
     }
-    if (request.status !== RequestStatus.pending || request.deferred) continue;
-    const question = request.params?.questions?.[0]?.question;
+    if (!needsAnswer(request)) continue;
+    const question =
+      request.request.kind === "question" ||
+      request.request.kind === "agent_question"
+        ? request.request.questions[0]?.question
+        : undefined;
     add(
       `request:${request.id}`,
       request.agent,
       question ? "Question for you" : "Your approval is needed",
       question || "Open the request to review it.",
       request.id,
-      request.createdAt ?? request.created ?? request.at,
+      approvalCreated(request),
     );
   }
   for (const complaint of data.runtime.complaints) {

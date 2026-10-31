@@ -152,7 +152,6 @@ impl Registry {
             "ProjectMutationRecord",
             "QueueItem",
             "RequestRecordResponse",
-            "RequestEntityDto",
             "ResourceRef",
             "SubscriptionAdd",
             "ResourceProgressEvent",
@@ -2100,7 +2099,7 @@ mod tests {
     fn persisted_record_schemas_validate_full_values_without_number_coercion() {
         let registry = Registry::compile(&[]).expect("stored schemas compile");
         assert!(
-            !registry.validate_stored("AgentRequest", &json!({})),
+            !registry.validate_stored("Approval", &json!({})),
             "HTTP retains its named-schema allowlist"
         );
         assert!(!registry.validate_stored("MissingSchema", &json!({})));

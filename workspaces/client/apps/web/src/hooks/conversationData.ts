@@ -5,7 +5,8 @@ import {
   chatWaitState,
   type ChatWaitState,
 } from "../components/chat-status/chatStatusModel";
-import type { Agent, Project, Request, Snapshot } from "../types";
+import type { Approval } from "../approvals";
+import type { Agent, Project, Snapshot } from "../types";
 import { retainArray } from "./snapshotSelection";
 
 /**
@@ -31,7 +32,7 @@ export type ConversationData = {
   stateDir: string;
   threads: ConversationAgent[];
   runtime: {
-    requests: Request[];
+    requests: Approval[];
     agents: ConversationAgent[];
     projects: Project[];
     nativeNotices: Snapshot["runtime"]["nativeNotices"];
