@@ -143,10 +143,7 @@ impl ReviewPlan {
             .into_iter()
             .filter_map(|k| args.get(k).map(|v| (k.to_owned(), v.clone())))
             .collect::<serde_json::Map<_, _>>();
-        let prompt = format!(
-            "Run a native code review: {}",
-            studio_runtime_store::python_json_utf8(&target)
-        );
+        let prompt = format!("Run a native code review: {target}");
         let spec = json!({"id":worker_id(&key),"name":"Review","cwd":directory,"role":"reviewer",
             "prompt":prompt.chars().take(MAX_PROMPT).collect::<String>(),"model":model,"effort":effort,
             "fast_mode":fast_mode,"daybreak_enabled":false});

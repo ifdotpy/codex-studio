@@ -606,6 +606,23 @@ fn invalid_worker_not_sent_receipts_keep_intent_unknown_and_unclaimable() {
 }
 
 #[test]
+fn review_prompt_uses_compact_json() {
+    let case = &corpus()["reviews"][0];
+    let plan = ReviewPlan::from_records(
+        case["actor"].clone(),
+        case["root"].clone(),
+        case["args"].clone(),
+        case["key"].as_str().expect("key").into(),
+        case["directory"].as_str().expect("directory").into(),
+    )
+    .expect("review plan");
+    assert_eq!(
+        plan.spec()["prompt"],
+        format!("Run a native code review: {}", case["args"]["target"])
+    );
+}
+
+#[test]
 fn review_worker_identity_and_saved_response_match_python() {
     for case in corpus()["reviews"].as_array().expect("reviews") {
         let plan = ReviewPlan::from_records(
