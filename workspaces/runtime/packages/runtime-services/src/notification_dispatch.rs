@@ -2427,6 +2427,8 @@ mod tests {
         let cost =
             crate::costs::session_cost_with_account_profiles(&store, "root", &Default::default())
                 .expect("priced dispatch observations");
+        let cost: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&cost).unwrap()).unwrap();
         assert_eq!(cost["pricedSamples"], 2);
         // Claude: 30 base + 7*0.5 reads + 3 writes + 12*2 output = 60.5;
         // Codex cumulative evidence is persisted but never priced as a response.
@@ -2475,6 +2477,8 @@ mod tests {
         let recovered_cost =
             crate::costs::session_cost_with_account_profiles(&store, "root", &Default::default())
                 .expect("price recovered Codex response");
+        let recovered_cost: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&recovered_cost).unwrap()).unwrap();
         assert_eq!(recovered_cost["pricedSamples"], 3);
         assert!((recovered_cost["totalUSD"].as_f64().unwrap() - 110. / 1_000_000.).abs() < 1e-12);
     }
