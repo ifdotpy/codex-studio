@@ -76,7 +76,7 @@ it("retains cancellation and recoverable copies on the initiating server after a
   const first = required(required(sendA.mock.calls[0])[0]);
   expect(isRemovedMessage("same", "agent", "same", message, a)).toBe(false);
   const copies = `${removedMessagesStorageKey("same", "agent", "same")}:copies`;
-  expect(a.getItem(copies)).toContain("private-a");
+  expect(a.getItem(copies)).toBeNull();
   expect(b.getItem(copies)).toBeNull();
   await ownerB.removeSendingMessage(scope, {
     chat: "same",
@@ -90,7 +90,6 @@ it("retains cancellation and recoverable copies on the initiating server after a
   expect(stopA).toHaveBeenCalledTimes(2);
   expect(stopB).toHaveBeenCalledTimes(1);
   expect(isRemovedMessage("same", "agent", "same", message, a)).toBe(true);
-  expect(a.getItem(copies)).toContain("private-a");
-  expect(a.getItem(copies)).not.toContain("private-b");
-  expect(b.getItem(copies)).toContain("private-b");
+  expect(a.getItem(copies)).toBeNull();
+  expect(b.getItem(copies)).toBeNull();
 });

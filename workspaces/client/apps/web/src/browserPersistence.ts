@@ -74,6 +74,7 @@ export async function cleanupLegacyPersistence(
     "studio-upload-settled:",
     "studio-workspace-panel-width:",
     "studio-sidebar-width:",
+    "studio-removed-messages:",
   ];
   const keys = Array.from({ length: storage.length }, (_, index) =>
     storage.key(index),

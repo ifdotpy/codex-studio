@@ -37,6 +37,7 @@ it("removes retired draft and upload data without touching identities", async ()
     [":server:remote:studio-session-cost:session", "cost"],
     ["studio-upload-cancelled:one", "true"],
     ["studio-sidebar-width:scope", "20"],
+    ["studio-removed-messages:chat", "old"],
     ["studio-queue-change:scope:chat", "request"],
     ["studio-paired-servers-v1", "servers"],
     ["unrelated-app-key", "other"],
