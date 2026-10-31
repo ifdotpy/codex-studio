@@ -13,6 +13,8 @@ use studio_runtime_process::{
     BackendId, BackendIdentity, CursorRequest, EventCursor, OpenRequest, SupervisorClient,
     SupervisorHandle,
 };
+mod supervisor_binary;
+pub(crate) use supervisor_binary::command as supervisor_command;
 mod supervisor_ready;
 pub(crate) use supervisor_ready::{HANG_GUARD, watch_changes};
 
@@ -108,14 +110,7 @@ pub(crate) struct SupervisorProcess {
 
 impl SupervisorProcess {
     pub(crate) fn start(state: &DisposableState) -> Self {
-        let binary = std::env::var_os("STUDIO_SUPERVISOR_BINARY")
-            .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into))
-            .unwrap_or_else(|| {
-                panic!(
-                    "supervisor integration requires the built codex-process-supervisor; run the fast Rust test recipe so STUDIO_SUPERVISOR_BINARY is set"
-                )
-            });
-        Self::start_command(state, Command::new(binary), "Rust supervisor")
+        Self::start_command(state, supervisor_command(), "Rust supervisor")
     }
 
     fn start_command(state: &DisposableState, mut command: Command, description: &str) -> Self {
@@ -225,10 +220,7 @@ impl Drop for SupervisorProcess {
                     .status(),
             );
         }
-        if self.child.try_wait().unwrap().is_none() {
-            self.child.kill().unwrap();
-        }
-        self.child.wait().unwrap();
+        supervisor_binary::stop(&mut self.child);
     }
 }
 

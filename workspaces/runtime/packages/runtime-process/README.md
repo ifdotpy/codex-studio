@@ -143,9 +143,14 @@ including the privileged operator handshake.
 ## Integration checks
 
 `tests/supervisor_v2.rs` launches the Rust supervisor into a unique directory
-below `std::env::temp_dir()`. The shared harness requires
-`STUDIO_SUPERVISOR_BINARY`, or Cargo's built supervisor path when run from the
-supervisor crate. It never falls back to an interpreter. Socket bounds, runtime
+below `std::env::temp_dir()`. The shared harness starts `STUDIO_SUPERVISOR_BINARY`,
+or else the `codex-process-supervisor` that Cargo built next to the test binary
+([`tests/support/supervisor_binary.rs`](tests/support/supervisor_binary.rs)). It never
+falls back to an interpreter. Under `layr retest` the sibling is the instrumented build in
+`target/retest/debug` (add `-p studio-process-supervisor` to the nextest arguments so it
+is built), so a change of the supervisor selects the tests that start it. There the
+harness stops the supervisor with SIGTERM before SIGKILL, and the supervisor exits
+normally on SIGTERM (only when `LLVM_PROFILE_FILE` is set), so its profile is written. Socket bounds, runtime
 state isolation, readiness handshakes, stderr diagnostics and child cleanup stay
 owned by [`tests/support`](tests/support/mod.rs).
 

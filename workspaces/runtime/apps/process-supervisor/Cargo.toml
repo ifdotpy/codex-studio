@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 studio-runtime-process = { path = "../../packages/runtime-process" }
+tokio.workspace = true
 
 [dev-dependencies]
 studio-test-deps = { path = "../../packages/test-deps" }
@@ -20,7 +21,6 @@ rusqlite.workspace = true
 studio-runtime-store = { path = "../../packages/runtime-store", features = ["test-support"] }
 serde_json.workspace = true
 tempfile.workspace = true
-tokio.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix = { workspace = true, features = ["param"] }
