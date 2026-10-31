@@ -404,6 +404,16 @@ impl TranscriptInput {
     pub fn at(&self) -> Option<f64> {
         self.at.value().and_then(serde_json::Number::as_f64)
     }
+    /// Historical inputs may store their timestamp under `created`.
+    pub fn created_or_at(&self) -> Result<Option<serde_json::Number>, serde_json::Error> {
+        let created = self
+            .extra
+            .get("created")
+            .map(|raw| serde_json::from_str::<Option<serde_json::Number>>(raw.get()))
+            .transpose()?
+            .flatten();
+        Ok(created.or_else(|| self.at.value().cloned()))
+    }
     pub fn assets(&self) -> &Field<Vec<Box<RawValue>>> {
         &self.assets
     }

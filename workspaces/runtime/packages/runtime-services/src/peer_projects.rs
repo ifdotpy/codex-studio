@@ -83,6 +83,7 @@ struct PeerProject {
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+// Peer projections may omit the name and project ID present in stored aliases.
 struct ProjectAlias {
     server_id: String,
 }

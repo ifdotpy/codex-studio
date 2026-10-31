@@ -95,9 +95,7 @@ impl SubscribedResource {
     }
 
     pub(super) fn new(resource: ResourceRef) -> Result<Self, ApiError> {
-        let key = serde_json::to_value(&resource)
-            .map_err(|_| ApiError::internal())?
-            .to_string();
+        let key = serde_json::to_string(&resource).map_err(|_| ApiError::internal())?;
         Ok(Self { resource, key })
     }
 }
@@ -761,8 +759,8 @@ async fn attach_initial_entries(
             // Scoped transfer delivery owns the baseline read and durable cursor.
             continue;
         }
-        let value = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
-        let cursor = since.get(&value.to_string()).cloned();
+        let key = serde_json::to_string(resource).map_err(|_| ApiError::internal())?;
+        let cursor = since.get(&key).cloned();
         let mut initial =
             super::subscriptions::initial_snapshot(state.clone(), resource.clone(), cursor).await?;
         if matches!(resource, ResourceRef::TerminalOutputResource(_)) {
