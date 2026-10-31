@@ -234,7 +234,7 @@ pub fn withdraw(
     message: &str,
 ) -> Result<(RequestReference, String), CommandError> {
     let agent = AgentRepository::get(tx, &AgentId::from(chat))?.ok_or(CommandError::NotFound)?;
-    if truthy(agent.extra.get("deletedAt")) {
+    if agent.is_deleted() {
         return Err(CommandError::Invalid("This agent was deleted"));
     }
     if truthy(agent.extra.get("remoteWorker")) || truthy(agent.extra.get("remoteAnchor")) {

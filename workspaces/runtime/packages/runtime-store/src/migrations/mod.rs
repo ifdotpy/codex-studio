@@ -37,14 +37,11 @@ mod m2026_10_28_usage_revision;
 mod m2026_10_29_agent_authorizations;
 mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
-<<<<<<< head
-mod m2026_10_30_command_path;
-||||||| base
-=======
 mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
 mod m2026_10_30_branch_phase;
 mod m2026_10_30_capture_errors;
+mod m2026_10_30_command_path;
 mod m2026_10_30_complaint_record;
 pub(crate) mod m2026_10_30_monitor_errors;
 mod m2026_10_30_monitor_generated;
@@ -61,7 +58,6 @@ mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
 mod m2026_10_31_native_status_error;
->>>>>>> origin/main
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -127,15 +123,11 @@ const OCTOBER_29: MigrationDate = MigrationDate {
     month: 10,
     day: 29,
 };
-<<<<<<< head
-||||||| base
-=======
 const OCTOBER_31: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
     day: 31,
 };
->>>>>>> origin/main
 const OCTOBER_30: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
@@ -762,7 +754,6 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
-<<<<<<< head
             id: "2026-10-30-command-path",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
@@ -770,8 +761,9 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_command_path::apply(c.transaction),
-||||||| base
-=======
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-30-rule-monitor-records",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
@@ -823,7 +815,6 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_request_record::apply(c.transaction),
->>>>>>> origin/main
     },
     &RegistryMigration,
     &SqlMigration {
