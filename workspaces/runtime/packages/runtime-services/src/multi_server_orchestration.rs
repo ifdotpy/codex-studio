@@ -3989,7 +3989,9 @@ mod tests {
     };
     use rusqlite::params;
     use std::sync::Arc;
+    use studio_runtime_schema::persistence::ServerDeliveryState;
     use studio_runtime_store::RuntimeStore;
+    use studio_runtime_store::request_results::AdmittedRequest;
 
     #[test]
     fn expired_applied_reply_is_unknown() {
