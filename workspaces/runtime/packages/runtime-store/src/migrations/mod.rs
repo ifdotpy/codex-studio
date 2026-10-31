@@ -724,6 +724,16 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| m2026_10_31_project_record_kind::apply(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-analytics-revision-schema",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Analytics,
+            supported_source: "Completed stores without analytics revision tracking",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::fresh_state::prepare_analytics_revision_schema(c.transaction),
+    },
 ];
 
 /// Operator-facing catalog; implementation and metadata have one owner.

@@ -6,6 +6,37 @@ use studio_runtime_schema::studio_errors::{
 use studio_runtime_store::{RuntimeStore, StoreError};
 
 #[tokio::test]
+async fn missing_analytics_revision_schema_is_restored_on_open() {
+    let state = tempfile::tempdir().expect("state");
+    drop(RuntimeStore::open(Some(state.path())).await.expect("fresh"));
+    let db = Connection::open(state.path().join("analytics.sqlite3")).expect("analytics");
+    db.execute_batch("DROP TABLE analytics_usage_revision_clock; DROP TABLE analytics_usage_revisions; DROP TABLE analytics_cost_group_revisions;").expect("older schema");
+    drop(db);
+    drop(
+        RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("upgrade"),
+    );
+    let db = Connection::open(state.path().join("analytics.sqlite3")).expect("analytics");
+    let clock: i64 = db
+        .query_row(
+            "SELECT revision FROM analytics_usage_revision_clock",
+            [],
+            |row| row.get(0),
+        )
+        .expect("revision clock");
+    assert_eq!(clock, 0);
+    let objects: i64 = db.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE name LIKE 'analytics_usage_revision%' OR name LIKE 'analytics_cost_group_revision%'", [], |row| row.get(0)).unwrap();
+    assert_eq!(objects, 11);
+    drop(db);
+    drop(
+        RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("reopen"),
+    );
+}
+
+#[tokio::test]
 async fn sync_schema_is_ready_before_model_preferences_migrate() {
     let state = tempfile::tempdir().expect("state");
     let store = RuntimeStore::open(Some(state.path())).await.expect("fresh");
