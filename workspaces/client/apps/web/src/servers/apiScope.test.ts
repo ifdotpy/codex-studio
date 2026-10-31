@@ -67,6 +67,7 @@ describe("concurrent servers in one interface", () => {
       memory(),
     );
     const waiting = api.waitForStreamSession();
+    expect(api.getStreamSession()).toBeUndefined();
     api.receiveStreamSession({
       routes: [],
       sessionId: "one",
@@ -77,6 +78,7 @@ describe("concurrent servers in one interface", () => {
       workspaceId: "a".repeat(32),
       token: "owner",
     });
+    expect(api.getStreamSession()?.sessionId).toBe("one");
     await api.post("/api/organization", { id: "chat" });
     expect(requests[0]?.headers.get("X-Canvas-Token")).toBe("owner");
     expect(requests[0]?.headers.get("X-Canvas-Workspace")).toBe("a".repeat(32));
@@ -87,6 +89,7 @@ describe("concurrent servers in one interface", () => {
         workspaceId: "b".repeat(32),
       }),
     ).toThrow();
+    expect(api.getStreamSession()?.sessionId).toBe("one");
     expect(requests).toHaveLength(1);
   });
   it("versions disposable caches without changing request identity storage", () => {

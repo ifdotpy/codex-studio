@@ -31,6 +31,8 @@ import {
   markApiSchemaMismatch,
   onApiSchemaMismatch,
   post,
+  receiveStreamSession,
+  clearStreamSession,
 } from "../api";
 
 import {
@@ -249,7 +251,7 @@ export type ResourceEventsOptions = {
     | "matchingApiSchemaResponseGeneration"
     | "markApiSchemaMismatch"
     | "onApiSchemaMismatch"
-  >;
+  > & Partial<Pick<import("../api").ServerApi, "receiveStreamSession" | "clearStreamSession">>;
   sync: Pick<
     ReturnType<typeof import("./client").createSyncClient>,
     "persistResourceEntityChanges"
@@ -1673,6 +1675,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   /** Forgets the state of one server connection; a native source survives it. */
   function resetConnection() {
+    if (sessionId) options.api.clearStreamSession?.(sessionId);
     validatedServerFrameAt = undefined;
     clearTimeout(subscriptionTimer);
     subscriptionTimer = undefined;
@@ -2062,6 +2065,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           )
             throw new TypeError("Invalid sync session");
           sessionId = event.sessionId;
+          options.api.receiveStreamSession?.(event);
           if (Array.isArray(event.routes)) options.onRoutes?.(event.routes);
           scheduleOwnerStreamUpdate();
         } catch (error) {
@@ -2783,6 +2787,8 @@ const defaultResourceEvents = createResourceEvents({
     markApiSchemaMismatch,
     onApiSchemaMismatch,
     post,
+    receiveStreamSession,
+    clearStreamSession,
   },
   sync: {
     readSubscriptionCursor: (resource) => readSubscriptionCursor(resource),
