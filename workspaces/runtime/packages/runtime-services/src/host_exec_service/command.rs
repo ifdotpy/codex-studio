@@ -315,7 +315,7 @@ impl HostService {
             "name_conflict",
         )?;
         require(
-            params.manifest_sha256 == protocol::manifest_digest(&source)?,
+            params.manifest_sha256 == protocol::manifest_digest(&source),
             "The host sources differ from the layr slot",
             "sync_conflict",
         )?;

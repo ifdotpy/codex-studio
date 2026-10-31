@@ -139,7 +139,7 @@ impl Fixture {
 
     fn manifest_digest(slot_path: &Value) -> String {
         let manifest = protocol::scan(Path::new(slot_path.as_str().unwrap()), &[], None).unwrap();
-        protocol::manifest_digest(&manifest).unwrap()
+        protocol::manifest_digest(&manifest)
     }
 
     async fn start(&self, operation: &str, argv: &[&str], timeout: f64) -> Value {
@@ -316,13 +316,9 @@ fn typed_manifest_hash_matches_legacy_json() {
         ),
         ("empty".into(), protocol::ManifestEntry::Directory),
     ]);
-    let legacy = json!({"café": {"kind":"file", "bytes":3, "mode":420, "sha256":"abc"}, "link":{"kind":"link", "target":"😀"}, "empty":{"kind":"directory"}});
-    let typed = studio_runtime_schema::json_compat::python_json_serialized(&manifest).unwrap();
-    assert_eq!(typed, protocol::sorted_json(&legacy));
-    assert_eq!(
-        protocol::manifest_digest(&manifest).unwrap(),
-        protocol::key(&protocol::sorted_json(&legacy))
-    );
+    let legacy = r#"{"caf\u00e9": {"bytes": 3, "kind": "file", "mode": 420, "sha256": "abc"}, "empty": {"kind": "directory"}, "link": {"kind": "link", "target": "\ud83d\ude00"}}"#;
+    assert_eq!(protocol::manifest_json(&manifest), legacy);
+    assert_eq!(protocol::manifest_digest(&manifest), protocol::key(legacy));
 }
 
 #[test]
@@ -349,11 +345,11 @@ fn the_manifest_hashes_as_the_guest_hashes_it() {
     fs::create_dir(root.join("empty")).unwrap();
     let manifest = protocol::scan(root, &[], None).unwrap();
     assert_eq!(
-        studio_runtime_schema::json_compat::python_json_serialized(&manifest).unwrap(),
+        protocol::manifest_json(&manifest),
         r#"{"caf\u00e9 \"q\"": {"bytes": 1, "kind": "file", "mode": 384, "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"}, "empty": {"kind": "directory"}, "link": {"kind": "link", "target": "src/\u00fcber\ud83d\ude00"}, "src": {"kind": "directory"}, "src/main.swift": {"bytes": 15, "kind": "file", "mode": 420, "sha256": "18a6066e8dd25f6d99b3274b3232ebae6750fc8d1637729125863d7919df784f"}, "tool.sh": {"bytes": 17, "kind": "file", "mode": 493, "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb"}}"#
     );
     assert_eq!(
-        protocol::manifest_digest(&manifest).unwrap(),
+        protocol::manifest_digest(&manifest),
         "646deef4182c19349905920ea0cb4f07893b09d9b3d5487c0c62a60ea2fdb607"
     );
     // A skipped path stays out with everything inside it.
@@ -462,6 +458,30 @@ async fn an_exact_retry_returns_the_saved_answer_and_changed_content_is_refused(
 }
 
 #[tokio::test]
+async fn receipt_replays_original_response_bytes() {
+    let fixture = Fixture::new();
+    let response = "  { \"result\" : {\"legacy\": 1}, \"id\" : \"stored-id\" }  ";
+    let params =
+        r#"{"operationId":"old","agentId":"agent","projectId":"project","linePath":"line"}"#;
+    fixture
+        .service
+        .db()
+        .execute(
+            "INSERT INTO receipts VALUES (?1,?2,?3)",
+            rusqlite::params!["stored-id", receipt_digest("acquire", params), response],
+        )
+        .unwrap();
+    let frame =
+        format!(r#"{{"id":"stored-id","method":"acquire","token":"{TOKEN}","params":{params}}}"#);
+    let actual = fixture
+        .service
+        .request_frame(frame.as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(actual, response);
+}
+
+#[tokio::test]
 async fn receipt_refuses_changed_raw_params_without_reexecution() {
     let fixture = Fixture::new();
     let params = json!({"operationId": "raw", "agentId": "agent", "projectId": "project", "linePath": fixture.line.display().to_string()});
@@ -489,6 +509,7 @@ async fn receipt_refuses_changed_raw_params_without_reexecution() {
         .request_frame(changed.as_bytes())
         .await
         .unwrap();
+    let refused: Value = serde_json::from_str(&refused).unwrap();
     assert_eq!(refused["error"]["code"], "id_conflict");
 }
 
@@ -637,7 +658,7 @@ async fn legacy_receipt_digest_is_refused_without_executing() {
     let fixture = Fixture::new();
     let params = json!({"operationId": "legacy", "agentId": "agent", "projectId": "project",
                         "linePath": fixture.line.display().to_string()});
-    let legacy = protocol::key(&protocol::sorted_json(&json!(["acquire", params])));
+    let legacy = protocol::key("legacy receipt digest");
     fixture
         .service
         .db()

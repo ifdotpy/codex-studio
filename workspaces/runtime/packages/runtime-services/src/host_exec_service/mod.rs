@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::OptionalExtension;
+use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
 
 mod clone_ffi;
@@ -109,6 +110,18 @@ struct IncomingFrame {
     token: Option<Box<serde_json::value::RawValue>>,
     method: Option<Box<serde_json::value::RawValue>>,
     params: Option<Box<serde_json::value::RawValue>>,
+}
+
+#[derive(serde::Serialize)]
+struct Response<'a, T: serde::Serialize> {
+    id: &'a str,
+    result: T,
+}
+
+#[derive(serde::Serialize)]
+struct ErrorResponse<'a, I: serde::Serialize> {
+    id: I,
+    error: &'a HostExecError,
 }
 
 #[derive(serde::Deserialize)]
@@ -358,7 +371,7 @@ pub(crate) struct ChildHandle {
 
 #[derive(Default)]
 pub(crate) struct Inner {
-    active: HashMap<String, tokio::sync::watch::Receiver<Option<Value>>>,
+    active: HashMap<String, tokio::sync::watch::Receiver<Option<String>>>,
     pub(crate) commands: HashSet<String>,
     pub(crate) children: HashMap<String, ChildHandle>,
     /// Per project folder: the bytes of the last walk plus the files written since then.
@@ -982,22 +995,31 @@ impl HostService {
     /// One request frame: its answer, or `None` when the frame is not an object.
     #[cfg(test)]
     pub(crate) async fn request(self: &Arc<Self>, request: &Value) -> Option<Value> {
-        self.request_frame(&serde_json::to_vec(request).ok()?).await
+        let response = self
+            .request_frame(&serde_json::to_vec(request).ok()?)
+            .await?;
+        serde_json::from_str(&response).ok()
     }
 
-    async fn request_frame(self: &Arc<Self>, bytes: &[u8]) -> Option<Value> {
+    async fn request_frame(self: &Arc<Self>, bytes: &[u8]) -> Option<String> {
         let request: IncomingFrame = serde_json::from_slice(bytes).ok()?;
         let identity = request.id.clone();
-        Some(match self.answer(request).await {
-            Ok(value) => value,
-            Err(Failure::Refused(error)) => json!({"id": identity, "error": error.object()}),
-            Err(Failure::Unexpected(_)) => {
-                json!({"id": identity, "error": {"code": "invalid_request", "message": "Invalid host request"}})
-            }
-        })
+        match self.answer(request).await {
+            Ok(value) => Some(value),
+            Err(Failure::Refused(error)) => serde_json::to_string(&ErrorResponse {
+                id: identity,
+                error: &error,
+            })
+            .ok(),
+            Err(Failure::Unexpected(_)) => serde_json::to_string(&ErrorResponse {
+                id: identity,
+                error: &HostExecError::new("invalid_request", "Invalid host request"),
+            })
+            .ok(),
+        }
     }
 
-    async fn answer(self: &Arc<Self>, request: IncomingFrame) -> Outcome<Value> {
+    async fn answer(self: &Arc<Self>, request: IncomingFrame) -> Outcome<String> {
         let id = request
             .id
             .as_ref()
@@ -1116,9 +1138,12 @@ impl HostService {
                 let inner = self.inner();
                 (inner.commands.len(), inner.active.len())
             };
-            return Ok(json!({"id": id, "result": {
+            return Ok(serde_json::to_string(&Response {
+                id: &id,
+                result: json!({
                 "protocol": PROTOCOL, "buildId": self.build_id, "pid": std::process::id(),
-                "activeCommands": commands, "activeRequests": active, "busy": self.busy()}}));
+                "activeCommands": commands, "activeRequests": active, "busy": self.busy()}),
+            })?);
         }
         require(
             !self.inner().retiring,
@@ -1137,14 +1162,20 @@ impl HostService {
                 "busy",
             )?;
             self.inner().retiring = true;
-            return Ok(json!({"id": id, "result": {
-                "state": "retiring", "buildId": self.build_id, "pid": std::process::id()}}));
+            return Ok(serde_json::to_string(&Response {
+                id: &id,
+                result: json!({
+                "state": "retiring", "buildId": self.build_id, "pid": std::process::id()}),
+            })?);
         }
         if READ_METHODS.contains(&method.as_str()) {
             self.inner().reading += 1;
             let result = self.dispatch_frame(&params).await;
             self.inner().reading -= 1;
-            return Ok(json!({"id": id, "result": result?}));
+            return Ok(serde_json::to_string(&Response {
+                id: &id,
+                result: result?,
+            })?);
         }
         let saved = {
             let db = self.db();
@@ -1172,7 +1203,9 @@ impl HostService {
             let running = self.inner().active.get(&id).cloned();
             if let Some(mut running) = running {
                 return match running.wait_for(Option::is_some).await {
-                    Ok(value) => Ok(value.clone().unwrap_or(Value::Null)),
+                    Ok(value) => value.clone().ok_or_else(|| {
+                        Failure::Unexpected("The request has no proven result".into())
+                    }),
                     Err(_) => Err(HostExecError::new(
                         "outcome_unknown",
                         "The request has no proven result; inspect its operation",
@@ -1186,7 +1219,8 @@ impl HostService {
                     "The request has no proven result; inspect its operation",
                 )
             })?;
-            return Ok(serde_json::from_str(&response)?);
+            serde_json::from_str::<&RawValue>(&response)?;
+            return Ok(response);
         }
         let (sender, mut receiver) = tokio::sync::watch::channel(None);
         self.inner().active.insert(id.clone(), receiver.clone());
@@ -1194,24 +1228,38 @@ impl HostService {
         let task_id = id.clone();
         tokio::spawn(async move {
             let result = match service.dispatch_frame(&params).await {
-                Ok(value) => json!({"id": task_id, "result": value}),
-                Err(Failure::Refused(error)) => json!({"id": task_id, "error": error.object()}),
-                Err(Failure::Unexpected(message)) => {
-                    json!({"id": task_id, "error": {"code": "outcome_unknown", "message": truncate(&message)}})
-                }
+                Ok(value) => serde_json::to_string(&Response {
+                    id: &task_id,
+                    result: value,
+                }),
+                Err(Failure::Refused(error)) => serde_json::to_string(&ErrorResponse {
+                    id: &task_id,
+                    error: &error,
+                }),
+                Err(Failure::Unexpected(message)) => serde_json::to_string(&ErrorResponse {
+                    id: &task_id,
+                    error: &HostExecError::new("outcome_unknown", truncate(&message)),
+                }),
             };
-            let saved = service.db().execute(
-                "UPDATE receipts SET response=?1 WHERE id=?2",
-                rusqlite::params![result.to_string(), task_id],
-            );
-            if saved.is_ok() {
+            let saved = result.as_ref().ok().is_some_and(|result| {
+                service
+                    .db()
+                    .execute(
+                        "UPDATE receipts SET response=?1 WHERE id=?2",
+                        rusqlite::params![result, task_id],
+                    )
+                    .is_ok()
+            });
+            if let (true, Ok(result)) = (saved, result) {
                 sender.send_replace(Some(result));
             }
             // A failed save keeps the receipt without an answer: an unknown outcome.
             service.inner().active.remove(&task_id);
         });
         match receiver.wait_for(Option::is_some).await {
-            Ok(value) => Ok(value.clone().unwrap_or(Value::Null)),
+            Ok(value) => value
+                .clone()
+                .ok_or_else(|| Failure::Unexpected("The request has no proven result".into())),
             Err(_) => Err(HostExecError::new(
                 "outcome_unknown",
                 "The request has no proven result; inspect its operation",

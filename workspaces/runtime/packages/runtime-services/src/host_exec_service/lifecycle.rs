@@ -63,10 +63,7 @@ pub fn service_call(
 ) -> Result<Value, ServiceError> {
     let identity = format!(
         "{CALL_ID_PREFIX}{}",
-        protocol::key(&protocol::sorted_json(&json!([
-            method,
-            params.cloned().unwrap_or(Value::Null)
-        ])))
+        protocol::key(&json!([method, params.cloned().unwrap_or(Value::Null)]).to_string())
     );
     let request = json!({"id": identity, "method": method, "params": params.cloned().unwrap_or_else(|| json!({})), "token": token});
     let io = |error: std::io::Error| unknown(error.to_string());
