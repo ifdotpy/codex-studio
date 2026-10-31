@@ -576,7 +576,7 @@ impl crate::native_review::ReviewCreator for UnavailableReviewCreator {
         &self,
         _: &Transaction<'_>,
         _: &Value,
-        _: &Value,
+        _: &studio_runtime_schema::creation_intent::CreationIntent,
     ) -> crate::native_actions::Result<Value> {
         Err(crate::native_actions::NativeError::Unavailable(
             "agent-create/worker-driver",

@@ -22,6 +22,16 @@ pub enum AgentRole {
     Reviewer,
 }
 
+impl AgentRole {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Orchestrator => "orchestrator",
+            Self::Implementer => "implementer",
+            Self::Reviewer => "reviewer",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreationIntent {
@@ -174,12 +184,41 @@ pub struct WorkerDefaults {
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewDefaults {
-    pub model: Option<String>,
-    pub effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub model: Field<String>,
+    #[serde(default, skip_serializing_if = "Field::is_missing")]
+    pub effort: Field<String>,
     #[serde(
         default,
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
     pub fast_mode: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentRole;
+
+    #[test]
+    fn agent_role_matches_openapi_and_its_wire_names() {
+        let openapi: serde_json::Value =
+            serde_json::from_str(include_str!("../../runtime-http/openapi.json")).unwrap();
+        let roles = [
+            AgentRole::Orchestrator,
+            AgentRole::Implementer,
+            AgentRole::Reviewer,
+        ];
+        let names: Vec<&str> = roles.iter().map(|role| role.as_str()).collect();
+        assert_eq!(
+            openapi["components"]["schemas"]["AgentRole-Input"]["enum"],
+            serde_json::json!(names)
+        );
+        for role in roles {
+            assert_eq!(
+                serde_json::to_string(&role).unwrap(),
+                format!("\"{}\"", role.as_str())
+            );
+        }
+    }
 }

@@ -11,6 +11,10 @@ use studio_runtime_schema::agent_limits::{
     DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURRENCY, MAX_SUBAGENT_CONCURRENCY,
     MAX_TEAM_AGENTS, MIN_SUBAGENT_CONCURRENCY, MIN_TEAM_AGENTS, TEAM_AGENT_HEADROOM,
 };
+use studio_runtime_schema::{
+    creation_intent::{CreationIntent, ReviewDefaults, WorkerDefaults},
+    queue_command::Field,
+};
 use studio_runtime_store::RuntimeStore;
 
 /// Accepted subagent concurrency, in running workers; owner `codex_agent_modes.py`.
@@ -88,7 +92,7 @@ pub struct Creation {
     pub catalog: bool,
     pub worker_catalog: bool,
     pub project_binding: bool,
-    pub intent: Value,
+    pub intent: CreationIntent,
 }
 
 pub struct Configuration {
@@ -249,8 +253,8 @@ pub struct Conversation {
     pub mode_revision: Option<i64>,
     pub mode_request_id: Option<String>,
     pub worker_settings: bool,
-    pub worker_defaults: Option<Value>,
-    pub review_defaults: Option<Value>,
+    pub worker_defaults: Option<WorkerDefaults>,
+    pub review_defaults: Option<ReviewDefaults>,
     pub non_defaults: bool,
 }
 
@@ -342,7 +346,7 @@ pub async fn replay_lead_request(
     };
     let workspace = creation_workspace_mode(context, request, true).await?;
     let cwd = request.cwd.as_deref().map(project_directory).transpose()?;
-    let signature = lead_signature(&request.intent, &workspace, cwd.as_deref());
+    let signature = lead_signature(&request.intent, &workspace, cwd.as_deref())?;
     let validate = std::sync::Arc::clone(&context.validate);
     let id = id.to_owned();
     context
@@ -409,8 +413,9 @@ pub async fn creation_account_key(
 fn requested_model(request: &Creation) -> Option<String> {
     request
         .intent
-        .get("model")
-        .and_then(Value::as_str)
+        .model
+        .value()
+        .map(String::as_str)
         .filter(|model| !model.trim().is_empty())
         .map(str::to_owned)
 }
@@ -562,16 +567,16 @@ async fn prepare_new_agent_admission(
                 .transpose()
         })
         .await?;
-    let explicit = request.intent.as_object();
+    let explicit = &request.intent;
     let profile_model = profile.as_ref().map(|profile| profile.model.as_str());
     let model = explicit
-        .and_then(|body| body.get("model"))
-        .and_then(Value::as_str)
+        .model
+        .value()
+        .map(String::as_str)
         .or(profile_model)
         .map(str::to_owned);
-    let profile_supplies_model =
-        explicit.is_none_or(|body| !body.contains_key("model")) && profile.is_some();
-    let profile_supplies_effort = explicit.is_none_or(|body| !body.contains_key("effort"))
+    let profile_supplies_model = explicit.model.is_missing() && profile.is_some();
+    let profile_supplies_effort = explicit.effort.is_missing()
         && profile
             .as_ref()
             .is_some_and(|profile| profile.effort.is_some());
@@ -601,37 +606,32 @@ async fn prepare_new_agent_admission(
 
 fn agent_needs_catalog(
     is_child: bool,
-    explicit: Option<&serde_json::Map<String, Value>>,
+    explicit: &CreationIntent,
     profile_supplies_model: bool,
     profile_supplies_effort: bool,
 ) -> bool {
     is_child
-        || [
-            "model",
-            "effort",
-            "fast_mode",
-            "daybreak_enabled",
-            "worker_defaults",
-        ]
-        .iter()
-        .any(|field| explicit.is_some_and(|body| body.contains_key(*field)))
+        || !explicit.model.is_missing()
+        || !explicit.effort.is_missing()
+        || !explicit.fast_mode.is_missing()
+        || !explicit.daybreak_enabled.is_missing()
+        || !explicit.worker_defaults.is_missing()
         || profile_supplies_model
         || profile_supplies_effort
 }
 
 fn merge_profile_catalog_fields(
-    intent: &mut Value,
-    original: &Value,
+    intent: &mut CreationIntent,
+    original: &CreationIntent,
     profile: &studio_runtime_store::ProfileRecord,
 ) -> bool {
-    let fields = original.as_object();
-    let model = fields.is_none_or(|body| !body.contains_key("model"));
-    let effort = fields.is_none_or(|body| !body.contains_key("effort")) && profile.effort.is_some();
+    let model = original.model.is_missing();
+    let effort = original.effort.is_missing() && profile.effort.is_some();
     if model {
-        intent["model"] = json!(profile.model);
+        intent.model = Field::Value(profile.model.clone());
     }
-    if effort {
-        intent["effort"] = json!(profile.effort);
+    if let (true, Some(value)) = (effort, profile.effort) {
+        intent.effort = Field::Value(value.as_str().to_owned());
     }
     model || effort
 }
@@ -647,48 +647,46 @@ fn load_profile(
 
 #[cfg(test)]
 mod agent_catalog_requirement_tests {
-    use super::{agent_needs_catalog, merge_profile_catalog_fields};
-    use serde_json::json;
+    use super::{CreationIntent, Field, agent_needs_catalog, merge_profile_catalog_fields};
 
     #[test]
     fn catalog_is_required_for_merged_model_or_effort_but_not_profile_presence() {
         // Python merges non-null profile fields before evaluating `needs_catalog`
         // (`codex_runtime.py:4859-4888`).
-        let profile_only = json!({"profile_id": "role-only", "role": "reviewer"});
+        let profile_only = CreationIntent {
+            profile_id: Field::Value("role-only".into()),
+            ..Default::default()
+        };
+        assert!(!agent_needs_catalog(false, &profile_only, false, false));
+        assert!(agent_needs_catalog(false, &profile_only, true, false));
+        assert!(agent_needs_catalog(false, &profile_only, false, true));
+        let explicit_model = CreationIntent {
+            model: Field::Value("gpt-6-astra".into()),
+            ..Default::default()
+        };
+        assert!(agent_needs_catalog(false, &explicit_model, false, false));
         assert!(!agent_needs_catalog(
             false,
-            profile_only.as_object(),
+            &CreationIntent::default(),
             false,
             false
         ));
         assert!(agent_needs_catalog(
-            false,
-            profile_only.as_object(),
             true,
-            false
-        ));
-        assert!(agent_needs_catalog(
-            false,
-            profile_only.as_object(),
-            false,
-            true
-        ));
-        let explicit_model = json!({"model": "gpt-6-astra"});
-        assert!(agent_needs_catalog(
-            false,
-            explicit_model.as_object(),
+            &CreationIntent::default(),
             false,
             false
         ));
-        assert!(!agent_needs_catalog(false, None, false, false));
-        assert!(agent_needs_catalog(true, None, false, false));
     }
 
     #[test]
     fn profile_merges_model_and_effort_without_losing_either_field() {
         // Python's `{profile fields, **data}` merge keeps both profile values
         // when the request omitted them (`codex_runtime.py:4859-4872`).
-        let original = json!({"profile_id": "execution-profile"});
+        let original = CreationIntent {
+            profile_id: Field::Value("execution-profile".into()),
+            ..Default::default()
+        };
         let profile: studio_runtime_store::ProfileRecord = serde_json::from_str(r#"{"id":"p","name":"Profile","role":"reviewer","model":"gpt-6-luna","effort":"high","instructions":""}"#).unwrap();
         let mut effective = original.clone();
         assert!(merge_profile_catalog_fields(
@@ -696,19 +694,21 @@ mod agent_catalog_requirement_tests {
             &original,
             &profile
         ));
-        assert_eq!(effective["model"], "gpt-6-luna");
-        assert_eq!(effective["effort"], "high");
+        assert_eq!(
+            effective.model.value().map(String::as_str),
+            Some("gpt-6-luna")
+        );
+        assert_eq!(effective.effort.value().map(String::as_str), Some("high"));
     }
 }
 
-async fn agent_creation_intent(request: &Creation) -> Result<Value, OperationError> {
+async fn agent_creation_intent(request: &Creation) -> Result<CreationIntent, OperationError> {
     let mut intent = request.intent.clone();
-    let object = intent.as_object_mut().ok_or(OperationError::Internal)?;
-    object.remove("id");
-    intent["prompt"] = json!(python_strip(&request.prompt));
-    intent["name"] = json!(python_strip(request.name.as_deref().unwrap_or("Lead")));
+    intent.id = Field::Missing;
+    intent.prompt = Some(python_strip(&request.prompt).to_owned());
+    intent.name = Some(python_strip(request.name.as_deref().unwrap_or("Lead")).to_owned());
     if let Some(cwd) = project_directory_async(request.cwd.clone()).await? {
-        intent["cwd"] = json!(cwd);
+        intent.cwd = Some(cwd);
     }
     Ok(intent)
 }
@@ -727,7 +727,7 @@ async fn create(
         // concurrent recheck, rather than relying on an earlier route read.
         request.intent = agent_creation_intent(&request).await?;
     }
-    let signature = lead_signature(&request.intent, &workspace, requested_cwd.as_deref());
+    let signature = lead_signature(&request.intent, &workspace, requested_cwd.as_deref())?;
     let validate = std::sync::Arc::clone(&context.validate);
     let intent = request.intent.clone();
     let read_id = id.clone();
@@ -864,17 +864,9 @@ async fn create(
             resolve_project_binding(
                 context,
                 cwd.clone(),
-                request
-                    .intent
-                    .get("project_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                request
-                    .intent
-                    .get("project_server_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                request.intent.get("project_folder").cloned(),
+                request.intent.project_id.value().cloned(),
+                request.intent.project_server_id.value().cloned(),
+                request.intent.project_folder.value().cloned(),
             )
             .await?,
         )
@@ -897,40 +889,40 @@ async fn create(
     let settings = if request.catalog || request.worker_catalog {
         let named_model = request
             .intent
-            .get("model")
-            .and_then(Value::as_str)
+            .model
+            .value()
+            .map(String::as_str)
             .filter(|model| !model.trim().is_empty());
         let model = named_model.unwrap_or(new_chat_model(identity.provider, draft));
         let effort = request
             .intent
-            .get("effort")
-            .and_then(Value::as_str)
+            .effort
+            .value()
+            .map(String::as_str)
             .map(str::trim)
             .filter(|effort| !effort.is_empty());
         let effort = effort.or_else(|| {
-            (request
-                .intent
-                .get("model")
-                .and_then(Value::as_str)
-                .is_some())
-            .then(|| previous.as_ref()?.get("effort")?.as_str())
-            .flatten()
+            (request.intent.model.value().is_some())
+                .then(|| previous.as_ref()?.get("effort")?.as_str())
+                .flatten()
         });
         let fast_mode = request
             .intent
-            .get("fast_mode")
-            .and_then(Value::as_bool)
+            .fast_mode
+            .value()
+            .copied()
             .or_else(|| {
-                request.intent.get("model").and_then(Value::as_str)?;
+                request.intent.model.value()?;
                 previous.as_ref()?.get("fastMode")?.as_bool()
             })
             .unwrap_or(false);
         let daybreak_enabled = request
             .intent
-            .get("daybreak_enabled")
-            .and_then(Value::as_bool)
+            .daybreak_enabled
+            .value()
+            .copied()
             .or_else(|| {
-                request.intent.get("model").and_then(Value::as_str)?;
+                request.intent.model.value()?;
                 previous.as_ref()?.get("daybreakEnabled")?.as_bool()
             })
             .unwrap_or(false);
@@ -992,11 +984,17 @@ async fn create(
     let prompt = python_strip(&request.prompt).to_owned();
     let created = crate::event_write::unix_time().map_err(|_| OperationError::Internal)?;
     let (worker_defaults, review_defaults) = if role == "orchestrator" {
+        if matches!(&request.intent.worker_defaults, Field::Null) {
+            return Err(OperationError::Invalid("worker_defaults must be an object"));
+        }
+        if matches!(&request.intent.review_defaults, Field::Null) {
+            return Err(OperationError::Invalid("review_defaults must be an object"));
+        }
         (
             Some(
                 resolve_worker_defaults(
                     context,
-                    request.intent.get("worker_defaults"),
+                    request.intent.worker_defaults.value(),
                     &account,
                     &identity,
                     &settings.model,
@@ -1007,13 +1005,15 @@ async fn create(
             Some(
                 resolve_review_defaults(
                     context,
-                    request.intent.get("review_defaults"),
+                    request.intent.review_defaults.value(),
                     &account,
                     &identity,
                     request
                         .intent
-                        .pointer("/worker_defaults/account_key")
-                        .and_then(Value::as_str),
+                        .worker_defaults
+                        .value()
+                        .and_then(|defaults| defaults.account_key.value())
+                        .map(String::as_str),
                     &[],
                 )
                 .await?,
@@ -1082,23 +1082,16 @@ async fn create(
     if let Some(profile) = profile {
         record["profileInstructions"] = json!(profile.instructions);
     }
-    if !draft {
-        record["creationIntent"] = intent.clone();
-    }
     if let Some(binding) = &binding {
         record["projectId"] = binding["projectId"].clone();
         record["projectServerId"] = binding["projectServerId"].clone();
         record["projectFolder"] = binding["projectFolder"].clone();
     }
-    let reuse_execution_fields = [
-        "effort",
-        "fast_mode",
-        "daybreak_enabled",
-        "worker_defaults",
-        "review_defaults",
-    ]
-    .iter()
-    .any(|field| request.intent.get(*field).is_some());
+    let reuse_execution_fields = !request.intent.effort.is_missing()
+        || !request.intent.fast_mode.is_missing()
+        || !request.intent.daybreak_enabled.is_missing()
+        || !request.intent.worker_defaults.is_missing()
+        || !request.intent.review_defaults.is_missing();
     let id_for_write = id.clone();
     let workspace_for_write = workspace.clone();
     let result = mutate(context, move |tx| {
@@ -1153,12 +1146,7 @@ async fn create(
             reused["accountKey"] = json!(account);
             reused["executionSettingsAccountKey"] = json!(account);
             reused["yoloMode"] = json!(yolo);
-            if request
-                .intent
-                .get("model")
-                .and_then(Value::as_str)
-                .is_some()
-            {
+            if request.intent.model.value().is_some() {
                 reused["model"] = json!(settings.model);
                 reused["effort"] = json!(settings.effort);
                 reused["fastMode"] = json!(settings.fast_mode);
@@ -1212,7 +1200,7 @@ async fn create(
                 binding["localServerId"]
                     .as_str()
                     .ok_or(OperationError::Internal)?,
-                Some(&binding["projectFolder"]),
+                binding["projectFolder"].as_str(),
             )?;
             if current != *binding {
                 return Err(CreateError::IdentityChanged.into());
@@ -1224,6 +1212,7 @@ async fn create(
             &prompt,
             record,
             created,
+            (!draft).then_some(intent),
             validate,
         )?)
     })
@@ -1235,7 +1224,7 @@ async fn create_child(
     context: &Context<'_>,
     request: &Creation,
     id: &str,
-    creation_intent: &Value,
+    creation_intent: &CreationIntent,
     profile: Option<&studio_runtime_store::ProfileRecord>,
     validate: PersistedRecordValidator,
 ) -> Result<Value, OperationError> {
@@ -1444,7 +1433,6 @@ async fn create_child(
     if workspace == "layr-native" {
         crate::layr_native::configure_child(&mut record, &parent, &root);
     }
-    record["creationIntent"] = creation_intent.clone();
     record["profileId"] = json!(request.profile);
     if let Some(profile) = profile {
         record["profileInstructions"] = json!(profile.instructions);
@@ -1457,10 +1445,9 @@ async fn create_child(
         .and_then(Value::as_f64)
         .ok_or(OperationError::Internal)?;
     let prompt = request.prompt.trim().to_owned();
-    let task_id = creation_intent
-        .get("task_id")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
+    let task_id = creation_intent.task_id.clone();
+    let permission_mode = creation_intent.permission_mode;
+    let creation_intent = creation_intent.clone();
     let id = id.to_owned();
     let id_for_write = id.clone();
     let parent_id = parent_id.to_owned();
@@ -1472,12 +1459,11 @@ async fn create_child(
             load_agent_value(tx, &parent_id, &validate)?.ok_or(MutationError::UnknownAgent)?;
         let current_root = load_agent_value(tx, &draft.root_id.0, &validate)?
             .ok_or(MutationError::UnknownAgent)?;
-        let permission_intent = record["creationIntent"].clone();
         crate::child_permissions::inherit_claude_permissions(
             &mut record,
             &current_parent,
             &current_root,
-            &permission_intent,
+            permission_mode,
         )
         .map_err(OperationError::Invalid)?;
         let mut prompt = prompt;
@@ -1494,6 +1480,7 @@ async fn create_child(
             &prompt,
             record,
             created,
+            Some(creation_intent),
             validate,
         )?;
         if let Some(task_id) = &task_id {
@@ -1833,8 +1820,8 @@ pub async fn conversation(
                 let worker_account_key = request
                     .worker_defaults
                     .as_ref()
-                    .and_then(|defaults| defaults.get("account_key"))
-                    .and_then(Value::as_str)
+                    .and_then(|defaults| defaults.account_key.value())
+                    .map(String::as_str)
                     .or_else(|| {
                         request
                             .worker_defaults
@@ -2720,7 +2707,7 @@ async fn resolve_project_binding(
     cwd: String,
     project_id: Option<String>,
     home_server: Option<String>,
-    folder: Option<Value>,
+    folder: Option<String>,
 ) -> Result<Value, OperationError> {
     let local = context
         .store
@@ -2739,7 +2726,7 @@ async fn resolve_project_binding(
                     project_id.as_deref(),
                     home_server.as_deref(),
                     &local,
-                    folder.as_ref(),
+                    folder.as_deref(),
                 )
             },
         )
@@ -2748,7 +2735,7 @@ async fn resolve_project_binding(
 
 async fn resolve_worker_defaults(
     context: &Context<'_>,
-    value: Option<&Value>,
+    value: Option<&WorkerDefaults>,
     account_key: &str,
     account: &AccountIdentity,
     root_model: &str,
@@ -2759,36 +2746,10 @@ async fn resolve_worker_defaults(
             json!({"model":"gpt-6-luna","effort":"high","fastMode":false,"daybreakEnabled":false,"delegationDepth":1}),
         );
     };
-    let object = value
-        .as_object()
-        .ok_or(OperationError::Invalid("worker_defaults must be an object"))?;
-    if object.keys().any(|key| {
-        ![
-            "model",
-            "effort",
-            "fast_mode",
-            "daybreak_enabled",
-            "account_key",
-            "delegation_depth",
-        ]
-        .contains(&key.as_str())
-    }) {
-        return Err(OperationError::Invalid(
-            "worker_defaults has unknown fields",
-        ));
-    }
-    if !["model", "effort", "fast_mode"]
-        .iter()
-        .all(|field| object.contains_key(*field))
-    {
-        return Err(OperationError::Invalid(
-            "worker_defaults requires model, effort, and fast_mode",
-        ));
-    }
-    let requested_account_key = object.get("account_key").and_then(Value::as_str);
-    let model = object
-        .get("model")
-        .and_then(Value::as_str)
+    let requested_account_key = value.account_key.value().map(String::as_str);
+    let model = value
+        .model
+        .as_deref()
         .filter(|model| !model.trim().is_empty())
         .unwrap_or(root_model);
     let (worker_account_key, worker_account) =
@@ -2821,34 +2782,22 @@ async fn resolve_worker_defaults(
             };
             (worker_account_key.to_owned(), worker_account)
         };
-    let effort = match object.get("effort") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.as_str()),
+    let effort = match value.effort.as_deref() {
+        None => None,
+        Some(value) if !value.trim().is_empty() => Some(value),
         _ => return Err(OperationError::Invalid("worker_defaults effort is invalid")),
     };
-    let fast_mode =
-        object
-            .get("fast_mode")
-            .and_then(Value::as_bool)
-            .ok_or(OperationError::Invalid(
-                "worker_defaults fast_mode must be a boolean",
-            ))?;
-    let daybreak = object
-        .get("daybreak_enabled")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if object
-        .get("daybreak_enabled")
-        .is_some_and(|value| !value.is_boolean())
-    {
-        return Err(OperationError::Invalid(
-            "worker_defaults daybreak_enabled must be a boolean",
-        ));
-    }
-    let depth = object
-        .get("delegation_depth")
-        .and_then(Value::as_i64)
-        .unwrap_or(1);
+    let fast_mode = value.fast_mode;
+    let daybreak = match &value.daybreak_enabled {
+        Field::Missing => false,
+        Field::Value(value) => *value,
+        Field::Null => {
+            return Err(OperationError::Invalid(
+                "worker_defaults daybreak_enabled must be a boolean",
+            ));
+        }
+    };
+    let depth = value.delegation_depth.unwrap_or(1);
     if !(1..=3).contains(&depth) {
         return Err(OperationError::Invalid("delegation_depth must be 1 to 3"));
     }
@@ -2868,7 +2817,7 @@ async fn resolve_worker_defaults(
         fast_mode,
         daybreak,
     )?;
-    let mut defaults = json!({"model":object.get("model").cloned().unwrap_or(Value::Null),
+    let mut defaults = json!({"model":value.model,
         "effort":settings.effort,"fastMode":settings.fast_mode,"daybreakEnabled":settings.daybreak_enabled,
         "cyberAccessProgram":settings.cyber_access_program,"delegationDepth":depth});
     if requested_account_key.is_some() {
@@ -2879,7 +2828,7 @@ async fn resolve_worker_defaults(
 
 async fn resolve_review_defaults(
     context: &Context<'_>,
-    value: Option<&Value>,
+    value: Option<&ReviewDefaults>,
     account_key: &str,
     account: &AccountIdentity,
     worker_account_key: Option<&str>,
@@ -2888,31 +2837,12 @@ async fn resolve_review_defaults(
     let Some(value) = value else {
         return Ok(json!({"model":null,"effort":null}));
     };
-    let object = value
-        .as_object()
-        .ok_or(OperationError::Invalid("review_defaults must be an object"))?;
-    if object
-        .keys()
-        .any(|key| !["model", "effort", "fast_mode"].contains(&key.as_str()))
-    {
-        return Err(OperationError::Invalid(
-            "review_defaults has unknown fields",
-        ));
-    }
-    let fast_mode = object
-        .get("fast_mode")
-        .map(|value| {
-            value.as_bool().ok_or(OperationError::Invalid(
-                "review_defaults fast_mode must be a boolean",
-            ))
-        })
-        .transpose()?;
     let mut defaults = json!({"model":null,"effort":null});
-    if let Some(fast_mode) = fast_mode {
+    if let Some(fast_mode) = value.fast_mode {
         defaults["fastMode"] = json!(fast_mode);
     }
-    let Some(model) = object.get("model").and_then(Value::as_str) else {
-        if object.get("effort").is_some_and(|effort| !effort.is_null()) {
+    let Some(model) = value.model.value().map(String::as_str) else {
+        if value.effort.value().is_some() {
             return Err(OperationError::Invalid(
                 "Select a review model before setting its effort",
             ));
@@ -2922,9 +2852,9 @@ async fn resolve_review_defaults(
     if !model.starts_with("gpt-") {
         return Err(OperationError::Invalid("Native review needs a Codex model"));
     }
-    let effort = match object.get("effort") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.as_str()),
+    let effort = match value.effort.value().map(String::as_str) {
+        None => None,
+        Some(value) if !value.trim().is_empty() => Some(value),
         _ => return Err(OperationError::Invalid("review_defaults effort is invalid")),
     };
     let (catalog_account_key, catalog_account) =
@@ -2969,7 +2899,7 @@ async fn resolve_review_defaults(
         &catalog_account,
         model,
         effort,
-        fast_mode.unwrap_or(false),
+        value.fast_mode.unwrap_or(false),
         false,
     )?;
     defaults["model"] = json!(settings.model);
@@ -2983,7 +2913,7 @@ fn resolve_project_binding_from(
     project_id: Option<&str>,
     home_server: Option<&str>,
     local: &str,
-    folder: Option<&Value>,
+    folder: Option<&str>,
 ) -> Result<Value, OperationError> {
     let project_id = project_id
         .filter(|value| !value.is_empty())
@@ -3028,8 +2958,8 @@ fn resolve_project_binding_from(
                 });
         if direct || alias {
             let folder_id = match folder {
-                None | Some(Value::Null) => Value::Null,
-                Some(Value::String(id)) => {
+                None => Value::Null,
+                Some(id) => {
                     if !project
                         .get("folders")
                         .and_then(Value::as_array)
@@ -3045,7 +2975,6 @@ fn resolve_project_binding_from(
                     }
                     json!(id)
                 }
-                Some(_) => return Err(OperationError::Invalid("Select a project folder")),
             };
             let version = crate::project_deletion::admission_version(
                 connection,
@@ -3092,20 +3021,34 @@ pub(crate) fn project_directory(value: &str) -> Result<String, OperationError> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
-fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> String {
+fn lead_signature(
+    body: &CreationIntent,
+    workspace_mode: &str,
+    cwd: Option<&str>,
+) -> Result<String, OperationError> {
     let mut settings = body.clone();
-    if let Some(fields) = settings.as_object_mut() {
-        fields.remove("id");
-        fields.entry("model").or_insert(Value::Null);
-        fields.entry("previous").or_insert(Value::Null);
-        fields
-            .entry("workspaceMode")
-            .or_insert(json!(workspace_mode));
+    settings.id = Field::Missing;
+    if settings.model.is_missing() {
+        settings.model = Field::Null;
+    }
+    if settings.previous.is_missing() {
+        settings.previous = Field::Null;
+    }
+    if settings.workspace_mode.is_none() {
+        use studio_runtime_schema::records::WorkspaceMode;
+        settings.workspace_mode = Some(match workspace_mode {
+            "layr-native" => WorkspaceMode::LayrNative,
+            "layr" => WorkspaceMode::Layr,
+            "worktree" => WorkspaceMode::Worktree,
+            "shared" => WorkspaceMode::Shared,
+            "image" => WorkspaceMode::Image,
+            _ => return Err(OperationError::Invalid("Unknown workspace mode")),
+        });
     }
     if let Some(cwd) = cwd {
-        settings["cwd"] = json!(cwd);
+        settings.cwd = Some(cwd.to_owned());
     }
-    serde_json::to_string(&settings).expect("creation settings are serializable")
+    serde_json::to_string(&settings).map_err(|_| OperationError::Internal)
 }
 
 fn reusable_previous_workspace(prior: &Value, _workspace: &str, _cwd: &str) -> bool {
@@ -3216,7 +3159,7 @@ mod tests {
         let request = Creation {
             parent: Some("root".into()),
             profile: Some("profile".into()),
-            intent: json!({}),
+            intent: CreationIntent::default(),
             ..Creation::default()
         };
         assert!(
@@ -3635,7 +3578,6 @@ mod tests {
             &self,
             _store: &RuntimeStore,
             _actor: &AgentRecord,
-            _args: &Value,
             _request_id: &str,
         ) -> Result<
             Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
@@ -3764,13 +3706,27 @@ mod tests {
             managed_creation_environment: Some(&environment),
             validate: std::sync::Arc::new(|_, _| true),
         };
-        let result = agent(&context, Creation {
-            id: Some("child".to_owned()), parent: Some("root".to_owned()),
-            profile: Some("profile".to_owned()), prompt: "Review".to_owned(),
-            workspace: Some("shared".to_owned()),
-            intent: json!({"id":"child","parent":"root","profile_id":"profile","prompt":"Review","workspaceMode":"shared"}),
-            ..Creation::default()
-        }).await.expect("child creation");
+        let result = agent(
+            &context,
+            Creation {
+                id: Some("child".to_owned()),
+                parent: Some("root".to_owned()),
+                profile: Some("profile".to_owned()),
+                prompt: "Review".to_owned(),
+                workspace: Some("shared".to_owned()),
+                intent: CreationIntent {
+                    id: Field::Value("child".into()),
+                    parent: Field::Value("root".into()),
+                    profile_id: Field::Value("profile".into()),
+                    prompt: Some("Review".into()),
+                    workspace_mode: Some(studio_runtime_schema::records::WorkspaceMode::Shared),
+                    ..Default::default()
+                },
+                ..Creation::default()
+            },
+        )
+        .await
+        .expect("child creation");
         assert_eq!(result["accountKey"], "claude-local");
         assert_eq!(result["model"], "opus");
         let saved = context
@@ -3806,20 +3762,21 @@ mod tests {
                     .expect("update root");
             }
         };
-        let request = |id: &str, role: &str, extra: Value| {
-            let mut intent = json!({"id":id,"parent":"root","role":role,"prompt":"Task","workspaceMode":"shared"});
-            intent
-                .as_object_mut()
-                .expect("object")
-                .extend(extra.as_object().expect("options").clone());
+        let request = |id: &str, role: &str, mut intent: CreationIntent| {
+            intent.id = Field::Value(id.to_owned());
+            intent.parent = Field::Value("root".into());
+            intent.role = Some(if role == "reviewer" {
+                studio_runtime_schema::creation_intent::AgentRole::Reviewer
+            } else {
+                studio_runtime_schema::creation_intent::AgentRole::Implementer
+            });
+            intent.prompt = Some("Task".into());
+            intent.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Shared);
             Creation {
                 id: Some(id.to_owned()),
                 parent: Some("root".to_owned()),
                 role: Some(role.to_owned()),
-                account: extra
-                    .get("account_key")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
+                account: intent.account_key.clone(),
                 prompt: "Task".to_owned(),
                 workspace: Some("shared".to_owned()),
                 intent,
@@ -3832,14 +3789,24 @@ mod tests {
             json!([]),
         )
         .await;
-        let reviewer = agent(&context, request("reviewer", "reviewer", json!({})))
-            .await
-            .expect("reviewer");
+        let reviewer = agent(
+            &context,
+            request("reviewer", "reviewer", CreationIntent::default()),
+        )
+        .await
+        .expect("reviewer");
         assert_eq!(reviewer["model"], "gpt-6-astra");
         assert_eq!(reviewer["effort"], "high");
         let cleared = agent(
             &context,
-            request("cleared", "reviewer", json!({"effort":null})),
+            request(
+                "cleared",
+                "reviewer",
+                CreationIntent {
+                    effort: Field::Null,
+                    ..Default::default()
+                },
+            ),
         )
         .await
         .expect("explicit null");
@@ -3851,14 +3818,24 @@ mod tests {
             json!([]),
         )
         .await;
-        let inherited = agent(&context, request("inherited", "implementer", json!({})))
-            .await
-            .expect("native effort");
+        let inherited = agent(
+            &context,
+            request("inherited", "implementer", CreationIntent::default()),
+        )
+        .await
+        .expect("native effort");
         assert!(inherited["effort"].is_null());
         assert!(matches!(
             agent(
                 &context,
-                request("explicit", "implementer", json!({"effort":"xhigh"}))
+                request(
+                    "explicit",
+                    "implementer",
+                    CreationIntent {
+                        effort: Field::Value("xhigh".into()),
+                        ..Default::default()
+                    }
+                )
             )
             .await,
             Err(OperationError::Create(CreateError::InvalidCreation(
@@ -3878,7 +3855,10 @@ mod tests {
                 request(
                     "pin-conflict",
                     "implementer",
-                    json!({"account_key":"claude-local"})
+                    CreationIntent {
+                        account_key: Some("claude-local".into()),
+                        ..Default::default()
+                    }
                 )
             )
             .await,
@@ -3888,7 +3868,11 @@ mod tests {
         ));
         update_root(json!({"model":"opus"}), json!({}), json!(["claude-local"])).await;
         assert!(matches!(
-            agent(&context, request("excluded", "implementer", json!({}))).await,
+            agent(
+                &context,
+                request("excluded", "implementer", CreationIntent::default())
+            )
+            .await,
             Err(OperationError::Invalid(
                 "This model is not available for the selected worker accounts"
             ))
@@ -3905,26 +3889,35 @@ mod tests {
             tx.execute("INSERT INTO runtime_projects(id,record) VALUES(?1,?2)", rusqlite::params![project_for_write, json!({"homeServerId":"local","accountKeys":["default","codex-b"],"accountGroups":["priority","secondary"]}).to_string()])?;
             Ok(())
         }).await.expect("bind project");
-        let ordered = agent(&context, request("ordered", "implementer", json!({})))
-            .await
-            .expect("ordered project");
+        let ordered = agent(
+            &context,
+            request("ordered", "implementer", CreationIntent::default()),
+        )
+        .await
+        .expect("ordered project");
         assert_eq!(ordered["accountKey"], "default");
         let project_for_write = project_id.clone();
         context.store.transaction(move |tx| {
             tx.execute("UPDATE runtime_projects SET record=?1 WHERE id=?2", rusqlite::params![json!({"homeServerId":"local","accountKeys":["default","codex-b"],"accountGroups":[]}).to_string(), project_for_write])?;
             Ok(())
         }).await.expect("clear project order");
-        let balanced = agent(&context, request("balanced", "implementer", json!({})))
-            .await
-            .expect("least loaded");
+        let balanced = agent(
+            &context,
+            request("balanced", "implementer", CreationIntent::default()),
+        )
+        .await
+        .expect("least loaded");
         assert_eq!(balanced["accountKey"], "codex-b");
         context.store.transaction(move |tx| {
             tx.execute("UPDATE runtime_projects SET record=?1 WHERE id=?2", rusqlite::params![json!({"homeServerId":"local","accountKeys":["default"],"accountGroups":[]}).to_string(), project_id])?;
             Ok(())
         }).await.expect("restrict project");
-        let allowed = agent(&context, request("allowed", "implementer", json!({})))
-            .await
-            .expect("project allowlist");
+        let allowed = agent(
+            &context,
+            request("allowed", "implementer", CreationIntent::default()),
+        )
+        .await
+        .expect("project allowlist");
         assert_eq!(allowed["accountKey"], "default");
     }
 
@@ -3947,12 +3940,10 @@ mod tests {
             account_id: None,
             email: None,
         };
-        let automatic_luna = json!({
-            "account_key": null,
-            "model": "gpt-6-luna",
-            "effort": "high",
-            "fast_mode": false
-        });
+        let automatic_luna: WorkerDefaults = serde_json::from_str(
+            r#"{"account_key":null,"model":"gpt-6-luna","effort":"high","fast_mode":false}"#,
+        )
+        .unwrap();
         let resolved = resolve_worker_defaults(
             &context,
             Some(&automatic_luna),
@@ -3970,12 +3961,7 @@ mod tests {
             "automatic choice stays unpinned"
         );
 
-        let explicit_claude_luna = json!({
-            "account_key": "claude-local",
-            "model": "gpt-6-luna",
-            "effort": "high",
-            "fast_mode": false
-        });
+        let explicit_claude_luna: WorkerDefaults = serde_json::from_str(r#"{"account_key":"claude-local","model":"gpt-6-luna","effort":"high","fast_mode":false}"#).unwrap();
         assert!(matches!(
             resolve_worker_defaults(
                 &context,
@@ -3989,12 +3975,10 @@ mod tests {
             Err(OperationError::Invalid(_))
         ));
 
-        let cleared_pin = json!({
-            "account_key": null,
-            "model": null,
-            "effort": null,
-            "fast_mode": false
-        });
+        let cleared_pin: WorkerDefaults = serde_json::from_str(
+            r#"{"account_key":null,"model":null,"effort":null,"fast_mode":false}"#,
+        )
+        .unwrap();
         let cleared = resolve_worker_defaults(
             &context,
             Some(&cleared_pin),
@@ -4033,9 +4017,13 @@ mod tests {
             account_id: None,
             email: None,
         };
-        for model in [Value::Null, json!("gpt-6-astra")] {
+        for model in [Field::Null, Field::Value("gpt-6-astra".to_owned())] {
             for fast in [true, false] {
-                let payload = json!({"model":model,"effort":null,"fast_mode":fast});
+                let payload = ReviewDefaults {
+                    model: model.clone(),
+                    effort: Field::Null,
+                    fast_mode: Some(fast),
+                };
                 let resolved = resolve_review_defaults(
                     &context,
                     Some(&payload),
@@ -4049,18 +4037,16 @@ mod tests {
                 assert_eq!(resolved["fastMode"], fast);
             }
         }
-        let legacy = json!({"model":null,"effort":null});
+        let legacy = ReviewDefaults {
+            model: Field::Null,
+            effort: Field::Null,
+            fast_mode: None,
+        };
         let resolved =
             resolve_review_defaults(&context, Some(&legacy), "default", &account, None, &[])
                 .await
                 .expect("legacy defaults validate");
         assert!(resolved.get("fastMode").is_none());
-        let malformed = json!({"model":null,"effort":null,"fast_mode":"false"});
-        assert!(
-            resolve_review_defaults(&context, Some(&malformed), "default", &account, None, &[])
-                .await
-                .is_err()
-        );
     }
 
     #[tokio::test]
@@ -4093,9 +4079,15 @@ mod tests {
             },
             "review_defaults": {"model": "gpt-6.1-sol", "effort": "high"}
         });
+        let worker_defaults: WorkerDefaults = serde_json::from_str(
+            r#"{"account_key":"default","model":"gpt-6-luna","effort":"high","fast_mode":false}"#,
+        )
+        .unwrap();
+        let review_defaults: ReviewDefaults =
+            serde_json::from_str(r#"{"model":"gpt-6.1-sol","effort":"high"}"#).unwrap();
         let workers = resolve_worker_defaults(
             &context,
-            Some(&payload["worker_defaults"]),
+            Some(&worker_defaults),
             "claude-local",
             &claude,
             "default",
@@ -4107,7 +4099,7 @@ mod tests {
         assert_eq!(workers["model"], "gpt-6-luna");
         let review = resolve_review_defaults(
             &context,
-            Some(&payload["review_defaults"]),
+            Some(&review_defaults),
             "claude-local",
             &claude,
             payload
@@ -4214,7 +4206,7 @@ mod tests {
             Some("project:example"),
             Some("local-server"),
             "local-server",
-            Some(&json!("folder-a")),
+            Some("folder-a"),
         )
         .expect("accept folder in selected project");
         assert_eq!(valid["projectFolder"], "folder-a");
@@ -4224,7 +4216,7 @@ mod tests {
             Some("project:remote"),
             Some("home-server"),
             "local-server",
-            Some(&json!("remote-folder")),
+            Some("remote-folder"),
         )
         .expect("accept registered remote project alias");
         assert_eq!(remote["projectServerId"], "home-server");
@@ -4248,7 +4240,7 @@ mod tests {
                 Some("project:example"),
                 Some("local-server"),
                 "local-server",
-                Some(&json!("another-project-folder")),
+                Some("another-project-folder"),
             ),
             Err(OperationError::Invalid(
                 "This folder is not in the selected project"
@@ -4509,7 +4501,10 @@ mod tests {
         };
         let creation = |model: Option<&str>| Creation {
             cwd: Some(project_path.clone()),
-            intent: model.map_or_else(|| json!({}), |model| json!({"model": model})),
+            intent: CreationIntent {
+                model: model.map_or(Field::Missing, |model| Field::Value(model.to_owned())),
+                ..Default::default()
+            },
             ..Creation::default()
         };
         let choose = |request: Creation, lead: bool| {
@@ -4733,16 +4728,17 @@ mod tests {
                 .expect("open fixture account driver"),
         );
         for scenario in ["agent", "lead", "previous"] {
-            let intent = if scenario == "agent" {
-                json!({"cwd":root,"name":"Lead","prompt":"Task"})
-            } else {
-                json!({"cwd":root})
+            let intent = CreationIntent {
+                cwd: root.to_str().map(str::to_owned),
+                name: (scenario == "agent").then(|| "Lead".into()),
+                prompt: (scenario == "agent").then(|| "Task".into()),
+                ..Default::default()
             };
-            let mut record = json!({"id":scenario,"provider":studio_runtime_schema::ProviderKind::Codex,"isLead":true,"cwd":root,"status":"idle"});
-            record["creationIntent"] = intent.clone();
+            let mut record = json!({"id":scenario,"rootId":scenario,"epoch":0,"accountKey":"default","compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"isLead":true,"cwd":root,"status":"idle"});
+            record["creationIntent"] = json!(intent);
             record["quickCreate"] = json!(true);
             record["quickCreateRequest"] =
-                json!(lead_signature(&intent, "worktree", root.to_str()));
+                json!(lead_signature(&intent, "worktree", root.to_str()).unwrap());
             let seed_record = record.clone();
             let scenario_id = scenario.to_owned();
             store
@@ -4907,7 +4903,11 @@ mod tests {
                 workspace: Some("worktree".to_owned()),
                 account: Some("default".to_owned()),
                 prompt: "Task".to_owned(),
-                intent: json!({"cwd":cwd,"prompt":"Task"}),
+                intent: CreationIntent {
+                    cwd: Some(cwd),
+                    prompt: Some("Task".into()),
+                    ..Default::default()
+                },
                 ..Creation::default()
             },
         )
@@ -4966,10 +4966,17 @@ mod tests {
             validate: std::sync::Arc::new(|_, _| true),
         };
         let child = |id: &str, workspace: Option<&str>| {
-            let mut intent = json!({"id":id,"parent":"root","prompt":"Task"});
-            if let Some(workspace) = workspace {
-                intent["workspaceMode"] = json!(workspace);
-            }
+            let intent = CreationIntent {
+                id: Field::Value(id.into()),
+                parent: Field::Value("root".into()),
+                prompt: Some("Task".into()),
+                workspace_mode: workspace.map(|mode| match mode {
+                    "worktree" => studio_runtime_schema::records::WorkspaceMode::Worktree,
+                    "shared" => studio_runtime_schema::records::WorkspaceMode::Shared,
+                    _ => panic!("fixture workspace"),
+                }),
+                ..Default::default()
+            };
             Creation {
                 id: Some(id.to_owned()),
                 parent: Some("root".to_owned()),

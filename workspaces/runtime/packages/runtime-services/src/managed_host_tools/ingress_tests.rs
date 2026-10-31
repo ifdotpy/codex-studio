@@ -2196,7 +2196,6 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
         &self,
         _: &RuntimeStore,
         _: &studio_runtime_store::AgentRecord,
-        _: &Value,
         _: &str,
     ) -> Result<
         Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
@@ -3031,7 +3030,7 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
             json!("missing-worker-folder"),
             "cwd must be an existing folder",
         ),
-        (json!(7), "cwd must be a folder path"),
+        (json!(7), "Invalid worker creation settings"),
         (json!("   "), "cwd must be a folder path"),
     ]
     .into_iter()

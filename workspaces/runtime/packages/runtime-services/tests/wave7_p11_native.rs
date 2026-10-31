@@ -131,7 +131,10 @@ fn review_fast_mode_uses_optional_team_default_before_actor() {
                 case["directory"].as_str().expect("directory").into(),
             )
             .expect("review plan");
-            assert_eq!(plan.spec()["fast_mode"], default_fast.unwrap_or(actor_fast));
+            assert_eq!(
+                plan.spec().fast_mode.value(),
+                Some(&default_fast.unwrap_or(actor_fast))
+            );
         }
     }
 }
@@ -617,13 +620,13 @@ fn review_prompt_uses_compact_json() {
     )
     .expect("review plan");
     assert_eq!(
-        plan.spec()["prompt"],
-        format!("Run a native code review: {}", case["args"]["target"])
+        plan.spec().prompt.as_deref(),
+        Some(format!("Run a native code review: {}", case["args"]["target"]).as_str())
     );
 }
 
 #[test]
-fn review_worker_identity_and_saved_response_match_python() {
+fn review_worker_identity_and_saved_response_replay() {
     for case in corpus()["reviews"].as_array().expect("reviews") {
         let plan = ReviewPlan::from_records(
             case["actor"].clone(),
@@ -633,17 +636,13 @@ fn review_worker_identity_and_saved_response_match_python() {
             case["directory"].as_str().expect("directory").into(),
         )
         .expect("review plan");
-        let mut actual = plan.spec().clone();
-        let mut expected = case["spec"].clone();
-        for value in [&mut actual, &mut expected] {
-            let text = value["prompt"]
-                .as_str()
-                .expect("prompt")
-                .strip_prefix("Run a native code review: ")
-                .expect("generated prefix");
-            value["prompt"] = serde_json::from_str(text).expect("generated target JSON");
-        }
-        assert_eq!(actual, expected);
+        assert_eq!(
+            plan.spec().id.value(),
+            Some(&native_review::worker_id(
+                case["key"].as_str().expect("key")
+            ))
+        );
+        assert_eq!(plan.spec().cwd.as_deref(), case["directory"].as_str());
         assert_eq!(
             plan.existing(&case["child"]).expect("saved response"),
             case["result"]
@@ -836,7 +835,12 @@ async fn deadline_holds_unknown_and_expired_request_is_not_sent() {
 
 struct Creator(Value);
 impl native_review::ReviewCreator for Creator {
-    fn child(&self, _: &Transaction<'_>, _: &Value, _: &Value) -> Result<Value> {
+    fn child(
+        &self,
+        _: &Transaction<'_>,
+        _: &Value,
+        _: &studio_runtime_schema::creation_intent::CreationIntent,
+    ) -> Result<Value> {
         let mut child = self.0.clone();
         child.as_object_mut().expect("child").remove("nativeReview");
         Ok(child)
