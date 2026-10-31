@@ -1179,8 +1179,9 @@ fn preserve_complaint(
         let Some(raw) = raw else {
             return Ok(true);
         };
-        let complaint: Value = serde_json::from_str(&raw).map_err(|_| invalid("complaint"))?;
-        if complaint["leadId"] != agent {
+        let complaint: studio_runtime_schema::complaint_record::ComplaintRecord =
+            serde_json::from_str(&raw).map_err(|_| invalid("complaint"))?;
+        if complaint.lead_id() != Some(agent) {
             return Ok(true);
         }
     }
@@ -1715,6 +1716,18 @@ mod resource_tests {
         };
         event.text = r#"{"complaints":[{"complaint_id":"bad"},{}]}"#.into();
         assert!(super::preserve_complaint(&tx, "lead", &event).is_err());
+        event.text = r#"{"complaints":[{"complaint_id":"ok"}]}"#.into();
+        assert!(super::preserve_complaint(&tx, "lead", &event).is_err());
+        for (id, lead) in [("ok", "lead"), ("foreign", "other")] {
+            let record = format!(
+                r#"{{"id":"{id}","author":"a","leadId":"{lead}","status":"open","text":"t","created":1,"readAt":null,"recipient":"lead","responses":[],"updated":null,"version":null}}"#
+            );
+            tx.execute(
+                "UPDATE runtime_complaints SET record=?1 WHERE id=?2",
+                [&record, id],
+            )
+            .unwrap();
+        }
         for (text, expected) in [
             (r#"{"complaints":[{}, {"complaint_id":"bad"}]}"#, true),
             (r#"{"complaints":[{"complaint_id":"ok"}]}"#, false),
