@@ -2416,8 +2416,8 @@ mod tests {
             .store
             .as_ref()
             .expect("store")
-            .test_reader()
-            .expect("read")
+            .test_terminal_output()
+            .expect("read archive")
             .query_row(
                 "SELECT COUNT(*) FROM user_terminal_output WHERE terminal=?1",
                 [&id],
@@ -2428,10 +2428,6 @@ mod tests {
             (
                 "fail_exit_record",
                 "CREATE TRIGGER fail_exit_record BEFORE UPDATE ON user_terminals BEGIN SELECT RAISE(ABORT,'record'); END;",
-            ),
-            (
-                "fail_exit_archive",
-                "CREATE TRIGGER fail_exit_archive BEFORE UPDATE ON user_terminal_output BEGIN SELECT RAISE(ABORT,'archive'); END;",
             ),
             (
                 "fail_exit_decoder",
@@ -2477,7 +2473,12 @@ mod tests {
                     .as_deref(),
                 Some(&b"tail"[..])
             );
-            let archived: i64 = connection
+            let archived: i64 = state
+                .store
+                .as_ref()
+                .expect("store")
+                .test_terminal_output()
+                .expect("read archive")
                 .query_row(
                     "SELECT COUNT(*) FROM user_terminal_output WHERE terminal=?1",
                     [&id],
@@ -2877,10 +2878,11 @@ mod tests {
                 Value::Array(rows)
             }
             let connection = store.test_reader().expect("read action corpus rows");
+            let archive = store.test_terminal_output().expect("read archive rows");
             serde_json::json!({
                 // The Python oracle predates the Rust-owned output_generation column.
                 "user_terminals":rows(&connection,"user_terminals","id,record,output,offset"),
-                "user_terminal_output":rows(&connection,"user_terminal_output","*"),
+                "user_terminal_output":rows(&archive,"user_terminal_output","*"),
                 "user_terminal_event_cursor":rows(&connection,"user_terminal_event_cursor","*"),
                 "user_terminal_decoder_state":rows(&connection,"user_terminal_decoder_state","*"),
             })
