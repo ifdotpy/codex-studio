@@ -1552,7 +1552,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                         })
                         .await?
                         .map_err(mutation_error)?
-                        .map_or_else(|| Ok(public_login(receipt)), public_login_value);
+                        .map_or_else(|| Ok(public_login(receipt)), |value| public_login_value(&value));
                     }
                     if runtime.session.is_none() {
                         return Err(AccountSessionError::Requires(
@@ -1670,7 +1670,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                     })
                     .await?
                     .map_err(mutation_error)
-                    .and_then(public_login_value)
+                    .and_then(|value| public_login_value(&value))
                 })
                 .await
         })
@@ -1690,7 +1690,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                             .await?
                             .map_err(mutation_error)?
                     {
-                        return public_login_value(receipt);
+                        return public_login_value(&receipt);
                     }
                     if runtime.session.is_none() {
                         let driver = Arc::clone(&runtime.driver);
@@ -1755,7 +1755,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                         })
                         .await?
                         .map_err(mutation_error)
-                        .and_then(public_login_value);
+                        .and_then(|value| public_login_value(&value));
                     }
                     let confirmed = response.ok().is_some_and(|receipt| {
                         matches!(
@@ -1774,7 +1774,7 @@ impl AccountSessionPort for AccountSessionRuntime {
                     })
                     .await?
                     .map_err(mutation_error)
-                    .and_then(public_login_value)
+                    .and_then(|value| public_login_value(&value))
                 })
                 .await
         })
@@ -1975,8 +1975,8 @@ fn public_login(mut receipt: LoginReply) -> LoginReply {
     receipt
 }
 
-fn public_login_value(receipt: Value) -> Result<LoginReply, AccountSessionError> {
-    crate::account_driver::typed_login_receipt(&receipt)
+fn public_login_value(receipt: &Value) -> Result<LoginReply, AccountSessionError> {
+    crate::account_driver::typed_login_receipt(receipt)
         .map(public_login)
         .map_err(account_error)
 }
