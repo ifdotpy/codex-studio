@@ -1662,23 +1662,22 @@ function ScopedExecutionSettings({
               : "For new subagents. Existing subagents keep their account and model."}
           </p>
         )}
-      {!readOnlyReason &&
-        (blockedTransfer || transferOpen) && (
-          <AccountTransferStatus
-            opened={transferOpen}
-            onClose={() => setTransferOpen(false)}
-            transfer={shownTransfer}
-            targetLabel={
-              teamDefaults
-                ? setupAccountName(shownTransferTarget)
-                : shownTransferTarget?.email ||
-                  setupAccountName(shownTransferTarget)
-            }
-            error={error}
-            pending={saving}
-            onAction={(action) => void runTeamTransferAction(action)}
-          />
-        )}
+      {!readOnlyReason && (blockedTransfer || transferOpen) && (
+        <AccountTransferStatus
+          opened={transferOpen}
+          onClose={() => setTransferOpen(false)}
+          transfer={shownTransfer}
+          targetLabel={
+            teamDefaults
+              ? setupAccountName(shownTransferTarget)
+              : shownTransferTarget?.email ||
+                setupAccountName(shownTransferTarget)
+          }
+          error={error}
+          pending={saving}
+          onAction={(action) => void runTeamTransferAction(action)}
+        />
+      )}
       {blockedTransfer && !transferOpen && (
         <Button
           size="compact-xs"

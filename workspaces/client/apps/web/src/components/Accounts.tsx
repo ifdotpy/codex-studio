@@ -686,14 +686,12 @@ export function AccountTransferConfirmation({
   onClose,
   target,
   sourceProvider,
-  extend = false,
   onConfirm,
 }: {
   opened: boolean;
   onClose: () => void;
   target: Account | null;
   sourceProvider: string;
-  extend?: boolean | undefined;
   onConfirm: () => Promise<void>;
 }) {
   const [pending, setPending] = useState(false);
@@ -709,20 +707,17 @@ export function AccountTransferConfirmation({
       onClose={() => {
         if (!pending) onClose();
       }}
-      title={extend ? "Add agents to this transfer" : "Transfer this chat"}
+      title="Transfer this chat"
       closeOnClickOutside={!pending}
       closeOnEscape={!pending}
       withCloseButton={!pending}
     >
       <p>
-        {extend
-          ? "Add descendants to the pending team transfer to"
-          : "Transfer this chat to"}{" "}
-        <strong>{target?.email || target?.label}</strong>?
+        Transfer this chat to <strong>{target?.email || target?.label}</strong>?
       </p>
       <p>
-        Active turns move immediately and continue on the destination.
-        Subagents keep their accounts.
+        Active turns move immediately and continue on the destination. Subagents
+        keep their accounts.
       </p>
       {target && sourceProvider !== target.provider && (
         <p>The destination model uses the saved chat context.</p>
@@ -757,7 +752,7 @@ export function AccountTransferConfirmation({
           }
         }}
       >
-        {extend ? "Add agents" : "Transfer chat"}
+        Transfer chat
       </Button>
     </Modal>
   );
@@ -818,7 +813,6 @@ export default function Accounts({
     sourceProvider: string;
     agentId: string;
     requestId: string;
-    extend: boolean;
   } | null>(null);
   const [disconnectChoice, setDisconnectChoice] = useState<Account | null>(
     null,
@@ -1022,9 +1016,7 @@ export default function Accounts({
       (transferring && account.id !== teamTransfer?.targetAccountKey)
     )
       return;
-    const extendTransfer =
-      transferring && account.id === teamTransfer?.targetAccountKey;
-    if (account.id === accountKey && !extendTransfer) return;
+    if (account.id === accountKey) return;
     if (pinned && owner) {
       onModalOpenChange?.(true);
       setTransferChoice({
@@ -1032,7 +1024,6 @@ export default function Accounts({
         sourceProvider: selected?.provider || owner.provider || "",
         agentId: owner.id,
         requestId: randomUUID(),
-        extend: !!extendTransfer,
       });
     } else if (!pinned)
       void action(account.id, async () => {
@@ -1621,7 +1612,6 @@ export default function Accounts({
         opened={!!transferChoice}
         target={transferChoice?.target || null}
         sourceProvider={transferChoice?.sourceProvider || ""}
-        extend={transferChoice?.extend}
         onClose={() => {
           setTransferChoice(null);
           onModalOpenChange?.(false);
