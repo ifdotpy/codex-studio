@@ -36,7 +36,7 @@ line, so the private key is never in the arguments or the environment:
 }
 ```
 
-The process answers `{"ready": true, "port": N}`. A later line `{"peers": [...]}` replaces the
+The process answers `{"ready": true, "port": N}`. After that line it writes `{"connected": "<SPKI PEM>"}` each time a QUIC connection to a paired server opens, inbound or outbound. The backend then makes the waiting outbox entries of that server due at once (`release_peer`), without a backoff wait. A later line `{"peers": [...]}` replaces the
 paired keys and closes the connections of a removed key. The process exits when stdin closes,
 so it ends with its backend. The backend starts it on Unix when the Serve origin is known. After
 an exit it starts the process again with a doubling delay of at most 30 seconds; the delay resets

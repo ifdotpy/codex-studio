@@ -17,7 +17,7 @@ pub fn create(connection: &Connection) -> rusqlite::Result<()> {
             id TEXT PRIMARY KEY, kind TEXT NOT NULL {kind}, owner_kind TEXT NOT NULL {owner},
             owner_id TEXT NOT NULL, request_id TEXT, signature TEXT NOT NULL,
             status TEXT NOT NULL {status}, account TEXT, stream_id TEXT, generation INTEGER,
-            ordinal INTEGER, next_at INTEGER, payload TEXT NOT NULL, created INTEGER NOT NULL,
+            ordinal INTEGER, next_at INTEGER, payload TEXT NOT NULL, created INTEGER NOT NULL, target TEXT,
             CHECK((status!='{unknown}' AND status!='{unrecognized}') OR next_at IS NULL));
         CREATE INDEX IF NOT EXISTS runtime_outbox_pending ON runtime_outbox(kind,status,next_at,id) WHERE status='{pending}';
         CREATE INDEX IF NOT EXISTS runtime_outbox_owner ON runtime_outbox(owner_kind,owner_id,kind,id);

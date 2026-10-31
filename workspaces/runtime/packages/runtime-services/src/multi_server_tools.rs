@@ -17,8 +17,9 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use studio_runtime_schema::persistence::{ServerDeliveryState, ServerFetchState};
+use studio_runtime_schema::persistence::{OutboxStatus, ServerDeliveryState, ServerFetchState};
 use studio_runtime_store::multi_server_delivery::{SavedRemoteReply, remote_operation_key};
+use studio_runtime_store::remote_outbox::{RemoteEffect, RemoteEntry, RemoteOutbox};
 use studio_runtime_store::request_results::{AdmittedRequest, RequestResultError};
 use studio_runtime_store::{
     AgentId, AgentRepository, ProjectsRepository, RuntimeStore, StoreError,
@@ -175,6 +176,25 @@ struct ExportRequest {
     cwd: Option<String>,
     branch: String,
     known: Vec<String>,
+}
+
+/// The record of a local Git fetch in the shared outbox (effect `server_fetch`).
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FetchEntry {
+    state: ServerFetchState,
+    /// The saved fetch inputs as JSON text.
+    export: Option<String>,
+    admission: AdmittedRequest,
+}
+
+/// An unknown entry (after an unclean stop) counts as a fetch that may have started.
+fn fetch_state(entry: &RemoteEntry<FetchEntry>) -> ServerFetchState {
+    if entry.status == OutboxStatus::Unknown {
+        ServerFetchState::Fetching
+    } else {
+        entry.record.state
+    }
 }
 
 enum FetchPayload {
@@ -515,7 +535,7 @@ impl ServerTools {
                     if saved.reply.server!=server {return refuse("The receipt belongs to another server");}
                     return Ok(json!({"state":ServerFetchState::Complete,"result":saved.reply,"error":null}));
                 }
-                let state:Option<ServerFetchState>=tx.query_row("SELECT state FROM runtime_server_fetch WHERE id=?1 AND server=?2",params![root,server],|row|row.get(0)).optional()?;
+                let state:Option<ServerFetchState>=RemoteOutbox::get::<FetchEntry>(tx,RemoteEffect::ServerFetch,&server,root).map_err(StoreError::from)?.map(|entry|fetch_state(&entry));
                 return state.map(|state|json!({"state":state,"result":null,"error":null})).ok_or_else(||Step::Refused("The request ID expired".into()));
             }
             let canonical=remote_operation_key("server-outbox",&[&server],root,&[action]);
@@ -864,16 +884,16 @@ impl ServerTools {
                     let _: FetchReply = serde_json::from_str(saved.reply.get()).map_err(StoreError::from)?;
                     return Ok(Err(serde_json::from_str(saved.reply.get()).map_err(StoreError::from)?));
                 }
-                let prior:Option<(String,ServerFetchState,Option<String>)>=tx.query_row("SELECT signature,state,result FROM runtime_server_fetch WHERE id=?1",[&key_owned],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional()?;
-                if let Some((signature,state,raw))=prior {
-                    if signature!=signature_for_claim {return refuse("This request id has different content");}
-                    return Ok(match FetchPayload::decode(state,raw.as_deref())? {
+                if let Some(prior)=RemoteOutbox::find::<FetchEntry>(tx,RemoteEffect::ServerFetch,&key_owned).map_err(StoreError::from)? {
+                    if prior.signature!=signature_for_claim {return refuse("This request id has different content");}
+                    let state=fetch_state(&prior);
+                    return Ok(match FetchPayload::decode(state,prior.record.export.as_deref())? {
                         Some(saved)=>Ok(saved),
                         None=>Err(json!({"requestId":key_owned,"outcome":"unknown","detail":"The original fetch inputs are unavailable. The operation will not be sent again."})),
                     });
                 }
                 let export=ExportRequest{cwd:worker_cwd,branch:branch_for_claim,known:known_sorted};
-                tx.execute("INSERT INTO runtime_server_fetch(id,server,signature,state,result,admission) VALUES(?1,?2,?3,?4,?5,?6)",params![key_owned,server_owned,signature_for_claim,ServerFetchState::Preparing,serde_json::to_string(&export).map_err(StoreError::from)?,serde_json::to_string(&admitted).map_err(StoreError::from)?])?;
+                RemoteOutbox::put(tx,RemoteEffect::ServerFetch,&server_owned,&key_owned,&signature_for_claim,OutboxStatus::Pending,None,FetchEntry{state:ServerFetchState::Preparing,export:Some(serde_json::to_string(&export).map_err(StoreError::from)?),admission:admitted},now).map_err(StoreError::from)?;
                 Ok(Ok(FetchPayload::Preparing(export)))
             })
             .await?;
@@ -997,10 +1017,32 @@ impl ServerTools {
         let claimed = self
             .store
             .transaction_with(move |tx| -> Result<usize, Step> {
-                Ok(tx.execute(
-                    "UPDATE runtime_server_fetch SET state='fetching' WHERE id=?1 AND state='preparing'",
-                    [&key_owned],
-                )?)
+                let Some(entry) =
+                    RemoteOutbox::find::<FetchEntry>(tx, RemoteEffect::ServerFetch, &key_owned)
+                        .map_err(StoreError::from)?
+                        .filter(|entry| {
+                            entry.status == OutboxStatus::Pending
+                                && entry.record.state == ServerFetchState::Preparing
+                        })
+                else {
+                    return Ok(0);
+                };
+                let record = FetchEntry {
+                    state: ServerFetchState::Fetching,
+                    ..entry.record
+                };
+                let changed = RemoteOutbox::update(
+                    tx,
+                    RemoteEffect::ServerFetch,
+                    &entry.target,
+                    &key_owned,
+                    &entry.signature,
+                    OutboxStatus::Submitted,
+                    None,
+                    record,
+                )
+                .map_err(StoreError::from)?;
+                Ok(usize::from(changed))
             })
             .await?;
         if claimed == 0 {
@@ -1065,15 +1107,19 @@ impl ServerTools {
         let now = crate::event_write::unix_time().unwrap_or_default() as i64;
         self.store
             .transaction_with(move |tx| -> Result<(), Step> {
-                let token: String = tx.query_row(
-                    "SELECT admission FROM runtime_server_fetch WHERE id=?1",
-                    [&key_owned],
-                    |row| row.get(0),
-                )?;
-                let admitted: AdmittedRequest =
-                    serde_json::from_str(&token).map_err(StoreError::from)?;
-                crate::event_write::settle_request(tx, &admitted, None, &reply)?;
-                tx.execute("DELETE FROM runtime_server_fetch WHERE id=?1", [&key_owned])?;
+                let entry =
+                    RemoteOutbox::find::<FetchEntry>(tx, RemoteEffect::ServerFetch, &key_owned)
+                        .map_err(StoreError::from)?
+                        .ok_or_else(|| Step::Refused("The fetch reservation is missing".into()))?;
+                crate::event_write::settle_request(tx, &entry.record.admission, None, &reply)?;
+                RemoteOutbox::delete(
+                    tx,
+                    RemoteEffect::ServerFetch,
+                    &entry.target,
+                    &key_owned,
+                    &entry.signature,
+                )
+                .map_err(StoreError::from)?;
                 if let Some(release) = &release_for_write {
                     crate::multi_server_orchestration::enqueue_in_transaction(
                         tx,

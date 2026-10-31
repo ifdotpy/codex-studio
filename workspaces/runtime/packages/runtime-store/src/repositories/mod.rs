@@ -37,6 +37,7 @@ pub(crate) mod projects;
 pub(crate) mod questions_reads;
 pub(crate) mod questions_write;
 pub(crate) mod queue_write;
+pub mod remote_outbox;
 pub(crate) mod remote_transport;
 pub mod request_results;
 pub(crate) mod reviewer_archive;

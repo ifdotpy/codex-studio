@@ -1,12 +1,14 @@
 //! Persistence primitives shared by the remote federation and multi-server
 //! transports. This module only uses tables already owned by the Python schema.
 
+use super::super::remote_outbox::{RemoteEffect, RemoteOutbox};
 use super::multi_server_delivery::{admit_remote, remote_result_key, replay_remote, settle_remote};
+use super::outbox::OutboxError;
 use crate::request_results::{Admission, AdmittedRequest};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use studio_runtime_schema::persistence::AccessOutboundState;
+use studio_runtime_schema::persistence::{AccessOutboundState, OutboxStatus};
 
 #[derive(Serialize, Deserialize)]
 pub struct AccessReply {
@@ -217,21 +219,19 @@ impl RemoteTransportRepository {
         {
             return access_reservation(saved.reply);
         }
-        let existing = transaction
-            .query_row(
-                "SELECT hash,record FROM runtime_access_outbound WHERE server=?1 AND request_id=?2",
-                params![server_id, request_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-            )
-            .optional()?;
-        if let Some((saved_fingerprint, record)) = existing {
-            if saved_fingerprint != fingerprint {
+        let existing = RemoteOutbox::get::<PendingAccessRequest>(
+            transaction,
+            RemoteEffect::AccessRequest,
+            server_id,
+            request_id,
+        )
+        .map_err(|error| outbound_error(error, server_id, request_id))?;
+        if let Some(entry) = existing {
+            if entry.signature != fingerprint {
                 return Err(crate::request_results::RequestResultError::Conflict { id }.into());
             }
-            let record: PendingAccessRequest = serde_json::from_str(&record)
-                .map_err(|_| invalid_outbound(server_id, request_id))?;
-            if record.outcome != AccessOutboundState::Unknown
-                || record.admission.signature() != fingerprint
+            if entry.record.outcome != AccessOutboundState::Unknown
+                || entry.record.admission.signature() != fingerprint
             {
                 return Err(invalid_outbound(server_id, request_id));
             }
@@ -259,9 +259,16 @@ impl RemoteTransportRepository {
             created: created_at,
             admission,
         };
-        transaction.execute(
-            "INSERT INTO runtime_access_outbound(server,request_id,hash,record) VALUES(?1,?2,?3,?4)",
-            params![server_id, request_id, fingerprint, serde_json::to_string(&record)?],
+        RemoteOutbox::put(
+            transaction,
+            RemoteEffect::AccessRequest,
+            server_id,
+            request_id,
+            fingerprint,
+            OutboxStatus::Submitted,
+            None,
+            &record,
+            (created_at * 1000.0) as i64,
         )?;
         Ok(OutboundReservation::New)
     }
@@ -341,23 +348,27 @@ fn finish_access(
     signature: &str,
     reply: &AccessReply,
 ) -> Result<(), StoreError> {
-    let raw: String = tx.query_row(
-        "SELECT record FROM runtime_access_outbound WHERE server=?1 AND request_id=?2 AND hash=?3",
-        params![server, request, signature],
-        |row| row.get(0),
-    )?;
-    let pending: PendingAccessRequest =
-        serde_json::from_str(&raw).map_err(|_| invalid_outbound(server, request))?;
+    let pending =
+        RemoteOutbox::get::<PendingAccessRequest>(tx, RemoteEffect::AccessRequest, server, request)
+            .map_err(|error| outbound_error(error, server, request))?
+            .filter(|entry| entry.signature == signature)
+            .ok_or_else(|| invalid_outbound(server, request))?
+            .record;
     if pending.outcome != AccessOutboundState::Unknown || pending.admission.signature() != signature
     {
         return Err(invalid_outbound(server, request));
     }
     settle_remote(tx, &pending.admission, None, reply).map_err(request_result_error)?;
-    tx.execute(
-        "DELETE FROM runtime_access_outbound WHERE server=?1 AND request_id=?2 AND hash=?3",
-        params![server, request, signature],
-    )?;
+    RemoteOutbox::delete(tx, RemoteEffect::AccessRequest, server, request, signature)?;
     Ok(())
+}
+
+/// A payload that does not decode is an invalid stored object, not a database failure.
+fn outbound_error(error: OutboxError, server_id: &str, request_id: &str) -> StoreError {
+    match error {
+        OutboxError::Json(_) => invalid_outbound(server_id, request_id),
+        other => other.into(),
+    }
 }
 
 fn invalid_outbound(server_id: &str, request_id: &str) -> StoreError {
@@ -755,8 +766,12 @@ mod tests {
     fn malformed_receipt_reports_the_table_and_stored_key() {
         let db = nonce_db();
         db.execute(
-            "INSERT INTO runtime_access_outbound(server,request_id,hash,record) VALUES('server-a','00000000-03e8-7000-8000-000000000001','fingerprint-a','{}')",
-            [],
+            "INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,payload,created,target) VALUES(?1,'remote_delivery','server','server-a','00000000-03e8-7000-8000-000000000001','fingerprint-a','submitted','{\"effect\":\"access_request\",\"record\":{}}',1,'server-a')",
+            [super::super::remote_outbox::RemoteOutbox::id(
+                super::super::remote_outbox::RemoteEffect::AccessRequest,
+                "server-a",
+                "00000000-03e8-7000-8000-000000000001",
+            )],
         ).expect("invalid persisted receipt fixture inserts");
         let tx = db.unchecked_transaction().expect("read transaction begins");
         let error = RemoteTransportRepository::reserve_multi_server_request(
@@ -812,9 +827,11 @@ mod tests {
         assert_eq!(result["reply"]["outcome"], "redacted");
         assert!(result["reply"].get("value").is_none());
         assert_eq!(
-            db.query_row("SELECT count(*) FROM runtime_access_outbound", [], |row| {
-                row.get::<_, i64>(0)
-            })
+            db.query_row(
+                "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery'",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )
             .expect("pending count"),
             0
         );

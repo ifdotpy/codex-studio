@@ -2303,9 +2303,11 @@ pub(crate) mod tests {
             store
                 .test_reader()
                 .expect("reader")
-                .query_row("SELECT count(*) FROM runtime_access_outbound", [], |row| {
-                    row.get::<_, i64>(0)
-                })
+                .query_row(
+                    "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery'",
+                    [],
+                    |row| { row.get::<_, i64>(0) }
+                )
                 .expect("count"),
             0
         );

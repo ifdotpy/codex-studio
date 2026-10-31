@@ -48,6 +48,10 @@ mod m2026_10_30_monitor_generated;
 pub(crate) mod m2026_10_30_monitor_queue;
 pub(crate) mod m2026_10_30_monitor_status;
 mod m2026_10_30_one_nonce_table;
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+mod m2026_10_30_one_outbox;
 mod m2026_10_30_project_teams;
 mod m2026_10_30_radio_room;
 mod m2026_10_30_request_record;
@@ -773,6 +777,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| crate::durable_seq::install(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-one-outbox",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Pending reservations in runtime_access_outbound and runtime_server_fetch",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_one_outbox::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
