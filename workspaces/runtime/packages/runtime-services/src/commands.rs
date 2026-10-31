@@ -197,7 +197,11 @@ pub fn begin(
         let watermark = CommandWatermarks::applied(tx, &client)?;
         return Err(match error {
             RequestIdentityError::Expired { .. } if number <= watermark => CommandError::TooOld,
-            error => RequestResultError::from(error).into(),
+            error @ (RequestIdentityError::InvalidUuidV7(_)
+            | RequestIdentityError::Expired { .. }
+            | RequestIdentityError::FutureTimestamp { .. }) => {
+                RequestResultError::from(error).into()
+            }
         });
     }
     let records = !is_create(&request.command);
