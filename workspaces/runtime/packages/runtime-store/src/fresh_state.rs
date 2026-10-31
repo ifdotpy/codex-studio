@@ -394,10 +394,7 @@ mod template_tests {
                 .query_row("SELECT id FROM sync_identity", [], |row| row.get(0))
                 .expect("identity");
             let state_dir: String = db.query_row("SELECT json_extract(payload, '$.value.stateDir') FROM sync_entities WHERE collection='workspace' AND id='current'", [], |row| row.get(0)).expect("workspace");
-            assert_eq!(
-                state_dir,
-                store.root().to_string_lossy().as_ref()
-            );
+            assert_eq!(state_dir, store.root().to_string_lossy().as_ref());
             identity
         };
         assert_ne!(inspect(&first), inspect(&second));
