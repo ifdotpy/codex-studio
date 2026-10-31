@@ -5,13 +5,16 @@
 //!
 //! 1. `begin`: check the principal against the permission table, the id, the replay
 //!    window, and the replay record. A repeated command returns its first reference.
-//! 2. Run the command. `withdraw` runs here, inside the caller's transaction. `send` and
-//!    `stop` need provider I/O or the lifecycle runner, so the caller runs them and then
-//!    calls `finish`.
+//! 2. Run the command. `execute_sync` runs `withdraw` and `stop` inside the caller's
+//!    transaction, including the reference and the watermark, so no crash can separate the
+//!    change from its record. `send` needs the message admission path, so its caller runs it
+//!    between `begin` and `finish`.
 //! 3. `finish`: record the reference in `request_results` (not for a create command, whose
 //!    row is the receipt) and raise the client's watermark, in the same transaction.
 //! 4. `response`: read the referenced rows at response time. They are never stored.
 
+use crate::agent_lifecycle_runtime::LifecyclePorts;
+use crate::agent_management::Action;
 use rusqlite::{Connection, Transaction};
 use studio_runtime_schema::command::{
     COMMAND_CLIENT_ID_MAX_CHARS, COMMAND_ROW_MAX_BYTES, Command, CommandRequest, CommandResponse,
@@ -25,7 +28,8 @@ use studio_runtime_store::request_results::{
     AdmittedRequest, RequestReference, RequestResultError, RequestResults,
 };
 use studio_runtime_store::{
-    AgentId, AgentRepository, QueueWriteRepository, StoreError, sha256_hex, truthy,
+    AgentId, AgentRepository, QueueWriteRepository, StoreError, SyncDocumentsRepository,
+    sha256_hex, truthy,
 };
 
 use crate::principal::{Access, CommandClass, Principal, Scope, access};
@@ -51,6 +55,10 @@ pub enum CommandError {
     RequestResult(#[from] RequestResultError),
     #[error(transparent)]
     Store(#[from] StoreError),
+    #[error(transparent)]
+    Lifecycle(#[from] crate::agent_management::ManagementError),
+    #[error(transparent)]
+    Coordination(#[from] crate::coordination::CoordinationError),
 }
 
 impl From<rusqlite::Error> for CommandError {
@@ -142,22 +150,39 @@ pub fn begin(
     now_ms: i64,
 ) -> Result<Start, CommandError> {
     authorize(tx, principal, &request.command)?;
-    let number = i64::try_from(request.number)
-        .ok()
-        .filter(|number| *number >= 1)
-        .ok_or(CommandError::Invalid("Command numbers start at 1"))?;
+    let who = principal_key(principal);
+    // An agent or the policy runs in this process and brings a tool call id, which is not a
+    // UUIDv7. The server numbers its commands.
+    let trusted = matches!(principal, Principal::Agent { .. } | Principal::Policy);
+    let client = format!("{who}/{}", request.client);
     if request.client.is_empty() || request.client.chars().count() > COMMAND_CLIENT_ID_MAX_CHARS {
         return Err(CommandError::Invalid("Invalid command client id"));
     }
-    let who = principal_key(principal);
-    let client = format!("{who}/{}", request.client);
-    let identity = RequestIdentity::new(
-        "command",
-        &[who.as_str()],
-        &request.id,
-        &[request.command.name()],
-    )
-    .map_err(RequestResultError::from)?;
+    let number = if trusted {
+        CommandWatermarks::applied(tx, &client)? + 1
+    } else {
+        i64::try_from(request.number)
+            .ok()
+            .filter(|number| *number >= 1)
+            .ok_or(CommandError::Invalid("Command numbers start at 1"))?
+    };
+    let identity = if trusted {
+        RequestIdentity::opaque(
+            "command",
+            &[who.as_str()],
+            &request.id,
+            &[request.command.name()],
+            now_ms,
+        )
+    } else {
+        RequestIdentity::new(
+            "command",
+            &[who.as_str()],
+            &request.id,
+            &[request.command.name()],
+        )
+        .map_err(RequestResultError::from)?
+    };
     let signature = sha256_hex(
         &serde_json::to_vec(&(&who, &request.command)).map_err(RequestResultError::from)?,
     );
@@ -226,8 +251,8 @@ pub fn agent_reference(tx: &Transaction<'_>, id: &str) -> Result<RequestReferenc
 /// Step 2 for `withdraw`: delete a queued message and return its text.
 ///
 /// TODO(#630): a message that already left the queue is held by a turn. The command must
-/// then interrupt that turn and return the text as a server draft. Both need the Turn table
-/// of the domain model; until it is on main, such a message is a conflict.
+/// then interrupt that turn and return the text the same way. That needs the Turn table of
+/// the domain model; until it is on main, such a message is a conflict.
 pub fn withdraw(
     tx: &Transaction<'_>,
     chat: &str,
@@ -309,4 +334,147 @@ pub fn response(
         seq,
         rows,
     })
+}
+
+/// A command that `execute_sync` ran.
+#[derive(Debug)]
+pub struct Executed {
+    pub reference: RequestReference,
+    /// The command ran before; nothing changed now.
+    pub replayed: bool,
+    /// The reply of the lifecycle decision of a stop (`{"stopped": [...]}`).
+    pub reply: serde_json::Value,
+}
+
+/// Write the text of a withdrawn message as a server draft of the chat. The draft stream
+/// delivers it to the composer. It is newer than every earlier version, so it wins, and a
+/// later edit of the user supersedes it like any other draft version.
+fn server_draft(
+    tx: &Transaction<'_>,
+    chat: &str,
+    text: &str,
+    now_ms: i64,
+) -> Result<(), CommandError> {
+    let id = format!("server:withdraw:{chat}");
+    let payload = serde_json::json!({
+        "id": id, "session": chat, "device": "server",
+        "text": text, "updated": now_ms, "seen": {},
+    });
+    SyncDocumentsRepository::put_draft(tx, &id, &payload.to_string(), false)?;
+    Ok(())
+}
+
+/// Steps 1 to 3 for the commands that run inside one transaction (`withdraw`, `stop`).
+/// The change, the reference and the watermark commit together. `ports` stage the provider
+/// effects of a stop; the caller wakes them after the commit.
+pub fn execute_sync(
+    tx: &Transaction<'_>,
+    principal: &Principal,
+    request: &CommandRequest,
+    now_ms: i64,
+    now: f64,
+    ports: Option<&dyn LifecyclePorts>,
+) -> Result<Executed, CommandError> {
+    if matches!(request.command, Command::Send { .. }) {
+        return Err(CommandError::Invalid(
+            "A send command runs through the message path",
+        ));
+    }
+    let begun = match begin(tx, principal, request, now_ms)? {
+        Start::Replay(reference) => {
+            return Ok(Executed {
+                reference,
+                replayed: true,
+                reply: serde_json::json!({"stopped":[request.command.target()]}),
+            });
+        }
+        Start::Fresh(begun) => begun,
+    };
+    let mut reply = serde_json::Value::Null;
+    let reference = match &request.command {
+        Command::Withdraw { target, body } => {
+            let (reference, text) = withdraw(tx, target, &body.message)?;
+            server_draft(tx, target, &text, now_ms)?;
+            reference
+        }
+        Command::Stop { target, body } => {
+            let (sender, sender_epoch) = match principal {
+                Principal::Agent { id, epoch } => (Some(id.clone()), i64::try_from(*epoch).ok()),
+                _ => (None, None),
+            };
+            // TODO(#630): a stop pauses the chat and clears its queue (today's lifecycle).
+            // The rule "stop does not pause and does not clear the queue" needs the Turn
+            // table of the domain model.
+            let action = Action::Stop {
+                target: target.clone(),
+                descendants: body.descendants,
+                reason: None,
+                sender,
+                sender_epoch,
+            };
+            reply = match ports {
+                Some(ports) => {
+                    crate::agent_lifecycle_runtime::execute_in_transaction(tx, &action, now, ports)?
+                }
+                None => crate::agent_management_store::execute_in_transaction(tx, &action, now)?,
+            };
+            agent_reference(tx, target)?
+        }
+        Command::Send { .. } => unreachable!("refused above"),
+    };
+    let reference = finish(tx, &begun, &reference)?;
+    Ok(Executed {
+        reference,
+        replayed: false,
+        reply,
+    })
+}
+
+/// An agent sends a message to one of its descendants (the tool `orchestration_send`). The
+/// tool call id is the command id, so a repeated call is the same command. The message path
+/// is the one of `send_followup`; the permission, the numbering and the reference are those
+/// of every other command.
+pub fn execute_agent_send(
+    tx: &Transaction<'_>,
+    principal: &Principal,
+    request: &CommandRequest,
+    now_ms: i64,
+    now: f64,
+    admission: &dyn crate::message_admission::MessageAdmission,
+) -> Result<(RequestReference, crate::coordination::PostMessageResult), CommandError> {
+    let (Principal::Agent { id, epoch }, Command::Send { target, body }) =
+        (principal, &request.command)
+    else {
+        return Err(CommandError::Forbidden);
+    };
+    let begun = match begin(tx, principal, request, now_ms)? {
+        Start::Fresh(begun) => begun,
+        Start::Replay(_) => return Err(CommandError::Invalid("Unexpected command replay")),
+    };
+    let result = crate::coordination::send_followup(
+        tx,
+        crate::coordination::AgentFollowup {
+            sender_id: id,
+            sender_epoch: i64::try_from(*epoch).unwrap_or_default(),
+            recipient_id: target,
+            id: &request.id,
+            text: &body.text,
+            delivery: body.delivery.unwrap_or_default(),
+            now,
+        },
+        admission,
+    )?;
+    let reference = finish(tx, &begun, &message_reference(tx, &request.id)?)?;
+    Ok((reference, result))
+}
+
+/// Command identity of a tool call of `agent`: the call id is the command id.
+pub fn agent_request(agent: &str, id: &str, command: Command) -> CommandRequest {
+    CommandRequest {
+        id: id.to_owned(),
+        client: agent.to_owned(),
+        // The server numbers the commands of an agent.
+        number: 1,
+        command,
+    }
 }

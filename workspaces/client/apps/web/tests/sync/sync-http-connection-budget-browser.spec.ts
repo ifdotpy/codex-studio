@@ -1,7 +1,8 @@
 import type { FixtureResourceChange } from "./helpers.ts";
-import type { PostBody } from "../../src/apiTypes.ts";
+import { sendBody, sendReply } from "../messages/send-command.ts";
+import type { CommandRequest, SendMessageBody } from "../../src/commands.ts";
 import type { ResourceRef } from "../playwright.ts";
-import { fixtureResources, fixturePostBody } from "./helpers.ts";
+import { fixtureResources } from "./helpers.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Connect } from "vite";
 import { fixtureOrigin } from "./helpers.ts";
@@ -41,7 +42,7 @@ test("Sync http connection budget browser", async ({
   }[] = [];
   const messages = new Map<
     string,
-    { body: PostBody<"/api/messages">; requests: number }
+    { body: SendMessageBody; requests: number }
   >();
   let revision = 1;
   const changeState = () => {
@@ -177,13 +178,15 @@ test("Sync http connection budget browser", async ({
             maxSeq: revision,
             initialHigh: revision,
           });
-        } else if (url.pathname === "/api/messages") {
+        } else if (url.pathname === "/api/commands") {
           let body = "";
           req.on("data", (value) => {
             body += value;
           });
           req.on("end", () => {
-            const message = fixturePostBody<"/api/messages">(JSON.parse(body));
+            const command = JSON.parse(body) as CommandRequest;
+            if (command.kind !== "send") return json({});
+            const message = sendBody(command);
 
             const previous = messages.get(message.id);
             if (previous) assert.deepEqual(previous.body, message);
@@ -191,7 +194,7 @@ test("Sync http connection budget browser", async ({
               body: message,
               requests: (previous?.requests || 0) + 1,
             });
-            json({ id: message.id, status: "accepted" });
+            json(sendReply({ id: message.id, status: "accepted" }));
           });
         } else json({ documents: [], items: [] });
       } else next();

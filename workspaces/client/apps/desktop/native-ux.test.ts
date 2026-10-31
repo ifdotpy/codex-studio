@@ -374,7 +374,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
             action: "request",
             serverId: "local",
             streamId: "ordinary",
-            url: "http://localhost:1234/api/messages",
+            url: "http://localhost:1234/api/commands",
             method: "POST",
           },
         }),

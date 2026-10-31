@@ -28,7 +28,7 @@ declare global {
     >;
     read: typeof read;
     start: (
-      body: import("../../src/apiTypes.ts").PostBody<"/api/messages">,
+      body: import("../../src/commands.ts").SendMessageBody,
       copies: number,
     ) => void;
     result: Promise<

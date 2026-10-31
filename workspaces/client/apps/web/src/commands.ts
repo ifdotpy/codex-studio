@@ -13,6 +13,20 @@ export type CommandResponse = components["schemas"]["CommandResponse"];
 export type CommandKind = CommandRequest["kind"];
 type Variant<K extends CommandKind> = Extract<CommandRequest, { kind: K }>;
 
+/** The message that the outbox stores and the `send` command creates. */
+export type SendMessageBody = components["schemas"]["ManagedMessageBody"];
+/** The delivery receipt of a message, as `GET /api/messages/receipts` returns it. */
+export type MessageDelivery =
+  components["schemas"]["studio_api__work__models__MessageReceipt"];
+
+/** The delivery receipt that a `send` response carries as a row. */
+export function messageReceipt(
+  response: CommandResponse,
+): MessageDelivery | undefined {
+  return response.rows.find((row) => row.collection === "messageReceipt")
+    ?.payload as MessageDelivery | undefined;
+}
+
 /** Key of the saved client identity. One browser storage holds one client per server. */
 export const COMMAND_CLIENT_KEY = "studio-command-client";
 
@@ -61,6 +75,27 @@ export function nextCommandNumber(
   return next;
 }
 
+let standaloneNumber = Date.now();
+/**
+ * A command for a caller without a saved client (a script or a test). It uses one fixed client
+ * and numbers that rise within the process and start at the clock.
+ */
+export function standaloneCommand<K extends CommandKind>(
+  kind: K,
+  target: string,
+  body: Variant<K>["body"],
+  id: string = randomUUID(),
+): Variant<K> {
+  return {
+    id,
+    client: "standalone",
+    number: ++standaloneNumber,
+    kind,
+    target,
+    body,
+  } as Variant<K>;
+}
+
 export type CommandPost = (
   body: CommandRequest,
   options?: {
@@ -85,10 +120,11 @@ export function createCommandClient(
     kind: K,
     target: string,
     body: Variant<K>["body"],
+    id: string = randomUUID(),
   ): Variant<K> {
     const { client, number } = nextCommandNumber(storage, memory);
     return {
-      id: randomUUID(),
+      id,
       client,
       number,
       kind,
@@ -120,6 +156,21 @@ export function createCommandClient(
       run(make("stop", chat, { descendants }), options),
     withdraw: (chat: string, message: string, options?: CommandOptions) =>
       run(make("withdraw", chat, { message }), options),
+    /** The message id is the command id, so a retry of the same message is the same command. */
+    send: (message: SendMessageBody, options?: CommandOptions) =>
+      run(
+        make(
+          "send",
+          message.room,
+          {
+            text: message.text,
+            ...(message.assets ? { assets: message.assets } : {}),
+            ...(message.delivery ? { delivery: message.delivery } : {}),
+          },
+          message.id,
+        ),
+        options,
+      ),
   };
 }
 

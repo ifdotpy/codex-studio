@@ -2,6 +2,8 @@ import { required } from "../messages/helpers.ts";
 import type {} from "./queue-mutation-deadline-browser.fixture.tsx";
 import { createFixtureViteServer } from "../playwright.ts";
 import { requestBody } from "../messages/helpers.ts";
+import { commandOf } from "../messages/send-command.ts";
+import type { CommandRequest, CommandResponse } from "../../src/commands.ts";
 import type { GetResult, PostBody, PostResult } from "../../src/apiTypes.ts";
 // Real queue callers, local HTTP receipts, and no native model requests.
 import assert from "node:assert/strict";
@@ -30,6 +32,7 @@ test("queue-mutation-deadline-browser @performance", async ({
     page.setDefaultTimeout(5000);
     const errors: string[] = [];
     const posts: PostBody<"/api/queue">[] = [];
+    const withdrawals: Extract<CommandRequest, { kind: "withdraw" }>[] = [];
     const nativeRequests: string[] = [];
     const receipts = new Map<
       string | null | undefined,
@@ -51,13 +54,10 @@ test("queue-mutation-deadline-browser @performance", async ({
       revision: "initial",
     };
     let applied = 0;
+    const withdrawn = new Set<string>();
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("request", (request) => {
-      if (
-        ["/api/messages", "/api/stop", "/api/commands"].includes(
-          new URL(request.url()).pathname,
-        )
-      )
+      if (commandOf(request, "send") || commandOf(request, "stop"))
         nativeRequests.push(request.url());
     });
     await page.route("**/check", (route) =>
@@ -102,9 +102,7 @@ test("queue-mutation-deadline-browser @performance", async ({
       const reply = { ok: true };
       receipts.set(body.request_id, { body, reply });
       applied++;
-      if (body.action === "cancel")
-        view.items = view.items.filter((item) => item.id !== body.id);
-      else if (body.action === "edit")
+      if (body.action === "edit")
         view.items = view.items.map((item) =>
           item.id === body.id ? { ...item, text: body.text } : item,
         );
@@ -115,6 +113,34 @@ test("queue-mutation-deadline-browser @performance", async ({
       else assert.fail(`Unexpected queue action: ${body.action}`);
       view.revision += ":committed";
       // The operation commits, but its response stays pending until the deadline.
+      return undefined;
+    });
+    await page.route("**/api/commands", (route) => {
+      const command = commandOf(route.request(), "withdraw");
+      if (!command) return route.fallback();
+      withdrawals.push(command);
+      if (withdrawn.has(command.id))
+        return route.fulfill({
+          json: {
+            status: "applied",
+            ref_kind: "message",
+            ref_id: command.body.message,
+            rev: 1,
+            seq: 0,
+            rows: [],
+          } satisfies CommandResponse,
+        });
+      assert.equal(
+        route.request().headers()["x-canvas-workspace"],
+        workspaceId,
+      );
+      withdrawn.add(command.id);
+      applied++;
+      view.items = view.items.filter(
+        (item) => item.id !== command.body.message,
+      );
+      view.revision += ":committed";
+      // The command commits, but its response stays pending until the deadline.
       return undefined;
     });
     await page.goto(server.resolvedUrls!.local[0]! + "check");
@@ -136,12 +162,19 @@ test("queue-mutation-deadline-browser @performance", async ({
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
     };
+    const untilWithdrawals = async (count: number) => {
+      const deadline = Date.now() + 5000;
+      while (withdrawals.length < count) {
+        assert.ok(Date.now() < deadline, "The withdraw command must start");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    };
     const expire = () =>
       page.evaluate(() => {
         window.advance += 16000;
         window.dispatchEvent(new Event("pageshow"));
       });
-    for (const action of ["cancel", "edit", "reorder"]) {
+    for (const action of ["edit", "reorder"]) {
       view = {
         items: [1, 2].map((number) => ({
           id: `${action}-${number}`,
@@ -164,9 +197,7 @@ test("queue-mutation-deadline-browser @performance", async ({
         const operation =
           action === "edit"
             ? queue.edit(first, "Exact replacement")
-            : action === "reorder"
-              ? queue.reorder(queue.items.map((item) => item.id).reverse())
-              : queue.cancel(first);
+            : queue.reorder(queue.items.map((item) => item.id).reverse());
         window.operation = operation.then(
           () => (window.outcome = "success"),
           (error: Error) => (window.outcome = error.name),
@@ -203,7 +234,7 @@ test("queue-mutation-deadline-browser @performance", async ({
           const item = window.queue.items[0];
           if (!item) throw new Error("Missing queue item");
           return window.queue
-            .cancel(item)
+            .sendNow(item)
             .catch((error: Error) => error.message);
         }))!,
         /Retry the previous queue change/,
@@ -215,7 +246,7 @@ test("queue-mutation-deadline-browser @performance", async ({
       assert.equal(await page.evaluate(() => window.queue.busy), false);
     }
     await page.evaluate(() => window.queueDeadlineRoot.unmount());
-    assert.equal(applied, 3);
+    assert.equal(applied, 2);
 
     // Removal has its own saved request. Its retry must work after the row is gone.
     view = {
@@ -228,7 +259,7 @@ test("queue-mutation-deadline-browser @performance", async ({
       ],
       revision: "revision-remove",
     };
-    const before = posts.length;
+    const before = withdrawals.length;
     await page.evaluate(async (workspaceId) => {
       window.removal = await import("/src/components/removeSendingMessages.ts");
       window.removed = await import("/src/components/removedMessages.ts");
@@ -251,8 +282,8 @@ test("queue-mutation-deadline-browser @performance", async ({
           (error: Error) => (window.outcome = error.name),
         );
     }, workspaceId);
-    await untilPosts(before + 1);
-    const request = posts[before];
+    await untilWithdrawals(before + 1);
+    const request = withdrawals[before];
     await expire();
     await page.waitForFunction(() => window.outcome !== "pending");
     assert.equal(
@@ -277,8 +308,8 @@ test("queue-mutation-deadline-browser @performance", async ({
         window.target,
       ),
     );
-    assert.deepEqual(posts[before + 1], request);
-    assert.equal(applied, 4);
+    assert.deepEqual(withdrawals[before + 1], request);
+    assert.equal(applied, 3);
     assert.equal(
       await page.evaluate(() =>
         window.removed.isRemovedMessage(
@@ -293,7 +324,7 @@ test("queue-mutation-deadline-browser @performance", async ({
     assert.deepEqual(nativeRequests, []);
     expect(errors).toEqual([]);
     console.log(
-      "PASS: queue cancel/edit/reorder and removal expire, preserve exact requests, and retry one committed effect",
+      "PASS: queue edit/reorder and removal expire, preserve exact requests, and retry one committed effect",
     );
   } finally {
     await server.close();

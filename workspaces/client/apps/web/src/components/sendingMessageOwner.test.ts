@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 vi.mock("../servers/ServerServicesContext", () => ({}));
 vi.mock("../api", () => ({
   get: vi.fn(),
-  syncPost: vi.fn(),
+  command: { make: vi.fn(), run: vi.fn() },
   ApiError: class extends Error {},
 }));
 vi.mock("../sync/send", () => ({ stopRemovedMessage: vi.fn() }));
@@ -48,23 +48,32 @@ it("retains cancellation and recoverable copies on the initiating server after a
   const sendB = vi.fn().mockResolvedValue({});
   const stopA = vi.fn().mockResolvedValue(false),
     stopB = vi.fn().mockResolvedValue(false);
+  let counter = 0;
+  const make = (kind: string, target: string, body: unknown) => ({
+    id: `command-${++counter}`,
+    client: "web",
+    number: counter,
+    kind,
+    target,
+    body,
+  });
   const ownerA = createSendingMessageRemoval({
     localStorage: a,
     get: read,
-    syncPost: sendA,
+    command: { make: make as never, run: sendA },
     stopRemovedMessage: stopA,
   });
   const ownerB = createSendingMessageRemoval({
     localStorage: b,
     get: read,
-    syncPost: sendB,
+    command: { make: make as never, run: sendB },
     stopRemovedMessage: stopB,
   });
   await expect(
     ownerA.removeSendingMessage(scope, { chat: "same", message }),
   ).rejects.toThrow("lost reply");
   expect(sendA).toHaveBeenCalledTimes(1);
-  const first = required(required(sendA.mock.calls[0])[1]);
+  const first = required(required(sendA.mock.calls[0])[0]);
   expect(isRemovedMessage("same", "agent", "same", message, a)).toBe(false);
   const copies = `${removedMessagesStorageKey("same", "agent", "same")}:copies`;
   expect(a.getItem(copies)).toContain("private-a");
@@ -73,12 +82,10 @@ it("retains cancellation and recoverable copies on the initiating server after a
     chat: "same",
     message: { ...message, text: "private-b" },
   });
-  expect(required(required(sendB.mock.calls[0])[1]).request_id).not.toBe(
-    first.request_id,
-  );
+  expect(required(required(sendB.mock.calls[0])[0]).id).not.toBe(first.id);
   expect(isRemovedMessage("same", "agent", "same", message, a)).toBe(false);
   await ownerA.removeSendingMessage(scope, { chat: "same", message });
-  expect(required(required(sendA.mock.calls[1])[1])).toEqual(first);
+  expect(required(required(sendA.mock.calls[1])[0])).toEqual(first);
   expect(sendB).toHaveBeenCalledTimes(1);
   expect(stopA).toHaveBeenCalledTimes(2);
   expect(stopB).toHaveBeenCalledTimes(1);

@@ -114,11 +114,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         serde_with: None,
     };
     for name in [
-        "QueueCancelBody",
         "QueueEditBody",
         "QueueFirstBody",
         "QueueReorderBody",
-        "QueueCancelBodyAction",
         "QueueEditBodyAction",
         "QueueFirstBodyAction",
         "QueueReorderBodyAction",

@@ -1,7 +1,8 @@
 import { required } from "./componentTestFixtures";
 import type { GetResult } from "../apiTypes";
 import type { Message } from "../types";
-import type { get, syncPost, PostBody } from "../api";
+import type { get } from "../api";
+import type { CommandRequest } from "../commands";
 import type { stopRemovedMessage } from "../sync/send";
 import type {
   saveRemovedMessage,
@@ -13,7 +14,17 @@ import { afterEach, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn<typeof get>(),
-  syncPost: vi.fn<typeof syncPost<"/api/queue">>(),
+  run: vi.fn<
+    (command: CommandRequest, options?: unknown) => Promise<unknown>
+  >(),
+  make: vi.fn((kind: string, target: string, body: unknown) => ({
+    id: "command-made",
+    client: "web",
+    number: 1,
+    kind,
+    target,
+    body,
+  })),
   stopRemovedMessage: vi.fn<typeof stopRemovedMessage>(),
   saveRemovedMessage: vi.fn<typeof saveRemovedMessage>(),
   removeMessageFromDevice: vi.fn<typeof removeMessageFromDevice>(),
@@ -21,7 +32,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../api", () => ({
   get: mocks.get,
-  syncPost: mocks.syncPost,
+  command: { make: mocks.make, run: mocks.run },
   ApiError: class ApiError extends Error {
     declare status: number;
     constructor(message: string, status: number) {
@@ -50,11 +61,33 @@ vi.stubGlobal("localStorage", {
   setItem: (key: string, value: string) => storage.set(key, value),
 });
 
-// This test writes every saved cancellation document in the same process.
-function savedRequestId(key: string): unknown {
-  const saved: unknown = JSON.parse(storage.get(key)!);
-  return saved && typeof saved === "object" && "request_id" in saved
-    ? saved.request_id
+const scope = { stateDir: "state", workspaceId: "workspace" };
+const message: Message = {
+  id: "chat:client-1",
+  clientMessageId: "client-1",
+  role: "user",
+  text: "hello",
+  deliveryStatus: "sending",
+};
+const key = `studio-remove-sending:${JSON.stringify([
+  scope.stateDir,
+  scope.workspaceId,
+  "chat",
+  "client-1",
+])}`;
+const saved = {
+  id: "command-fixed",
+  client: "web",
+  number: 4,
+  kind: "withdraw",
+  target: "chat",
+  body: { message: "client-1" },
+} satisfies CommandRequest;
+
+function savedId(): unknown {
+  const value: unknown = JSON.parse(storage.get(key)!);
+  return value && typeof value === "object" && "id" in value
+    ? value.id
     : undefined;
 }
 
@@ -63,39 +96,15 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-it("reuses the saved queue request identity and bounded typed write", async () => {
-  const scope = { stateDir: "state", workspaceId: "workspace" };
-  const message: Message = {
-    id: "chat:client-1",
-    clientMessageId: "client-1",
-    role: "user",
-    text: "hello",
-    deliveryStatus: "sending",
-  };
-  const key = `studio-remove-sending:${JSON.stringify([
-    scope.stateDir,
-    scope.workspaceId,
-    "chat",
-    "client-1",
-  ])}`;
-  const request = {
-    action: "cancel",
-    agent: "chat",
-    id: "client-1",
-    expectedText: "hello",
-    expected_revision: "revision-7",
-    request_id: "request-fixed",
-  } satisfies PostBody<"/api/queue">;
-  storage.set(key, JSON.stringify(request));
+it("sends the saved withdraw command with its identity", async () => {
+  storage.set(key, JSON.stringify(saved));
   mocks.stopRemovedMessage.mockResolvedValue(false);
-  mocks.syncPost.mockResolvedValue(
-    {} satisfies Awaited<ReturnType<typeof syncPost<"/api/queue">>>,
-  );
+  mocks.run.mockResolvedValue({});
 
   await removeSendingMessage(scope, { chat: "chat", message });
 
-  assert.deepEqual(mocks.syncPost.mock.calls, [
-    ["/api/queue", request, { workspaceId: "workspace" }],
+  assert.deepEqual(mocks.run.mock.calls, [
+    [saved, { workspaceId: "workspace" }],
   ]);
   assert.deepEqual(mocks.removeMessageFromDevice.mock.calls, [
     [
@@ -106,136 +115,59 @@ it("reuses the saved queue request identity and bounded typed write", async () =
       serverLocalStorage,
     ],
   ]);
-  assert.equal(savedRequestId(key), "request-fixed");
+  assert.equal(savedId(), "command-fixed");
 });
 
 it("loads cancellation eligibility through the typed queue query", async () => {
-  const scope = { stateDir: "state", workspaceId: "workspace" };
-  const message: Message = {
-    id: "chat:client-1",
-    clientMessageId: "client-1",
-    role: "user",
-    text: "hello",
-    deliveryStatus: "sending",
-  };
   mocks.stopRemovedMessage.mockResolvedValue(false);
   // Queue fixture omits item.created, item.status and capabilities.reorder.
   const queueFixture = {
-    items: [
-      {
-        id: "client-1",
-        kind: "user",
-        text: "hello",
-      },
-    ],
+    items: [{ id: "client-1", kind: "user", text: "hello" }],
     revision: "revision-7",
     capabilities: { receipts: true },
   } as GetResult<"/api/queue">;
   mocks.get.mockResolvedValue(queueFixture);
-  mocks.syncPost.mockResolvedValue(
-    {} satisfies Awaited<ReturnType<typeof syncPost<"/api/queue">>>,
-  );
+  mocks.run.mockResolvedValue({});
 
   await removeSendingMessage(scope, { chat: "chat", message });
 
   assert.deepEqual(mocks.get.mock.calls, [
     ["/api/queue", { query: { agent: "chat" }, workspaceId: "workspace" }],
   ]);
-  const [path, request, options] = required(mocks.syncPost.mock.calls[0]);
-  assert.equal(path, "/api/queue");
-  assert.equal(options!.workspaceId, "workspace");
+  assert.deepEqual(mocks.make.mock.calls, [
+    ["withdraw", "chat", { message: "client-1" }],
+  ]);
+  const [command, options] = required(mocks.run.mock.calls[0]);
   assert.deepEqual(
-    {
-      action: request.action,
-      agent: request.agent,
-      id: request.id,
-      expectedText: (
-        request as Extract<PostBody<"/api/queue">, { action: "cancel" }>
-      ).expectedText,
-      expected_revision: (
-        request as Extract<PostBody<"/api/queue">, { action: "cancel" }>
-      ).expected_revision,
-    },
-    {
-      action: "cancel",
-      agent: "chat",
-      id: "client-1",
-      expectedText: "hello",
-      expected_revision: "revision-7",
-    },
+    { kind: command.kind, target: command.target, body: command.body },
+    { kind: "withdraw", target: "chat", body: { message: "client-1" } },
   );
-  assert.equal(typeof request.request_id, "string");
-  const key = `studio-remove-sending:${JSON.stringify([
-    scope.stateDir,
-    scope.workspaceId,
-    "chat",
-    "client-1",
-  ])}`;
-  assert.equal(savedRequestId(key), request.request_id);
+  assert.deepEqual(options, { workspaceId: "workspace" });
+  assert.equal(savedId(), "command-made");
 });
 
-it("retains the same request when its write outcome is unknown", async () => {
-  const scope = { stateDir: "state", workspaceId: "workspace" };
-  const message: Message = {
-    id: "chat:client-1",
-    clientMessageId: "client-1",
-    role: "user",
-    text: "hello",
-    deliveryStatus: "sending",
-  };
-  const key = `studio-remove-sending:${JSON.stringify([
-    scope.stateDir,
-    scope.workspaceId,
-    "chat",
-    "client-1",
-  ])}`;
-  const request = {
-    action: "cancel",
-    agent: "chat",
-    id: "client-1",
-    expectedText: "hello",
-    expected_revision: "revision-7",
-    request_id: "request-fixed",
-  } satisfies PostBody<"/api/queue">;
-  storage.set(key, JSON.stringify(request));
+it("retains the same command when its write outcome is unknown", async () => {
+  storage.set(key, JSON.stringify(saved));
   mocks.stopRemovedMessage.mockResolvedValue(false);
   const unknown = new TypeError("connection lost");
-  mocks.syncPost.mockRejectedValue(unknown);
+  mocks.run.mockRejectedValue(unknown);
 
   await assert.rejects(
     removeSendingMessage(scope, { chat: "chat", message }),
     (error) => error === unknown,
   );
 
-  assert.equal(savedRequestId(key), "request-fixed");
+  assert.equal(savedId(), "command-fixed");
   assert.deepEqual(mocks.removeMessageFromDevice.mock.calls, []);
 });
 
-it("preserves a saved cancellation with a removed legacy alias", async () => {
-  const scope = { stateDir: "state", workspaceId: "workspace" };
-  const message: Message = {
-    id: "chat:client-1",
-    clientMessageId: "client-1",
-    role: "user",
-    text: "hello",
-    deliveryStatus: "sending",
-  };
-  const key = `studio-remove-sending:${JSON.stringify([
-    scope.stateDir,
-    scope.workspaceId,
-    "chat",
-    "client-1",
-  ])}`;
+it("refuses a saved cancellation that is not a withdraw of this message", async () => {
   storage.set(
     key,
     JSON.stringify({
-      action: "cancel",
-      agent: "chat",
-      id: "client-1",
-      message_id: "client-1",
-      expectedText: "hello",
-      expected_revision: "revision",
-      request_id: "request-unknown",
+      ...saved,
+      id: "command-unknown",
+      body: { message: "other" },
     }),
   );
 
@@ -243,7 +175,7 @@ it("preserves a saved cancellation with a removed legacy alias", async () => {
     message: "The saved message cancellation cannot be verified.",
   });
 
-  assert.equal(savedRequestId(key), "request-unknown");
-  assert.deepEqual(mocks.syncPost.mock.calls, []);
+  assert.equal(savedId(), "command-unknown");
+  assert.deepEqual(mocks.run.mock.calls, []);
   assert.deepEqual(mocks.removeMessageFromDevice.mock.calls, []);
 });

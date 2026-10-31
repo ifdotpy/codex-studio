@@ -515,7 +515,7 @@ async function runMessageReceiptScenario(
       const url = new URL(request.url());
       if (
         request.method() === "POST" &&
-        ["/api/messages", "/api/queue"].includes(url.pathname)
+        ["/api/commands", "/api/queue"].includes(url.pathname)
       )
         posts.push(url.pathname);
       if (url.pathname === "/api/messages/receipts")

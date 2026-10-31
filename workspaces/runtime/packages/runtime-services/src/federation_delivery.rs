@@ -591,7 +591,7 @@ pub async fn send_message(
         .await
 }
 
-/// The Python `/api/messages` path sends a user message as the local lead.
+/// A user message to a federated room, sent as the local lead (the `send` command).
 pub async fn user_message(
     store: Arc<RuntimeStore>,
     room_id: &str,

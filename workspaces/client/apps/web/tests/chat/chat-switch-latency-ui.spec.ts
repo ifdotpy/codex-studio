@@ -3,7 +3,8 @@ import {
   projectionIsStored,
   completedTranscriptAgent,
 } from "./prefetch-storage.fixture.ts";
-import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { SendMessageBody } from "../../src/commands.ts";
+import { sendRoute } from "../messages/send-command.ts";
 import type { Page, Route } from "@playwright/test";
 import type { components } from "../../src/generated/api.ts";
 import type { AgentEntityDto as Agent } from "../../src/generated/api.ts";
@@ -744,29 +745,23 @@ test(
         0,
         "Replicated chat history stays scoped",
       );
-      const sends: PostBody<"/api/messages">[] = [];
-      await page.route("**/api/messages", async (r) => {
-        const body = fixturePostBody(
-          "/api/messages",
-          r.request().postDataJSON(),
-        );
-        sends.push(body);
-        assert.equal(
-          r.request().headers()["x-canvas-workspace"],
-          identity.workspaceId,
-          "Send uses the synchronized workspace",
-        );
-        await r.fulfill({
-          json: {
+      const sends: SendMessageBody[] = [];
+      await page.route(
+        "**/api/commands",
+        sendRoute(async (r, body, reply) => {
+          sends.push(body);
+          assert.equal(
+            r.request().headers()["x-canvas-workspace"],
+            identity.workspaceId,
+            "Send uses the synchronized workspace",
+          );
+          await reply({
             id: body.id,
             status: "queued",
             deliveries: { [a.id]: { status: "queued" } },
-          } satisfies Pick<
-            PostResult<"/api/messages">,
-            "id" | "status" | "deliveries"
-          >,
-        });
-      });
+          });
+        }),
+      );
       await page.locator("#stop").waitFor();
       for (const action of ["button", "Enter"]) {
         await page.locator("#message").fill(`Sync shortcut ${action}`);

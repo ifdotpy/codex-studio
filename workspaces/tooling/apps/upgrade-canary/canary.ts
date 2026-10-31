@@ -1149,10 +1149,17 @@ export class Canary {
   }
 
   async send(chat: CanaryChat, text: string, delivery: string) {
-    const message = { id: randomUUID(), room: chat.id, text, delivery };
-    await this.backend.post("/api/messages", message);
-    chat.messages.push(message.id);
-    return message.id;
+    const id = randomUUID();
+    await this.backend.post("/api/commands", {
+      id,
+      client: "canary",
+      number: Date.now(),
+      kind: "send",
+      target: chat.id,
+      body: { text, delivery },
+    });
+    chat.messages.push(id);
+    return id;
   }
 
   async startScenario() {

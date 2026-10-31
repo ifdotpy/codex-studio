@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,12 +10,8 @@ import {
 } from "../playwright.ts";
 import { responseJson } from "../messages/helpers.ts";
 import type { components } from "../../src/generated/api.ts";
-import type { GetResult, PostBody, PostResult } from "../../src/apiTypes.ts";
-
-type QueueMutation = PostBody<"/api/queue">;
-type QueueChange<T = QueueMutation> = T extends unknown
-  ? Omit<T, "agent" | "request_id">
-  : never;
+import type { GetResult } from "../../src/apiTypes.ts";
+import { standaloneCommand } from "../../src/commands.ts";
 
 export async function queueUiFixture(env: NodeJS.ProcessEnv) {
   const root = await mkdtemp(join(tmpdir(), "studio-message-queue-ui-"));
@@ -54,32 +49,20 @@ export async function queueUiFixture(env: NodeJS.ProcessEnv) {
     fetch(`${origin}/api/queue?agent=${lead.id}`).then(
       responseJson<GetResult<"/api/queue">>,
     );
-  const post = async (body: QueueChange) => {
-    const response = await fetch(origin + "/api/queue", {
+  const withdraw = async (message: string) => {
+    const response = await fetch(origin + "/api/commands", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Origin: origin,
         "X-Canvas-Token": initial.token,
       },
-      body: JSON.stringify({
-        agent: lead.id,
-        request_id: randomUUID(),
-        ...body,
-      } satisfies QueueMutation),
+      body: JSON.stringify(standaloneCommand("withdraw", lead.id, { message })),
     });
     assert.equal(response.status, 200, await response.clone().text());
-    return responseJson<PostResult<"/api/queue">>(response);
+    return response.json();
   };
-  for (const item of (await queue()).items) {
-    const current = await queue();
-    await post({
-      action: "cancel",
-      id: item.id,
-      expectedText: item.text,
-      expected_revision: current.revision,
-    });
-  }
+  for (const item of (await queue()).items) await withdraw(item.id);
   const wait = async (
     test: () => boolean | Promise<boolean>,
     label: string,

@@ -7,17 +7,17 @@ import {
 import { createSendingMessageRemoval } from "./removeSendingMessages";
 
 export function useSendingMessageRemoval() {
-  const { get, syncPost } = useServerApi();
+  const { get, command } = useServerApi();
   const { stopRemovedMessage } = useServerOutbox();
   const localStorage = useServerStorage();
   return useMemo(
     () =>
       createSendingMessageRemoval({
         get,
-        syncPost,
+        command,
         stopRemovedMessage,
         localStorage,
       }),
-    [get, syncPost, stopRemovedMessage, localStorage],
+    [get, command, stopRemovedMessage, localStorage],
   );
 }

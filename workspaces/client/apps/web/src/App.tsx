@@ -20,6 +20,7 @@ import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
 import { useWorkspaceLayout } from "./layout/useWorkspaceLayout";
 import { layoutQueries } from "./layout/layout-contract.generated";
 import { restoreSidebarFocus } from "./components/sidebar/SidebarFrame";
+import type { SendMessageBody } from "./commands";
 import {
   StudioErrorsScope,
   useStudioErrorsState,
@@ -853,7 +854,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const [pendingCreations, setPendingCreations] = useState<Json[]>([]);
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
   const creation = useRef<LeadCreateRequest | null>(null),
-    sends = useRef<Record<string, PostBody<"/api/messages">>>({}),
+    sends = useRef<Record<string, SendMessageBody>>({}),
     sendingLock = useRef<symbol | null>(null),
     latestSend = useRef<Record<string, symbol>>({}),
     creationLock = useRef(false),
@@ -1743,7 +1744,7 @@ export default function App({ active = true }: { active?: boolean }) {
       sendingLock.current = null;
       setSending(false);
     };
-    let request: PostBody<"/api/messages"> | undefined;
+    let request: SendMessageBody | undefined;
     try {
       if (renameCommand(text) !== undefined && !opened)
         throw new Error("Open a chat before using /rename.");
