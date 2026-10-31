@@ -175,14 +175,8 @@ questionHistory, request, work, workDetail, workResult, workDecision, workReleas
 `view_changes_since(cursor)` lists the view ids that changed after a cursor. A parity
 test compares it with the published views.
 
-Status: the source, the shared cursor space and the view log exist. The global entity
-page reader (`read_entity_page`) finds view-collection rows through the view log; their
-payloads still come from `sync_entities`, and entity publication still writes it. The
-scoped selector reader still scans `sync_entities`.
-`sync_policy::read_agent_views` builds the agent views (`agentSummary`, `agentDetail`,
-`agent`, `retainedWorktree`) from the main tables at read time; the publisher writes the
-same values (`agent_views`), and a test compares them with the stored ones. Work views
-need one more step: `workDetail` keeps `submissionRefusal` state in its own stored payload. Before the transcript copy
+Status: the source, the shared cursor space and the view log exist. The stream still
+reads `sync_entities`, and entity publication still writes it. Before the transcript copy
 in `sync_entities` is removed, `transcript_copy_missing_from_owner` must return nothing
 for the live store. Old `sync_entities` rows are deleted by a later migration.
 

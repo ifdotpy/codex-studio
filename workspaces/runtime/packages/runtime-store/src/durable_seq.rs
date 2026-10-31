@@ -408,7 +408,7 @@ mod tests {
             .expect("delete");
         match changes_since(&db, "runtime_work", Some(cursor)).expect("changes") {
             DurableChanges::Snapshot { rows, .. } => assert!(rows.is_empty()),
-            other => panic!("expected a snapshot, got {other:?}"),
+            other @ DurableChanges::Delta { .. } => panic!("expected a snapshot, got {other:?}"),
         }
         assert!(matches!(
             changes_since(&db, "runtime_work", None).expect("changes"),
