@@ -153,9 +153,12 @@ pub fn action(
             QueueWriteRepository::update_text(transaction, target_id, text)?;
             if row.get("text").and_then(Value::as_str) != Some(text) {
                 let mut metadata = read_metadata(transaction, target_id)?;
-                metadata
-                    .extensions
-                    .insert("acceptedAt".into(), json!(unix_time()?));
+                metadata.extensions.insert(
+                    "acceptedAt".into(),
+                    studio_runtime_schema::raw_json::RawJson(serde_json::value::to_raw_value(
+                        &unix_time()?,
+                    )?),
+                );
                 QueueWriteRepository::put_typed_metadata(transaction, target_id, &metadata)?;
             }
         }
@@ -195,7 +198,13 @@ pub fn action(
             if matches!(body, QueueCommand::SendNow(_)) {
                 let mut metadata = read_metadata(transaction, target_id)?;
                 if metadata.requested_delivery.is_missing()
-                    && !event_write::truthy(metadata.extensions.get("sendNow"))
+                    && !event_write::truthy(
+                        metadata
+                            .extensions
+                            .get("sendNow")
+                            .and_then(|raw| serde_json::from_str(raw.0.get()).ok())
+                            .as_ref(),
+                    )
                 {
                     let original = metadata.delivery.value().cloned().unwrap_or_else(|| {
                         studio_runtime_schema::event_metadata::StoredDelivery::canonical(
@@ -210,7 +219,12 @@ pub fn action(
                         studio_runtime_schema::DeliveryMoment::CurrentTurn,
                     ),
                 );
-                metadata.extensions.insert("sendNow".into(), json!(true));
+                metadata.extensions.insert(
+                    "sendNow".into(),
+                    studio_runtime_schema::raw_json::RawJson(serde_json::value::to_raw_value(
+                        &true,
+                    )?),
+                );
                 QueueWriteRepository::put_typed_metadata(transaction, target_id, &metadata)?;
             }
         }

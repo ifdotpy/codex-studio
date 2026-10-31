@@ -56,7 +56,6 @@ impl From<TranscriptStoreError> for TranscriptError {
             TranscriptStoreError::InvalidStoredObject { table, id } => {
                 Self::InvalidStoredObject { table, id }
             }
-            TranscriptStoreError::ActiveTurn => Self::RequiresDependency("transcript/event-driver"),
             TranscriptStoreError::Store(StoreError::Sqlite(rusqlite::Error::SqliteFailure(
                 error,
                 _,
@@ -192,7 +191,9 @@ fn pull_scope_cached_in(
     after: i64,
 ) -> Result<Option<Value>, TranscriptError> {
     let actor = TranscriptRepository::agent(transaction, agent)?;
-    let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
+    let deleted = actor
+        .as_ref()
+        .is_none_or(studio_runtime_store::AgentRecord::is_deleted);
     let revision = TranscriptRepository::revision(transaction, agent)?;
     let high = transaction.query_row(
         "SELECT coalesce(max(seq),0) FROM sync_entities WHERE collection=?1",
@@ -255,7 +256,9 @@ fn pull_scope_in(
         return Ok(result);
     }
     let actor = TranscriptRepository::agent(transaction, agent)?;
-    let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
+    let deleted = actor
+        .as_ref()
+        .is_none_or(studio_runtime_store::AgentRecord::is_deleted);
     let revision = TranscriptRepository::revision(transaction, agent)?;
     let payload = if deleted {
         json!({})
@@ -318,7 +321,7 @@ pub async fn item(
 fn item_in(connection: &Connection, agent: &str, identity: &str) -> Result<Value, TranscriptError> {
     let actor =
         TranscriptRepository::agent(connection, agent)?.ok_or(TranscriptError::UnknownMessage)?;
-    if truthy(actor.get("deletedAt")) {
+    if actor.is_deleted() {
         return Err(TranscriptError::DeletedConversation);
     }
     let row = TranscriptRepository::resolve_item(connection, agent, identity)?
@@ -368,7 +371,7 @@ fn search_in(
     let limit = limit.clamp(1, 500) as usize;
     let actor =
         TranscriptRepository::agent(connection, agent)?.ok_or(TranscriptError::UnknownMessage)?;
-    if truthy(actor.get("deletedAt")) {
+    if actor.is_deleted() {
         return Err(TranscriptError::DeletedConversation);
     }
     if query.is_empty() {

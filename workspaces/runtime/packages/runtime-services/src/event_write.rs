@@ -389,8 +389,10 @@ fn enqueue(
     };
     if let Some((server, link, is_anchor)) = remote_owner(agent)? {
         let request_id = match metadata.extensions.get("remoteRequestId") {
-            Some(Value::String(root)) if !root.is_empty() => root.clone(),
-            Some(_) => return Err(EventWriteError::Conflict("Remote event outcome is unknown")),
+            Some(raw) => serde_json::from_str::<String>(raw.0.get())
+                .ok()
+                .filter(|root| !root.is_empty())
+                .ok_or(EventWriteError::Conflict("Remote event outcome is unknown"))?,
             None if existing => {
                 return Err(EventWriteError::Conflict("Remote event outcome is unknown"));
             }
@@ -400,9 +402,13 @@ fn enqueue(
                     .filter(|id| id.get_version_num() == 7)
                     .map(|_| id.clone())
                     .unwrap_or_else(RequestIdentity::issue_root);
-                metadata
-                    .extensions
-                    .insert("remoteRequestId".into(), json!(root));
+                metadata.extensions.insert(
+                    "remoteRequestId".into(),
+                    studio_runtime_schema::raw_json::RawJson(
+                        serde_json::value::to_raw_value(&root)
+                            .map_err(studio_runtime_store::StoreError::from)?,
+                    ),
+                );
                 QueueWriteRepository::put_typed_metadata(transaction, &id, &metadata)?;
                 root
             }

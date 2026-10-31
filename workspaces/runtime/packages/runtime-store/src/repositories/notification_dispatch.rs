@@ -119,6 +119,7 @@ impl NotificationDispatchRepository {
 
     pub fn agent_record(transaction: &Transaction<'_>, agent: &str) -> StoreResult<Option<Value>> {
         TranscriptRepository::agent(transaction, agent)
+            .map(|record| record.map(crate::AgentRecord::into_value))
             .map_err(|error| map_transcript_error(error, "runtime_agents", agent))
     }
 
@@ -403,9 +404,7 @@ fn map_transcript_error(error: TranscriptStoreError, table: &'static str, id: &s
     match error {
         TranscriptStoreError::Store(error) => error,
         TranscriptStoreError::Sqlite(error) => StoreError::from(error),
-        TranscriptStoreError::InvalidStoredObject { .. } | TranscriptStoreError::ActiveTurn => {
-            invalid_record(table, id)
-        }
+        TranscriptStoreError::InvalidStoredObject { .. } => invalid_record(table, id),
     }
 }
 
