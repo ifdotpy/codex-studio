@@ -997,13 +997,35 @@ fn rows_by_id(
 }
 
 /// Publish agent views; `work` must hold every work item the agents own.
-fn publish_agents(
+/// The client views of one agent, computed from the source rows and not yet written.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentViews {
+    pub id: String,
+    /// The retained cleanup folder view, if the agent keeps one.
+    pub retained_worktree: Option<Value>,
+    /// What the agent publishes: nothing for a deleted agent (its views are retired),
+    /// the list, open-chat and compatibility views otherwise.
+    pub state: AgentViewState,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AgentViewState {
+    /// `deletedAt` is set: `agentSummary`, `agentDetail` and `agent` are retired.
+    Deleted,
+    /// The record has no view (it is not a managed agent record); nothing is published.
+    NoView,
+    /// The three views, as the entity values `agentSummary`, `agentDetail` and `agent`.
+    Live([(&'static str, Value); 3]),
+}
+
+/// Compute the views of `agents` from their records and owned `work`. Read-only; the
+/// publisher writes the result and a read-time reader can return it directly.
+fn agent_views(
     transaction: &Transaction<'_>,
     agents: &[(&str, &Value)],
     work: &[studio_runtime_store::WorkItemRecord],
     project_server_id: Option<&str>,
-    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
-) -> StoreResult<()> {
+) -> StoreResult<Vec<AgentViews>> {
     let contexts = crate::sync_entity_context::agent_view_contexts(
         transaction,
         agents,
@@ -1011,24 +1033,98 @@ fn publish_agents(
         project_server_id,
     )?
     .0;
+    let mut views = Vec::with_capacity(agents.len());
     for &(id, record) in agents {
-        match crate::sync_views::retained_worktree_entity(record) {
+        let retained_worktree = crate::sync_views::retained_worktree_entity(record);
+        let state = if truthy(record.get("deletedAt")) {
+            AgentViewState::Deleted
+        } else {
+            let context = contexts.get(id).ok_or(StoreError::RecordContract(
+                "agent projection context snapshot is incomplete",
+            ))?;
+            match agent_entity_view(record, context) {
+                Some(view) => AgentViewState::Live(
+                    agent_projection_values(&view)
+                        .ok_or(StoreError::RecordContract("agent projection has no id"))?,
+                ),
+                None => AgentViewState::NoView,
+            }
+        };
+        views.push(AgentViews {
+            id: id.to_owned(),
+            retained_worktree,
+            state,
+        });
+    }
+    Ok(views)
+}
+
+/// The views of agent `id` built from the main tables in `transaction`, as the
+/// publisher would write them now. `None` when there is no readable agent row.
+pub fn read_agent_views(
+    transaction: &Transaction<'_>,
+    id: &str,
+    project_server_id: Option<&str>,
+) -> StoreResult<Option<AgentViews>> {
+    let ids = BTreeSet::from([id.to_owned()]);
+    let Some((_, _, raw)) = rows_by_id(transaction, "runtime_agents", &ids)?
+        .into_iter()
+        .next()
+    else {
+        return Ok(None);
+    };
+    let record = serde_json::from_str::<Value>(&raw)?;
+    let mut owned_work = Vec::new();
+    if table_exists(transaction, "runtime_work")? {
+        let mut statement = transaction.prepare_cached(
+            "SELECT id,record FROM runtime_work WHERE json_extract(record,'$.owner')=?1 ORDER BY rowid",
+        )?;
+        for row in statement.query_map([id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (work_id, raw) = row?;
+            if let Some(work) = checked_owned_work(&work_id, &raw)? {
+                owned_work.push(work);
+            }
+        }
+    }
+    Ok(agent_views(
+        transaction,
+        &[(id, &record)],
+        &owned_work,
+        project_server_id,
+    )?
+    .into_iter()
+    .next())
+}
+
+fn publish_agents(
+    transaction: &Transaction<'_>,
+    agents: &[(&str, &Value)],
+    work: &[studio_runtime_store::WorkItemRecord],
+    project_server_id: Option<&str>,
+    validate: &impl Fn(&str, &str, &Value, bool) -> bool,
+) -> StoreResult<()> {
+    for views in agent_views(transaction, agents, work, project_server_id)? {
+        let id = views.id.as_str();
+        match views.retained_worktree {
             Some(value) => {
                 put_projection(transaction, "retainedWorktree", id, value, false, validate)?
             }
             None => retire_if_live(transaction, "retainedWorktree", id, validate)?,
         }
-        if truthy(record.get("deletedAt")) {
-            for collection in ["agentSummary", "agentDetail", "agent"] {
-                retire_if_live(transaction, collection, id, validate)?;
+        match views.state {
+            AgentViewState::Deleted => {
+                for collection in ["agentSummary", "agentDetail", "agent"] {
+                    retire_if_live(transaction, collection, id, validate)?;
+                }
             }
-            continue;
-        }
-        let context = contexts.get(id).ok_or(StoreError::RecordContract(
-            "agent projection context snapshot is incomplete",
-        ))?;
-        if let Some(projected) = agent_entity_view(record, context) {
-            publish_agent_projection(transaction, id, projected, false, validate)?;
+            AgentViewState::NoView => {}
+            AgentViewState::Live(values) => {
+                for (collection, value) in values {
+                    put_projection(transaction, collection, id, value, false, validate)?;
+                }
+            }
         }
     }
     Ok(())
@@ -1044,22 +1140,36 @@ pub(crate) fn publish_agent_projection(
     deleted: bool,
     validate: &impl Fn(&str, &str, &Value, bool) -> bool,
 ) -> StoreResult<()> {
-    for collection in ["agentSummary", "agentDetail"] {
-        let projected = if deleted {
-            json!({})
-        } else {
-            project_persisted_record(collection, &view)
-                .ok_or(StoreError::RecordContract("agent projection has no id"))?
-        };
-        put_projection(transaction, collection, id, projected, deleted, validate)?;
+    if deleted {
+        for collection in ["agentSummary", "agentDetail", "agent"] {
+            put_projection(transaction, collection, id, json!({}), true, validate)?;
+        }
+        return Ok(());
     }
-    let mut compatibility = view;
+    let values = agent_projection_values(&view)
+        .ok_or(StoreError::RecordContract("agent projection has no id"))?;
+    for (collection, value) in values {
+        put_projection(transaction, collection, id, value, false, validate)?;
+    }
+    Ok(())
+}
+
+/// The list, open-chat and compatibility entity values of one agent view, in write
+/// order. The legacy DTO drops the summary attention fields.
+fn agent_projection_values(view: &Value) -> Option<[(&'static str, Value); 3]> {
+    let summary = project_persisted_record("agentSummary", view)?;
+    let detail = project_persisted_record("agentDetail", view)?;
+    let mut compatibility = view.clone();
     if let Some(fields) = compatibility.as_object_mut() {
         for field in crate::sync_views::AGENT_SUMMARY_ATTENTION_FIELDS {
             fields.remove(field);
         }
     }
-    put_projection(transaction, "agent", id, compatibility, deleted, validate)
+    Some([
+        ("agentSummary", summary),
+        ("agentDetail", detail),
+        ("agent", compatibility),
+    ])
 }
 
 /// Publish one request, rule or work row; only pending requests stay live.
