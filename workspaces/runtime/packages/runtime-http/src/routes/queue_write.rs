@@ -1,12 +1,8 @@
 //! HTTP adapter for durable queue mutations.
 
-use axum::Extension;
 use axum::Json;
 use axum::extract::State;
-use std::sync::Arc;
 use studio_runtime_schema::queue_command::QueueCommand;
-use studio_runtime_services::agent_lifecycle_runtime::{self, LifecyclePorts};
-use studio_runtime_services::agent_management::Action;
 use studio_runtime_services::queue_write;
 
 use super::extractors::ApiJson;
@@ -15,7 +11,6 @@ use crate::router::HttpState;
 
 pub(crate) async fn queue_action(
     State(state): State<HttpState>,
-    ports: Option<Extension<Arc<dyn LifecyclePorts>>>,
     ApiJson(body): ApiJson<QueueCommand>,
 ) -> Result<Json<queue_write::QueueReply>, ApiError> {
     let agent_id = body
@@ -24,7 +19,6 @@ pub(crate) async fn queue_action(
         .unwrap_or_else(|| state.workspace_id.clone());
     let signature = signature(&agent_id, &body)?;
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let held_agent = agent_id.clone();
     let result = store
         .transaction_with_error(move |transaction| {
             queue_write::action(
@@ -35,32 +29,8 @@ pub(crate) async fn queue_action(
                 |connection, agent| super::queue_read::queue_snapshot(connection, agent),
             )
         })
-        .await;
-    if let (Err(queue_write::QueueWriteError::HeldByTurn), Some(Extension(ports))) =
-        (&result, ports)
-    {
-        // Withdraw of a message that a running turn holds: interrupt that turn.
-        // The message returns to the queue or is delivered when the turn ends.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| ApiError::internal())?
-            .as_secs_f64();
-        agent_lifecycle_runtime::execute(
-            Arc::clone(&store),
-            &Action::Stop {
-                target: held_agent,
-                descendants: false,
-                reason: None,
-                sender: None,
-                sender_epoch: None,
-            },
-            now,
-            ports,
-        )
         .await
-        .map_err(|_| ApiError::internal())?;
-    }
-    let result = result.map_err(super::queue_read::api_error)?;
+        .map_err(super::queue_read::api_error)?;
     state.event_wake.notify_one();
     Ok(Json(result))
 }
@@ -348,43 +318,6 @@ mod tests {
         ] {
             assert_eq!(call(&app, invalid.clone()).await.0, 400, "{invalid}");
         }
-    }
-
-    async fn seeded_store(directory: &std::path::Path) -> Arc<RuntimeStore> {
-        let store = Arc::new(RuntimeStore::open(Some(directory)).await.expect("store"));
-        store.transaction(|tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"workspace","rootId":"workspace","epoch":0,"status":"idle","provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
-            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('late','workspace','user','Late','pending',3,0),('early','workspace','user','Early','pending',1,0),('note','workspace','followup','Note','pending',2,0)", [])?;
-            Ok(())
-        }).await.expect("seed queue");
-        store
-    }
-
-    fn queued_ids(store: &RuntimeStore) -> Vec<String> {
-        let reader = store.test_reader().expect("reader");
-        let agent = AgentRepository::get(&reader, &"workspace".into())
-            .expect("agent read")
-            .expect("agent");
-        queue_write::queue_snapshot(&reader, &agent)
-            .expect("queue")
-            .items
-            .iter()
-            .map(|item| item["id"].as_str().expect("id").to_owned())
-            .collect()
-    }
-
-    // The queue is server state: a bridge that restarts, or is gone, changes nothing.
-    #[tokio::test]
-    async fn queue_order_is_server_state_and_survives_a_restart() {
-        let directory = tempfile::tempdir().expect("isolated state");
-        let first = seeded_store(directory.path()).await;
-        let before = queued_ids(&first);
-        drop(first);
-        assert_eq!(before, ["early", "note", "late"]);
-        let reopened = RuntimeStore::open(Some(directory.path()))
-            .await
-            .expect("reopened store");
-        assert_eq!(queued_ids(&reopened), before);
     }
 }
 inventory::submit! {

@@ -192,7 +192,7 @@ async fn ending_after_worker_reattach_ends_the_turn_work(ending: Ending) {
     ));
     let target = state.agent.clone();
     let action = match ending {
-        Ending::Stop => Action::Pause {
+        Ending::Stop => Action::Stop {
             target,
             descendants: false,
             reason: None,
@@ -303,7 +303,7 @@ async fn ending_before_worker_reattach_ends_the_turn_work(ending: Ending) {
     ));
     let target = state.agent.clone();
     let action = match ending {
-        Ending::Stop => Action::Pause {
+        Ending::Stop => Action::Stop {
             target,
             descendants: false,
             reason: None,
@@ -477,7 +477,7 @@ async fn stop_while_a_retained_provider_has_no_worker_ends_its_turn_once(window:
     ));
     ports
         .execute(
-            &Action::Pause {
+            &Action::Stop {
                 target: state.agent.clone(),
                 descendants: false,
                 reason: None,
@@ -603,7 +603,7 @@ async fn proven_unsent_interrupt_reuses_stop_identity_after_reattach() {
         account_session(&state, first_worker.retained_session()),
         None,
     ));
-    let action = Action::Pause {
+    let action = Action::Stop {
         target: state.agent.clone(),
         descendants: false,
         reason: None,
@@ -674,7 +674,7 @@ async fn stop_interrupt_with_a_lost_reply_is_not_sent_again_after_reattach() {
         account_session(&state, first_worker.retained_session()),
         None,
     ));
-    let action = Action::Pause {
+    let action = Action::Stop {
         target: state.agent.clone(),
         descendants: false,
         reason: None,

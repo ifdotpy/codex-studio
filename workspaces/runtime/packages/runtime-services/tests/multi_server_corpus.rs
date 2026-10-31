@@ -1202,7 +1202,7 @@ async fn stopping_remote_proxy_persists_and_replays_the_same_signed_intent() {
     assert_eq!(
         ports
             .execute(
-                &Action::Pause {
+                &Action::Stop {
                     target: "remote-stop-proxy".to_owned(),
                     descendants: false,
                     reason: None,

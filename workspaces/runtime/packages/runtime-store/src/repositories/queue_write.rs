@@ -1,6 +1,6 @@
 //! Queue event mutations used by the queue-write service.
 
-use rusqlite::{OptionalExtension, Transaction, params};
+use rusqlite::{Transaction, params};
 use serde_json::Value;
 
 use crate::records::{EventMetadataRecord, QueueEventId, Table};
@@ -70,24 +70,6 @@ impl QueueWriteRepository {
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-    }
-
-    /// Whether user message `id` of `agent` is held by a turn: claimed for a turn
-    /// start or a steer, and not yet delivered.
-    pub fn held_user_message(
-        transaction: &Transaction<'_>,
-        agent: &str,
-        id: &str,
-    ) -> StoreResult<bool> {
-        Ok(transaction
-            .query_row(
-                "SELECT 1 FROM runtime_events WHERE id=?1 AND agent=?2 AND kind='user' \
-                 AND status IN ('reserved','dispatching')",
-                params![id, agent],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some())
     }
 
     pub fn update_created(
