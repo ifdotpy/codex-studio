@@ -611,53 +611,49 @@ impl Sender {
     }
 }
 
-/// The pending sign-in cards of the store, with their chat names. It reads the stored cards,
-/// so a push does not wait for a client to receive the card.
 pub async fn pending_cards(
     store: &studio_runtime_store::RuntimeStore,
 ) -> Result<Vec<DueCard>, studio_runtime_store::StoreError> {
+    use rusqlite::OptionalExtension;
+    use studio_runtime_schema::approvals::{ApprovalStateKind, BrowserPhase, Request, RequestKind};
     store
         .read_async("runtime-services/web_push", move |connection| {
-            let mut statement = connection.prepare(
-                "SELECT r.id, r.record, a.record FROM runtime_requests r \
-                 LEFT JOIN runtime_agents a ON a.id = json_extract(r.record,'$.agent') \
-                 WHERE json_extract(r.record,'$.method') = ?1 \
-                 AND json_extract(r.record,'$.status') = 'pending'",
+            let rows = studio_runtime_store::approvals::of_kind(
+                connection,
+                RequestKind::BrowserOpen,
+                ApprovalStateKind::Pending,
             )?;
-            let rows = statement
-                .query_map([crate::browser_cards::METHOD], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok::<_, studio_runtime_store::StoreError>(
-                rows.into_iter()
-                    .filter_map(|(id, request, agent)| {
-                        let request: Value = serde_json::from_str(&request).ok()?;
-                        let agent: Value = agent
-                            .and_then(|agent| serde_json::from_str(&agent).ok())
-                            .unwrap_or(Value::Null);
-                        if request.get("deferred").is_some_and(|value| value == true) {
-                            return None;
-                        }
-                        let params = &request["params"];
-                        Some(DueCard {
-                            id,
-                            host: params["host"]
-                                .as_str()
-                                .unwrap_or("a sign-in page")
-                                .to_owned(),
-                            chat: agent["name"].as_str().unwrap_or("a chat").to_owned(),
-                            created_at: request["createdAt"].as_f64()?,
-                            expires_at: params["expiresAt"].as_f64(),
-                            waiting: params["phase"] == "waiting",
-                        })
-                    })
-                    .collect(),
-            )
+            let mut cards = Vec::new();
+            for row in rows {
+                let Request::BrowserOpen(card) = &row.request else {
+                    continue;
+                };
+                if row.hidden.is_some() || row.deferral.as_ref().is_some_and(|d| d.active) {
+                    continue;
+                }
+                let chat: Option<String> = connection
+                    .query_row(
+                        "SELECT json_extract(record,'$.name') FROM runtime_agents WHERE id=?1",
+                        [row.agent.as_str()],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(studio_runtime_store::StoreError::from)?
+                    .flatten();
+                cards.push(DueCard {
+                    id: row.id.as_str().to_owned(),
+                    host: if card.host.is_empty() {
+                        "a sign-in page".to_owned()
+                    } else {
+                        card.host.clone()
+                    },
+                    chat: chat.unwrap_or_else(|| "a chat".to_owned()),
+                    created_at: row.created.0,
+                    expires_at: card.expires_at.map(|at| at.0),
+                    waiting: matches!(card.phase, BrowserPhase::Waiting { .. }),
+                });
+            }
+            Ok::<_, studio_runtime_store::StoreError>(cards)
         })
         .await
 }
