@@ -852,7 +852,20 @@ pub async fn adopt_receipt(
 }
 
 fn check_durable_blockers(tx: &Transaction<'_>, agent: &str) -> Result<(), TransferError> {
-    for table in ["runtime_tasks", "runtime_requests"] {
+    let waiting: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM approvals WHERE agent=?1 AND state IN ('pending','unknown'))",
+            [agent],
+            |r| r.get(0),
+        )
+        .map_err(studio_runtime_store::StoreError::from)?;
+    if waiting {
+        return Err(TransferError::Refused(
+            "Waiting for background work or a tool response",
+        ));
+    }
+    {
+        let table = "runtime_tasks";
         let sql = format!(
             "SELECT EXISTS(SELECT 1 FROM {table} WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') IN ('running','starting','approval','pending','unknown'))"
         );

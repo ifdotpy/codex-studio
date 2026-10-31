@@ -8,7 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 const RECORD_TABLES: &[&str] = &[
     "runtime_agents",
     "runtime_monitors",
-    "runtime_requests",
     "runtime_tasks",
     "runtime_tool_requests",
     "runtime_work",
@@ -121,6 +120,31 @@ pub fn read_for_agents(
         }
         tables.insert((*table).to_owned(), records);
     }
+    // Approvals are typed rows, read as their JSON form under the table name.
+    let approvals_exist: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='approvals')",
+        [],
+        |r| r.get(0),
+    )?;
+    if approvals_exist {
+        let mut rows = Vec::new();
+        if let Some(owners) = owners {
+            for owner in owners {
+                rows.extend(crate::approvals::for_agent(
+                    connection,
+                    &studio_runtime_schema::approvals::AgentId(owner.clone()),
+                )?);
+            }
+        } else {
+            rows = crate::approvals::all(connection)?;
+        }
+        tables.insert(
+            "approvals".to_owned(),
+            rows.iter()
+                .map(|row| serde::Serialize::serialize(row, serde_json::value::Serializer))
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
     let events = if let Some(owners) = owners {
         let mut ordered = Vec::new();
         for owner in owners {
@@ -229,22 +253,19 @@ pub fn write(transaction: &Transaction<'_>, table: &str, record: &Value) -> Stor
             transaction,
             &serde_json::from_value::<AgentRecord>(record.clone())?,
         ),
-        "runtime_requests" => {
-            // ManagementSnapshot Records is an existing Value-based lifecycle debt.
-            let id = record
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or(StoreError::RecordContract("Request write requires an id"))?;
-            if !studio_runtime_schema::validate("PersistedRequestRecord", record)
-                .map_err(StoreError::SchemaValidation)?
-            {
-                return Err(StoreError::InvalidStoredObject {
-                    table: "runtime_requests",
-                    id: id.to_owned(),
-                });
-            }
-            transaction.execute("INSERT INTO runtime_requests(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record", rusqlite::params![id, serde_json::to_string(record)?])?;
-            Ok(())
+        "approvals" => {
+            let approval: studio_runtime_schema::approvals::Approval =
+                serde::Deserialize::deserialize(record).map_err(|_| {
+                    StoreError::InvalidStoredObject {
+                        table: "approvals",
+                        id: record
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    }
+                })?;
+            Ok(crate::approvals::put(transaction, &approval)?)
         }
         "runtime_work" => Table::<WorkItemRecord>::new(transaction)
             .put(&WorkItemRecord::from_value(record.clone())?),
@@ -413,27 +434,19 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn malformed_request_write_preserves_stored_diagnostic_and_row() {
+    fn malformed_approval_write_preserves_the_stored_row() {
         let db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL); INSERT INTO runtime_requests VALUES('r','{\"id\":\"r\",\"status\":\"pending\"}')").unwrap();
+        crate::approvals::create_schema(&db).unwrap();
         let tx = db.unchecked_transaction().unwrap();
         let error = super::write(
             &tx,
-            "runtime_requests",
-            &serde_json::json!({"id":"r","status":false}),
+            "approvals",
+            &serde_json::json!({"id":"r","state":false}),
         )
         .unwrap_err();
         assert!(
-            matches!(error, crate::StoreError::InvalidStoredObject { table: "runtime_requests", ref id } if id == "r")
+            matches!(error, crate::StoreError::InvalidStoredObject { table: "approvals", ref id } if id == "r")
         );
-        let stored: String = tx
-            .query_row(
-                "SELECT record FROM runtime_requests WHERE id='r'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(stored, "{\"id\":\"r\",\"status\":\"pending\"}");
     }
 
     #[test]

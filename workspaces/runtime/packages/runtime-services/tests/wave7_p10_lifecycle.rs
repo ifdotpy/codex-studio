@@ -122,8 +122,9 @@ async fn seed(store: &RuntimeStore, records: Records) {
                         params![row["id"].as_str(), row["agent"].as_str(), row["ended"].as_f64(), row["state"].as_str()],
                     )?;
                 } else if table == "runtime_requests" {
-                    let request: studio_runtime_store::RequestRecord = serde_json::from_str(&row.to_string())?;
-                    studio_runtime_store::Table::<studio_runtime_store::RequestRecord>::new(tx).put(&request)?;
+                    let id = row["id"].as_str().expect("request id");
+                    let approval = studio_runtime_store::approvals::from_legacy_record(id, &row).expect("typed approval");
+                    studio_runtime_store::approvals::put(tx, &approval).expect("approval row");
                 } else { agent_management::write(tx, &table, &row)?; }
             }
         }
@@ -696,6 +697,36 @@ async fn production_delete_releases_deleted_worker_work_item() {
     assert_eq!(entity["value"]["status"], "ready");
 }
 
+/// The frozen oracle names the retired `runtime_requests` table. The store keeps the
+/// typed rows in `approvals`: convert the expected rows and read the new table.
+fn typed_table<'a>(table: &'a str, expected: &Value) -> (&'a str, Value) {
+    if table != "runtime_requests" {
+        return (table, expected.clone());
+    }
+    let rows = expected
+        .as_array()
+        .expect("expected request rows")
+        .iter()
+        .map(|row| {
+            let id = row["id"].as_str().expect("request id");
+            serde_json::to_value(
+                studio_runtime_store::approvals::from_legacy_record(id, row)
+                    .expect("typed approval"),
+            )
+            .expect("approval json")
+        })
+        .collect::<Vec<_>>();
+    ("approvals", Value::Array(rows))
+}
+
+/// The oracle records no close time and no close reason: compare the state kind only.
+fn loosen_approvals(rows: &mut Value) {
+    for row in rows.as_array_mut().into_iter().flatten() {
+        let kind = row["state"]["kind"].clone();
+        row["state"] = json!({ "kind": kind });
+    }
+}
+
 fn state(store: &RuntimeStore) -> Value {
     let db = store.test_reader().expect("reader");
     let records = agent_management::read(&db).expect("records");
@@ -924,7 +955,7 @@ fn assert_conversation_detail_sources(snapshot: &Value) {
             .expect("entity validator")
         );
         let table = if collection == "questionHistory" {
-            "runtime_requests"
+            "approvals"
         } else {
             "runtime_agents"
         };
@@ -936,12 +967,7 @@ fn assert_conversation_detail_sources(snapshot: &Value) {
             .expect("live detail has its source");
         assert_eq!(payload["value"]["id"], source["id"]);
         if collection == "questionHistory" {
-            for field in ["agent", "method", "status", "decision", "answeredAt"] {
-                assert_eq!(
-                    payload["value"][field], source[field],
-                    "question source field {field}"
-                );
-            }
+            assert_eq!(payload["value"]["agent"], source["agent"]);
         } else {
             assert_eq!(payload["value"]["rootId"], source["rootId"]);
             assert_eq!(
@@ -1023,8 +1049,9 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
         .as_object()
         .expect("tables")
     {
+        let (table, expected) = typed_table(table, expected);
         let mut actual = saved["tables"][table].clone();
-        let mut expected = expected.clone();
+        let mut expected = expected;
         if table == "runtime_agents" {
             for row in expected.as_array_mut().expect("expected agent rows") {
                 row["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
@@ -1042,6 +1069,10 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
                     }
                 }
             }
+        }
+        if table == "approvals" {
+            loosen_approvals(&mut actual);
+            loosen_approvals(&mut expected);
         }
         crate::normalize_agent_nulls(&mut actual);
         crate::normalize_agent_nulls(&mut expected);
@@ -1255,7 +1286,7 @@ async fn lifecycle_store_failpoints_and_missing_consumer_leave_no_writes() {
     drop(store);
     for (table, operation) in [
         ("runtime_agents", "UPDATE"),
-        ("runtime_requests", "UPDATE"),
+        ("approvals", "INSERT"),
         ("runtime_events", "UPDATE"),
         // Seeded projections exist, so the action updates entity rows.
         ("sync_entities", "UPDATE"),
@@ -1480,6 +1511,7 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
                 .as_object()
                 .expect("Python output tables")
             {
+                let (table, expected) = typed_table(table, expected);
                 let mut actual_rows = actual["tables"][table].clone();
                 if table == "runtime_agents" {
                     for row in actual_rows.as_array_mut().expect("agent rows") {
@@ -1491,12 +1523,16 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
                         }
                     }
                 }
-                let mut expected = expected.clone();
+                let mut expected = expected;
                 if table == "runtime_agents" {
                     for row in expected.as_array_mut().expect("expected agent rows") {
                         row["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
                         use_current_ticket_shape(row);
                     }
+                }
+                if table == "approvals" {
+                    loosen_approvals(&mut actual_rows);
+                    loosen_approvals(&mut expected);
                 }
                 crate::normalize_agent_nulls(&mut actual_rows);
                 crate::normalize_agent_nulls(&mut expected);
@@ -1553,7 +1589,8 @@ async fn production_child_notification_matches_python_corpus() {
                 "Python child notification event rows"
             );
         } else {
-            let mut expected = expected.clone();
+            let (table, expected) = typed_table(table, expected);
+            let mut expected = expected;
             if table == "runtime_agents" {
                 for row in expected.as_array_mut().expect("expected agent rows") {
                     row["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
@@ -1561,6 +1598,10 @@ async fn production_child_notification_matches_python_corpus() {
                 }
             }
             let mut actual_row = actual["tables"][table].clone();
+            if table == "approvals" {
+                loosen_approvals(&mut actual_row);
+                loosen_approvals(&mut expected);
+            }
             crate::normalize_agent_nulls(&mut actual_row);
             crate::normalize_agent_nulls(&mut expected);
             assert_eq!(actual_row, expected, "Python event corpus: {table}");

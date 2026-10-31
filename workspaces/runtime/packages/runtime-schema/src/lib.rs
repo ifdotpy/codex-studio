@@ -7,6 +7,7 @@ pub mod agent_progress;
 pub mod annotation_command;
 pub mod annotation_record;
 pub mod api_schema;
+pub mod approvals;
 pub mod bounded_integer;
 pub mod bounded_text;
 pub mod checkpoint_record;
@@ -800,7 +801,6 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         "ModelChoices",
         "ProjectEntityDto",
         "ProjectMutationRecord",
-        "RequestEntityDto",
         "ResourceRef",
         "SubscriptionAdd",
         "SubscriptionCursor",
@@ -831,7 +831,6 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         "AutoPairRequest",
         "DevicePairRequest",
         "AgentRecordResponse",
-        "AgentRequest",
         "AppearancePreferences",
         "AnnotationReceipt",
         "CheckpointSummary",
@@ -850,8 +849,6 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         "PullRequest",
         "PullResult",
         "RenameServer",
-        "QuestionEntry",
-        "QuestionHistory",
         "QueueItem",
         "RequestRecordResponse",
         "RuleRecordResponse",

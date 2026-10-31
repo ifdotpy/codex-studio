@@ -6,9 +6,9 @@ import {
 } from "../generated/api";
 import { required } from "../components/componentTestFixtures.ts";
 import type { EntityRow } from "./entityProjection.ts";
-import type { Agent, Message, Request, Snapshot } from "../types";
+import type { Agent, Message, Snapshot } from "../types";
+import { approval, browserOpen } from "../approvalFixtures";
 import type { SyncEntityPayload } from "../generated/api";
-import { RequestStatus } from "../generated/api";
 import assert from "node:assert/strict";
 import {
   applyEntityChanges,
@@ -714,60 +714,65 @@ const entityRow = (
   ...extra,
 });
 
-it("shows only actionable request cards from cached and streamed entities", () => {
+it("shows the pending and answering request cards the server publishes", () => {
   const state = emptyEntityProjection();
-  const request = {
+  const request = approval({
     id: "approval",
-    agent: "lead",
-    method: "monitor/approve",
-    status: RequestStatus.pending,
-  } satisfies Request;
+    request: { kind: "monitor_start", monitor: "m", command: "tail" },
+  });
+  const sending = {
+    ...request,
+    id: "sending",
+    state: {
+      kind: "answering",
+      answer: { kind: "decision", decision: "accept" },
+      command: "command",
+    },
+  } satisfies typeof request;
   const initial = applyEntityChanges(
     state,
     [
       entityRow("request", request.id, request, 1),
-      entityRow(
-        "request",
-        "answered",
-        { ...request, id: "answered", status: RequestStatus.answered },
-        2,
-      ),
+      entityRow("request", "sending", sending, 2),
       entityRow(
         "request",
         "deferred",
-        { ...request, id: "deferred", deferred: true },
+        approval({ ...request, id: "deferred", deferred: true }),
         3,
       ),
-      entityRow("request", "legacy", { id: "legacy" }, 4),
     ],
     true,
   );
   assert.deepEqual(
-    initial.runtime.requests.map((entry) => entry.id),
-    ["approval", "deferred", "legacy"],
+    initial.runtime.requests.map((entry) => [entry.id, entry.state.kind]),
+    [
+      ["approval", "pending"],
+      ["sending", "answering"],
+      ["deferred", "pending"],
+    ],
   );
-  const answered = applyEntityChanges(
+  const answering = applyEntityChanges(
     state,
     [
       entityRow(
         "request",
         request.id,
-        { ...request, status: RequestStatus.answered },
+        { ...request, ...sending, id: request.id },
         5,
       ),
     ],
     true,
   );
   assert.deepEqual(
-    answered.runtime.requests.map((entry) => entry.id),
-    ["deferred", "legacy"],
+    answering.runtime.requests.map((entry) => entry.state.kind),
+    ["answering", "answering", "pending"],
   );
   const unrelated = applyEntityChanges(
     state,
     [entityRow("agentSummary", "lead", { id: "lead", status: "idle" }, 6)],
     true,
   );
-  assert.equal(unrelated.runtime.requests, answered.runtime.requests);
+  assert.equal(unrelated.runtime.requests, answering.runtime.requests);
 });
 
 it("projects entity rows and preserves server sequence ordering", () => {
@@ -1351,7 +1356,15 @@ it("reuses unchanged work, request, and peer team arrays when agents change", ()
     state,
     [
       entityRow("work", "w1", { id: "w1" }, 1),
-      entityRow("request", "r1", { id: "r1" }, 2),
+      entityRow(
+        "request",
+        "r1",
+        approval({
+          id: "r1",
+          request: browserOpen("https://example.com"),
+        }),
+        2,
+      ),
       entityRow("peerTeam", "pt1", { id: "pt1" }, 3),
       entityRow("agent", "a1", { id: "a1", name: "A" }, 4),
     ],
@@ -1361,7 +1374,15 @@ it("reuses unchanged work, request, and peer team arrays when agents change", ()
     state,
     [
       entityRow("work", "w1", { id: "w1" }, 1),
-      entityRow("request", "r1", { id: "r1" }, 2),
+      entityRow(
+        "request",
+        "r1",
+        approval({
+          id: "r1",
+          request: browserOpen("https://example.com"),
+        }),
+        2,
+      ),
       entityRow("peerTeam", "pt1", { id: "pt1" }, 3),
       entityRow("agent", "a1", { id: "a1", name: "A2" }, 5),
     ],
@@ -1413,7 +1434,14 @@ it("maps all runtime collections and carries workspace and edge data into snapsh
     ["task", "t", { id: "t" }],
     ["monitor", "m", { id: "m" }],
     ["complaint", "q", { id: "q" }],
-    ["request", "u", { id: "u" }],
+    [
+      "request",
+      "u",
+      approval({
+        id: "u",
+        request: browserOpen("https://example.com"),
+      }),
+    ],
     ["rule", "l", { id: "l" }],
     ["project", "p", { id: "p" }],
     ["peerTeam", "pt", { id: "pt" }],
@@ -1447,9 +1475,10 @@ it("maps all runtime collections and carries workspace and edge data into snapsh
     ["event", "events"],
     ["work", "work"],
   ] as const)
-    assert.deepEqual(snapshot.runtime[key], [
-      { id: (entries.find(([name]) => name === collection)![2] as Agent).id },
-    ]);
+    assert.deepEqual(
+      (snapshot.runtime[key] as { id: string }[]).map((entry) => entry.id),
+      [(entries.find(([name]) => name === collection)![2] as Agent).id],
+    );
 });
 
 it("reuses unchanged runtime lists and edges, but replaces changed collections", () => {

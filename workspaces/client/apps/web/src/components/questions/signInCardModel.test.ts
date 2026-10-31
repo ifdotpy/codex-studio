@@ -14,6 +14,7 @@ import {
   verificationPage,
   waitingChatsLabel,
 } from "./signInCardModel";
+import { approval, browserOpen } from "../../approvalFixtures";
 import { browserOpenDetails } from "./requestData";
 
 const redirect: BrowserOpenDetails = {
@@ -139,17 +140,15 @@ describe("sign-in card model", () => {
 
 describe("chats that wait on one sign-in card", () => {
   it("reads the waiting chats of the card and names them", () => {
-    const details = browserOpenDetails({
-      id: "card",
-      method: "browser/open",
-      agent: "lead",
-      status: "pending",
-      params: {
-        host: "id.example.com",
-        url: "https://id.example.com/authorize?client_id=c&state=s",
-        joined: ["worker-1", "worker-2", 7],
-      },
-    } as never);
+    const details = browserOpenDetails(
+      approval({
+        id: "card",
+        request: browserOpen(
+          "https://id.example.com/authorize?client_id=c&state=s",
+          { joined: ["worker-1", "worker-2"] },
+        ),
+      }),
+    );
     expect(details?.joined).toEqual(["worker-1", "worker-2"]);
     const names = new Map([["worker-1", "Infra"]]);
     expect(waitingChatsLabel(details?.joined, names)).toBe(

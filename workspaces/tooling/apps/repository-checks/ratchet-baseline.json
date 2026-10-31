@@ -321,14 +321,6 @@
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
     {
-      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/cards.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:1"
-    },
-    {
-      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/cards.rs",
-      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:2"
-    },
-    {
       "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/model.rs",
       "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
     },
@@ -967,6 +959,38 @@
     {
       "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_22_analytics.rs",
       "fingerprint": "b83fbdc5af2110fa1e99b9b255ed438f594b833a1df72af2a05e0e84cdbdd9cb:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "3d8360ab0f3b45d9db5138c709d5ee0d85795b677ad89cc0be416ca61bd0dccd:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "eef1a49005de15dc8b62b240413d697ea6cf01f9333938bfd5f4ca039432fc70:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:2"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:3"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:4"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
+      "fingerprint": "f08a93461c190aa29bcdbdceb6268cce933bd0ca584d6c94d0dfe982e39e2ffd:5"
     },
     {
       "file": "workspaces/runtime/packages/runtime-store/src/repositories/agent_management.rs",
@@ -2940,6 +2964,14 @@
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/legacy_view.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/legacy_view.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:1"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools/runtime_dispatch.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
@@ -3064,12 +3096,24 @@
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/tests/agent_management_corpus.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/agent_management_store.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/monitor_wake_guarantees.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
       "file": "workspaces/runtime/packages/runtime-services/tests/portable_history_python_parity.rs",
@@ -3124,7 +3168,27 @@
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:2"
     },
     {
+      "file": "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:2"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:3"
+    },
+    {
       "file": "workspaces/runtime/packages/runtime-services/tests/wave7_p03_message_ingress.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/wave7_p10_lifecycle.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
@@ -3141,6 +3205,10 @@
     },
     {
       "file": "workspaces/runtime/packages/runtime-store/src/lib.rs",
+      "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_30_approvals.rs",
       "fingerprint": "ba49cada35f63797e806417ddfb6b96690109671aa7de2fd89c0f92d49290ab1:0"
     },
     {
@@ -3205,7 +3273,7 @@
     },
     {
       "file": "workspaces/client/apps/web/src/components/liveRequestConsumers.test.ts",
-      "fingerprint": "d0e937cfbdae4bc3877719bf6d9ee51eb08473f396ec691ca0e8dd345c0d5a19:0"
+      "fingerprint": "b2d5d6ac5d417be601dd86316f5bf594275166679713d51ea82c74b9448b3725:0"
     },
     {
       "file": "workspaces/client/apps/web/src/components/readState.noRefetch.test.ts",

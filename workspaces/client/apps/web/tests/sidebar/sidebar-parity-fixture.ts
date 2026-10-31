@@ -4,6 +4,7 @@ import type {
   JsonInput,
   JsonInputOf,
 } from "../../src/apiTypes.ts";
+import { simpleRequest } from "../../src/approvalFixtures.ts";
 import { sidebarFixtureRadio } from "./sidebar-fixture-values.ts";
 import type { TestRuntimeView } from "../playwright.ts";
 import type { FixtureRequestFields } from "../servers/browser-fixture.ts";
@@ -190,14 +191,7 @@ function seed(server: ServerFixture, owner: Owner) {
     projects: [project],
     peerTeams: [team],
     sidebarOrder: { revision: owner === "local" ? 3 : 7, groups: order },
-    requests: [
-      {
-        id: "approval-request",
-        agent: "approval",
-        status: "pending",
-        deferred: false,
-      },
-    ],
+    requests: [simpleRequest({ id: "approval-request", agent: "approval" })],
     rooms: [
       {
         id: "shared",

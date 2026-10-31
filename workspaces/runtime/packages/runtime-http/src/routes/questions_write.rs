@@ -218,6 +218,7 @@ fn async_question_error(error: QuestionsWriteError) -> ApiError {
         }
         E::InvalidStoredObject { object, id } => ApiError::invalid_stored(object, &id),
         E::Store(error) => ApiError::stored(error),
+        E::Approval(error) => ApiError::stored(error.into()),
         E::Json(_) | E::Clock => ApiError::internal(),
         E::Coordination(error) => match error {
             studio_runtime_services::coordination::CoordinationError::RequestResult(error) => {
@@ -357,7 +358,20 @@ async fn delete_question(
     ApiJson(body): ApiJson<crate::generated::QuestionBody>,
 ) -> Result<Json<crate::generated::MutationReceipt>, ApiError> {
     let id = body.id;
-    let result = if let Some(runtime) = state.callback_runtime.clone() {
+    // An agent question is a typed approval; a provider card goes through the callback runtime.
+    let agent_id = id.clone();
+    let agent_question = match state.store.clone() {
+        Some(store) => store
+            .transaction_with_error(move |transaction| {
+                questions_write::delete_agent_question(transaction, &agent_id)
+            })
+            .await
+            .map_err(api_error)?,
+        None => None,
+    };
+    let result = if let Some(result) = agent_question {
+        result
+    } else if let Some(runtime) = state.callback_runtime.clone() {
         runtime
             .delete_question(&id, callback_clock().map_err(|_| ApiError::internal())?)
             .await
@@ -597,6 +611,7 @@ fn api_error(error: QuestionsWriteError) -> ApiError {
             ApiError::invalid_stored(object, &id)
         }
         QuestionsWriteError::Store(error) => ApiError::stored(error),
+        QuestionsWriteError::Approval(error) => ApiError::stored(error.into()),
         QuestionsWriteError::Event(error) => super::work_items::write_error(error),
         QuestionsWriteError::Json(_) | QuestionsWriteError::Clock => ApiError::internal(),
         QuestionsWriteError::Coordination(_) | QuestionsWriteError::Projects(_) => {

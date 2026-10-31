@@ -140,14 +140,14 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>)
             "rpcId":"provider-rpc-http", "accountKey":"voice-http-account",
             "connectionId":"voice-http-connection"
         });
+        let approval = studio_runtime_store::approvals::from_legacy_record("request-1", &request)
+            .expect("typed approval");
+        studio_runtime_store::approvals::put(tx, &approval).expect("approval row");
+        let request = serde_json::to_value(&approval).expect("approval json");
         let fingerprint = sha2::Sha256::digest(studio_runtime_store::python_json(&request).as_bytes())
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-        tx.execute(
-            "INSERT INTO runtime_requests(id,record) VALUES('request-1',?1)",
-            [request.to_string()],
-        )?;
         tx.execute(
             "INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) \
              VALUES('approval-speech','voice-http-agent','','orchestrator',?1,'','',?2,1)",
@@ -297,8 +297,6 @@ async fn installed_provider_supports_start_end_and_service_receipts() {
 
 #[tokio::test]
 async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
-    use studio_runtime_store::{RequestRecord, Table};
-
     let root = monitor_fixtures::tempdir();
     let mut case = monitor_fixtures::corpus(root.path())
         .into_iter()
@@ -338,13 +336,16 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
                 "status":"pending",
                 "createdAt":1000.0
             });
+            let approval = studio_runtime_store::approvals::from_legacy_record(
+                request["id"].as_str().expect("request ID"),
+                &request,
+            )
+            .expect("typed approval");
+            studio_runtime_store::approvals::put(tx, &approval).expect("approval row");
+            let request = serde_json::to_value(&approval).expect("approval json");
             let fingerprint = studio_runtime_store::sha256_hex(
                 studio_runtime_store::python_json(&request).as_bytes(),
             );
-            tx.execute(
-                "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
-                rusqlite::params![request["id"].as_str().expect("request ID"), request.to_string()],
-            )?;
             tx.execute(
                 "INSERT INTO voice_sessions(id,agent,created,state) VALUES('voice-monitor-session',?1,1,'ready')",
                 [request["agent"].as_str().expect("agent ID")],
@@ -402,14 +403,12 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
     );
     let response = approve(true).await.expect("monitor approval");
     assert_eq!(response["status"], "answered");
-    let request = Table::<RequestRecord>::new(&store.test_reader().expect("read request"))
-        .get(&request_id)
-        .expect("get monitor approval")
-        .expect("monitor approval");
-    assert_eq!(
-        request.answer_decision.map(|value| value.as_str()),
-        Some("accept")
-    );
+    let request = studio_runtime_services::provider_callbacks::legacy_view::stored(
+        &store.test_reader().expect("read request"),
+        &request_id,
+    )
+    .expect("monitor approval");
+    assert_eq!(request["decision"], "accept");
 
     // A saved accepted voice receipt must replay without the optional runtime.
     let replayed = approve(false).await.expect("approval replay");

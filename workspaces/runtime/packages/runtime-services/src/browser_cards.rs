@@ -3,7 +3,7 @@
 //!
 //! One poll runs for each source: the guest service of the Linux VM on this Mac (`vm`) and
 //! the host bridge of commands on this server (`host`, `browser_host`). It long-polls `browser.wait`,
-//! writes one `browser/open` request for each new pending link, refuses links that no chat
+//! writes one typed `BrowserOpen` approval for each new pending link, refuses links that no chat
 //! can own, keeps the card's deadline equal to the guest request's, and expires a pending
 //! card when its guest request ends. A card that nobody answered tells its chat
 //! (`unanswered_event`), so the agent does not wait for a result that cannot come.
@@ -13,267 +13,54 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use studio_runtime_store::{
-    QuestionsWriteRepository, RequestRecord, RuntimeStore, Table, Transaction,
+pub(crate) use studio_runtime_schema::approvals::BrowserRedirect;
+use studio_runtime_schema::approvals::{
+    AgentId, Answer, Approval, ApprovalId, ApprovalState, BrowserCard, BrowserOutcome,
+    BrowserPhase, BrowserSource, CloseReason, Decision, Detail, Principal, ProviderObject, Request,
+    Timestamp,
 };
+use studio_runtime_store::approvals::{self, ApprovalError, NewApproval};
+use studio_runtime_store::{RuntimeStore, Transaction};
 use tokio::sync::{Notify, watch};
 
 use crate::browser::BrowserForwarder;
 use crate::linux_vm_guest::{GuestError, GuestRpc};
 
+/// The method name of the old request records. Readers outside the browser cluster
+/// still query it until they move to the approvals table.
 pub const METHOD: &str = "browser/open";
 
-/// Browser parameters with opaque provider extensions retained byte-for-byte.
-#[derive(Default, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct BrowserParams {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bridge_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub host: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub phase: Option<BrowserPhase>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub redirect: Option<BrowserRedirect>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub forward: Option<BrowserForward>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub joined: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub paste: Option<BrowserPaste>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub waiting: Option<BrowserWaiting>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub outcome_http: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub scope: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub linux_user: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub user_code: Option<String>,
-    #[serde(flatten)]
-    pub extra: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>>,
-}
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct BrowserRedirect {
-    pub host: String,
-    pub port: u16,
-    pub path: String,
-}
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct BrowserWaiting {
-    pub expires_at: f64,
-}
-#[derive(serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct BrowserPaste {
-    pub at: f64,
-}
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct BrowserForward {
-    pub token_hash: Option<String>,
-    pub expires_at: Option<f64>,
-    #[serde(flatten)]
-    pub extra: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>>,
-}
-fn canonical_field<T>(field: Option<studio_runtime_schema::queue_command::Field<T>>) -> Option<T> {
-    match field {
-        Some(studio_runtime_schema::queue_command::Field::Value(value)) => Some(value),
-        None
-        | Some(
-            studio_runtime_schema::queue_command::Field::Null
-            | studio_runtime_schema::queue_command::Field::Missing,
-        ) => None,
-    }
-}
-#[derive(Default)]
-struct ForwardFields {
-    token_hash: Option<studio_runtime_schema::queue_command::Field<String>>,
-    expires_at: Option<studio_runtime_schema::queue_command::Field<f64>>,
-}
-impl<'de> studio_runtime_schema::raw_object::RawObjectFields<'de> for ForwardFields {
-    type Output = BrowserForward;
-    fn field<M: serde::de::MapAccess<'de>>(
-        &mut self,
-        name: &str,
-        map: &mut M,
-    ) -> Result<bool, M::Error> {
-        match name {
-            "tokenHash" => {
-                if self.token_hash.is_some() {
-                    return Err(serde::de::Error::duplicate_field("tokenHash"));
-                }
-                self.token_hash = Some(map.next_value()?);
-            }
-            "expiresAt" => {
-                if self.expires_at.is_some() {
-                    return Err(serde::de::Error::duplicate_field("expiresAt"));
-                }
-                self.expires_at = Some(map.next_value()?);
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-    fn finish<E: serde::de::Error>(
-        self,
-        extra: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>>,
-    ) -> Result<BrowserForward, E> {
-        Ok(BrowserForward {
-            token_hash: canonical_field(self.token_hash),
-            expires_at: canonical_field(self.expires_at),
-            extra,
-        })
-    }
-}
-impl<'de> serde::Deserialize<'de> for BrowserForward {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        studio_runtime_schema::raw_object::deserialize::<D, ForwardFields>(deserializer)
-    }
-}
-#[derive(Default)]
-struct BrowserFields {
-    bridge_id: Option<studio_runtime_schema::queue_command::Field<String>>,
-    url: Option<studio_runtime_schema::queue_command::Field<String>>,
-    host: Option<studio_runtime_schema::queue_command::Field<String>>,
-    source: Option<studio_runtime_schema::queue_command::Field<String>>,
-    phase: Option<studio_runtime_schema::queue_command::Field<BrowserPhase>>,
-    redirect: Option<studio_runtime_schema::queue_command::Field<BrowserRedirect>>,
-    forward: Option<studio_runtime_schema::queue_command::Field<BrowserForward>>,
-    joined: Option<studio_runtime_schema::queue_command::Field<Vec<String>>>,
-    paste: Option<studio_runtime_schema::queue_command::Field<BrowserPaste>>,
-    waiting: Option<studio_runtime_schema::queue_command::Field<BrowserWaiting>>,
-    outcome: Option<studio_runtime_schema::queue_command::Field<String>>,
-    outcome_http: Option<studio_runtime_schema::queue_command::Field<u16>>,
-    expires_at: Option<studio_runtime_schema::queue_command::Field<f64>>,
-    client_id: Option<studio_runtime_schema::queue_command::Field<String>>,
-    scope: Option<studio_runtime_schema::queue_command::Field<String>>,
-    linux_user: Option<studio_runtime_schema::queue_command::Field<String>>,
-    user_code: Option<studio_runtime_schema::queue_command::Field<String>>,
-}
-impl<'de> studio_runtime_schema::raw_object::RawObjectFields<'de> for BrowserFields {
-    type Output = BrowserParams;
-    fn field<M: serde::de::MapAccess<'de>>(
-        &mut self,
-        name: &str,
-        map: &mut M,
-    ) -> Result<bool, M::Error> {
-        macro_rules! field {
-            ($name:literal, $member:ident) => {
-                if name == $name {
-                    if self.$member.is_some() {
-                        return Err(serde::de::Error::duplicate_field($name));
-                    }
-                    self.$member = Some(map.next_value()?);
-                    return Ok(true);
-                }
-            };
-        }
-        field!("bridgeId", bridge_id);
-        field!("url", url);
-        field!("host", host);
-        field!("source", source);
-        field!("phase", phase);
-        field!("redirect", redirect);
-        field!("forward", forward);
-        field!("joined", joined);
-        field!("paste", paste);
-        field!("waiting", waiting);
-        field!("outcome", outcome);
-        field!("outcomeHttp", outcome_http);
-        field!("expiresAt", expires_at);
-        field!("clientId", client_id);
-        field!("scope", scope);
-        field!("linuxUser", linux_user);
-        field!("userCode", user_code);
-        Ok(false)
-    }
-    fn finish<E: serde::de::Error>(
-        self,
-        extra: std::collections::BTreeMap<String, Box<serde_json::value::RawValue>>,
-    ) -> Result<BrowserParams, E> {
-        Ok(BrowserParams {
-            bridge_id: canonical_field(self.bridge_id),
-            url: canonical_field(self.url),
-            host: canonical_field(self.host),
-            source: canonical_field(self.source),
-            phase: canonical_field(self.phase),
-            redirect: canonical_field(self.redirect),
-            forward: canonical_field(self.forward),
-            joined: canonical_field(self.joined),
-            paste: canonical_field(self.paste),
-            waiting: canonical_field(self.waiting),
-            outcome: canonical_field(self.outcome),
-            outcome_http: canonical_field(self.outcome_http),
-            expires_at: canonical_field(self.expires_at),
-            client_id: canonical_field(self.client_id),
-            scope: canonical_field(self.scope),
-            linux_user: canonical_field(self.linux_user),
-            user_code: canonical_field(self.user_code),
-            extra,
-        })
-    }
-}
-impl<'de> serde::Deserialize<'de> for BrowserParams {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        studio_runtime_schema::raw_object::deserialize::<D, BrowserFields>(deserializer)
-    }
-}
-impl BrowserParams {
-    pub(crate) fn read(raw: &serde_json::value::RawValue) -> Option<Self> {
-        serde_json::from_str(raw.get()).ok()
-    }
-}
 /// The long poll of `browser.wait`, in seconds (`POLL_SECONDS`).
 const POLL_SECONDS: u64 = 20;
 /// Guest request states that end a card (`FINAL_STATES`).
 pub const FINAL_STATES: [&str; 6] = [
     "declined", "stale", "expired", "closed", "replaced", "opened",
 ];
-/// The waiting phase of a link opened in paste mode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum BrowserPhase {
-    Waiting,
-}
 /// The `closeReason` of a card that startup recovery expired (`monitor_runtime`). The
 /// bridge keeps its request across the restart, so the poll reopens the card while that
 /// request is open, and tells the chat when it ended meanwhile without an answer.
 pub const RESTART_CLOSE_REASON: &str = "restart";
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The chat event text of each final outcome (`OUTCOME_TEXT` of `codex_browser_bridge.py`).
-fn outcome_text(outcome: &str) -> Option<&'static str> {
+/// The chat event text of each outcome after a paste (`OUTCOME_TEXT` of `codex_browser_bridge.py`).
+fn outcome_text(outcome: BrowserOutcome) -> Option<&'static str> {
     Some(match outcome {
-        "signed-in" => {
+        BrowserOutcome::SignedIn => {
             "The person signed in at {host}. Studio sent the result to the command on port {port}; the command answered HTTP {http}."
         }
-        "refused" => {
+        BrowserOutcome::Refused => {
             "The person signed in at {host}, but the command refused the result (HTTP {http})."
         }
-        "provider-error" => {
+        BrowserOutcome::ProviderError => {
             "The sign-in at {host} returned an error. Studio sent it to the command on port {port}."
         }
-        "unknown" => {
+        BrowserOutcome::Unknown => {
             "The result of the sign-in at {host} is unknown. Studio does not send it again. Check the command output."
         }
-        "expired" => {
+        BrowserOutcome::Expired => {
             "The sign-in at {host} ended without a result: the request expired or the command stopped."
         }
-        _ => return None,
+        BrowserOutcome::Cancelled => return None,
     })
 }
 
@@ -329,113 +116,115 @@ pub enum BrowserCardError {
     Store(#[from] studio_runtime_store::StoreError),
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
-    #[error("the sign-in request record is invalid")]
-    Invalid,
+    #[error(transparent)]
+    Approval(#[from] ApprovalError),
 }
 
-pub(crate) struct BrowserCard {
-    pub record: RequestRecord,
-    pub params: BrowserParams,
-}
-impl BrowserCard {
-    pub fn decode(raw: &str) -> Result<Self, BrowserCardError> {
-        let record: RequestRecord =
-            serde_json::from_str(raw).map_err(|_| BrowserCardError::Invalid)?;
-        if record.method != studio_runtime_schema::request_record::RequestMethod::BrowserOpen {
-            return Err(BrowserCardError::Invalid);
-        }
-        let params = BrowserParams::read(&record.params).ok_or(BrowserCardError::Invalid)?;
-        Ok(Self { record, params })
-    }
-}
-pub(crate) fn put_request(
+/// The stored sign-in card with this id, or none. Decoding is strict: a damaged row is an error.
+pub(crate) fn load(
     tx: &Transaction<'_>,
-    card: &mut BrowserCard,
+    id: &str,
+) -> Result<Option<(Approval, BrowserCard)>, BrowserCardError> {
+    Ok(
+        approvals::get(tx, &ApprovalId(id.to_owned()))?.and_then(|row| {
+            let Request::BrowserOpen(card) = &row.request else {
+                return None;
+            };
+            let card = card.clone();
+            Some((row, card))
+        }),
+    )
+}
+
+/// Store a changed card and publish its client view in the same transaction. The renderer
+/// shows a card only while it is pending; a closed card loses its entity.
+pub(crate) fn save(
+    tx: &Transaction<'_>,
+    mut row: Approval,
+    card: BrowserCard,
 ) -> Result<(), BrowserCardError> {
-    card.record.params =
-        serde_json::value::to_raw_value(&card.params).map_err(|_| BrowserCardError::Invalid)?;
-    Table::<RequestRecord>::new(tx).put(&card.record)?;
-    publish_request(tx, &card.record.id)?;
+    row.request = Request::BrowserOpen(card);
+    approvals::put(tx, &row)?;
+    crate::approval_sync::publish(tx, &row)?;
     Ok(())
 }
 
-/// Publish the client view of a stored card in the writer's transaction. The renderer shows
-/// a card only through its `request` entity: a pending card has one, and a closed card loses it.
-pub(crate) fn publish_request(
-    tx: &Transaction<'_>,
-    id: &str,
-) -> Result<(), studio_runtime_store::StoreError> {
-    let changes = crate::sync_policy::EntityChanges {
-        requests: BTreeSet::from([id.to_owned()]),
-        ..Default::default()
-    };
-    let server_id = RuntimeStore::transaction_local_server_id(tx)?;
-    crate::sync_policy::publish_entity_changes(tx, &changes, server_id.as_deref(), &|_, _, _, _| {
-        true
-    })
+fn optional_text<T: ToString>(value: Option<T>) -> String {
+    value.map_or_else(|| "None".into(), |value| value.to_string())
 }
 
 /// Tell the chat how a sign-in that the person opened ended (section 6.2). Returns whether an
 /// event was queued.
-pub(crate) fn outcome_event(tx: &Transaction<'_>, card: &BrowserCard, now: f64) -> bool {
-    let Some(text) = card.params.outcome.as_deref().and_then(outcome_text) else {
+pub(crate) fn outcome_event(
+    tx: &Transaction<'_>,
+    row: &Approval,
+    card: &BrowserCard,
+    now: f64,
+) -> bool {
+    let BrowserPhase::Finished { outcome, http } = &card.phase else {
         return false;
     };
-    let Ok(agent) = crate::event_write::checked_agent(tx, &card.record.agent) else {
+    let Some(text) = outcome_text(*outcome) else {
+        return false;
+    };
+    let Ok(agent) = crate::event_write::checked_agent(tx, row.agent.as_str()) else {
         return false;
     };
     let text = text
-        .replace("{host}", card.params.host.as_deref().unwrap_or("None"))
+        .replace("{host}", &card.host)
         .replace(
             "{port}",
-            &card
-                .params
-                .redirect
-                .as_ref()
-                .map_or_else(|| "None".into(), |r| r.port.to_string()),
+            &optional_text(card.redirect.as_ref().map(|redirect| redirect.port)),
         )
-        .replace(
-            "{http}",
-            &card
-                .params
-                .outcome_http
-                .map_or_else(|| "None".into(), |v| v.to_string()),
-        );
-    let bridge_id = card.params.bridge_id.as_deref().unwrap_or("None");
+        .replace("{http}", &optional_text(*http));
     match crate::event_write::enqueue_event(
         tx,
         &agent,
-        format!("browser-outcome:{bridge_id}"),
+        format!("browser-outcome:{}", card.bridge_id),
         "browser_outcome",
         text,
         now,
     ) {
         Ok(_) => true,
         Err(error) => {
-            eprintln!("browser outcome event for {bridge_id} failed: {error}");
+            eprintln!(
+                "browser outcome event for {} failed: {error}",
+                card.bridge_id
+            );
             false
         }
     }
 }
-fn unanswered_event(tx: &Transaction<'_>, card: &BrowserCard, state: &str, now: f64) -> bool {
+
+/// Tell the chat that its pending card closed without an answer. Returns whether an event was
+/// queued. The event ID names the guest request, so a repeated final state queues nothing.
+fn unanswered_event(
+    tx: &Transaction<'_>,
+    row: &Approval,
+    card: &BrowserCard,
+    state: &str,
+    now: f64,
+) -> bool {
     let Some(text) = unanswered_text(state) else {
         return false;
     };
-    let Ok(agent) = crate::event_write::checked_agent(tx, &card.record.agent) else {
+    let Ok(agent) = crate::event_write::checked_agent(tx, row.agent.as_str()) else {
         return false;
     };
-    let bridge_id = card.params.bridge_id.as_deref().unwrap_or("None");
     match crate::event_write::enqueue_event(
         tx,
         &agent,
-        format!("browser-unanswered:{bridge_id}"),
+        format!("browser-unanswered:{}", card.bridge_id),
         "browser_unanswered",
-        text.replace("{host}", card.params.host.as_deref().unwrap_or("None")),
+        text.replace("{host}", &card.host),
         now,
     ) {
         Ok(queued) => queued,
         Err(error) => {
-            eprintln!("browser unanswered event for {bridge_id} failed: {error}");
+            eprintln!(
+                "browser unanswered event for {} failed: {error}",
+                card.bridge_id
+            );
             false
         }
     }
@@ -444,30 +233,26 @@ fn unanswered_event(tx: &Transaction<'_>, card: &BrowserCard, state: &str, now: 
 /// The chat event of a joined request whose sign-in finished on another chat's card.
 const JOINED_SIGNED_IN_TEXT: &str = "The person signed in at {host} on the sign-in card of another chat. Your own sign-in command did not get that result. Stop it if it still waits, then run it again: the sign-in session is now active.";
 
-/// Add a chat that waits on a card to the card's `params.joined`, or take it away.
+/// Add a chat that waits on a card to the card's `joined` list, or take it away.
 fn join_card(
     tx: &Transaction<'_>,
     leader: &str,
     agent: &str,
     waits: bool,
 ) -> Result<(), BrowserCardError> {
-    let key = card_id(leader);
-    let Some(raw) = QuestionsWriteRepository::request(tx, &key)? else {
+    let Some((row, mut card)) = load(tx, &card_id(leader))? else {
         return Ok(());
     };
-    let mut card = BrowserCard::decode(&raw)?;
-    if card.record.status != studio_runtime_schema::persistence::RequestCardStatus::Pending {
+    if !matches!(row.state, ApprovalState::Pending) {
         return Ok(());
     }
-    let mut joined = card.params.joined.take().unwrap_or_default();
-    let before = joined.clone();
-    joined.retain(|chat| chat != agent);
+    let before = card.joined.clone();
+    card.joined.retain(|chat| chat.as_str() != agent);
     if waits {
-        joined.push(agent.to_owned());
+        card.joined.push(AgentId(agent.to_owned()));
     }
-    if joined != before {
-        card.params.joined = Some(joined);
-        put_request(tx, &mut card)?;
+    if card.joined != before {
+        save(tx, row, card)?;
     }
     Ok(())
 }
@@ -498,10 +283,22 @@ fn joined_event(tx: &Transaction<'_>, item: &Value, now: f64) -> bool {
 }
 
 /// Whether startup recovery expired this card while nobody had answered it.
-fn restart_expired(card: &BrowserCard) -> bool {
-    card.record.status == studio_runtime_schema::persistence::RequestCardStatus::Expired
-        && card.record.close_reason.as_deref() == Some(RESTART_CLOSE_REASON)
-        && card.record.decision.is_none()
+fn restart_expired(row: &Approval) -> bool {
+    matches!(
+        row.state,
+        ApprovalState::Closed {
+            reason: CloseReason::Expired,
+            ..
+        }
+    ) && row.detail.host_close_reason.as_deref() == Some(RESTART_CLOSE_REASON)
+}
+
+/// Whether the person opened the link in paste mode and the card waits for the address.
+pub(crate) fn waits_for_address(phase: &BrowserPhase) -> bool {
+    matches!(
+        phase,
+        BrowserPhase::Waiting { .. } | BrowserPhase::Pasted { .. }
+    )
 }
 
 /// A bridge that the server polls.
@@ -618,66 +415,39 @@ pub async fn apply(
     let source = source.clone();
     store
         .transaction_with_error(move |tx| {
-            let row = QuestionsWriteRepository::request(tx, &key)?;
             let mut applied = Applied {
                 refused: None,
                 finished,
                 event: false,
             };
-            match row {
+            match load(tx, &key)? {
                 None if state == "pending" => {
                     applied.refused = refusal(tx, &source, &item)?;
                     if applied.refused.is_none() {
-                        let user_code = crate::browser_policy::provider(
-                            item.get("url").and_then(Value::as_str).unwrap_or_default(),
-                            &source.http_providers,
-                        )
-                        .ok()
-                        .and_then(|checked| checked.user_code);
-                        let params = BrowserParams {
-                            bridge_id: Some(bridge_id.clone()),
-                            url: item["url"].as_str().map(str::to_owned),
-                            host: item["host"].as_str().map(str::to_owned),
-                            source: Some(source.source.to_owned()),
-                            redirect: item
-                                .get("redirect")
-                                .filter(|v| !v.is_null())
-                                .map(|v| {
-                                    serde::Deserialize::deserialize(v)
-                                        .map_err(|_| BrowserCardError::Invalid)
-                                })
-                                .transpose()?,
-                            client_id: item
-                                .get("clientId")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            scope: item.get("scope").and_then(Value::as_str).map(str::to_owned),
-                            linux_user: item
-                                .get("linuxUser")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned),
-                            user_code,
-                            expires_at: item.get("expiresAt").and_then(Value::as_f64),
-                            ..BrowserParams::default()
-                        };
-                        let raw = serde_json::value::to_raw_value(&params)
-                            .map_err(|_| BrowserCardError::Invalid)?;
-                        let mut card = BrowserCard {
-                            record: RequestRecord::new(
-                                key.clone(),
-                                item["agentId"]
-                                    .as_str()
-                                    .ok_or(BrowserCardError::Invalid)?
-                                    .into(),
-                                studio_runtime_schema::request_record::RequestMethod::BrowserOpen,
-                                studio_runtime_schema::persistence::RequestCardStatus::Pending,
-                                now,
-                                raw,
-                            ),
-                            params,
-                        };
-                        if let Err(error) = put_request(tx, &mut card) {
-                            applied.refused = Some(format!("The card is invalid: {error}"));
+                        match new_card(&source, &item, &bridge_id) {
+                            Some((agent, card)) => {
+                                let row = approvals::create(
+                                    tx,
+                                    NewApproval {
+                                        id: ApprovalId(key.clone()),
+                                        agent,
+                                        turn: None,
+                                        epoch: None,
+                                        request: Request::BrowserOpen(card),
+                                        delivery: None,
+                                        detail: Detail {
+                                            params: ProviderObject(serde_json::Map::new()),
+                                            preview: None,
+                                            answer_error: None,
+                                            host_close_reason: None,
+                                        },
+                                        fire_at: None,
+                                    },
+                                    Timestamp(now),
+                                )?;
+                                crate::approval_sync::publish(tx, &row)?;
+                            }
+                            None => applied.refused = Some("The card is invalid".into()),
                         }
                     }
                 }
@@ -708,57 +478,72 @@ pub async fn apply(
                         applied.event = joined_event(tx, &item, now);
                     }
                 }
-                Some(raw) if finished => {
-                    use studio_runtime_schema::persistence::RequestCardStatus as Status;
-                    let mut card = BrowserCard::decode(&raw)?;
-                    let pasting = card.params.paste.is_some();
+                Some((mut row, mut card)) if finished => {
+                    // A pasted result in flight writes its own outcome (browser_answer).
+                    let pasting = matches!(card.phase, BrowserPhase::Pasted { .. });
                     let local = item.get("closeReason").and_then(Value::as_str)
                         == Some(crate::browser_host::LOCAL_CLOSE_REASON);
-                    let pending = card.record.status == Status::Pending || restart_expired(&card);
+                    // A card that startup recovery expired ends as an open card does: the
+                    // request ended while the server was down, and nobody answered it.
+                    let pending =
+                        matches!(row.state, ApprovalState::Pending) || restart_expired(&row);
                     if pending && !pasting && local {
-                        card.record.status = Status::Answered;
-                        card.record.answered_by = Some("browser".into());
-                        card.record.answered_at = Some(now);
-                        card.record.decision =
-                            Some(studio_runtime_schema::request_record::RequestDecision::Accept);
-                        card.record.close_reason =
-                            Some(crate::browser_host::LOCAL_CLOSE_REASON.into());
-                        put_request(tx, &mut card)?;
-                    } else if pending && !pasting {
-                        let waiting = card.params.phase == Some(BrowserPhase::Waiting);
-                        card.record.status = Status::Expired;
-                        card.record.close_reason = Some(state.clone());
-                        if waiting {
-                            card.params.outcome = Some("expired".into());
-                        }
-                        put_request(tx, &mut card)?;
-                        applied.event = if waiting {
-                            outcome_event(tx, &card, now)
-                        } else {
-                            unanswered_event(tx, &card, &state, now)
+                        // The browser of this Mac had the page and the command stopped
+                        // listening: it ended its sign-in there, and nobody waits for the card.
+                        row.state = ApprovalState::Answered {
+                            answer: Answer::Decision {
+                                decision: Decision::Accept,
+                            },
+                            by: Principal::Owner,
+                            at: Timestamp(now),
                         };
+                        row.detail.host_close_reason =
+                            Some(crate::browser_host::LOCAL_CLOSE_REASON.to_owned());
+                        save(tx, row, card)?;
+                    } else if pending && !pasting {
+                        let waiting = waits_for_address(&card.phase);
+                        row.state = ApprovalState::Closed {
+                            reason: CloseReason::Expired,
+                            at: Timestamp(now),
+                        };
+                        row.detail.host_close_reason = Some(state.clone());
+                        if waiting {
+                            card.phase = BrowserPhase::Finished {
+                                outcome: BrowserOutcome::Expired,
+                                http: None,
+                            };
+                        }
+                        applied.event = if waiting {
+                            outcome_event(tx, &row, &card, now)
+                        } else {
+                            unanswered_event(tx, &row, &card, &state, now)
+                        };
+                        save(tx, row, card)?;
                     }
                 }
-                Some(raw) if state == "pending" || state == "approved" => {
-                    use studio_runtime_schema::persistence::RequestCardStatus as Status;
-                    let mut card = BrowserCard::decode(&raw)?;
-                    let waiting = card.params.phase == Some(BrowserPhase::Waiting);
+                // An open request whose card startup recovery expired gets its card back: the
+                // pending link, or the waiting phase of a phone sign-in.
+                Some((mut row, mut card)) if state == "pending" || state == "approved" => {
                     let mut changed = false;
-                    if restart_expired(&card) && (state == "pending" || waiting) {
-                        card.record.status = Status::Pending;
-                        card.record.close_reason = None;
+                    if restart_expired(&row)
+                        && (state == "pending" || waits_for_address(&card.phase))
+                    {
+                        row.state = ApprovalState::Pending;
+                        row.detail.host_close_reason = None;
                         changed = true;
                     }
+                    // A listening command moved the deadline of its open request (`check`).
+                    let deadline = item.get("expiresAt").and_then(Value::as_f64).map(Timestamp);
                     if state == "pending"
-                        && card.record.status == Status::Pending
-                        && let Some(deadline) = item.get("expiresAt").and_then(Value::as_f64)
-                        && card.params.expires_at != Some(deadline)
+                        && matches!(row.state, ApprovalState::Pending)
+                        && let Some(deadline) = deadline
+                        && card.expires_at != Some(deadline)
                     {
-                        card.params.expires_at = Some(deadline);
+                        card.expires_at = Some(deadline);
                         changed = true;
                     }
                     if changed {
-                        put_request(tx, &mut card)?;
+                        save(tx, row, card)?;
                     }
                 }
                 _ => {}
@@ -766,6 +551,41 @@ pub async fn apply(
             Ok(applied)
         })
         .await
+}
+
+/// The owner chat and card of a new pending link. The link was checked by `refusal`.
+fn new_card(source: &CardSource, item: &Value, bridge_id: &str) -> Option<(AgentId, BrowserCard)> {
+    let text = |key: &str| item.get(key).and_then(Value::as_str).map(str::to_owned);
+    let url = text("url")?;
+    let user_code = crate::browser_policy::provider(&url, &source.http_providers)
+        .ok()
+        .and_then(|checked| checked.user_code);
+    let redirect = match item.get("redirect") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(<BrowserRedirect as serde::Deserialize>::deserialize(value).ok()?),
+    };
+    Some((
+        AgentId(text("agentId")?),
+        BrowserCard {
+            url,
+            bridge_id: bridge_id.to_owned(),
+            host: text("host")?,
+            source: if source.source == "host" {
+                BrowserSource::Host
+            } else {
+                BrowserSource::Vm
+            },
+            redirect,
+            client_id: text("clientId"),
+            scope: text("scope"),
+            linux_user: text("linuxUser"),
+            user_code,
+            expires_at: item.get("expiresAt").and_then(Value::as_f64).map(Timestamp),
+            joined: Vec::new(),
+            forward: None,
+            phase: BrowserPhase::Link,
+        },
+    ))
 }
 
 /// Run one blocking guest call on its own thread, so a long poll never holds the runtime's
@@ -906,6 +726,82 @@ pub async fn run(
             _ = shutdown.wait_for(|stopped| *stopped) => return,
             () = tokio::time::sleep(Duration::from_secs(delay)) => {}
         }
+    }
+}
+
+/// Typed rows for the tests of the browser cluster.
+#[cfg(test)]
+pub(crate) mod fixture {
+    use super::*;
+
+    pub const BRIDGE: &str = "0123456789abcdef0123456789abcdef";
+
+    pub fn card(bridge: &str) -> BrowserCard {
+        BrowserCard {
+            url: "https://login.example.test/".into(),
+            bridge_id: bridge.into(),
+            host: "login.example.test".into(),
+            source: BrowserSource::Vm,
+            redirect: None,
+            client_id: None,
+            scope: None,
+            linux_user: None,
+            user_code: None,
+            expires_at: None,
+            joined: Vec::new(),
+            forward: None,
+            phase: BrowserPhase::Link,
+        }
+    }
+
+    pub fn row(id: &str, agent: &str, card: BrowserCard) -> Approval {
+        Approval {
+            id: ApprovalId(id.into()),
+            agent: AgentId(agent.into()),
+            turn: None,
+            created: Timestamp(1.0),
+            epoch: None,
+            request: Request::BrowserOpen(card),
+            delivery: None,
+            detail: Detail {
+                params: ProviderObject(serde_json::Map::new()),
+                preview: None,
+                answer_error: None,
+                host_close_reason: None,
+            },
+            state: ApprovalState::Pending,
+            deferral: None,
+            fire_at: None,
+            hidden: None,
+        }
+    }
+
+    /// Store a pending card for the guest request `card.bridge_id`.
+    pub async fn seed(store: &RuntimeStore, agent: &str, card: BrowserCard) -> String {
+        let id = card_id(&card.bridge_id);
+        let stored = row(&id, agent, card);
+        store
+            .transaction_with_error(move |tx| {
+                approvals::put(tx, &stored).map_err(BrowserCardError::from)
+            })
+            .await
+            .expect("card is seeded");
+        id
+    }
+
+    pub fn read_optional(store: &RuntimeStore, id: &str) -> Option<(Approval, BrowserCard)> {
+        let id = id.to_owned();
+        store
+            .test_read_transaction(move |tx| {
+                load(tx, &id).map_err(|error| {
+                    studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
+                })
+            })
+            .expect("card reads")
+    }
+
+    pub fn read(store: &RuntimeStore, id: &str) -> (Approval, BrowserCard) {
+        read_optional(store, id).expect("card exists")
     }
 }
 

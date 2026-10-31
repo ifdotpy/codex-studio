@@ -117,7 +117,7 @@ mod registry_hints {
                             | ObservedTable::ErrorIncidents
                             | ObservedTable::AccountTransfers
                             | ObservedTable::OrchestrationSettings
-                            | ObservedTable::RuntimeRequests
+                            | ObservedTable::Approvals
                             | ObservedTable::RuntimeToolRequests
                             | ObservedTable::AccountState
                             | ObservedTable::AnalyticsProjection

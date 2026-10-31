@@ -2,7 +2,7 @@
 //!
 //! The renderer reads chats and cards only from their `sync_entities` rows, and
 //! a pull does not rebuild a complete projection. So every writer transaction
-//! publishes the `runtime_agents` and `runtime_requests` rows it changed, in the
+//! publishes the `runtime_agents` and `approvals` rows it changed, in the
 //! same transaction and before it commits, unless the transaction already
 //! published that entity after its last change. The projection itself belongs
 //! to runtime-services, which installs it with
@@ -233,7 +233,7 @@ impl Source {
     fn of_table(table: &str) -> Option<Self> {
         match table {
             "runtime_agents" => Some(Self::Agent),
-            "runtime_requests" => Some(Self::Request),
+            "approvals" => Some(Self::Request),
             "runtime_events" => Some(Self::Event),
             "runtime_event_meta" => Some(Self::EventMeta),
             "runtime_items" => Some(Self::Item),
@@ -264,7 +264,7 @@ impl Source {
     fn table(self) -> &'static str {
         match self {
             Self::Agent => "runtime_agents",
-            Self::Request => "runtime_requests",
+            Self::Request => "approvals",
             Self::Event => "runtime_events",
             Self::EventMeta => "runtime_event_meta",
             Self::Item => "runtime_items",
@@ -456,11 +456,9 @@ pub(crate) fn pending(
         }
         if let Some(id) = id {
             if let Some(agent) = transaction
-                .query_row(
-                    "SELECT json_extract(record,'$.agent') FROM runtime_requests WHERE id=?1",
-                    [id],
-                    |row| row.get::<_, Option<String>>(0),
-                )
+                .query_row("SELECT agent FROM approvals WHERE id=?1", [id], |row| {
+                    row.get::<_, Option<String>>(0)
+                })
                 .optional()?
                 .flatten()
             {

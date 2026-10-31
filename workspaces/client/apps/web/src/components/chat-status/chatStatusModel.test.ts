@@ -2,11 +2,11 @@ import {
   AgentSource,
   AgentStatus,
   ComplaintStatus,
-  RequestStatus,
   TaskKind,
   TaskStatus,
 } from "../../generated/api";
 import { required } from "../componentTestFixtures";
+import { simpleRequest } from "../../approvalFixtures";
 import type { Agent, Snapshot } from "../../types";
 import type { ChatActivity } from "./chatStatusModel";
 import { componentSnapshot } from "../componentTestFixtures";
@@ -224,31 +224,30 @@ it("classifies unread, work, answer, error and paused states from current runtim
     state(
       { ...lead, status: "running" },
       {
-        requests: [{ agent: "lead", status: RequestStatus.pending, epoch: 2 }],
+        requests: [simpleRequest({ agent: "lead", epoch: 2 })],
       },
     ),
     "answer",
   );
   assert.equal(
     state(lead, {
-      requests: [{ agent: "lead", status: RequestStatus.pending, epoch: 1 }],
+      requests: [simpleRequest({ agent: "lead", epoch: 1 })],
     }),
     "unread",
   );
   assert.equal(
     state(lead, {
-      requests: [{ agent: "lead", status: RequestStatus.answered }],
+      requests: [simpleRequest({ agent: "lead", answered: true })],
     }),
     "unread",
   );
   assert.equal(
     state(lead, {
       requests: [
-        {
+        simpleRequest({
           agent: "lead",
-          status: RequestStatus.pending,
           deferred: true,
-        },
+        }),
       ],
     }),
     "unread",
@@ -258,11 +257,10 @@ it("classifies unread, work, answer, error and paused states from current runtim
       { ...lead, status: "approval" },
       {
         requests: [
-          {
+          simpleRequest({
             agent: "lead",
-            status: RequestStatus.pending,
             deferred: true,
-          },
+          }),
         ],
       },
     ),
@@ -346,11 +344,10 @@ it("classifies unread, work, answer, error and paused states from current runtim
     chatIndicators(
       snapshot([lead, child], {
         requests: [
-          {
+          simpleRequest({
             agent: "child",
-            status: RequestStatus.pending,
             epoch: 2,
-          },
+          }),
         ],
       }),
     ).get("lead")!.kind,
@@ -370,7 +367,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
     state(
       { ...lead, status: "approval" },
       {
-        requests: [{ agent: "lead", status: RequestStatus.pending, epoch: 1 }],
+        requests: [simpleRequest({ agent: "lead", epoch: 1 })],
       },
     ),
     "none",
@@ -414,7 +411,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
     assert.equal(
       state(agent, {
         ...inboxAttention,
-        requests: [{ agent: "lead", status: RequestStatus.pending, epoch: 2 }],
+        requests: [simpleRequest({ agent: "lead", epoch: 2 })],
       }),
       "answer",
       "An actual pending question still takes priority over inbox items",
@@ -726,12 +723,8 @@ it("classifies unread, work, answer, error and paused states from current runtim
     kind: "working",
     label: "Waiting for event build-ready",
   });
-  const input: Snapshot["runtime"]["requests"][number] = {
-    id: "input",
-    agent: "lead",
-    status: RequestStatus.pending,
-    epoch: 2,
-  };
+  const inputFields = { id: "input", agent: "lead", epoch: 2 };
+  const input = simpleRequest(inputFields);
   assert.equal(
     waitState(undefined, { requests: [input] }).label,
     "Waiting for 1 input",
@@ -746,7 +739,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
   assert.equal(
     chatWaitState(
       snapshot([waitingLead], {
-        requests: [{ agent: "lead" }],
+        requests: [simpleRequest({ agent: "lead" })],
       }),
       waitingLead,
     ).inputs,
@@ -765,13 +758,15 @@ it("classifies unread, work, answer, error and paused states from current runtim
     },
   );
   for (const record of [
-    { status: "answered" },
+    { answered: true },
     { deferred: true },
     { epoch: 1 },
     { agent: "other" },
   ] as const)
     assert.equal(
-      waitState(undefined, { requests: [{ ...input, ...record }] }).live,
+      waitState(undefined, {
+        requests: [simpleRequest({ ...inputFields, ...record })],
+      }).live,
       false,
     );
   const twoWorkers: Agent[] = [
@@ -793,7 +788,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
     waitState([{ ...waitingLead, parkedEvent: "ready" }], {
       tasks: [ownCommand, { ...ownCommand, id: "cmd-2" }],
       monitors: [ownMonitor, { ...ownMonitor, id: "monitor-2" }],
-      requests: [input, { ...input, id: "input-2" }],
+      requests: [input, simpleRequest({ ...inputFields, id: "input-2" })],
     }).label,
     "Waiting for 2 commands, 2 monitors, event ready and 2 inputs",
   );
@@ -886,11 +881,10 @@ it("keeps a parent waiting for a child with current command or monitor work", ()
     const snapshot = makeSnapshot([lead, child], {
       [kind]: [work],
       requests: [
-        {
+        simpleRequest({
           agent: child.id,
           epoch: child.epoch,
-          status: RequestStatus.pending,
-        },
+        }),
       ],
     });
     assert.equal(
@@ -1073,16 +1067,10 @@ it("rejects malformed request epochs while preserving absent, null and numeric r
     [{ epoch: null }, true],
     [{ epoch: 4 }, true],
     [{ epoch: 3 }, false],
-    [{ epoch: "3" }, false],
   ] as const;
 
   for (const [record, current] of requestEpochs) {
-    // @ts-expect-error The epoch matrix intentionally includes a string epoch.
-    const request: Partial<Snapshot["runtime"]["requests"][number]> = {
-      agent: "lead",
-      status: "pending" as const,
-      ...record,
-    };
+    const request = simpleRequest({ agent: "lead", ...record });
     assert.equal(
       chatWaitState(makeSnapshot([waiting], { requests: [request] }), waiting)
         .inputs,
@@ -1248,7 +1236,7 @@ it("maps live runtime records to sorted caller-visible activities", () => {
   assert.deepEqual(
     chatIndicators(
       makeSnapshot([makeAgent({ id: "orphan", rootId: "missing-root" })], {
-        requests: [{ agent: "orphan" }],
+        requests: [simpleRequest({ agent: "orphan" })],
       }),
     ).get("orphan")!,
     { kind: "answer", label: "Needs your answer" },
@@ -1261,7 +1249,7 @@ it("maps live runtime records to sorted caller-visible activities", () => {
           makeAgent({ id: "regular", rootId: "" }),
           makeAgent({ id: "", rootId: "", status: "idle" }),
         ],
-        { requests: [{ agent: "regular" }] },
+        { requests: [simpleRequest({ agent: "regular" })] },
       ),
     ).get("")!,
     { kind: "none", label: "Ready" },
@@ -1474,16 +1462,15 @@ it("builds live wait labels only from current owned triggers", () => {
   } as ChatActivity;
   const snapshot = makeSnapshot([lead, child], {
     requests: [
-      { id: "pending", agent: "lead", epoch: 2 },
-      {
+      simpleRequest({ id: "pending", agent: "lead", epoch: 2 }),
+      simpleRequest({
         id: "deferred",
         agent: "lead",
-        status: RequestStatus.pending,
         deferred: true,
-      },
-      { id: "answered", agent: "lead", status: RequestStatus.answered },
-      { id: "stale", agent: "lead", epoch: 1 },
-      { id: "child", agent: "child", status: RequestStatus.pending },
+      }),
+      simpleRequest({ id: "answered", agent: "lead", answered: true }),
+      simpleRequest({ id: "stale", agent: "lead", epoch: 1 }),
+      simpleRequest({ id: "child", agent: "child" }),
     ],
   });
   const state = chatWaitState(
@@ -1532,7 +1519,7 @@ it("builds live wait labels only from current owned triggers", () => {
   assert.equal(
     chatWaitState(
       makeSnapshot([noEpochAgent], {
-        requests: [{ agent: "lead", epoch: 7 }],
+        requests: [simpleRequest({ agent: "lead", epoch: 7 })],
       }),
       noEpochAgent,
     ).label,
@@ -1542,7 +1529,7 @@ it("builds live wait labels only from current owned triggers", () => {
   assert.equal(
     chatWaitState(
       makeSnapshot([scopedAgent], {
-        requests: [{ agent: "lead" }],
+        requests: [simpleRequest({ agent: "lead" })],
       }),
       scopedAgent,
     ).inputs,
@@ -1611,7 +1598,7 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
     autoWake: false,
   });
   const snapshot = makeSnapshot([agent, child], {
-    requests: [{ agent: "child", status: RequestStatus.pending, epoch: 2 }],
+    requests: [simpleRequest({ agent: "child", epoch: 2 })],
     tasks: [
       {
         id: "task",
@@ -1650,7 +1637,7 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
   assert.deepEqual(
     chatIndicators(
       makeSnapshot([makeAgent({ status: "approval" })], {
-        requests: [{ agent: "lead", deferred: true }],
+        requests: [simpleRequest({ agent: "lead", deferred: true })],
       }),
     ).get("lead")!,
     { kind: "paused", label: "Question deferred" },
@@ -1740,7 +1727,7 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
   assert.deepEqual(
     chatIndicators(
       makeSnapshot([makeAgent({ status: "waiting", epoch: 2 })], {
-        requests: [{ agent: "lead", epoch: 2 }],
+        requests: [simpleRequest({ agent: "lead", epoch: 2 })],
       }),
     ).get("lead")!,
     { kind: "answer", label: "Waiting for 1 input" },
@@ -1748,7 +1735,7 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
   assert.deepEqual(
     chatIndicators(
       makeSnapshot([makeAgent({ status: "waiting", epoch: null })], {
-        requests: [{ agent: "lead", epoch: 9 }],
+        requests: [simpleRequest({ agent: "lead", epoch: 9 })],
       }),
     ).get("lead")!,
     { kind: "answer", label: "Waiting for 1 input" },
@@ -1770,11 +1757,10 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
         ],
         {
           requests: [
-            {
+            simpleRequest({
               agent: "child",
-              status: RequestStatus.pending,
               epoch: 2,
-            },
+            }),
           ],
         },
       ),

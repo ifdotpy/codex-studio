@@ -1512,16 +1512,19 @@ async fn sign_in_shows_one_card_through_the_chat_bridge() {
     let card = value["requestId"].as_str().unwrap().to_owned();
     let saved = store
         .read_async("test", move |tx| {
-            studio_runtime_store::QuestionsWriteRepository::request(tx, &card)
+            Ok::<_, studio_runtime_store::StoreError>(studio_runtime_store::approvals::get(
+                tx,
+                &studio_runtime_schema::approvals::ApprovalId(card),
+            )?)
         })
         .await
         .unwrap()
         .expect("the card is written before the tool answers");
-    let saved: Value = serde_json::from_str(&saved).unwrap();
-    assert_eq!(
-        (saved["method"].as_str(), saved["agent"].as_str()),
-        (Some("browser/open"), lead["id"].as_str())
-    );
+    assert!(matches!(
+        saved.request,
+        studio_runtime_schema::approvals::Request::BrowserOpen(_)
+    ));
+    assert_eq!(Some(saved.agent.as_str()), lead["id"].as_str());
     let again = call_with_ports(
         &store,
         lead,

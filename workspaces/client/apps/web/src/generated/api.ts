@@ -4457,6 +4457,8 @@ export interface components {
       /** Updatedat */
       updatedAt: number;
     };
+    /** @description Identity of the agent that owns the turn. */
+    AgentId: string;
     /** AgentInboxEntry */
     AgentInboxEntry: {
       /** Agent */
@@ -5675,102 +5677,6 @@ export interface components {
       yoloMode?: boolean | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /** AgentRequest */
-    AgentRequest: {
-      /** Agent */
-      agent: string;
-      /**
-       * Answeredat
-       * @default null
-       */
-      answeredAt?: number | null | undefined;
-      /**
-       * Answeredby
-       * @default null
-       */
-      answeredBy?: null | string | undefined;
-      /**
-       * Answererror
-       * @default null
-       */
-      answerError?: null | string | undefined;
-      /**
-       * Answerhistory
-       * @default null
-       */
-      answerHistory?:
-        | components["schemas"]["AnswerHistoryEntry"][]
-        | null
-        | undefined;
-      /**
-       * Createdat
-       * @default null
-       */
-      createdAt?: number | null | undefined;
-      /**
-       * Decision
-       * @default null
-       */
-      decision?:
-        | ("answer" | "accept" | "decline" | "cancel")
-        | null
-        | undefined;
-      /**
-       * Deferred
-       * @default null
-       */
-      deferred?: boolean | null | undefined;
-      /**
-       * Deferredat
-       * @default null
-       */
-      deferredAt?: number | null | undefined;
-      /**
-       * Deferredby
-       * @default null
-       */
-      deferredBy?: null | string | undefined;
-      /** Id */
-      id: string;
-      /**
-       * Itemid
-       * @description Provider transcript item that asked the question, when known.
-       * @default null
-       */
-      itemId?: null | string | undefined;
-      /**
-       * Method
-       * @enum {string}
-       */
-      method:
-        | "agent/asyncQuestion"
-        | "item/tool/requestUserInput"
-        | "mcpServer/elicitation/request";
-      /**
-       * Questions
-       * @default []
-       */
-      questions?: components["schemas"]["QuestionEntry"][] | undefined;
-      /**
-       * Status
-       * @enum {string}
-       */
-      status:
-        | "pending"
-        | "blocked"
-        | "answered"
-        | "answering"
-        | "uncertain"
-        | "expired"
-        | "declined"
-        | "failed";
-      /**
-       * Turnid
-       * @description Native turn that asked the question, when known.
-       * @default null
-       */
-      turnId?: null | string | undefined;
     };
     /**
      * AgentResponse
@@ -8252,6 +8158,24 @@ export interface components {
        */
       turnId?: null | string | undefined;
     };
+    /** @description The answer a person or policy gives. Its kind must fit the request kind. */
+    Answer:
+      | {
+          decision: components["schemas"]["Decision"];
+          /** @constant */
+          kind: "decision";
+        }
+      | {
+          answers: components["schemas"]["QuestionAnswer"][];
+          /** @constant */
+          kind: "answers";
+        }
+      | {
+          action: components["schemas"]["ElicitationAction"];
+          content: unknown;
+          /** @constant */
+          kind: "elicitation";
+        };
     /**
      * AnswerBody
      * @description Provider question answers may carry provider-specific answer fields.
@@ -8304,16 +8228,6 @@ export interface components {
       result?: string | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /** AnswerHistoryEntry */
-    AnswerHistoryEntry: {
-      answer: components["schemas"]["JsonValue"];
-      /** Id */
-      id: string;
-      /** Issecret */
-      isSecret: boolean;
-      /** Question */
-      question: string;
     };
     /** AnswerResult */
     AnswerResult: {
@@ -8425,6 +8339,62 @@ export interface components {
        */
       typography?: "original" | "custom" | undefined;
     };
+    /** @description A row. `fire_at` is the durable expiry timer of a pending approval. */
+    Approval: {
+      agent: components["schemas"]["AgentId"];
+      created: components["schemas"]["Timestamp"];
+      deferral: components["schemas"]["Deferral"] | null;
+      /** @description Present for provider requests that Studio answers over a connection. */
+      delivery: components["schemas"]["Delivery"] | null;
+      detail: components["schemas"]["Detail"];
+      /**
+       * Format: uint64
+       * @description Agent epoch when the request was made. Absent on old rows.
+       */
+      epoch: number | null;
+      fire_at: components["schemas"]["Timestamp"] | null;
+      hidden: components["schemas"]["Hidden"] | null;
+      id: components["schemas"]["ApprovalId"];
+      request: components["schemas"]["Request"];
+      state: components["schemas"]["ApprovalState"];
+      /**
+       * @description None only for kinds in `RequestKind::TURN_OPTIONAL`: requests of the
+       *     agent itself (not of a provider turn).
+       */
+      turn: components["schemas"]["TurnId"] | null;
+    };
+    /** @description Identity of one approval. Equals the legacy request id after migration. */
+    ApprovalId: string;
+    ApprovalState:
+      | {
+          /** @constant */
+          kind: "pending";
+        }
+      | {
+          answer: components["schemas"]["Answer"];
+          command: components["schemas"]["CommandId"];
+          /** @constant */
+          kind: "answering";
+        }
+      | {
+          answer: components["schemas"]["Answer"];
+          at: components["schemas"]["Timestamp"];
+          by: components["schemas"]["Principal"];
+          /** @constant */
+          kind: "answered";
+        }
+      | {
+          answer: components["schemas"]["Answer"];
+          /** @constant */
+          kind: "unknown";
+          since: components["schemas"]["Timestamp"];
+        }
+      | {
+          at: components["schemas"]["Timestamp"];
+          /** @constant */
+          kind: "closed";
+          reason: components["schemas"]["CloseReason"];
+        };
     /** ApprovePeerRequest */
     ApprovePeerRequest: {
       /**
@@ -9217,6 +9187,11 @@ export interface components {
        */
       yoloMode?: boolean | null | undefined;
     };
+    /** @description A forward of the callback to another server. Only the hash of the token is stored. */
+    BrowserCallbackForward: {
+      expires_at: components["schemas"]["Timestamp"];
+      token_hash: string;
+    };
     /**
      * BrowserForward
      * @description The redirect port of a sign-in that a paired server approved for a window on this Mac.
@@ -9253,6 +9228,40 @@ export interface components {
        */
       status: "forwarding";
     };
+    /** @description How a sign-in ended after the person opened it. */
+    BrowserOutcome:
+      | ("signed_in" | "refused" | "provider_error" | "unknown" | "expired")
+      | "cancelled";
+    /**
+     * @description The step of a sign-in card. The approval state says who answered; the phase
+     *     says what happens in the paste mode, where the card waits after the answer.
+     */
+    BrowserPhase:
+      | {
+          /** @constant */
+          kind: "link";
+        }
+      | {
+          expires_at: components["schemas"]["Timestamp"];
+          /** @constant */
+          kind: "waiting";
+        }
+      | {
+          at: components["schemas"]["Timestamp"];
+          expires_at: components["schemas"]["Timestamp"];
+          /** @constant */
+          kind: "pasted";
+        }
+      | {
+          /**
+           * Format: uint16
+           * @description HTTP status the command answered, when it answered.
+           */
+          http: number | null;
+          /** @constant */
+          kind: "finished";
+          outcome: components["schemas"]["BrowserOutcome"];
+        };
     /** BrowserRecoveryRecordResponse */
     BrowserRecoveryRecordResponse: {
       /**
@@ -9380,6 +9389,15 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    /** @description The loopback address the sign-in command listens on. */
+    BrowserRedirect: {
+      host: string;
+      path: string;
+      /** Format: uint16 */
+      port: number;
+    };
+    /** @description Where a sign-in link came from. */
+    BrowserSource: "vm" | "host";
     /** BrowserStatus */
     BrowserStatus: {
       /** Enabled */
@@ -10660,6 +10678,15 @@ export interface components {
       /** Text */
       text: string;
     };
+    CloseReason:
+      | (
+          | "turn_ended"
+          | "provider_resolved"
+          | "session_lost"
+          | "chat_deleted"
+          | "expired"
+        )
+      | "legacy";
     /**
      * CodexLoginReceipt
      * @description Known fields; AccountStore.login_receipts() passes persisted receipts through.
@@ -10749,6 +10776,8 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    /** @description Identity of the outbox command that delivers an answer. */
+    CommandId: string;
     /**
      * CommandRequest
      * @description One write action. The owner is runtime-schema/src/command.rs.
@@ -12044,6 +12073,8 @@ export interface components {
       /** @description Disjoint cumulative token counts; tokens. */
       tokens: components["schemas"]["UsageTokens"];
     };
+    /** @enum {string} */
+    Decision: "accept" | "accept_for_session" | "decline" | "cancel";
     /**
      * DefaultAccountGroupsRequest
      * @description Replace the default account order of projects without their own order. An empty list removes it. Repeating a request sets the same value.
@@ -12051,6 +12082,12 @@ export interface components {
     DefaultAccountGroupsRequest: {
       /** Groups */
       groups: string[];
+    };
+    /** @description The user moved the question aside. `active` is false after it came back. */
+    Deferral: {
+      active: boolean;
+      at: components["schemas"]["Timestamp"];
+      by: components["schemas"]["Principal"];
     };
     /** DeleteAccountRequest */
     DeleteAccountRequest: {
@@ -12093,6 +12130,14 @@ export interface components {
       version?: string | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
+    };
+    /** @description What the server needs to send the answer back to the provider. */
+    Delivery: {
+      account: string;
+      connection: string;
+      rpc_id: components["schemas"]["RpcId"];
+      /** @description Absent on rows written before supervisor generations were recorded. */
+      supervisor: components["schemas"]["Supervisor"] | null;
     };
     /**
      * DeliveryMoment
@@ -12220,6 +12265,17 @@ export interface components {
       supervisorNotice: null | string;
       /** Supervisorrequired */
       supervisorRequired: boolean;
+    };
+    /** @description Display content and provider fields that no logic reads by name. */
+    Detail: {
+      /** @description Human text of a lost delivery. */
+      answer_error: string | null;
+      /** @description Text the browser host gave when it closed a browser request. */
+      host_close_reason: string | null;
+      /** @description Provider request params without the fields typed in `Request`. */
+      params: components["schemas"]["ProviderObject"];
+      /** @description Item body shown on the card (command run, file changes). */
+      preview: components["schemas"]["ProviderObject"] | null;
     };
     /** DevicePairRequest */
     DevicePairRequest: {
@@ -12561,6 +12617,8 @@ export interface components {
       /** Target */
       target?: null | string | undefined;
     };
+    /** @enum {string} */
+    ElicitationAction: "accept" | "decline" | "cancel";
     /** EmptyTransferRecoveryRecordResponse */
     EmptyTransferRecoveryRecordResponse: {
       /**
@@ -13641,6 +13699,13 @@ export interface components {
       /** @constant */
       found: true;
       result: components["schemas"]["ProcessActionResult"];
+    };
+    /** @enum {string} */
+    Grant: "full" | "observe";
+    /** @description History stays: a hidden row is not shown in the default list. */
+    Hidden: {
+      at: components["schemas"]["Timestamp"];
+      by: components["schemas"]["Principal"];
     };
     /** HistoricalInputProofRecordResponse */
     HistoricalInputProofRecordResponse: {
@@ -17185,6 +17250,42 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    /**
+     * @description Who acts. Local copy of the permissions work (`feat/principal-permissions`);
+     *     the second change to land unifies the two.
+     */
+    Principal:
+      | {
+          /** @constant */
+          kind: "owner";
+        }
+      | {
+          grant: components["schemas"]["Grant"];
+          id: string;
+          /** @constant */
+          kind: "device";
+        }
+      | {
+          /** @constant */
+          kind: "peer";
+          server: string;
+        }
+      | {
+          /** Format: uint64 */
+          epoch: number;
+          id: string;
+          /** @constant */
+          kind: "agent";
+        }
+      | {
+          /** @constant */
+          kind: "federated";
+          peer: string;
+        }
+      | {
+          /** @constant */
+          kind: "policy";
+        };
     ProcessActionResult: {
       /** @default [] */
       processes?: components["schemas"]["ProcessEntry"][] | undefined;
@@ -18317,6 +18418,13 @@ export interface components {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
+     * @description Provider-owned content that Studio stores and shows as is (tolerant at the
+     *     provider boundary). Typed request fields are removed from `params`.
+     */
+    ProviderObject: {
+      [key: string]: unknown;
+    };
+    /**
      * ProviderUpdateNotice
      * @description A newer installed or upstream provider version is available.
      */
@@ -18454,6 +18562,22 @@ export interface components {
        */
       protocol: 1;
     };
+    Question: {
+      header: string | null;
+      id: string;
+      is_other: boolean | null;
+      is_secret: boolean;
+      /** @description Absent when the provider did not send the flag. */
+      multi_select: boolean | null;
+      options: components["schemas"]["QuestionOption"][];
+      question: string;
+    };
+    QuestionAnswer: {
+      answer: string[];
+      /** @description SHA-256 (hex) of the typed values of a secret question, which are stored as the redaction mark. */
+      digest?: string | null | undefined;
+      id: string;
+    };
     QuestionAnswerStrings: {
       answers: string[];
     };
@@ -18520,53 +18644,11 @@ export interface components {
       };
       decision: components["schemas"]["QuestionDecision"];
     };
-    /** QuestionEntry */
-    QuestionEntry: {
-      /**
-       * Header
-       * @description Short topic label of a native or asynchronous question.
-       * @default null
-       */
-      header?: null | string | undefined;
-      /** Id */
-      id: string;
-      /**
-       * Isother
-       * @description The provider also accepts a free-text answer.
-       * @default null
-       */
-      isOther?: boolean | null | undefined;
-      /** Issecret */
-      isSecret: boolean;
-      /**
-       * Multiselect
-       * @description The question accepts more than one choice.
-       * @default null
-       */
-      multiSelect?: boolean | null | undefined;
-      /**
-       * Options
-       * @description Choices offered by a native or asynchronous question; absent for form elicitation.
-       * @default null
-       */
-      options?: components["schemas"]["QuestionOption"][] | null | undefined;
-      /** Question */
-      question: string;
-    };
-    /** QuestionHistory */
-    QuestionHistory: {
-      /** Items */
-      items: components["schemas"]["AgentRequest"][];
-    };
-    /** QuestionOption */
     QuestionOption: {
-      /**
-       * Description
-       * @default null
-       */
-      description?: null | string | undefined;
-      /** Label */
+      description: string | null;
       label: string;
+      /** @description Markdown shown next to the option. */
+      preview: string | null;
     };
     QuestionSelections: {
       answers: {
@@ -19041,6 +19123,75 @@ export interface components {
       /** Requestid */
       requestId: string;
     };
+    /** @description Fixed at creation. Decides which answers are allowed. */
+    Request:
+      | {
+          command: string;
+          cwd: string;
+          /** @constant */
+          kind: "exec";
+          reason: string | null;
+        }
+      | {
+          files: string[];
+          item: string;
+          /** @constant */
+          kind: "patch";
+          reason: string | null;
+        }
+      | {
+          /** @constant */
+          kind: "permissions";
+          requested: string[];
+        }
+      | {
+          /** @constant */
+          kind: "elicitation";
+          /** @description JSON schema chosen by the provider; shown as is. */
+          schema: unknown;
+        }
+      | {
+          /** @constant */
+          kind: "question";
+          questions: components["schemas"]["Question"][];
+        }
+      | {
+          input: unknown;
+          /** @constant */
+          kind: "tool_use";
+          tool: string;
+        }
+      | {
+          /** @constant */
+          kind: "agent_question";
+          questions: components["schemas"]["Question"][];
+        }
+      | {
+          command: string;
+          /** @constant */
+          kind: "monitor_start";
+          monitor: string;
+        }
+      | {
+          /** @description Identity of the guest request. 32 lowercase hex characters. */
+          bridge_id: string;
+          client_id: string | null;
+          /** @description Deadline of the guest request. */
+          expires_at: components["schemas"]["Timestamp"] | null;
+          forward: components["schemas"]["BrowserCallbackForward"] | null;
+          host: string;
+          /** @description Other chats that wait on this card. */
+          joined: components["schemas"]["AgentId"][];
+          /** @constant */
+          kind: "browser_open";
+          linux_user: string | null;
+          phase: components["schemas"]["BrowserPhase"];
+          redirect: components["schemas"]["BrowserRedirect"] | null;
+          scope: string | null;
+          source: components["schemas"]["BrowserSource"];
+          url: string;
+          user_code: string | null;
+        };
     /** RequestAnswerRecordResponse */
     RequestAnswerRecordResponse: {
       answer?: components["schemas"]["JsonValue"] | undefined;
@@ -19062,45 +19213,6 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
-    /** RequestEntityDto */
-    RequestEntityDto: {
-      /** Accountkey */
-      accountKey?: null | string | undefined;
-      /** Agent */
-      agent?: null | string | undefined;
-      /** At */
-      at?: null | number | undefined;
-      /** Connectionid */
-      connectionId?: null | string | undefined;
-      /** Created */
-      created?: null | number | undefined;
-      /** Createdat */
-      createdAt?: null | number | undefined;
-      /** Deferred */
-      deferred?: boolean | null | undefined;
-      /** Epoch */
-      epoch?: number | null | undefined;
-      /** Error */
-      error?: null | string | undefined;
-      /** Id */
-      id: string;
-      /** Method */
-      method?: null | string | undefined;
-      params?: components["schemas"]["RequestParamsDto"] | null | undefined;
-      preview?: components["schemas"]["RequestPreviewDto"] | null | undefined;
-      result?: components["schemas"]["JsonValue"] | null | undefined;
-      status?: components["schemas"]["RequestStatus"] | null | undefined;
-      /** Threadid */
-      threadId?: null | string | undefined;
-      /** Title */
-      title?: null | string | undefined;
-      /** Turnid */
-      turnId?: null | string | undefined;
-      /** Updated */
-      updated?: null | number | undefined;
-      /** Updatedat */
-      updatedAt?: null | number | undefined;
-    };
     /** RequestInboxEntry */
     RequestInboxEntry: {
       /** Agent */
@@ -19117,138 +19229,6 @@ export interface components {
       text: string;
       /** Title */
       title: string;
-    };
-    /**
-     * RequestParamsDto
-     * @description Known request UI fields and typed JSON-safe native protocol extensions.
-     */
-    RequestParamsDto: {
-      changes?: components["schemas"]["JsonValue"] | null | undefined;
-      /** Clientid */
-      clientId?: null | string | undefined;
-      /** Command */
-      command?: string[] | null | string | undefined;
-      /** Cwd */
-      cwd?: null | string | undefined;
-      /** Expiresat */
-      expiresAt?: null | number | undefined;
-      /** Host */
-      host?: null | string | undefined;
-      /** Linuxuser */
-      linuxUser?: null | string | undefined;
-      /** Message */
-      message?: null | string | undefined;
-      /** Paste */
-      paste?:
-        | {
-            [key: string]: components["schemas"]["JsonValue"] | undefined;
-          }
-        | null
-        | undefined;
-      /** Permissions */
-      permissions?:
-        | {
-            [key: string]: components["schemas"]["JsonValue"] | undefined;
-          }
-        | null
-        | undefined;
-      /** Phase */
-      phase?: null | string | undefined;
-      /** Questions */
-      questions?:
-        | components["schemas"]["RequestQuestionDto"][]
-        | null
-        | undefined;
-      /** Reason */
-      reason?: null | string | undefined;
-      /** Redirect */
-      redirect?:
-        | {
-            [key: string]: components["schemas"]["JsonValue"] | undefined;
-          }
-        | null
-        | undefined;
-      requestedSchema?:
-        | components["schemas"]["RequestSchemaDto"]
-        | null
-        | undefined;
-      /** Scope */
-      scope?: null | string | undefined;
-      /** Source */
-      source?: null | string | undefined;
-      /** Threadid */
-      threadId?: null | string | undefined;
-      /** Turnid */
-      turnId?: null | string | undefined;
-      /** Url */
-      url?: null | string | undefined;
-      /** Usercode */
-      userCode?: null | string | undefined;
-      /** Waiting */
-      waiting?:
-        | {
-            [key: string]: components["schemas"]["JsonValue"] | undefined;
-          }
-        | null
-        | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /**
-     * RequestPreviewDto
-     * @description Known preview fields plus the native tool's provider-specific preview metadata.
-     */
-    RequestPreviewDto: {
-      changes?: components["schemas"]["JsonValue"] | null | undefined;
-      /** Command */
-      command?: string[] | null | string | undefined;
-      /** Cwd */
-      cwd?: null | string | undefined;
-      /** Permissions */
-      permissions?:
-        | {
-            [key: string]: components["schemas"]["JsonValue"] | undefined;
-          }
-        | null
-        | undefined;
-      /** Url */
-      url?: null | string | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /**
-     * RequestQuestionDto
-     * @description Known question UI fields plus future native question protocol fields.
-     */
-    RequestQuestionDto: {
-      /** Id */
-      id: string;
-      /** Issecret */
-      isSecret?: boolean | null | undefined;
-      /** Multiselect */
-      multiSelect?: boolean | null | undefined;
-      /** Options */
-      options?:
-        | components["schemas"]["RequestQuestionOptionDto"][]
-        | null
-        | undefined;
-      /** Question */
-      question: string;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /**
-     * RequestQuestionOptionDto
-     * @description Known labels plus provider-owned option metadata passed through verbatim.
-     */
-    RequestQuestionOptionDto: {
-      /** Description */
-      description?: null | string | undefined;
-      /** Label */
-      label?: null | string | undefined;
-      value?: components["schemas"]["JsonValue"] | null | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** RequestRecordResponse */
     RequestRecordResponse: {
@@ -19430,44 +19410,6 @@ export interface components {
        * @default null
        */
       turnId?: null | string | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /**
-     * RequestSchemaDto
-     * @description A JSON Schema request; provider-defined top-level keywords pass through.
-     */
-    RequestSchemaDto: {
-      /** Properties */
-      properties: {
-        [key: string]: components["schemas"]["RequestSchemaPropertyDto"];
-      };
-      /** Required */
-      required?: string[] | null | undefined;
-    } & {
-      [key: string]: components["schemas"]["JsonValue"] | undefined;
-    };
-    /**
-     * RequestSchemaPropertyDto
-     * @description A JSON Schema property; arbitrary standard and future schema keywords pass through.
-     */
-    RequestSchemaPropertyDto: {
-      /** Enum */
-      enum?: components["schemas"]["JsonValue"][] | null | undefined;
-      /** Format */
-      format?: null | string | undefined;
-      /** Issecret */
-      isSecret?: boolean | null | undefined;
-      items?:
-        | components["schemas"]["RequestSchemaPropertyDto"]
-        | null
-        | undefined;
-      /** Title */
-      title?: null | string | undefined;
-      /** Type */
-      type?: string[] | null | string | undefined;
-      /** Writeonly */
-      writeOnly?: boolean | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
@@ -20271,6 +20213,19 @@ export interface components {
       | components["schemas"]["ToolRequestRecordResponse"];
     /** RootModel[ResourceNotifyAck] */
     RootModel_ResourceNotifyAck_: components["schemas"]["ResourceNotifyAck"];
+    /** @description JSON-RPC id of a provider request. The reply must use the same form. */
+    RpcId:
+      | {
+          /** @constant */
+          kind: "number";
+          /** Format: int64 */
+          value: number;
+        }
+      | {
+          /** @constant */
+          kind: "text";
+          value: string;
+        };
     /** RuleBody */
     RuleBody: {
       /**
@@ -22875,6 +22830,13 @@ export interface components {
        */
       section?: string | undefined;
     };
+    /** @description The provider process generation that owns a request, under the supervisor. */
+    Supervisor: {
+      /** Format: uint64 */
+      generation: number;
+      handle: string | null;
+      state_dir: string | null;
+    };
     /** SupervisorDiagnostics */
     SupervisorDiagnostics: {
       /** Fallback */
@@ -23208,7 +23170,7 @@ export interface components {
           collection: "request";
           /** @constant */
           op: "upsert";
-          value: components["schemas"]["RequestEntityDto"];
+          value: components["schemas"]["Approval"];
         }
       | {
           /** @constant */
@@ -23382,7 +23344,7 @@ export interface components {
           collection: "questionHistory";
           /** @constant */
           op: "upsert";
-          value: components["schemas"]["AgentRequest"];
+          value: components["schemas"]["Approval"];
         }
       | {
           /** @constant */
@@ -23640,7 +23602,7 @@ export interface components {
       collection: "questionHistory";
       /** Id */
       id: string;
-      value: components["schemas"]["AgentRequest"];
+      value: components["schemas"]["Approval"];
     };
     /** SyncQueueEntityPayload */
     SyncQueueEntityPayload: {
@@ -23680,7 +23642,7 @@ export interface components {
       collection: "request";
       /** Id */
       id: string;
-      value: components["schemas"]["RequestEntityDto"];
+      value: components["schemas"]["Approval"];
     };
     /** SyncRetainedWorktreeEntityPayload */
     SyncRetainedWorktreeEntityPayload: {
@@ -24381,6 +24343,11 @@ export interface components {
       /** Text */
       text: string;
     };
+    /**
+     * Format: double
+     * @description Unix seconds.
+     */
+    Timestamp: number;
     /**
      * TokenRateRecord
      * @description One active or completed agent turn's volatile token-rate snapshot.
@@ -25728,6 +25695,8 @@ export interface components {
      * @enum {string}
      */
     TransferStatus: "pending" | "completed" | "cancelled";
+    /** @description Provider turn identifier. A domain Turn table replaces this later. */
+    TurnId: string;
     /** TurnRecoveryRecordResponse */
     TurnRecoveryRecordResponse: {
       /**
@@ -38496,7 +38465,6 @@ export type PlanSummaryEntityDto =
   components["schemas"]["PlanSummaryEntityDto"];
 export type ProjectEntityDto = components["schemas"]["ProjectEntityDto"];
 export type QueueEntityDto = components["schemas"]["QueueEntityDto"];
-export type RequestEntityDto = components["schemas"]["RequestEntityDto"];
 export type RetainedWorktreeEntityDto =
   components["schemas"]["RetainedWorktreeEntityDto"];
 export type RoomEntityDto = components["schemas"]["RoomEntityDto"];
@@ -38657,6 +38625,13 @@ export const ComplaintStatus = {
   stopped: "stopped",
 } as const;
 export type ComplaintStatus = components["schemas"]["ComplaintStatus"];
+export const Decision = {
+  accept: "accept",
+  accept_for_session: "accept_for_session",
+  decline: "decline",
+  cancel: "cancel",
+} as const;
+export type Decision = components["schemas"]["Decision"];
 export const DeliveryMoment = {
   current_turn: "current_turn",
   next_turn: "next_turn",
@@ -38683,6 +38658,12 @@ export const DeliveryStatus = {
   uncertain: "uncertain",
 } as const;
 export type DeliveryStatus = components["schemas"]["DeliveryStatus"];
+export const ElicitationAction = {
+  accept: "accept",
+  decline: "decline",
+  cancel: "cancel",
+} as const;
+export type ElicitationAction = components["schemas"]["ElicitationAction"];
 export const ExecutionAction = {
   review: "review",
   compact: "compact",
@@ -38723,6 +38704,8 @@ export const ExecutionStatus = {
   not_applied: "not_applied",
 } as const;
 export type ExecutionStatus = components["schemas"]["ExecutionStatus"];
+export const Grant = { full: "full", observe: "observe" } as const;
+export type Grant = components["schemas"]["Grant"];
 export const HttpErrorKind = {
   handler_panic: "handler_panic",
   store_configuration: "store_configuration",

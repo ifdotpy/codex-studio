@@ -374,7 +374,18 @@ mod tests {
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{invalid}");
         }
         let response = app.oneshot(request).await.expect("HTTP response");
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let status = response.status();
+        let (parts, body) = response.into_parts();
+        let bytes = axum::body::to_bytes(body, 4096)
+            .await
+            .expect("response body reads");
+        assert_eq!(
+            status,
+            axum::http::StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let response = axum::response::Response::from_parts(parts, axum::body::Body::from(bytes));
         let bytes = axum::body::to_bytes(response.into_body(), 4096)
             .await
             .expect("response body reads");

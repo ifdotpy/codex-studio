@@ -848,20 +848,17 @@ pub async fn is_monitor_approval(
             let Some(request_id) = metadata.request_id.as_deref() else {
                 return Ok(false);
             };
-            let request = connection
-                .query_row(
-                    "SELECT record FROM runtime_requests WHERE id=?1",
-                    [request_id],
-                    |row| row.get::<_, String>(0),
+            let request = studio_runtime_store::approvals::get(
+                connection,
+                &studio_runtime_schema::approvals::ApprovalId(request_id.to_owned()),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            Ok(request.is_some_and(|row| {
+                matches!(
+                    row.request,
+                    studio_runtime_schema::approvals::Request::MonitorStart { .. }
                 )
-                .optional()?;
-            let Some(request) = request else {
-                return Ok(false);
-            };
-            let request: studio_runtime_schema::request_record::RequestRecord =
-                serde_json::from_str(&request).map_err(|_| VoiceProviderError::Operation)?;
-            Ok(request.method
-                == studio_runtime_schema::request_record::RequestMethod::MonitorApprove)
+            }))
         })
         .await
 }
@@ -1102,19 +1099,23 @@ async fn reserve_approval(
                 return Ok(ApprovalDispatch::Replay(serde_json::from_str(value).map_err(|_| VoiceProviderError::Operation)?));
             }
             if status == "uncertain" {
-                let current: String = transaction.query_row(
-                    "SELECT record FROM runtime_requests WHERE id=?1",
-                    [&request_id],
-                    |row| row.get(0),
-                ).optional()?.ok_or(VoiceProviderError::ContextUnavailable)?;
-                let current: Value = serde_json::from_str(&current)
-                    .map_err(|_| VoiceProviderError::Operation)?;
-                if current.get("method").and_then(Value::as_str) != Some("monitor/approve") {
+                use studio_runtime_schema::approvals as typed;
+                let current = studio_runtime_store::approvals::get(
+                    transaction,
+                    &typed::ApprovalId(request_id.clone()),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?
+                .ok_or(VoiceProviderError::ContextUnavailable)?;
+                if !matches!(current.request, typed::Request::MonitorStart { .. }) {
                     return Err(VoiceProviderError::Unknown);
                 }
-                if current.get("status").and_then(Value::as_str) == Some("answered")
-                    && current.get("answerDecision").and_then(Value::as_str) == Some("accept")
-                {
+                if matches!(
+                    &current.state,
+                    typed::ApprovalState::Answered {
+                        answer: typed::Answer::Decision { decision: typed::Decision::Accept },
+                        ..
+                    }
+                ) {
                     let replay = json!({"status":"answered","replayed":true});
                     transaction.execute(
                         "UPDATE voice_approvals SET status='accepted',result=?1 WHERE id=?2",
@@ -1122,32 +1123,35 @@ async fn reserve_approval(
                     )?;
                     return Ok(ApprovalDispatch::Replay(replay));
                 }
-                if current.get("status").and_then(Value::as_str) != Some("pending") {
+                if !matches!(current.state, typed::ApprovalState::Pending) {
                     return Err(VoiceProviderError::Unknown);
                 }
             } else if status != "not_sent" {
                 return Err(VoiceProviderError::Unknown);
             }
         }
-        let current = transaction.query_row(
-            "SELECT record FROM runtime_requests WHERE id=?1",
-            [&request_id],
-            |row| row.get::<_, String>(0),
-        ).optional()?.ok_or(VoiceProviderError::ContextUnavailable)?;
-        let current: Value = serde_json::from_str(&current)
-            .map_err(|_| VoiceProviderError::Operation)?;
-        let method = current.get("method").and_then(Value::as_str);
-        let fingerprint = super::approval_fingerprint(&current);
-        if current.get("agent").and_then(Value::as_str) != Some(agent_id.as_str())
-            || current.get("status").and_then(Value::as_str) != Some("pending")
-            || !method.is_some_and(|method| super::APPROVAL_METHODS.contains(&method))
+        use studio_runtime_schema::approvals as typed;
+        let current = studio_runtime_store::approvals::get(
+            transaction,
+            &typed::ApprovalId(request_id.clone()),
+        )
+        .map_err(studio_runtime_store::StoreError::from)?
+        .ok_or(VoiceProviderError::ContextUnavailable)?;
+        let fingerprint = super::approval_fingerprint(
+            &serde::Serialize::serialize(&current, serde_json::value::Serializer)
+                .map_err(|_| VoiceProviderError::Operation)?,
+        );
+        let is_monitor = matches!(current.request, typed::Request::MonitorStart { .. });
+        if current.agent.as_str() != agent_id.as_str()
+            || !matches!(current.state, typed::ApprovalState::Pending)
+            || !super::is_approval_request(&current.request)
             || metadata.fingerprint.as_deref() != Some(fingerprint.as_str())
-            || current.get("epoch").and_then(Value::as_i64) != Some(actor.epoch)
+            || current.epoch.and_then(|epoch| i64::try_from(epoch).ok()) != Some(actor.epoch)
             || actor.auto_wake != Some(true)
         {
             return Err(VoiceProviderError::ContextChanged);
         }
-        if method == Some("monitor/approve") {
+        if is_monitor {
             if !monitor_runtime_available {
                 return Ok(ApprovalDispatch::MonitorUnavailable);
             }
@@ -1169,8 +1173,12 @@ async fn reserve_approval(
             }
             return Ok(ApprovalDispatch::Monitor { request_id });
         }
-        let rpc_id = current.get("rpcId").and_then(parse_rpc_id)
-            .ok_or(VoiceProviderError::ContextUnavailable)?;
+        let delivery = current.delivery.as_ref().ok_or(VoiceProviderError::ContextUnavailable)?;
+        let rpc_id = match &delivery.rpc_id {
+            typed::RpcId::Number { value } => VoiceRpcId::Number(*value),
+            typed::RpcId::Text { value } if !value.is_empty() => VoiceRpcId::String(value.clone()),
+            typed::RpcId::Text { .. } => return Err(VoiceProviderError::ContextUnavailable),
+        };
         let session = load_row(transaction, &session_id, &agent_id)?
             .ok_or(policy::VoiceError::UnknownSession)?;
         let session = VoiceSession::from_row(session)?;
@@ -1196,9 +1204,9 @@ async fn reserve_approval(
             connection_id: session.connection_id().ok_or(VoiceProviderError::ContextUnavailable)?.to_owned(),
             generation: scope.generation,
         };
-        let request_account = current.get("accountKey").and_then(Value::as_str);
-        let request_connection = current.get("connectionId").and_then(Value::as_str);
-        let request_thread = current.get("params").and_then(|params| params.get("threadId")).and_then(Value::as_str);
+        let request_account = Some(delivery.account.as_str());
+        let request_connection = Some(delivery.connection.as_str());
+        let request_thread = current.detail.params.0.get("threadId").and_then(Value::as_str);
         // Python's connectionId is a generation-scoped identity. Bind the stored
         // RPC to the exact retained connection, thread and account before reply.
         if request_account != Some(context.account_key.as_str())
@@ -1244,16 +1252,6 @@ fn approval_receipt(
             },
         )
         .optional()?)
-}
-
-fn parse_rpc_id(value: &Value) -> Option<VoiceRpcId> {
-    match value {
-        Value::String(value) if !value.is_empty() => Some(VoiceRpcId::String(value.clone())),
-        Value::Number(value) => value.as_i64().map(VoiceRpcId::Number),
-        Value::Null | Value::Bool(_) | Value::String(_) | Value::Array(_) | Value::Object(_) => {
-            None
-        }
-    }
 }
 
 async fn reserve_speech(
@@ -2088,24 +2086,9 @@ mod tests {
         let (_directory, store) = voice_outbox_fixture().await;
         store.transaction(|tx| {
             tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('speech','agent','session','orchestrator','','','',?1,1)", [r#"{"request_id":"r"}"#])?;
-            tx.execute("INSERT INTO runtime_requests(id,record) VALUES('r',?1)", [r#"{"id":"r","agent":"agent","method":"monitor/approve","status":false,"createdAt":1,"params":{}}"#])?;
+            crate::provider_callbacks::legacy_view::insert(tx, &serde_json::json!({"id":"r","agent":"agent","method":"monitor/approve","status":"pending","createdAt":1,"params":{}}))?;
             Ok(())
         }).await.expect("seed approval");
-        assert!(
-            is_monitor_approval(&store, "agent", "speech")
-                .await
-                .is_err()
-        );
-        store
-            .transaction(|tx| {
-                tx.execute(
-                    "UPDATE runtime_requests SET record=?1 WHERE id='r'",
-                    [r#"{"id":"r","agent":"agent","method":"monitor/approve","status":"pending","createdAt":1,"params":{}}"#],
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("repair request");
         assert!(
             is_monitor_approval(&store, "agent", "speech")
                 .await

@@ -13,7 +13,6 @@ use hyper::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, HeaderName, Header
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use rusqlite::OptionalExtension;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -246,58 +245,39 @@ impl BrowserCallbackReceiver {
             format!("studio-browser-open:{bridge_id}").as_bytes(),
         )
         .to_string();
-        let raw: Option<String> = self
+        let card = self
             .store
-            .read_async("runtime-services/browser", move |connection| {
-                connection
-                    .query_row(
-                        "SELECT record FROM runtime_requests WHERE id=?1",
-                        [request_id],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(studio_runtime_store::StoreError::from)
+            .read_async("runtime-services/browser", move |tx| {
+                crate::browser_cards::load(tx, &request_id)
             })
             .await
-            .map_err(|_| {
-                refused(
-                    503,
-                    "browser_request_unavailable",
-                    "The sign-in request is unavailable",
-                )
-            })?;
-        let raw = raw.ok_or_else(|| {
-            refused(
-                404,
-                "browser_request_unknown",
-                "The sign-in request is unknown",
-            )
-        })?;
-        let record: studio_runtime_store::RequestRecord =
-            serde_json::from_str(&raw).map_err(|_| {
-                refused(
+            .map_err(|error| match error {
+                crate::browser_cards::BrowserCardError::Approval(_) => refused(
                     503,
                     "browser_request_invalid",
                     "The sign-in request is invalid",
+                ),
+                crate::browser_cards::BrowserCardError::Store(_)
+                | crate::browser_cards::BrowserCardError::Sqlite(_) => refused(
+                    503,
+                    "browser_request_unavailable",
+                    "The sign-in request is unavailable",
+                ),
+            })?;
+        let card = card
+            .map(|(_, card)| card)
+            .filter(|card| card.bridge_id == bridge_id)
+            .ok_or_else(|| {
+                refused(
+                    404,
+                    "browser_request_unknown",
+                    "The sign-in request is unknown",
                 )
             })?;
-        let parsed = crate::browser_cards::BrowserParams::read(&record.params);
-        if record.method != studio_runtime_schema::request_record::RequestMethod::BrowserOpen
-            || parsed
-                .as_ref()
-                .and_then(|params| params.bridge_id.as_deref())
-                != Some(bridge_id)
-        {
-            return Err(refused(
-                404,
-                "browser_request_unknown",
-                "The sign-in request is unknown",
-            ));
-        }
-        let expected = parsed
+        let expected = card
+            .forward
             .as_ref()
-            .and_then(|params| params.forward.as_ref())
-            .and_then(|forward| forward.token_hash.as_deref())
+            .map(|forward| forward.token_hash.as_str())
             .ok_or_else(|| {
                 refused(
                     403,
@@ -319,26 +299,21 @@ impl BrowserCallbackReceiver {
                 "The sign-in forward token is not valid",
             ));
         }
-        let redirect = parsed
-            .as_ref()
-            .and_then(|params| params.redirect.as_ref())
-            .ok_or_else(|| {
-                refused(
-                    404,
-                    "browser_redirect_missing",
-                    "The sign-in redirect is unavailable",
-                )
-            })?;
+        let redirect = card.redirect.as_ref().ok_or_else(|| {
+            refused(
+                404,
+                "browser_redirect_missing",
+                "The sign-in redirect is unavailable",
+            )
+        })?;
         let host = redirect.host.as_str();
-        let port = (redirect.port >= 1024)
-            .then_some(redirect.port)
-            .ok_or_else(|| {
-                refused(
-                    503,
-                    "browser_redirect_invalid",
-                    "The sign-in redirect is invalid",
-                )
-            })?;
+        let port = Some(redirect.port).filter(|p| *p >= 1024).ok_or_else(|| {
+            refused(
+                503,
+                "browser_redirect_invalid",
+                "The sign-in redirect is invalid",
+            )
+        })?;
         if !matches!(host, "127.0.0.1" | "localhost" | "::1") {
             return Err(refused(
                 403,
@@ -1822,78 +1797,80 @@ mod tests {
     use tokio::sync::{Notify, Semaphore};
 
     #[tokio::test]
-    async fn callback_request_refusal_order_handles_partial_stored_records() {
+    async fn callback_request_refusal_order_follows_the_stored_card() {
+        use crate::browser_cards::fixture;
+        use studio_runtime_schema::approvals::{
+            BrowserCallbackForward, BrowserRedirect, Timestamp,
+        };
         let dir = tempfile::tempdir().expect("temporary state");
         let store = Arc::new(RuntimeStore::open(Some(dir.path())).await.expect("store"));
-        let bridge = "0123456789abcdef0123456789abcdef";
-        let id = uuid::Uuid::new_v5(
-            &uuid::Uuid::NAMESPACE_URL,
-            format!("studio-browser-open:{bridge}").as_bytes(),
-        )
-        .to_string();
+        let bridge = fixture::BRIDGE;
         let receiver = BrowserCallbackReceiver::new(Arc::clone(&store));
-        for (raw, expected) in [
-            ("null", 503),
-            (r#"{"method":"wrong"}"#, 503),
-            (r#"{"method":"wrong","params":null}"#, 503),
-            (r#"{"method":"browser/open","params":{}}"#, 503),
+        let payload = json!({"bridgeId":bridge,"token":"token","target":"/"});
+        let status = |error: crate::multi_server_auth::AccessError| error.status();
+        // No card.
+        assert_eq!(
+            status(receiver.receive(&payload).await.expect_err("unknown")),
+            404
+        );
+        let redirect = |host: &str, port: u16| BrowserRedirect {
+            host: host.into(),
+            port,
+            path: "/cb".into(),
+        };
+        let forward = |token: &[u8]| BrowserCallbackForward {
+            token_hash: studio_runtime_store::sha256_hex(token),
+            expires_at: Timestamp(9.0),
+        };
+        for (edit, expected) in [
             (
-                r#"{"method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef"}}"#,
+                Box::new(|_: &mut studio_runtime_schema::approvals::BrowserCard| {})
+                    as Box<dyn Fn(&mut studio_runtime_schema::approvals::BrowserCard)>,
+                403,
+            ),
+            (Box::new(|card| card.forward = Some(forward(b"other"))), 403),
+            (Box::new(|card| card.forward = Some(forward(b"token"))), 404),
+            (
+                Box::new(|card| {
+                    card.forward = Some(forward(b"token"));
+                    card.redirect = Some(redirect("127.0.0.1", 80));
+                }),
                 503,
             ),
             (
-                r#"{"method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":null}}"#,
-                503,
-            ),
-            (
-                r#"{"method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":123}}"#,
-                503,
-            ),
-            (
-                r#"{"method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":{"tokenHash":null,"extra":true}}}"#,
-                503,
-            ),
-            (
-                r#"{"method":"browser/open","params":{"bridgeId":"wrong","forward":{"tokenHash":false}}}"#,
-                503,
-            ),
-            (
-                r#"{"method":"wrong","method":"browser/open","params":{"bridgeId":"0123456789abcdef0123456789abcdef","forward":{"tokenHash":"bad"}}}"#,
-                503,
+                Box::new(|card| {
+                    card.forward = Some(forward(b"token"));
+                    card.redirect = Some(redirect("example.test", 4000));
+                }),
+                403,
             ),
         ] {
-            let key = id.clone();
-            store
-                .transaction_with(move |tx| {
-                    studio_runtime_store::QuestionsWriteRepository::put_request(tx, &key, raw)
-                })
-                .await
-                .expect("request fixture");
+            let mut card = crate::browser_cards::fixture::card(bridge);
+            edit(&mut card);
+            fixture::seed(&store, "agent", card).await;
             let error = receiver
-                .receive(&json!({"bridgeId":bridge,"token":"token","target":"/"}))
+                .receive(&payload)
                 .await
                 .expect_err("refused before callback");
-            assert_eq!(error.status(), expected, "{raw}");
+            assert_eq!(error.status(), expected);
         }
-        let key = id.clone();
-        let valid = json!({"id":id,"agent":"fixture","status":"pending","createdAt":1,"method":"browser/open","params":{"bridgeId":bridge,"forward":{"tokenHash":studio_runtime_store::sha256_hex(b"token"),"extra":true}}}).to_string();
+        // A stored card with a missing field is damaged: strict decoding refuses it.
+        let id = crate::browser_cards::card_id(bridge);
         store
             .transaction_with(move |tx| {
-                studio_runtime_store::QuestionsWriteRepository::put_request(tx, &key, &valid)
+                tx.execute(
+                    "UPDATE approvals SET request='{\"kind\":\"browser_open\"}' WHERE id=?1",
+                    [id],
+                )
+                .map(drop)
+                .map_err(studio_runtime_store::StoreError::from)
             })
             .await
-            .expect("valid token fixture");
-        let error = receiver
-            .receive(&json!({"bridgeId":bridge,"token":"token","target":"/"}))
-            .await
-            .expect_err("redirect absent");
-        assert!(matches!(
-            error,
-            crate::multi_server_auth::AccessError::Refused {
-                code: "browser_redirect_missing",
-                ..
-            }
-        ));
+            .expect("damaged card fixture");
+        assert_eq!(
+            status(receiver.receive(&payload).await.expect_err("damaged")),
+            503
+        );
     }
 
     #[test]

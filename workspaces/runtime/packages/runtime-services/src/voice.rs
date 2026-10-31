@@ -5,8 +5,7 @@ use std::collections::BTreeSet;
 use serde_json::{Value, json};
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use studio_runtime_store::{
-    AgentId, AgentRepository, Connection, QuestionsReadsRepository, RuntimeStore, StoreError,
-    VoiceRecord, VoiceRepository,
+    AgentId, AgentRepository, Connection, RuntimeStore, StoreError, VoiceRecord, VoiceRepository,
 };
 use thiserror::Error;
 
@@ -53,11 +52,14 @@ const SESSION_STATES: &[&str] = &[
     "lost",
     "unknown",
 ];
-const APPROVAL_METHODS: &[&str] = &[
-    "monitor/approve",
-    "item/commandExecution/requestApproval",
-    "item/fileChange/requestApproval",
-];
+/// The requests a spoken approval can answer: a monitor start, a command or a file change.
+pub(super) fn is_approval_request(request: &studio_runtime_schema::approvals::Request) -> bool {
+    use studio_runtime_schema::approvals::Request;
+    matches!(
+        request,
+        Request::MonitorStart { .. } | Request::Exec { .. } | Request::Patch { .. }
+    )
+}
 
 #[derive(Debug, Error)]
 pub enum VoiceError {
@@ -384,22 +386,28 @@ pub async fn stream_records(
 
 pub async fn approvals(store: &RuntimeStore, agent_id: &str) -> Result<Value, VoiceError> {
     let agent_for_read = AgentId::from(agent_id);
+    let typed_agent = studio_runtime_schema::approvals::AgentId(agent_id.to_owned());
     let (agent, rows) = store
         .read_async("runtime-services/voice", move |connection| {
             Ok::<_, StoreError>((
                 AgentRepository::get(connection, &agent_for_read)?,
-                QuestionsReadsRepository::questions(connection)?,
+                studio_runtime_store::approvals::for_agent(connection, &typed_agent)?,
             ))
         })
         .await?;
     validate_agent(agent, agent_id)?;
     let mut requests = Vec::new();
     for row in rows {
-        if row.agent == agent_id
-            && row.status == studio_runtime_schema::persistence::RequestCardStatus::Pending
-            && APPROVAL_METHODS.contains(&row.method.as_str())
+        if matches!(
+            row.state,
+            studio_runtime_schema::approvals::ApprovalState::Pending
+        ) && row.hidden.is_none()
+            && is_approval_request(&row.request)
         {
-            requests.push(row);
+            requests.push(serde::Serialize::serialize(
+                &row,
+                serde_json::value::Serializer,
+            )?);
         }
     }
     Ok(json!({"requests": requests}))
@@ -573,7 +581,7 @@ pub async fn approval_speech(
             "The approval request is no longer pending",
         ))?;
     let fingerprint = approval_fingerprint(request);
-    let params = studio_runtime_store::python_json(request.get("params").unwrap_or(&Value::Null));
+    let params = studio_runtime_store::python_json(request.get("request").unwrap_or(&Value::Null));
     let text = format!("Запрос разрешения. {params}. Для подтверждения скажите «разрешаю».");
     if text.chars().count() > 4096 {
         return Err(VoiceError::InvalidRequest(

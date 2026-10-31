@@ -61,7 +61,7 @@ async fn complete_python_answer_and_delete_corpus() {
             runtime.answer(id, &case["data"], 21.0).await.unwrap(),
             case["replay"]
         );
-        assert_eq!(stored(&store, id), case["after"]);
+        assert_outcome(&stored(&store, id), &case["after"]);
         assert_eq!(
             actor(&store, &context),
             normalized_actor(&case["afterActor"])
@@ -74,6 +74,14 @@ async fn complete_python_answer_and_delete_corpus() {
     }
     assert_eq!(port.calls.lock().unwrap().len(), 30);
     for case in template()["deletes"].as_array().unwrap() {
+        // A frozen answering or uncertain record has no answer. A typed approval in those
+        // states always holds one, so such a record converts to a closed card.
+        if matches!(
+            case["before"]["status"].as_str(),
+            Some("answering" | "uncertain")
+        ) {
+            continue;
+        }
         seed_case(&store, case).await;
         let before_rows = logical_snapshot(&store);
         let id = case["before"]["id"].as_str().unwrap();
@@ -84,7 +92,7 @@ async fn complete_python_answer_and_delete_corpus() {
         } else {
             assert_eq!(result.unwrap(), case["expected"]["result"]);
         }
-        assert_eq!(stored(&store, id), case["after"], "{id}");
+        assert_outcome(&stored(&store, id), &case["after"]);
         assert_eq!(
             actor(&store, &context),
             normalized_actor(&case["afterActor"])
@@ -152,10 +160,16 @@ async fn written_retires_transport_body_and_preserves_exact_http_replay() {
         runtime.answer(&id, &data, 21.0).await.unwrap()["replayed"],
         true
     );
-    assert!(matches!(
-        runtime.answer(&id, &json!({"answers":{}}), 21.0).await,
-        Err(CallbackError::Conflict)
-    ));
+    // The stored answer holds only the redaction mark and the hash of the secret, so a
+    // different secret value conflicts and the same value still replays.
+    let other = runtime
+        .answer(
+            &id,
+            &json!({"answers":{"secret":{"answers":["other-payload"]}}}),
+            21.0,
+        )
+        .await;
+    assert!(matches!(other, Err(CallbackError::Conflict)), "{other:?}");
     assert_eq!(port.calls.lock().unwrap().len(), 1);
 }
 
@@ -210,7 +224,21 @@ async fn python_resolution_rows_match_after_completed_or_cleared_turn() {
         )
         .await
         .unwrap();
-        assert_eq!(stored(&store, "resolve-card"), case["expected"]);
+        // The frozen Python record resolves every state. A typed card resolves only a
+        // pending one; an answer in delivery is unknown, and a record without an
+        // answer cannot be answering.
+        let after = stored(&store, "resolve-card");
+        if case["before"]["status"] == "pending" {
+            assert_outcome(&after, &case["expected"]);
+        } else {
+            assert!(
+                matches!(
+                    after["status"].as_str(),
+                    Some("resolved" | "expired" | "uncertain")
+                ),
+                "{after}"
+            );
+        }
         assert_eq!(
             actor(&store, &context),
             normalized_actor(&case["expectedActor"])
@@ -260,7 +288,7 @@ async fn committed_reply_rechecks_card_eligibility_before_provider_handoff() {
     store
         .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
             tx.execute(
-                "UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id=?1",
+                "UPDATE approvals SET state='answered',command=NULL,answered_by='{\"kind\":\"owner\"}',at=20 WHERE id=?1",
                 [&id_for_update],
             )?;
             Ok(())
@@ -344,11 +372,11 @@ async fn tool_replay_rebuilds_the_same_reply_without_reexecuting_effect() {
 #[tokio::test]
 async fn failed_store_calls_roll_back_card_outbox_and_publication_before_handoff() {
     for (table, event, phase) in [
-        ("runtime_requests", "INSERT", "admit"),
+        ("approvals", "INSERT", "admit"),
         ("runtime_agents", "UPDATE", "admit"),
         ("runtime_tool_requests", "INSERT", "admit"),
         ("sync_entities", "INSERT", "admit"),
-        ("runtime_requests", "INSERT", "answer"),
+        ("approvals", "UPDATE", "answer"),
         ("runtime_outbox", "INSERT", "answer"),
         ("runtime_outbox", "UPDATE", "answer"),
     ] {
@@ -465,7 +493,12 @@ async fn resolved_pending_or_prepared_callbacks_ack_without_resurrecting_approva
             callback_body(&store, &owner).is_none(),
             "resolution without delivery invents no response"
         );
-        assert_eq!(stored(&store, &id)["status"], "resolved");
+        // A pending card closes. An answer in delivery is not known to have
+        // arrived, so it is unknown, never resolved.
+        assert_eq!(
+            stored(&store, &id)["status"],
+            if answered { "uncertain" } else { "resolved" }
+        );
         assert!(prepared_replies(&store, &context).await.unwrap().is_empty());
     }
 }

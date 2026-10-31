@@ -1,7 +1,5 @@
-import {
-  RequestStatus as GeneratedApiRequestStatus,
-  AgentStatus as GeneratedApiAgentStatus,
-} from "../../../generated/api.ts";
+import { AgentStatus as GeneratedApiAgentStatus } from "../../../generated/api.ts";
+import { approval, question as questionField } from "../../../approvalFixtures";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -17,7 +15,6 @@ import {
   type QuestionLookup,
 } from "../../questions/questionCardModel";
 import { RequestCard } from "../../questions/Requests";
-import type { components } from "../../../generated/api";
 
 const question: Message = {
   id: "lead:toolu_9",
@@ -73,23 +70,16 @@ for (const afterTool of [false, true]) {
       text: "",
       turnId: "turn-1",
     };
-    const history = {
+    const request = approval({
       id: "request-empty",
       agent: "lead",
-      itemId: "empty-question",
-      method: "agent/asyncQuestion",
-      status: "pending",
-      questions: [
-        { id: "0", question: "Continue with the release?", isSecret: false },
-      ],
-    } satisfies QuestionHistoryEntry;
-    const request: components["schemas"]["RequestEntityDto"] = {
-      id: history.id,
-      agent: history.agent,
-      method: history.method,
-      status: GeneratedApiRequestStatus.pending,
-      params: { questions: history.questions },
-    };
+      request: {
+        kind: "agent_question",
+        questions: [questionField("0", "Continue with the release?")],
+      },
+      params: { itemId: "empty-question" },
+    });
+    const history: QuestionHistoryEntry = request;
     const lookup: QuestionLookup = {
       agentId: "lead",
       history: questionHistoryIndex([history]),

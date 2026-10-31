@@ -1,4 +1,5 @@
-import { AgentStatus, RequestStatus } from "../../generated/api";
+import { AgentStatus } from "../../generated/api";
+import { approval, question } from "../../approvalFixtures";
 import { required } from "../componentTestFixtures.ts";
 import type { Agent } from "../../types";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
@@ -6,19 +7,37 @@ import assert from "node:assert/strict";
 import { it } from "vitest";
 import { awaitingAnswerIds, workerState } from "./WorkerOverview.tsx";
 
-it("only includes pending requests with a string agent identity", () => {
+it("only includes pending requests that are not deferred", () => {
+  const request = {
+    kind: "agent_question" as const,
+    questions: [question("q", "Continue?")],
+  };
+  const answer = {
+    kind: "answers" as const,
+    answers: [{ id: "q", answer: ["Yes"] }],
+  };
   assert.deepEqual(
     [
       ...awaitingAnswerIds([
-        { id: "valid", agent: "worker", status: RequestStatus.pending },
-        { id: "missing", status: RequestStatus.pending },
-        { id: "answered", agent: "other", status: RequestStatus.answered },
-        {
-          id: "deferred",
-          agent: "later",
-          status: RequestStatus.pending,
-          deferred: true,
-        },
+        approval({ id: "valid", agent: "worker", request }),
+        approval({
+          id: "sending",
+          agent: "sending",
+          request,
+          state: { kind: "answering", answer, command: "command" },
+        }),
+        approval({
+          id: "answered",
+          agent: "other",
+          request,
+          state: {
+            kind: "answered",
+            answer,
+            by: { kind: "owner" },
+            at: 2,
+          },
+        }),
+        approval({ id: "deferred", agent: "later", request, deferred: true }),
       ]),
     ],
     ["worker"],

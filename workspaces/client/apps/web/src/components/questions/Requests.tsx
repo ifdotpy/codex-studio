@@ -21,11 +21,20 @@ import AnswerFields, {
   type AnswerValues,
 } from "./AnswerFields";
 import {
-  BROWSER_OPEN_METHOD,
   browserOpenDetails,
+  elicitationSchema,
+  isFieldRequest,
   requestApprovalDetails,
   requestQuestions,
 } from "./requestData";
+import {
+  approvalCreated,
+  approvalParams,
+  approvalThreadId,
+  isAgentQuestion,
+  isDeferred,
+  type Approval,
+} from "../../approvals";
 import { approveSignInPage } from "./openSignIn";
 import SignInCard from "./SignInCard";
 
@@ -34,8 +43,8 @@ type Props = {
   showDates?: boolean;
   onAnswerOpen?: () => void;
   onAnswerPosition?: (node: HTMLElement) => void;
-  requests: components["schemas"]["RequestEntityDto"][];
-  allRequests: components["schemas"]["RequestEntityDto"][];
+  requests: Approval[];
+  allRequests: Approval[];
   scope: string;
   agents: Array<
     Pick<Agent, "id" | "name" | "threadId" | "nativeThreadBlock" | "error">
@@ -44,7 +53,7 @@ type Props = {
   notify: (s: string) => void;
 };
 
-type RequestDto = components["schemas"]["RequestEntityDto"];
+type RequestDto = Approval;
 type QuestionCardAnswer = components["schemas"]["QuestionCardAnswer"];
 type JsonObject = Record<string, JsonValue>;
 
@@ -78,6 +87,9 @@ function permissionRows(
   value: unknown,
   name = "Permission",
 ): [string, string][] {
+  // The requested names, when the provider sent no details.
+  if (Array.isArray(value) && value.every((entry) => typeof entry === "string"))
+    return value.map((entry): [string, string] => [entry, "Requested"]);
   if (isJsonObject(value)) {
     return Object.entries(value).flatMap(([key, entry]) =>
       permissionRows(entry, name === "Permission" ? key : `${name} / ${key}`),
@@ -104,28 +116,12 @@ function permissionRows(
 function useAnswerDrafts() {
   return requestDraftsForStorage(useServerStorage());
 }
-// Show a command as the shell line the user would type, not as JSON.
-function commandText(
-  command: components["schemas"]["RequestParamsDto"]["command"],
-): string {
-  if (typeof command === "string") return command;
-  if (Array.isArray(command))
-    return command
-      .map((part) =>
-        /^[\w@%+=:,./-]+$/.test(part)
-          ? part
-          : `'${part.replace(/'/g, `'\\''`)}'`,
-      )
-      .join(" ");
-  return JSON.stringify(command, null, 2);
-}
-
 const answerKey = (scope: string, request: RequestDto) =>
   JSON.stringify([
     scope,
     request.agent,
     request.id,
-    request.method,
+    request.request.kind,
     requestQuestions(request).map(
       ({ id, question, isSecret, isOther, multiSelect, options }) => ({
         id,
@@ -159,10 +155,10 @@ export function AnswerForm({
     () => answerDrafts.get(draftKey) || {},
   );
   const questions = requestQuestions(request);
-  const method = request.method || "";
-  const schema = request.params?.requestedSchema;
+  const kind = request.request.kind;
+  const schema = elicitationSchema(request);
   const properties = schema?.properties ?? {};
-  const elicitation = method === "mcpServer/elicitation/request";
+  const elicitation = kind === "elicitation";
   const required = new Set(elicitation ? (schema?.required ?? []) : []);
   const missingRequired = [...required].some(
     (id) => !questions.some((question) => question.id === id),
@@ -185,12 +181,12 @@ export function AnswerForm({
     if (sending || !ready) return;
     try {
       let answer: QuestionCardAnswer;
-      if (
-        method === "item/tool/requestUserInput" ||
-        method === "agent/asyncQuestion"
-      ) {
+      if (kind === "question" || kind === "agent_question") {
         answer = {
-          method,
+          method:
+            kind === "question"
+              ? "item/tool/requestUserInput"
+              : "agent/asyncQuestion",
           data: {
             answers: Object.fromEntries(
               questions.map((q) => [
@@ -200,7 +196,7 @@ export function AnswerForm({
             ),
           },
         };
-      } else if (method === "mcpServer/elicitation/request") {
+      } else if (kind === "elicitation") {
         const content: components["schemas"]["QuestionElicitation"]["content"] =
           {};
         for (const [key, value] of Object.entries(properties)) {
@@ -225,7 +221,7 @@ export function AnswerForm({
                     : v[0];
         }
         answer = {
-          method,
+          method: "mcpServer/elicitation/request",
           data: { decision: QuestionDecision.accept, content },
         };
       } else {
@@ -300,11 +296,11 @@ export function RequestCard({
 
   const draftKey = answerKey(scope, r);
   const owner = agents.find((a) => a.id === r.agent);
-  const params = r.params ?? {};
+  const params = approvalParams(r);
   const approvalDetails = requestApprovalDetails(r);
   const browserOpen = browserOpenDetails(r);
-  const method = r.method || "";
-  const requestThread = params.threadId ?? undefined;
+  const kind = r.request.kind;
+  const requestThread = approvalThreadId(r);
   const blocked =
     !!nativeThreadError(owner) && requestThread === owner?.threadId;
   const [requestError, setRequestError] = useState("");
@@ -408,7 +404,7 @@ export function RequestCard({
       else
         await apiPost("/api/questions/defer", {
           id: r.id,
-          deferred: !r.deferred,
+          deferred: !isDeferred(r),
         });
       if (mounted.current) setOpen(false);
       await refresh();
@@ -422,29 +418,23 @@ export function RequestCard({
       if (mounted.current) setSending(false);
     }
   };
-  const asynchronous = method === "agent/asyncQuestion";
-  const stdinApproval =
-    method === "item/commandExecution/requestApproval" &&
-    params.kind === "writeStdin";
-  const question =
-    ["item/tool/requestUserInput", "agent/asyncQuestion"].includes(method) ||
-    (method === "mcpServer/elicitation/request" && params.mode === "form");
-  const approval =
-    [
-      "monitor/approve",
-      "item/commandExecution/requestApproval",
-      "item/fileChange/requestApproval",
-      "item/permissions/requestApproval",
-      BROWSER_OPEN_METHOD,
-    ].includes(method) ||
-    (method === "mcpServer/elicitation/request" && params.mode === "url");
-  const reason = params.reason;
-  const message = params.message;
-  const command = approvalDetails.command;
-  const cwd = params.cwd;
-  const permissions = approvalDetails.permissions;
-  const url = params.url;
+  const asynchronous = isAgentQuestion(r);
+  const stdinApproval = kind === "exec" && params.kind === "writeStdin";
+  const question = isFieldRequest(r);
+  // Every other kind (and a link elicitation) is a yes or no approval.
+  const approval = !question;
+  const { reason, message, command, cwd, files, permissions, url, tool } =
+    approvalDetails;
   const questions = question ? requestQuestions(r) : [];
+  // The controls need a pending request; other states only say where it stands.
+  const waiting = r.state.kind === "pending";
+  const stateNote = {
+    pending: "",
+    answering: "Sending your answer",
+    answered: "Answered",
+    unknown: "The agent may not have got your answer",
+    closed: "Closed",
+  }[r.state.kind];
   const Icon = approval ? ShieldQuestion : MessageCircleQuestion;
   if (browserOpen)
     return (
@@ -454,7 +444,7 @@ export function RequestCard({
         data-request={r.id}
         data-message={messageId}
       >
-        {showDates && <MessageDate at={r.createdAt ?? r.created ?? r.at} />}
+        {showDates && <MessageDate at={approvalCreated(r)} />}
         {blocked ? (
           <p>
             This chat stopped as a precaution. This request cannot resume it.
@@ -497,24 +487,26 @@ export function RequestCard({
               {agents.find((a) => a.id === r.agent)?.name || "Codex"}
             </strong>
             <span
-              className={`request-status${question ? " request-status-hidden" : ""}`}
+              className={`request-status${question && waiting ? " request-status-hidden" : ""}`}
             >
-              {r.deferred
-                ? asynchronous
-                  ? "Deferred · Agent can continue"
-                  : "Deferred · Agent still waits"
-                : asynchronous
-                  ? "Agent can continue"
-                  : question
-                    ? "Answer required"
-                    : approval
-                      ? stdinApproval
-                        ? "Terminal input approval required"
-                        : "Approval required"
-                      : "Request"}
+              {!waiting
+                ? stateNote
+                : isDeferred(r)
+                  ? asynchronous
+                    ? "Deferred · Agent can continue"
+                    : "Deferred · Agent still waits"
+                  : asynchronous
+                    ? "Agent can continue"
+                    : question
+                      ? "Answer required"
+                      : approval
+                        ? stdinApproval
+                          ? "Terminal input approval required"
+                          : "Approval required"
+                        : "Request"}
             </span>
           </div>
-          {showDates && <MessageDate at={r.createdAt ?? r.created ?? r.at} />}
+          {showDates && <MessageDate at={approvalCreated(r)} />}
           {(!open || blocked || !question) &&
             (questions[0]?.question || reason || message || !approval) && (
               <p className="request-prompt">
@@ -535,8 +527,12 @@ export function RequestCard({
             )}
           {!open && questions.length > 1 && <p>{questions.length} questions</p>}
           {!stdinApproval && command !== undefined && (
-            <pre className="request-command">{commandText(command)}</pre>
+            <pre className="request-command">{command}</pre>
           )}
+          {files !== undefined && files.length > 0 && (
+            <pre className="request-command">{files.join("\n")}</pre>
+          )}
+          {tool !== undefined && <p className="request-cwd">Tool {tool}</p>}
           {cwd && (
             <p className="request-cwd" title={cwd}>
               in {cwd}
@@ -565,7 +561,7 @@ export function RequestCard({
           )}
         </div>
         <div className="request-actions">
-          {question && (
+          {question && waiting && (
             <Button
               variant="subtle"
               className="request-delete"
@@ -579,16 +575,16 @@ export function RequestCard({
             <p>
               This chat stopped as a precaution. This request cannot resume it.
             </p>
-          ) : question ? (
+          ) : !waiting ? null : question ? (
             <>
               {!open && (
                 <Button
                   variant="subtle"
                   disabled={sending}
-                  aria-label={r.deferred ? "Restore" : "Defer"}
+                  aria-label={isDeferred(r) ? "Restore" : "Defer"}
                   onClick={() => void defer()}
                 >
-                  {r.deferred ? "Restore" : "Answer later"}
+                  {isDeferred(r) ? "Restore" : "Answer later"}
                 </Button>
               )}
               <Button
@@ -631,9 +627,7 @@ export function RequestCard({
                 {stdinApproval ? "Allow input" : "Approve"}
               </Button>
             </>
-          ) : (
-            <p>Unsupported client request: {method}</p>
-          )}
+          ) : null}
         </div>
       </div>
       {requestError && (
@@ -692,11 +686,11 @@ export default function Requests({
         answerDrafts.delete(key);
   }, [allRequests, props.scope, answerDrafts]);
   const group = (items: RequestDto[]) => {
-    const deferred = items.filter((r) => r.deferred);
+    const deferred = items.filter(isDeferred);
     return (
       <>
         {items
-          .filter((r) => !r.deferred)
+          .filter((r) => !isDeferred(r))
           .map((r) => (
             <RequestCard
               key={answerKey(props.scope, r)}

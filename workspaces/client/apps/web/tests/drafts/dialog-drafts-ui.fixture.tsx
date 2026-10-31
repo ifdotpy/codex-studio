@@ -1,4 +1,5 @@
-import type { Agent, Complaint, Request, Snapshot } from "../../src/types.ts";
+import type { Agent, Complaint, Snapshot } from "../../src/types.ts";
+import { approval } from "../../src/approvalFixtures.ts";
 declare global {
   interface Window {
     notices: string[];
@@ -32,17 +33,33 @@ const complaint = {
   needsUserResponse: true,
   created: 1,
 } satisfies Complaint;
-const request: Request = {
+const request = approval({
   id: "question",
   agent: "lead",
-  method: "item/tool/requestUserInput",
-  params: {
+  request: {
+    kind: "question",
     questions: [
-      { id: "public", question: "Public answer" },
-      { id: "secret", question: "Private answer", isSecret: true },
+      {
+        id: "public",
+        question: "Public answer",
+        header: null,
+        options: [],
+        is_secret: false,
+        multi_select: null,
+        is_other: null,
+      },
+      {
+        id: "secret",
+        question: "Private answer",
+        header: null,
+        options: [],
+        is_secret: true,
+        multi_select: null,
+        is_other: null,
+      },
     ],
   },
-} satisfies Request;
+});
 // This partial snapshot omits unused collections and runtime fields.
 const base = {
   stateDir: "workspace-a",

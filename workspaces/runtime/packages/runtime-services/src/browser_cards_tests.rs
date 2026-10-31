@@ -1,25 +1,15 @@
 //! Cards from a fake guest `browser.wait` (the Python server's `Bridge.apply` rules).
 
-use super::{CardSource, card_id, poll_once};
+use super::{CardSource, card_id, load, poll_once, save};
 use crate::linux_vm_guest::{GuestError, GuestRpc};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-#[test]
-fn browser_params_preserve_raw_extensions_and_reject_duplicate_keys() {
-    let raw = r#"{"bridgeId":"id","phase":"waiting","provider":{"z":  1, "a":2}}"#;
-    let params: super::BrowserParams = serde_json::from_str(raw).unwrap();
-    let encoded = serde_json::to_string(&params).unwrap();
-    assert!(encoded.contains(r#"{"z":  1, "a":2}"#));
-    assert!(
-        serde_json::from_str::<super::BrowserParams>(r#"{"phase":"waiting","phase":"waiting"}"#)
-            .is_err()
-    );
-    assert!(serde_json::from_str::<super::BrowserParams>(r#"{"other":1,"other":2}"#).is_err());
-    assert!(serde_json::from_str::<super::BrowserParams>(r#"{"phase":"future"}"#).is_err());
-}
+use studio_runtime_schema::approvals::{
+    Answer, Approval, ApprovalState, BrowserCard, BrowserOutcome, BrowserPhase, BrowserSource,
+    CloseReason, Decision, Principal, Timestamp,
+};
 
 struct WaitGuest {
     batches: Mutex<VecDeque<Value>>,
@@ -88,13 +78,11 @@ async fn store() -> (tempfile::TempDir, studio_runtime_store::RuntimeStore) {
     (dir, store)
 }
 
-fn request(store: &studio_runtime_store::RuntimeStore, bridge: &str) -> Option<Value> {
-    store
-        .test_read_transaction(|tx| {
-            studio_runtime_store::QuestionsWriteRepository::request(tx, &card_id(bridge))
-        })
-        .expect("request reads")
-        .map(|raw| serde_json::from_str(&raw).expect("request JSON"))
+fn request(
+    store: &studio_runtime_store::RuntimeStore,
+    bridge: &str,
+) -> Option<(Approval, BrowserCard)> {
+    super::fixture::read_optional(store, &card_id(bridge))
 }
 
 /// The client entity of a card: `None` when it was never published, else whether it is
@@ -121,8 +109,25 @@ fn request_entity(
         })
 }
 
+/// Change a stored card, as an answer or startup recovery does.
+async fn edit(
+    store: &studio_runtime_store::RuntimeStore,
+    bridge: &str,
+    change: impl FnOnce(&mut Approval, &mut BrowserCard) + Send + 'static,
+) {
+    let key = card_id(bridge);
+    store
+        .transaction_with_error(move |tx| {
+            let (mut row, mut card) = load(tx, &key)?.expect("card exists");
+            change(&mut row, &mut card);
+            save(tx, row, card)
+        })
+        .await
+        .expect("card edit");
+}
+
 #[tokio::test]
-async fn a_card_reaches_the_client_while_pending_and_leaves_it_when_it_closes() {
+async fn a_card_is_stored_while_pending_and_closes_with_its_request() {
     let (_dir, store) = store().await;
     let device = "f".repeat(32);
     let guest = Arc::new(WaitGuest {
@@ -141,21 +146,30 @@ async fn a_card_reaches_the_client_while_pending_and_leaves_it_when_it_closes() 
     poll_once(&store, &source, 0, 0, None)
         .await
         .expect("test step");
-    let (retired, card) = request_entity(&store, &device).expect("the pending card is published");
+    let (row, card) = request(&store, &device).expect("the pending card is stored");
+    assert_eq!(row.id.as_str(), card_id(&device));
+    assert!(matches!(row.state, ApprovalState::Pending));
+    assert_eq!(card.host, "device.sso.us-east-1.amazonaws.com");
+    assert_eq!(card.user_code.as_deref(), Some("ABCD-EFGH"));
+    assert_eq!(card.expires_at, Some(Timestamp(601.0)));
+    assert_eq!(card.phase, BrowserPhase::Link);
+    let (retired, entity) = request_entity(&store, &device).expect("the pending card is published");
     assert!(!retired);
-    assert_eq!(card["id"], card_id(&device));
-    assert_eq!(card["method"], "browser/open");
-    assert_eq!(card["status"], "pending");
-    assert_eq!(card["params"]["host"], "device.sso.us-east-1.amazonaws.com");
-    assert_eq!(card["params"]["userCode"], "ABCD-EFGH");
-    assert_eq!(card["params"]["expiresAt"], 601.0);
+    assert_eq!(entity["id"], card_id(&device));
+    assert_eq!(entity["request"]["kind"], "browser_open");
+    assert_eq!(entity["state"]["kind"], "pending");
     poll_once(&store, &source, 1, 0, None)
         .await
         .expect("test step");
-    assert_eq!(
-        request(&store, &device).expect("test step")["status"],
-        "expired"
-    );
+    let (row, _) = request(&store, &device).expect("the closed card stays");
+    assert!(matches!(
+        row.state,
+        ApprovalState::Closed {
+            reason: CloseReason::Expired,
+            ..
+        }
+    ));
+    assert_eq!(row.detail.host_close_reason.as_deref(), Some("closed"));
     let (retired, _) = request_entity(&store, &device).expect("the closed card stays known");
     assert!(retired, "a closed card leaves the client");
 }
@@ -190,21 +204,25 @@ async fn pending_links_become_cards_once_and_unknown_chats_are_refused() {
             .expect("test step"),
         3
     );
-    let card = request(&store, &kube).expect("kubelogin card");
-    assert_eq!(card["method"], "browser/open");
-    assert_eq!(card["agent"], VM_AGENT);
-    assert_eq!(card["status"], "pending");
-    assert_eq!(card["params"]["redirect"], redirect);
-    assert_eq!(card["params"]["url"], KUBE);
+    let (row, card) = request(&store, &kube).expect("kubelogin card");
+    assert_eq!(row.agent.as_str(), VM_AGENT);
+    assert!(matches!(row.state, ApprovalState::Pending));
+    assert_eq!(row.turn, None);
+    let stored = card.redirect.as_ref().expect("redirect");
     assert_eq!(
-        card["params"]["host"],
+        json!({"host": stored.host, "port": stored.port, "path": stored.path}),
+        redirect
+    );
+    assert_eq!(card.url, KUBE);
+    assert_eq!(
+        json!(card.host),
         item(&kube, VM_AGENT, KUBE, redirect.clone(), "pending", 1)["host"]
     );
-    assert_eq!(card["params"]["source"], "vm");
-    assert_eq!(card["params"]["userCode"], Value::Null);
-    let device_card = request(&store, &device).expect("device card");
-    assert_eq!(device_card["params"]["userCode"], "ABCD-EFGH");
-    assert_eq!(device_card["params"]["redirect"], Value::Null);
+    assert_eq!(card.source, BrowserSource::Vm);
+    assert_eq!(card.user_code, None);
+    let (_, device_card) = request(&store, &device).expect("device card");
+    assert_eq!(device_card.user_code.as_deref(), Some("ABCD-EFGH"));
+    assert_eq!(device_card.redirect, None);
     assert!(request(&store, &stranger).is_none());
     let closes: Vec<Value> = guest
         .calls
@@ -215,7 +233,7 @@ async fn pending_links_become_cards_once_and_unknown_chats_are_refused() {
         .map(|call| call.1.clone())
         .collect();
     assert_eq!(closes, vec![json!({"id": stranger, "reason": "refused"})]);
-    let created = card["createdAt"].clone();
+    let created = row.created;
     assert_eq!(
         poll_once(&store, &source, 3, 0, None)
             .await
@@ -223,7 +241,7 @@ async fn pending_links_become_cards_once_and_unknown_chats_are_refused() {
         4
     );
     assert_eq!(
-        request(&store, &kube).expect("test step")["createdAt"],
+        request(&store, &kube).expect("test step").0.created,
         created,
         "a second poll never makes a second card"
     );
@@ -288,36 +306,41 @@ async fn a_final_guest_state_expires_the_card_and_tells_the_chat_after_an_approv
     poll_once(&store, &source, 0, 0, None)
         .await
         .expect("test step");
-    for (bridge, paste) in [(&waiting, Value::Null), (&pasting, json!({"at": 5.0}))] {
-        let key = card_id(bridge);
-        store
-            .transaction_with(move |tx| {
-                let raw = studio_runtime_store::QuestionsWriteRepository::request(tx, &key)?
-                    .expect("test step");
-                let mut record: Value = serde_json::from_str(&raw).expect("test step");
-                record["params"]["phase"] = json!("waiting");
-                if !paste.is_null() {
-                    record["params"]["paste"] = paste;
-                }
-                studio_runtime_store::QuestionsWriteRepository::put_request(
-                    tx,
-                    &key,
-                    &studio_runtime_store::python_json_utf8(&record),
-                )
-            })
-            .await
-            .expect("test step");
-    }
+    edit(&store, &waiting, |_, card| {
+        card.phase = BrowserPhase::Waiting {
+            expires_at: Timestamp(900.0),
+        };
+    })
+    .await;
+    edit(&store, &pasting, |_, card| {
+        card.phase = BrowserPhase::Pasted {
+            expires_at: Timestamp(900.0),
+            at: Timestamp(5.0),
+        };
+    })
+    .await;
     poll_once(&store, &source, 2, 0, None)
         .await
         .expect("test step");
-    let expired = request(&store, &waiting).expect("test step");
-    assert_eq!(expired["status"], "expired");
-    assert_eq!(expired["closeReason"], "stale");
-    assert_eq!(expired["params"]["outcome"], "expired");
-    let in_flight = request(&store, &pasting).expect("test step");
+    let (expired, card) = request(&store, &waiting).expect("test step");
+    assert!(matches!(
+        expired.state,
+        ApprovalState::Closed {
+            reason: CloseReason::Expired,
+            ..
+        }
+    ));
+    assert_eq!(expired.detail.host_close_reason.as_deref(), Some("stale"));
     assert_eq!(
-        in_flight["status"], "pending",
+        card.phase,
+        BrowserPhase::Finished {
+            outcome: BrowserOutcome::Expired,
+            http: None
+        }
+    );
+    let (in_flight, _) = request(&store, &pasting).expect("test step");
+    assert!(
+        matches!(in_flight.state, ApprovalState::Pending),
         "a pasted result in flight writes its own outcome"
     );
     let connection = store.test_reader().expect("test step");
@@ -384,15 +407,15 @@ async fn a_card_follows_the_request_deadline_and_tells_the_chat_when_nobody_answ
         .await
         .expect("test step");
     assert_eq!(
-        request(&store, &stopped).expect("card")["params"]["expiresAt"],
-        601.0
+        request(&store, &stopped).expect("card").1.expires_at,
+        Some(Timestamp(601.0))
     );
     poll_once(&store, &source, 3, 0, None)
         .await
         .expect("test step");
     assert_eq!(
-        request(&store, &stopped).expect("card")["params"]["expiresAt"],
-        1201.0,
+        request(&store, &stopped).expect("card").1.expires_at,
+        Some(Timestamp(1201.0)),
         "the card shows the moved deadline"
     );
     poll_once(&store, &source, 4, 0, None)
@@ -406,11 +429,15 @@ async fn a_card_follows_the_request_deadline_and_tells_the_chat_when_nobody_answ
         (&timed_out, "expired"),
         (&replaced, "replaced"),
     ] {
-        let card = request(&store, bridge).expect("card");
-        assert_eq!(
-            (card["status"].clone(), card["closeReason"].clone()),
-            (json!("expired"), json!(reason))
-        );
+        let (row, _) = request(&store, bridge).expect("card");
+        assert!(matches!(
+            row.state,
+            ApprovalState::Closed {
+                reason: CloseReason::Expired,
+                ..
+            }
+        ));
+        assert_eq!(row.detail.host_close_reason.as_deref(), Some(reason));
     }
     assert_eq!(
         events(&store),
@@ -450,11 +477,10 @@ async fn the_host_bridge_shows_a_card_for_a_vm_chat_command_that_runs_on_the_mac
     poll_once(&store, &source, 0, 0, None)
         .await
         .expect("test step");
-    let card = request(&store, &bridge).expect("a host_exec command of a VM chat gets a card");
-    assert_eq!(
-        (card["status"].clone(), card["params"]["source"].clone()),
-        (json!("pending"), json!("host"))
-    );
+    let (row, card) =
+        request(&store, &bridge).expect("a host_exec command of a VM chat gets a card");
+    assert!(matches!(row.state, ApprovalState::Pending));
+    assert_eq!(card.source, BrowserSource::Host);
     assert!(
         guest
             .calls
@@ -493,15 +519,18 @@ async fn a_card_whose_page_this_mac_opened_closes_as_answered_when_its_command_s
     poll_once(&store, &source, 1, 0, None)
         .await
         .expect("test step");
-    let card = request(&store, &bridge).expect("card");
-    assert_eq!(
-        (
-            card["status"].clone(),
-            card["answeredBy"].clone(),
-            card["closeReason"].clone()
-        ),
-        (json!("answered"), json!("browser"), json!("local"))
-    );
+    let (row, _) = request(&store, &bridge).expect("card");
+    assert!(matches!(
+        row.state,
+        ApprovalState::Answered {
+            answer: Answer::Decision {
+                decision: Decision::Accept
+            },
+            by: Principal::Owner,
+            ..
+        }
+    ));
+    assert_eq!(row.detail.host_close_reason.as_deref(), Some("local"));
     assert!(
         events(&store).is_empty(),
         "the browser of this Mac had the page, so the chat gets no unanswered event"
@@ -543,46 +572,48 @@ async fn a_card_comes_back_after_a_backend_restart_while_its_request_is_open() {
         .await
         .expect("test step");
     // The person opened the second card on a phone: the waiting phase of a paste.
-    let key = card_id(&waiting);
-    store
-        .transaction_with(move |tx| {
-            let raw = studio_runtime_store::QuestionsWriteRepository::request(tx, &key)?
-                .expect("test step");
-            let mut record: Value = serde_json::from_str(&raw).expect("test step");
-            record["params"]["phase"] = json!("waiting");
-            record["params"]["waiting"] = json!({"expiresAt": 900.0});
-            studio_runtime_store::QuestionsWriteRepository::put_request(
-                tx,
-                &key,
-                &studio_runtime_store::python_json_utf8(&record),
-            )
-        })
-        .await
-        .expect("test step");
-    crate::monitor_runtime::recover_on_startup(&store, 50.0)
-        .await
-        .expect("startup recovery");
+    edit(&store, &waiting, |_, card| {
+        card.phase = BrowserPhase::Waiting {
+            expires_at: Timestamp(900.0),
+        };
+    })
+    .await;
+    // Startup recovery expires every pending card with the restart reason.
     for bridge in [&open, &waiting, &ended] {
-        assert_eq!(request(&store, bridge).expect("card")["status"], "expired");
+        edit(&store, bridge, |row, _| {
+            row.state = ApprovalState::Closed {
+                reason: CloseReason::Expired,
+                at: Timestamp(50.0),
+            };
+            row.detail.host_close_reason = Some(super::RESTART_CLOSE_REASON.to_owned());
+        })
+        .await;
+    }
+    for bridge in [&open, &waiting, &ended] {
+        assert!(matches!(
+            request(&store, bridge).expect("card").0.state,
+            ApprovalState::Closed { .. }
+        ));
     }
     poll_once(&store, &source, 0, 0, None)
         .await
         .expect("test step");
-    let back = request(&store, &open).expect("card");
-    assert_eq!(
-        (back["status"].clone(), back.get("closeReason").cloned()),
-        (json!("pending"), None),
+    let (back, _) = request(&store, &open).expect("card");
+    assert!(
+        matches!(back.state, ApprovalState::Pending) && back.detail.host_close_reason.is_none(),
         "the open request gets its card back"
     );
-    let phone = request(&store, &waiting).expect("card");
-    assert_eq!(
-        (phone["status"].clone(), phone["params"]["phase"].clone()),
-        (json!("pending"), json!("waiting")),
+    let (phone, phone_card) = request(&store, &waiting).expect("card");
+    assert!(
+        matches!(phone.state, ApprovalState::Pending)
+            && matches!(phone_card.phase, BrowserPhase::Waiting { .. }),
         "a phone sign-in keeps waiting for its pasted result"
     );
-    assert_eq!(
-        request(&store, &ended).expect("card")["status"],
-        "expired",
+    assert!(
+        matches!(
+            request(&store, &ended).expect("card").0.state,
+            ApprovalState::Closed { .. }
+        ),
         "an ended request keeps its card closed"
     );
     assert_eq!(
@@ -675,18 +706,22 @@ async fn joined_requests_wait_on_one_card_and_hear_how_it_ended() {
     );
     assert!(request(&store, &promoted).is_none());
     assert_eq!(
-        request(&store, &leader).expect("card")["params"]["joined"],
-        json!(["second-agent", "third-agent"]),
+        request(&store, &leader)
+            .expect("card")
+            .1
+            .joined
+            .iter()
+            .map(|agent| agent.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        ["second-agent", "third-agent"],
         "the card names the chats that wait on it"
     );
     poll_once(&store, &source, 3, 0, None)
         .await
         .expect("test step");
     let own = request(&store, &promoted).expect("the oldest joined request becomes the card");
-    assert_eq!(
-        (own["status"].clone(), own["agent"].clone()),
-        (json!("pending"), json!("third-agent"))
-    );
+    assert!(matches!(own.0.state, ApprovalState::Pending));
+    assert_eq!(own.0.agent.as_str(), "third-agent");
     let joined_events: Vec<(String, String, String)> = events(&store)
         .into_iter()
         .filter(|(id, _, _)| id.starts_with("browser-joined:"))

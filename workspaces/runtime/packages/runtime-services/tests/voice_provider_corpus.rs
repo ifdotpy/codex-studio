@@ -1193,44 +1193,32 @@ async fn account_session_voice_approval_uses_the_shared_callback_lane() {
                 "UPDATE runtime_agents SET record=?1 WHERE id='agent'",
                 [actor.to_string()],
             )?;
-            tx.execute(
-                "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
-                rusqlite::params![
-                    callback_request_id_for_transaction,
-                    json!({
-                        "id":callback_request_id_for_transaction,
-                        "rpcId":99,
-                        "method":"item/commandExecution/requestApproval",
-                        "params":{"threadId":"thread","turnId":"turn"},
-                        "agent":"agent",
-                        "accountKey":"account",
-                        "connectionId":connection_id_for_transaction,
-                        "epoch":0,
-                        "supervisor":{"generation":7},
-                        "status":"pending",
-                        "createdAt":1.0
-                    })
-                    .to_string()
-                ],
+            studio_runtime_services::provider_callbacks::legacy_view::insert(
+                tx,
+                &json!({
+                    "id":callback_request_id_for_transaction,
+                    "rpcId":99,
+                    "method":"item/commandExecution/requestApproval",
+                    "params":{"threadId":"thread","turnId":"turn"},
+                    "agent":"agent",
+                    "accountKey":"account",
+                    "connectionId":connection_id_for_transaction,
+                    "epoch":0,
+                    "supervisor":{"generation":7},
+                    "status":"pending",
+                    "createdAt":1.0
+                }),
             )?;
             Ok(())
         })
         .await
         .expect("seed callback request and live actor");
-    let card: String = store
-        .test_reader()
-        .expect("fixture reader")
-        .query_row(
-            "SELECT record FROM runtime_requests WHERE id=?1",
-            [&callback_request_id],
-            |row| row.get(0),
-        )
-        .expect("callback card");
-    crate::callback_fixtures::seed_admission(
-        &store,
-        &serde_json::from_str(&card).expect("callback record"),
+    let card = studio_runtime_services::provider_callbacks::legacy_view::stored(
+        &store.test_reader().expect("fixture reader"),
+        callback_request_id,
     )
-    .await;
+    .expect("callback card");
+    crate::callback_fixtures::seed_admission(&store, &card).await;
 
     let store = Arc::new(store);
     let reply_port = Arc::new(LiveCallbackReplyPort::default());
@@ -2224,8 +2212,10 @@ async fn provider_actions_do_not_dispatch_when_intent_write_fails() {
         tx.execute("INSERT INTO voice_sessions(id,agent,created,account_key,connection_id,state) VALUES('matrix-approve-fail','agent',1,'account','receipt-matrix-connection','ready')", [])?;
         save_scope(tx)?;
         let request = json!({"id":"matrix-approve-fail-request","rpcId":"matrix-rpc-fail","agent":"agent","epoch":0,"status":"pending","method":"item/commandExecution/requestApproval","accountKey":"account","connectionId":"receipt-matrix-connection","params":{"command":"safe","threadId":"thread"}});
+        let approval = studio_runtime_store::approvals::from_legacy_record("matrix-approve-fail-request", &request).expect("typed approval");
+        studio_runtime_store::approvals::put(tx, &approval).expect("approval row");
+        let request = serde_json::to_value(&approval).expect("approval json");
         let fingerprint = studio_runtime_store::sha256_hex(studio_runtime_store::python_json(&request).as_bytes());
-        tx.execute("INSERT INTO runtime_requests(id,record) VALUES('matrix-approve-fail-request',?1)", [request.to_string()])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('matrix-approve-fail-speech','agent','','orchestrator','approval','','',?1,1)", [json!({"request_id":"matrix-approve-fail-request","fingerprint":fingerprint}).to_string()])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('matrix-approve-fail-playback','agent','matrix-approve-fail','playback','played','','',?1,2)", [json!({"record_id":"matrix-approve-fail-speech"}).to_string()])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('matrix-approve-fail-transcript','agent','matrix-approve-fail','user','разрешаю','','','{}',3)", [])?;
@@ -2285,8 +2275,10 @@ async fn approval_from_another_connection_generation_is_refused_without_writes()
             "accountKey":"account", "connectionId":"another-connection-generation",
             "params":{"command":"safe", "threadId":"thread"}
         });
+        let approval = studio_runtime_store::approvals::from_legacy_record("request-from-prior-generation", &request).expect("typed approval");
+        studio_runtime_store::approvals::put(tx, &approval).expect("approval row");
+        let request = serde_json::to_value(&approval).expect("approval json");
         let fingerprint = studio_runtime_store::sha256_hex(studio_runtime_store::python_json(&request).as_bytes());
-        tx.execute("INSERT INTO runtime_requests(id,record) VALUES('request-from-prior-generation',?1)", [request.to_string()])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('connection-bound-speech','agent','','orchestrator','approval','','',?1,1)", [json!({"request_id":"request-from-prior-generation","fingerprint":fingerprint}).to_string()])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('connection-bound-playback','agent','connection-bound-approval','playback','played','','',?1,2)", [json!({"record_id":"connection-bound-speech"}).to_string()])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('connection-bound-transcript','agent','connection-bound-approval','user','разрешаю','','','{}',3)", [])?;
@@ -2321,16 +2313,16 @@ async fn approval_from_another_connection_generation_is_refused_without_writes()
             .expect("approval count"),
         0
     );
-    let request_record: String = connection
-        .query_row(
-            "SELECT record FROM runtime_requests WHERE id='request-from-prior-generation'",
-            [],
-            |row| row.get(0),
-        )
-        .expect("request record");
-    let request: serde_json::Value =
-        serde_json::from_str(&request_record).expect("decode request record");
-    assert_eq!(request["status"], "pending");
+    let request = studio_runtime_store::approvals::get(
+        &connection,
+        &studio_runtime_schema::approvals::ApprovalId("request-from-prior-generation".into()),
+    )
+    .expect("request row")
+    .expect("request");
+    assert_eq!(
+        request.state,
+        studio_runtime_schema::approvals::ApprovalState::Pending
+    );
 }
 
 #[tokio::test]
@@ -2608,9 +2600,10 @@ async fn unknown_provider_receipts_survive_restart_without_resending() {
         tx.execute("UPDATE voice_sessions SET native_thread='thread',account_key='account',connection_id='receipt-matrix-connection',state='ready' WHERE id='session'", [])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('matrix-speech','agent','','orchestrator','voice text','item','', '{}',1)", [])?;
         tx.execute("INSERT INTO voice_sessions(id,agent,created,account_key,connection_id,state) VALUES('matrix-approve','agent',1,'account','receipt-matrix-connection','ready')", [])?;
-        tx.execute("INSERT INTO runtime_requests(id,record) VALUES('matrix-request',?1)", [json!({"id":"matrix-request","rpcId":"matrix-rpc","agent":"agent","epoch":0,"status":"pending","method":"item/commandExecution/requestApproval","accountKey":"account","connectionId":"receipt-matrix-connection","params":{"command":"safe","threadId":"thread"}}).to_string()])?;
-        let request = tx.query_row("SELECT record FROM runtime_requests WHERE id='matrix-request'", [], |row| row.get::<_,String>(0))?;
-        let request: serde_json::Value = serde_json::from_str(&request).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let request = json!({"id":"matrix-request","rpcId":"matrix-rpc","agent":"agent","epoch":0,"status":"pending","method":"item/commandExecution/requestApproval","accountKey":"account","connectionId":"receipt-matrix-connection","params":{"command":"safe","threadId":"thread"}});
+        let approval = studio_runtime_store::approvals::from_legacy_record("matrix-request", &request).expect("typed approval");
+        studio_runtime_store::approvals::put(tx, &approval).expect("approval row");
+        let request = serde_json::to_value(&approval).expect("approval json");
         let fingerprint = studio_runtime_store::sha256_hex(studio_runtime_store::python_json(&request).as_bytes());
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('matrix-approval-speech','agent','','orchestrator','approval','','',?1,1)", [json!({"request_id":"matrix-request","fingerprint":fingerprint}).to_string()])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('matrix-playback','agent','matrix-approve','playback','played','','',?1,2)", [json!({"record_id":"matrix-approval-speech"}).to_string()])?;
@@ -2839,8 +2832,10 @@ async fn written_provider_effects_survive_restart_and_replay_once() {
         tx.execute("UPDATE runtime_agents SET record=?1 WHERE id='agent'", [actor.to_string()])?;
         tx.execute("INSERT INTO voice_sessions(id,agent,created,account_key,connection_id,state) VALUES('written-approval','agent',1,'account','receipt-matrix-connection','ready')", [])?;
         let request = json!({"id":"written-request","rpcId":"written-rpc","agent":"agent","epoch":0,"status":"pending","method":"item/commandExecution/requestApproval","accountKey":"account","connectionId":"receipt-matrix-connection","params":{"command":"safe","threadId":"thread"}});
+        let approval = studio_runtime_store::approvals::from_legacy_record("written-request", &request).expect("typed approval");
+        studio_runtime_store::approvals::put(tx, &approval).expect("approval row");
+        let request = serde_json::to_value(&approval).expect("approval json");
         let fingerprint = studio_runtime_store::sha256_hex(studio_runtime_store::python_json(&request).as_bytes());
-        tx.execute("INSERT INTO runtime_requests(id,record) VALUES('written-request',?1)", [request.to_string()])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('written-approval-speech','agent','','orchestrator','approval','','',?1,1)", [json!({"request_id":"written-request","fingerprint":fingerprint}).to_string()])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('written-approval-playback','agent','written-approval','playback','played','','',?1,2)", [json!({"record_id":"written-approval-speech"}).to_string()])?;
         tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('written-approval-transcript','agent','written-approval','user','разрешаю','','','{}',3)", [])?;

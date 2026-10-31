@@ -75,7 +75,7 @@ const IDLE_STATE_OBSERVED_TABLES: [ObservedTable; 6] = [
     ObservedTable::Events,
     ObservedTable::Monitors,
     ObservedTable::AccountTransfers,
-    ObservedTable::RuntimeRequests,
+    ObservedTable::Approvals,
     ObservedTable::RuntimeToolRequests,
 ];
 // Maximum provider events per journal transaction (count); bounds transaction work and ACK delay.

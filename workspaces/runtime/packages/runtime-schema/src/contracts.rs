@@ -747,6 +747,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     crate::agent_progress::check_schema_parity(openapi)?;
     crate::studio_errors::check_schema_parity(openapi)?;
     crate::queue_command::check_schema_parity(openapi)?;
+    crate::approvals::check_schema_parity(openapi)?;
     crate::question_answers::check_schema_parity(openapi)?;
     crate::claude_controls::check_schema_parity(openapi)?;
     crate::process_controls::check_schema_parity(openapi)?;
@@ -919,8 +920,9 @@ fn check_delivery_parity(openapi: &Value) -> Result<(), String> {
             let Some(property) = schema.pointer(&format!("/properties/{field}")) else {
                 continue;
             };
-            // Terminal input delivery is an unrelated status contract.
-            if name == "TerminalInputResult" {
+            // Terminal input delivery is an unrelated status contract. An approval's
+            // delivery names the provider connection that gets the answer.
+            if name == "TerminalInputResult" || name == "Approval" {
                 continue;
             }
             let reference = if matches!(name.as_str(), "ManagedMessageBody" | "CommandSendBody") {
@@ -1272,6 +1274,9 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .ok_or_else(|| format!("OpenAPI is missing Rust-owned {name}"))? = schema;
     }
     for (name, schema) in crate::process_controls::schemas() {
+        openapi["components"]["schemas"][name] = schema;
+    }
+    for (name, schema) in crate::approvals::schemas() {
         openapi["components"]["schemas"][name] = schema;
     }
     openapi["components"]["schemas"]["AnswerBody"]["properties"]["decision"] =
@@ -1811,6 +1816,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .into_generator();
         generator.subschema_for::<crate::supervisor_contract::HealthResult>();
         generator.subschema_for::<crate::persistence::RecipientDelivery>();
+        generator.subschema_for::<crate::approvals::Approval>();
         generator.subschema_for::<crate::provider_diagnostics::StdinTimingDiagnostic>();
         generator.subschema_for::<crate::provider_diagnostics::ReplyTimingDiagnostic>();
         generator.subschema_for::<studio_client_domain::protocol::Request>();

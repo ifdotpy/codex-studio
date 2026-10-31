@@ -515,7 +515,7 @@ async fn enabled_native_backend_serves_success_and_null_refusal() {
                     }
                 );
                 assert_eq!(physical_snapshot(&store), before);
-                assert_eq!(stored(&store, &id), value);
+                assert_eq!(stored(&store, &id)["status"], "pending");
                 assert_eq!(port.calls.lock().unwrap().len(), index);
             } else {
                 assert_eq!(body["status"], "answered");

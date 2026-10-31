@@ -14,6 +14,7 @@ mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
+mod m2026_10_30_approvals;
 mod m2026_10_30_branch_phase;
 mod m2026_10_30_capture_errors;
 mod m2026_10_30_command_path;
@@ -25,6 +26,7 @@ pub(crate) mod m2026_10_30_monitor_queue;
 pub(crate) mod m2026_10_30_monitor_status;
 mod m2026_10_30_one_nonce_table;
 mod m2026_10_30_one_outbox;
+mod m2026_10_30_outbox_reopen;
 mod m2026_10_30_project_teams;
 mod m2026_10_30_radio_room;
 mod m2026_10_30_request_record;
@@ -52,6 +54,7 @@ pub use m2026_10_26_provider_identity::migrate_canvas_2026_10_26;
 pub(crate) use m2026_10_26_provider_identity::{
     ANALYTICS_PROVIDER_FORMAT_KEY, PROVIDER_IDENTITY_FORMAT,
 };
+pub(crate) use m2026_10_30_approvals::approval_from_record;
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_30_branch_phase::apply as migrate_branch_phase;
 #[cfg(any(test, feature = "test-support"))]
@@ -704,6 +707,26 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_domain_model::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-approvals",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Approvals and provider questions in runtime_requests with string states",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_approvals::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-outbox-card-reopen",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Callback outbox rows that keep the whole unanswered card",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_outbox_reopen::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {

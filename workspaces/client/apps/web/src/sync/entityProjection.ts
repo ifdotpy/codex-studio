@@ -8,7 +8,6 @@ import type {
   ModelEntityDto,
   PeerTeamEntityDto,
   ProjectEntityDto,
-  RequestEntityDto,
   RoomEntityDto,
   RuleEntityDto,
   SyncEntityPayload,
@@ -17,11 +16,11 @@ import type {
   WorkspaceEntityDto,
 } from "../generated/api";
 import type { components } from "../generated/api";
-import { RequestStatus } from "../generated/api";
 type AccountRateLimitsDto = components["schemas"]["AccountRateLimitsDto"];
 type StudioError = components["schemas"]["StudioError"];
 export type UiPreferencesDto = components["schemas"]["UiPreferencesDto"];
 import type { Snapshot } from "../types";
+import type { Approval } from "../approvals";
 
 export const UI_PREFERENCE_SCOPES = ["user", "server"] as const;
 export type UiPreferenceScope = (typeof UI_PREFERENCE_SCOPES)[number];
@@ -137,7 +136,7 @@ function emptyEntityValues(): EntityValues {
     task: new Map<string, TaskEntityDto>(),
     monitor: new Map<string, MonitorEntityDto>(),
     complaint: new Map<string, ComplaintEntityDto>(),
-    request: new Map<string, RequestEntityDto>(),
+    request: new Map<string, Approval>(),
     rule: new Map<string, RuleEntityDto>(),
     project: new Map<string, ProjectEntityDto>(),
     peerTeam: new Map<string, PeerTeamEntityDto>(),
@@ -243,10 +242,7 @@ function projectSnapshotCollections(
   const requests =
     prior && !changed.has("request")
       ? prior.runtime.requests
-      : entityValues(values, "request").filter(
-          (request) =>
-            request.status == null || request.status === RequestStatus.pending,
-        );
+      : entityValues(values, "request");
   const rules =
     prior && !changed.has("rule")
       ? prior.runtime.rules

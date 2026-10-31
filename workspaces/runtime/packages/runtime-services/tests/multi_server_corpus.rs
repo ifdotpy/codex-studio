@@ -1348,24 +1348,66 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
         1
     });
     let (_root, store) = store().await;
-    let mut record = json!({"id":request_id,"agent":"fixture","createdAt":1,"method":"browser/open","status":"answered","params":{"bridgeId":bridge_id,"forward":{"tokenHash":""},"redirect":{"host":"127.0.0.1","port":port,"path":"/callback"}}});
-    let digest = sha2::Sha256::digest(token.as_bytes());
-    let digest = digest
+    let digest = sha2::Sha256::digest(token.as_bytes())
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    record["params"]["forward"]["tokenHash"] = json!(digest);
-    let record_for_store = record.clone();
-    let request_id_for_store = request_id.clone();
+    use studio_runtime_schema::approvals as typed;
+    let card = typed::BrowserCard {
+        url: "https://login.example.test/".into(),
+        bridge_id: bridge_id.into(),
+        host: "login.example.test".into(),
+        source: typed::BrowserSource::Vm,
+        redirect: Some(typed::BrowserRedirect {
+            host: "127.0.0.1".into(),
+            port,
+            path: "/callback".into(),
+        }),
+        client_id: None,
+        scope: None,
+        linux_user: None,
+        user_code: None,
+        expires_at: None,
+        joined: Vec::new(),
+        forward: Some(typed::BrowserCallbackForward {
+            token_hash: digest,
+            expires_at: typed::Timestamp(9.0),
+        }),
+        phase: typed::BrowserPhase::Link,
+    };
+    let row = typed::Approval {
+        id: typed::ApprovalId(request_id.clone()),
+        agent: typed::AgentId("agent".into()),
+        turn: None,
+        created: typed::Timestamp(1.0),
+        epoch: None,
+        request: typed::Request::BrowserOpen(card),
+        delivery: None,
+        detail: typed::Detail {
+            params: typed::ProviderObject(serde_json::Map::new()),
+            preview: None,
+            answer_error: None,
+            host_close_reason: None,
+        },
+        state: typed::ApprovalState::Answered {
+            answer: typed::Answer::Decision {
+                decision: typed::Decision::Accept,
+            },
+            by: typed::Principal::Owner,
+            at: typed::Timestamp(2.0),
+        },
+        deferral: None,
+        fire_at: None,
+        hidden: None,
+    };
+    let stored_row = row.clone();
     store
         .transaction(move |tx| {
-        tx.execute(
-            "INSERT INTO runtime_requests(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
-                rusqlite::params![request_id_for_store, record_for_store.to_string()],
-            )?;
-            Ok::<_, studio_runtime_store::StoreError>(())
+            studio_runtime_store::approvals::put(tx, &row).map_err(|error| {
+                studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
+            })
         })
-            .await
+        .await
         .expect("saved browser callback request");
     let driver = OrchestrationDriver::new(
         Arc::clone(&store),
@@ -1429,17 +1471,17 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
                 "ValueError"
             }
         );
-        let connection = store.test_reader().expect("saved request remains readable");
-        let saved: String = connection
-            .query_row(
-                "SELECT record FROM runtime_requests WHERE id=?1",
-                [&request_id],
-                |row| row.get(0),
-            )
-            .expect("wrong and unknown bridge attempts do not modify saved request");
+        let saved = store
+            .test_read_transaction(|tx| {
+                studio_runtime_store::approvals::get(tx, &stored_row.id).map_err(|error| {
+                    studio_runtime_store::StoreError::SchemaMismatch(error.to_string())
+                })
+            })
+            .expect("saved request remains readable");
         assert_eq!(
-            serde_json::from_str::<Value>(&saved).expect("saved callback JSON"),
-            record
+            saved.as_ref(),
+            Some(&stored_row),
+            "wrong and unknown bridge attempts do not modify saved request"
         );
     }
     assert_eq!(relay.join().expect("bounded local relay server"), 1);

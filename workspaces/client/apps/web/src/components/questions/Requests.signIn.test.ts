@@ -1,4 +1,4 @@
-import { RequestStatus } from "../../generated/api";
+import { approval, browserOpen } from "../../approvalFixtures";
 import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -43,20 +43,19 @@ const forward = {
 function card() {
   const notify = vi.fn();
   const refresh = vi.fn(async () => {});
-  const request = {
-    id: requestId,
-    agent: "agent",
-    method: "browser/open",
-    status: RequestStatus.pending,
-    params: {
-      bridgeId: forward.bridgeId,
-      url: link,
-      host: "identity.example.test",
-      source: "host",
-      redirect: { host: "localhost", port: 8250, path: "/callback" },
-      expiresAt: forward.expiresAt,
+  const request: ComponentProps<typeof Requests>["requests"][number] = approval(
+    {
+      id: requestId,
+      agent: "agent",
+      request: browserOpen(link, {
+        bridgeId: forward.bridgeId,
+        host: "identity.example.test",
+        source: "host",
+        redirect: { host: "localhost", port: 8250, path: "/callback" },
+        expiresAt: forward.expiresAt,
+      }),
     },
-  } satisfies ComponentProps<typeof Requests>["requests"][number];
+  );
   renderToStaticMarkup(
     createElement(Requests, {
       requests: [request],

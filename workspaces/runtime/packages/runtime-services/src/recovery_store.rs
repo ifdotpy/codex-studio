@@ -505,11 +505,8 @@ impl CompletionWriter for LifecycleCompletionWriter {
                 rows.push(event_id);
             }
             let pending_request: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_requests \
-                 WHERE json_extract(record,'$.agent')=?1 \
-                 AND json_extract(record,'$.status')='pending' \
-                 AND (json_extract(record,'$.turnId') IS NULL \
-                      OR json_extract(record,'$.turnId')=?2))",
+                "SELECT EXISTS(SELECT 1 FROM approvals \
+                 WHERE agent=?1 AND state='pending' AND (turn IS NULL OR turn=?2))",
                 rusqlite::params![id, a["turnId"].as_str().ok_or(RecoveryError::CommitFailed)?],
                 |row| row.get(0),
             )?;

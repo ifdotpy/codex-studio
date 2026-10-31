@@ -1,6 +1,8 @@
-import { AgentStatus, RequestStatus } from "../generated/api";
+import { AgentStatus } from "../generated/api";
+import { approval, browserOpen, question, simpleRequest } from "../approvalFixtures";
+import type { Approval } from "../approvals";
 import { snapshotFixture } from "../snapshotFixture";
-import type { Agent, Snapshot, Request, Complaint } from "../types";
+import type { Agent, Snapshot, Complaint } from "../types";
 import assert from "node:assert/strict";
 import {
   SIGN_IN_ALERT_GRACE_SECONDS,
@@ -24,7 +26,7 @@ const lead = {
 
 const snapshot = (
   threads: Agent[] = [lead],
-  requests: Request[] = [],
+  requests: Approval[] = [],
   complaints: Complaint[] = [],
 ): Snapshot => snapshotFixture(threads, { requests, complaints });
 
@@ -174,58 +176,23 @@ it("reports failed and interrupted work using readable error fallbacks", () => {
 });
 
 it("turns active requests into question or approval notifications", () => {
-  const requests: Request[] = [
-    {
-      id: "question",
-      agent: "lead",
-      status: RequestStatus.pending,
-      // The question fixture omits the unused question identity.
-      params: {
-        questions: [{ question: "Which scope?" }],
-      } as Request["params"],
-    },
-    { id: "approval", agent: "lead", status: RequestStatus.pending },
-    {
-      id: "empty-question",
-      agent: "lead",
-      status: RequestStatus.pending,
-      // The question fixture omits the unused question identity.
-      params: { questions: [{ question: "" }] } as Request["params"],
-    },
-    {
+  const ask = (id: string, text: string) =>
+    approval({
+      id,
+      request: { kind: "question", questions: [question("q", text)] },
+    });
+  const requests: Approval[] = [
+    ask("question", "Which scope?"),
+    simpleRequest({ id: "approval", agent: "lead" }),
+    ask("empty-question", ""),
+    approval({
       id: "no-questions",
-      agent: "lead",
-      status: RequestStatus.pending,
-      params: { questions: [] },
-    },
-    {
-      id: "null-question",
-      agent: "lead",
-      status: RequestStatus.pending,
-      // @ts-expect-error questions deliberately contains a null question.
-      params: { questions: [null] },
-    },
-    {
-      id: "null-questions",
-      agent: "lead",
-      status: RequestStatus.pending,
-      params: { questions: null },
-    },
-    {
-      id: "null-params",
-      agent: "lead",
-      status: RequestStatus.pending,
-      params: null,
-    },
-    {
-      id: "deferred",
-      agent: "lead",
-      status: RequestStatus.pending,
-      deferred: true,
-    },
-    { id: "answered", agent: "lead", status: RequestStatus.answered },
-    { id: "unknown-agent", agent: "missing", status: RequestStatus.pending },
-    { id: "deleted-agent", agent: "gone", status: RequestStatus.pending },
+      request: { kind: "question", questions: [] },
+    }),
+    simpleRequest({ id: "deferred", agent: "lead", deferred: true }),
+    simpleRequest({ id: "answered", agent: "lead", answered: true }),
+    simpleRequest({ id: "unknown-agent", agent: "missing" }),
+    simpleRequest({ id: "deleted-agent", agent: "gone" }),
   ];
   const alerts = desktopAlerts(
     snapshot(
@@ -252,13 +219,7 @@ it("turns active requests into question or approval notifications", () => {
         "Open the request to review it.",
         { agentId: "lead", section: "messages", itemId: "approval" },
       ],
-      ...[
-        "empty-question",
-        "no-questions",
-        "null-question",
-        "null-questions",
-        "null-params",
-      ].map((id) => [
+      ...["empty-question", "no-questions"].map((id) => [
         `request:${id}`,
         "Main: Your approval is needed",
         "Open the request to review it.",
@@ -416,21 +377,34 @@ it("does not show a complaint from before the window started when its page arriv
   assert.equal(fresh(withoutTime), true);
 });
 
-const signInParams = {
-  bridgeId: "b1",
-  host: "id.example.com",
-  expiresAt: 1600,
-  source: "host",
-} satisfies NonNullable<Request["params"]>;
-const signIn = (fields: Partial<Request> = {}): Request => ({
-  id: "card-1",
-  method: "browser/open",
-  agent: "lead",
-  status: RequestStatus.pending,
-  createdAt: 1000,
-  params: signInParams,
-  ...fields,
-});
+const answeredState: Approval["state"] = {
+  kind: "answered",
+  answer: { kind: "decision", decision: "accept" },
+  by: { kind: "owner" },
+  at: 2,
+};
+const signIn = (
+  fields: {
+    state?: Approval["state"];
+    expiresAt?: number;
+    waiting?: boolean;
+  } = {},
+): Approval =>
+  approval({
+    id: "card-1",
+    agent: "lead",
+    request: browserOpen("https://id.example.com/device", {
+      bridgeId: "b1",
+      host: "id.example.com",
+      source: "host",
+      expiresAt: fields.expiresAt ?? 1600,
+      phase: fields.waiting
+        ? { kind: "waiting", expires_at: 1600 }
+        : { kind: "link" },
+    }),
+    created: 1000,
+    ...(fields.state ? { state: fields.state } : {}),
+  });
 
 it("alerts once with sound for a sign-in card that is still open after the grace", () => {
   assert.equal(SIGN_IN_ALERT_GRACE_SECONDS, 10);
@@ -453,8 +427,11 @@ it("alerts once with sound for a sign-in card that is still open after the grace
     sound: true,
   });
   // A card that someone answered, or that closed, gives no alert.
-  assert.deepEqual(ids(1010, signIn({ status: "answered" })), []);
-  assert.deepEqual(ids(1010, signIn({ status: "expired" })), []);
+  assert.deepEqual(ids(1010, signIn({ state: answeredState })), []);
+  assert.deepEqual(
+    ids(1010, signIn({ state: { kind: "closed", reason: "expired", at: 2 } })),
+    [],
+  );
 });
 
 it("reminds once before a sign-in card closes, and not while a phone sign-in waits", () => {
@@ -477,18 +454,12 @@ it("reminds once before a sign-in card closes, and not while a phone sign-in wai
     sound: true,
   });
   // The person already opened the page on a phone: the card waits for the pasted result.
-  const waiting = signIn({
-    params: {
-      ...signInParams,
-      phase: "waiting",
-      waiting: { expiresAt: 1600 },
-    },
-  });
+  const waiting = signIn({ waiting: true });
   assert.deepEqual(ids(1300, waiting), ["signin:card-1"]);
   // A card whose deadline passed gives no reminder.
   assert.deepEqual(ids(1601), ["signin:card-1"]);
   // A card shorter than the grace plus the reminder lead gets only the first alert.
-  const short = signIn({ params: { ...signInParams, expiresAt: 1200 } });
+  const short = signIn({ expiresAt: 1200 });
   assert.deepEqual(ids(1100, short), ["signin:card-1"]);
 });
 
@@ -499,7 +470,7 @@ it("names the next moment at which a sign-in alert becomes due", () => {
   assert.equal(nextAlertChange(data, 1300), null);
   assert.equal(nextAlertChange(snapshot([lead], []), 1005), null);
   assert.equal(
-    nextAlertChange(snapshot([lead], [signIn({ status: "answered" })]), 1005),
+    nextAlertChange(snapshot([lead], [signIn({ state: answeredState })]), 1005),
     null,
   );
 });

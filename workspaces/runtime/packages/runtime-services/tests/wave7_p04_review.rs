@@ -11,6 +11,55 @@ use studio_runtime_schema::persistence::{OutboxStatus, ToolRequestStatus};
 use studio_runtime_services::{callback_runtime::*, provider_callbacks::*};
 use studio_runtime_store::{RuntimeStore, outbox::Outbox};
 
+/// A pending agent question of `agent`, as the typed approval row.
+async fn agent_question(
+    store: &RuntimeStore,
+    id: &str,
+    agent: &str,
+    epoch: u64,
+    questions: Vec<(&str, &str, bool)>,
+) {
+    use studio_runtime_schema::approvals::{
+        AgentId, ApprovalId, Detail, ProviderObject, Question, Request, Timestamp, TurnId,
+    };
+    let new = studio_runtime_store::approvals::NewApproval {
+        id: ApprovalId(id.to_owned()),
+        agent: AgentId(agent.to_owned()),
+        turn: Some(TurnId("turn-0".to_owned())),
+        epoch: Some(epoch),
+        request: Request::AgentQuestion {
+            questions: questions
+                .into_iter()
+                .map(|(id, question, is_secret)| Question {
+                    id: id.to_owned(),
+                    question: question.to_owned(),
+                    header: None,
+                    options: vec![],
+                    is_secret,
+                    multi_select: None,
+                    is_other: None,
+                })
+                .collect(),
+        },
+        delivery: None,
+        detail: Detail {
+            params: ProviderObject(Default::default()),
+            preview: None,
+            answer_error: None,
+            host_close_reason: None,
+        },
+        fire_at: None,
+    };
+    store
+        .transaction(move |tx| {
+            studio_runtime_store::approvals::create(tx, new, Timestamp(10.0))
+                .map_err(studio_runtime_store::StoreError::from)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn complaint_event_failure_returns_error_and_rolls_back_complaint() {
     let (_root, store, context) = fixture().await;
@@ -86,8 +135,7 @@ async fn resolved_before_admission_or_before_deletion_survives_restart() {
                 store
                     .test_reader()
                     .unwrap()
-                    .query_row("SELECT count(*) FROM runtime_requests", [], |r| r
-                        .get::<_, i64>(0))
+                    .query_row("SELECT count(*) FROM approvals", [], |r| r.get::<_, i64>(0))
                     .unwrap(),
                 0
             );
@@ -247,7 +295,8 @@ async fn send_acceptance_and_resolution_are_serialized_without_holding_a_store_t
     let (submitted, resolved) = tokio::join!(submit, resolve);
     assert_eq!(submitted.unwrap(), Some(()));
     assert_eq!(resolved.unwrap(), 1);
-    assert_eq!(stored(&store, &id)["status"], "resolved");
+    // The answer was in delivery: not known to have arrived, never "resolved".
+    assert_eq!(stored(&store, &id)["status"], "uncertain");
 }
 
 #[tokio::test]
@@ -511,9 +560,6 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
 
 #[tokio::test]
 async fn python_failures_null_decisions_and_race_winners_are_preserved() {
-    fn expected_actor(case: &serde_json::Value) -> serde_json::Value {
-        normalized_actor(&case["afterActor"])
-    }
     for case in template()["failures"].as_array().unwrap() {
         let (_root, store, context) = fixture().await;
         seed_case(&store, case).await;
@@ -532,8 +578,11 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
             runtime.answer(id, &json!({"answers":{}}), 20.0).await
         };
         assert!(result.is_err());
-        assert_eq!(stored(&store, id), case["after"]);
-        assert_eq!(actor(&store, &context), expected_actor(case));
+        assert_outcome(&stored(&store, id), &case["after"]);
+        assert_eq!(
+            actor(&store, &context),
+            normalized_actor(&case["afterActor"])
+        );
         assert_writes(&before, &store, &case["writes"]);
     }
     for case in template()["invalid"].as_array().unwrap() {
@@ -550,8 +599,11 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
         } else {
             assert_eq!(result.unwrap(), case["expected"]["result"]);
         }
-        assert_eq!(stored(&store, id), case["after"]);
-        assert_eq!(actor(&store, &context), expected_actor(case));
+        assert_outcome(&stored(&store, id), &case["after"]);
+        assert_eq!(
+            actor(&store, &context),
+            normalized_actor(&case["afterActor"])
+        );
         assert_writes(&before, &store, &case["writes"]);
     }
     for case in template()["races"].as_array().unwrap() {
@@ -582,14 +634,20 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
                     .await
                     .is_err()
             );
-            assert_eq!(stored(&store, id), case["winner"]["after"]);
+            // The answer was in delivery: the provider's resolution leaves it unknown.
+            let mut resolved = case["winner"]["after"].clone();
+            resolved["status"] = json!("uncertain");
+            assert_outcome(&stored(&store, id), &resolved);
         } else {
             put_actor(&store, &case["winner"]["afterActor"]).await;
             delivery(&store, &reply.identity, DeliveryOutcome::Written)
                 .await
                 .unwrap();
-            assert_eq!(actor(&store, &context), expected_actor(&case["winner"]));
-            assert_eq!(stored(&store, id), case["pythonAfter"]["after"]);
+            assert_eq!(
+                actor(&store, &context),
+                normalized_actor(&case["winner"]["afterActor"])
+            );
+            assert_outcome(&stored(&store, id), &case["pythonAfter"]["after"]);
             assert_eq!(case["pythonAfter"]["afterActor"]["status"], "running");
         }
     }
@@ -598,36 +656,100 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
 #[tokio::test]
 async fn deferring_a_question_publishes_the_request_entity() {
     let (_root, store, context) = fixture().await;
-    let (id, _) = pending(&store, &context).await;
-    let entity_payload = |store: Arc<RuntimeStore>, id: String| async move {
-        store
-            .read_async::<String, studio_runtime_store::StoreError>("test entity", move |tx| {
-                Ok(tx.query_row(
-                    "SELECT payload FROM sync_entities WHERE collection='request' AND id=?1",
-                    [&id],
-                    |row| row.get(0),
-                )?)
-            })
-            .await
-            .expect("request entity")
-    };
-    assert!(
-        !entity_payload(Arc::clone(&store), id.clone())
-            .await
-            .contains("\"deferred\":true")
-    );
-    let request = id.clone();
+    let id = "deferred-question";
+    agent_question(&store, id, &context.agent, 3, vec![("q", "Choose", false)]).await;
+    let request = id.to_owned();
     store
         .transaction_with_error(move |tx| {
             studio_runtime_services::questions_write::defer_question(tx, &request, true)
         })
         .await
         .expect("defer the question");
-    assert!(
-        entity_payload(Arc::clone(&store), id)
-            .await
-            .contains("\"deferred\":true")
+    let row = store
+        .read_async::<_, studio_runtime_store::StoreError>("test row", move |tx| {
+            Ok(studio_runtime_store::approvals::get(
+                tx,
+                &studio_runtime_schema::approvals::ApprovalId(id.to_owned()),
+            )?)
+        })
+        .await
+        .expect("read")
+        .expect("row");
+    let deferral = row.deferral.expect("deferral");
+    assert!(deferral.active);
+    assert_eq!(
+        deferral.by,
+        studio_runtime_schema::approvals::Principal::Owner
     );
+    let payload: String = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT payload FROM sync_entities WHERE collection='request' AND id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .expect("request entity");
+    assert!(
+        payload.contains("\"deferral\":{\"active\":true"),
+        "{payload}"
+    );
+}
+
+#[tokio::test]
+async fn deleting_an_agent_question_hides_it_and_leaves_other_ids_to_the_cards() {
+    use studio_runtime_services::questions_write::{
+        QuestionsWriteError, defer_question, delete_agent_question,
+    };
+    let (_root, store, context) = fixture().await;
+    agent_question(
+        &store,
+        "hidden-question",
+        &context.agent,
+        3,
+        vec![("q", "Choose", false)],
+    )
+    .await;
+    let receipt = store
+        .transaction_with_error(|tx| delete_agent_question(tx, "hidden-question"))
+        .await
+        .expect("delete");
+    assert_eq!(
+        receipt,
+        Some(json!({"id":"hidden-question","status":"deleted"}))
+    );
+    let again = store
+        .transaction_with_error(|tx| delete_agent_question(tx, "hidden-question"))
+        .await
+        .expect("delete again");
+    assert_eq!(again, receipt, "a second delete is a replay");
+    let other = store
+        .transaction_with_error(|tx| delete_agent_question(tx, "not-an-agent-question"))
+        .await
+        .expect("other id");
+    assert_eq!(other, None);
+    let row = store
+        .read_async::<_, studio_runtime_store::StoreError>("test row", |tx| {
+            Ok(studio_runtime_store::approvals::get(
+                tx,
+                &studio_runtime_schema::approvals::ApprovalId("hidden-question".to_owned()),
+            )?)
+        })
+        .await
+        .expect("read")
+        .expect("row");
+    assert!(row.hidden.is_some());
+    assert!(matches!(
+        row.state,
+        studio_runtime_schema::approvals::ApprovalState::Pending
+    ));
+    let deferred = store
+        .transaction_with_error(|tx| defer_question(tx, "hidden-question", true))
+        .await;
+    assert!(matches!(
+        deferred,
+        Err(QuestionsWriteError::InvalidRequest(_))
+    ));
 }
 
 #[tokio::test]
@@ -654,37 +776,34 @@ async fn non_radio_async_answer_is_steered_and_acknowledged() {
     let (_root, store, context) = fixture().await;
     let agent = context.agent.clone();
     let agent_for_setup = agent.clone();
-    store
-        .transaction(move |tx| {
-            tx.execute(
-                "DELETE FROM runtime_events WHERE agent=?1",
-                [&agent_for_setup],
-            )?;
-            let mut record =
-                AgentRepository::get(tx, &AgentId::from(agent_for_setup.as_str()))?.unwrap();
-            record.status = studio_runtime_store::AgentStatus::Running;
-            record.in_flight = Some(true);
-            record.auto_wake = Some(true);
-            record.thread_id = Some("thread-0".to_string());
-            record.turn_id = Some("turn-0".to_string());
-            record.is_lead = Some(true);
-            record.start_attempt = Some(Box::new(studio_runtime_store::StartAttemptView {
-                id: Some("start".into()),
-                epoch: Some(3),
-                submitted: Some(true),
-                turn_id: Some("turn-0".into()),
-                thread_id: Some("thread-0".into()),
-                account_key: Some("default".into()),
-                events: Some(vec!["initial".into()]),
-                connection_generation: Some(7),
-                ..Default::default()
-            }));
-            AgentRepository::put(tx, &record)?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-    card(&store, &json!({"id":"question","agent":agent,"epoch":3,"turnId":"turn-0","method":"agent/asyncQuestion","status":"pending","createdAt":1.0,"params":{"questions":[{"id":"q","question":"Choose"},{"id":"secret","question":"Token","isSecret":true},{"id":"legacy","question":"Optional"}]}})).await;
+    store.transaction(move |tx| {
+        tx.execute("DELETE FROM runtime_events WHERE agent=?1", [&agent_for_setup])?;
+        let mut record = AgentRepository::get(tx, &AgentId::from(agent_for_setup.as_str()))?.unwrap();
+        record.status = studio_runtime_store::AgentStatus::Running;
+        record.in_flight = Some(true);
+        record.auto_wake = Some(true);
+        record.thread_id = Some("thread-0".to_string());
+record.turn_id = Some("turn-0".to_string());
+for (key, value) in [
+            ("isLead", json!(true)),
+
+            ("startAttempt", json!({"id":"start","epoch":3,"submitted":true,"turnId":"turn-0","threadId":"thread-0","accountKey":"default","events":["initial"],"connectionGeneration":7})),
+        ] { record.extra.insert(key.into(), value); }
+        AgentRepository::put(tx, &record)?;
+        Ok(())
+    }).await.unwrap();
+    agent_question(
+        &store,
+        "question",
+        &agent,
+        3,
+        vec![
+            ("q", "Choose", false),
+            ("secret", "Token", true),
+            ("legacy", "Optional", false),
+        ],
+    )
+    .await;
     let prepared = PreparedHost::load(&store).await.unwrap();
     let agent_for_write = agent.clone();
     store
@@ -704,17 +823,53 @@ async fn non_radio_async_answer_is_steered_and_acknowledged() {
                     admission: &Allow,
                     prepared: &prepared,
                     now: 30.0,
-                    },
+                },
             )?;
             assert!(!answer_async_question(tx, &input(&data, 30.5))?.event_inserted);
             let mut changed = data.clone();
-            changed.as_object_mut().unwrap().remove("decision");
-            assert!(answer_async_question(tx, &input(&changed, 30.6)).is_err(), "null and omission keep distinct raw signatures");
-            let record: String = tx.query_row("SELECT record FROM runtime_requests WHERE id='question'", [], |row| row.get(0)).map_err(studio_runtime_store::StoreError::from)?;
-            let record: serde_json::Value = serde_json::from_str(&record)?;
-            assert_eq!(record["answerHistory"][0]["answer"], json!(["yes"]));
-            assert_eq!(record["answerHistory"][1]["answer"], json!("[redacted]"));
-            assert_eq!(record["answerHistory"][2]["answer"], json!([]));
+            changed["answers"]["q"]["answers"] = json!(["no"]);
+            assert!(
+                matches!(
+                    answer_async_question(tx, &input(&changed, 30.6)),
+                    Err(studio_runtime_services::questions_write::QuestionsWriteError::Conflict(_))
+                ),
+                "a different answer is a conflict"
+            );
+            let row = studio_runtime_store::approvals::get(
+                tx,
+                &studio_runtime_schema::approvals::ApprovalId("question".to_owned()),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?
+            .expect("answered row");
+            let answers = |answers: Vec<(&str, Vec<&str>)>| {
+                studio_runtime_schema::approvals::Answer::Answers {
+                    answers: answers
+                        .into_iter()
+                        .map(|(id, answer)| studio_runtime_schema::approvals::QuestionAnswer {
+                            id: id.to_owned(),
+                            answer: answer.into_iter().map(str::to_owned).collect(),
+                            digest: None,
+                        })
+                        .collect(),
+                }
+            };
+            // The secret value is stored as the mark and the hash of what was typed.
+            let mut expected = answers(vec![
+                ("q", vec!["yes"]),
+                ("secret", vec!["[redacted]"]),
+                ("legacy", vec![]),
+            ]);
+            if let studio_runtime_schema::approvals::Answer::Answers { answers } = &mut expected {
+                answers[1].digest = Some(studio_runtime_store::sha256_hex(b"private"));
+            }
+            assert!(matches!(
+                row.state,
+                studio_runtime_schema::approvals::ApprovalState::Answered {
+                    ref answer,
+                    by: studio_runtime_schema::approvals::Principal::Owner,
+                    ..
+                } if *answer == expected
+            ));
             let claim = SchedulerRepository::claim_steer(tx, &agent_for_write, 3, "steer", 31.0)?
                 .expect("answer must be eligible for the running turn");
             assert_eq!(claim.events[0].text, "Choose\nyes\nToken\nprivate\nOptional");

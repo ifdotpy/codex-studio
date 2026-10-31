@@ -95,10 +95,10 @@ type LiveEntity = Record<string, unknown> &
   Optional<Schema["AgentDetailEntityDto"]> &
   Optional<Pick<Schema["AgentSummaryEntityDto"], "turnId">> &
   Cost &
-  Optional<Pick<Schema["MonitorEntityDto"], "agent" | "exitCode">> & {
+  Optional<Pick<Schema["MonitorEntityDto"], "agent" | "exitCode">> &
+  Optional<Pick<Schema["Approval"], "state">> & {
     status?:
       | Schema["MonitorEntityDto"]["status"]
-      | Schema["RequestEntityDto"]["status"]
       | Schema["EventEntityDto"]["status"]
       | Schema["MessageReceiptEntityDto"]["status"];
   };
@@ -1897,7 +1897,7 @@ export class Smoke {
         const cards = await this.changedEntities(
           after,
           "request",
-          (value) => value?.id === id && value.status === "pending",
+          (value) => value?.id === id && value.state?.kind === "pending",
         );
         return { done: cards.length > 0, value: true };
       });
