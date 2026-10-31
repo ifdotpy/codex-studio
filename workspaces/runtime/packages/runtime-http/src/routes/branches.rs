@@ -1019,9 +1019,9 @@ async fn copy_branch_history(
     let operation_id = operation_id.to_owned();
     let (result, _) = store.transaction_with_post_commit(move |tx|{
         let raw:String=tx.query_row("SELECT record FROM runtime_workspace_operations WHERE id=?1",[operation_id.as_str()],|r|r.get(0))?;
-        let mut operation:Value=serde_json::from_str(&raw)?;
+        let mut operation=decode_branch_operation(&raw)?;
         let current=AgentRepository::get(tx,&AgentId::from(source.as_str()))?.ok_or(studio_runtime_store::StoreError::SchemaMismatch("missing branch source".into()))?;
-        if CheckpointsRepository::workspace_source(&current.value()) != operation["source"]
+        if CheckpointsRepository::workspace_source(&current.value()) != *operation.other.get("source").unwrap_or(&Value::Null)
             || current.extra.get("workspaceReservationId").and_then(Value::as_str) != Some(operation_id.as_str())
         {
             return Err(studio_runtime_store::StoreError::SchemaMismatch("branch source changed before local copy".into()));
@@ -1129,8 +1129,10 @@ async fn copy_branch_history(
         let value=child.value(); AgentRepository::put(tx,&child)?;
         studio_runtime_services::agents_create::publish_agent(tx,&value)?;
         let result=value.clone();
-        operation["phase"]=json!("completed"); operation["result"]=result.clone(); operation["updated"]=json!(unix_time());
-        tx.execute("UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",params![operation_id.as_str(),operation.to_string()])?;
+        operation.set_phase(OperationPhase::Completed);
+        operation.result = Field::Value(result.clone());
+        operation.other.insert("updated".into(), json!(unix_time()));
+        tx.execute("UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",params![operation_id.as_str(),serde_json::to_string(&operation)?])?;
         if let Some(mut actor)=AgentRepository::get(tx,&AgentId::from(source))? {
             actor.extra.remove("workspaceReservationId");
             actor.extra.insert("workspaceOperation".into(),Value::Null);
@@ -1138,8 +1140,6 @@ async fn copy_branch_history(
             AgentRepository::put(tx,&actor)?;
             studio_runtime_services::agents_create::publish_agent(tx,&actor_value)?;
         }
-        operation["result"] = result.clone();
-        tx.execute("UPDATE runtime_workspace_operations SET record=?2 WHERE id=?1",params![operation_id.as_str(),operation.to_string()])?;
         Ok::<_,studio_runtime_store::StoreError>(result)
     }, move |_| wake.notify_one()).await.map_err(ApiError::stored)?;
     Ok(result)
@@ -1397,7 +1397,7 @@ mod tests {
         store.transaction(move |tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('source',?1)", [source.to_string()])?;
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('child',?1)", [child.to_string()])?;
-            tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('op',?1)", [json!({"source":source_identity,"phase":"provider_ready"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('op',?1)", [json!({"source":source_identity,"signature":"s","phase":"provider_ready"}).to_string()])?;
             tx.execute("INSERT INTO runtime_assets(id,record) VALUES('asset',?1)", [json!({"id":"asset","agent":"source","name":"file.txt","path":asset_path,"mime":"text/plain","image":false,"size":1,"hash":"h","created":1}).to_string()])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:a','source',?1,1)", [r#"{"role":"assistant","text":"first","turnId":"t","assets":[{"id":"asset"}],"inputs":[{"text":"second","created":null,"at":2,"assets":[{"id":"asset"}]}]}"#])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:b','source',?1,1)", [r#"{"turnId":"t","text":null,"assets":null}"#])?;
@@ -1695,6 +1695,39 @@ mod tests {
         .expect("copy");
         assert_eq!(result["status"], "idle");
         assert_stored_status(&store, "child", "idle");
+    }
+
+    #[tokio::test]
+    async fn branch_copy_refuses_unreconstructible_operation() {
+        let (_root, store) = status_fixture().await;
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_workspace_operations SET record=json_set(record,'$.signature',NULL) WHERE id='operation'", [])?;
+            Ok(())
+        }).await.unwrap();
+        let selected = studio_runtime_store::TranscriptItem {
+            id: "message".into(),
+            agent: "source".into(),
+            record: serde_json::from_str(r#"{"id":"message","role":"assistant","turnId":"turn"}"#)
+                .unwrap(),
+        };
+        let provider = json!({"thread":{"id":"new-thread"}});
+        let result = copy_branch_history(
+            &store,
+            BranchCopy {
+                source: "source",
+                target: "child",
+                selected: &selected,
+                message_id: "message",
+                fork_turn: None,
+                before: false,
+                provider: &provider,
+                operation_id: "operation",
+            },
+            Arc::new(tokio::sync::Notify::new()),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_stored_status(&store, "child", "queued");
     }
 
     const HISTORY_TURNS: usize = 100;
