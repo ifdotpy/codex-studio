@@ -115,7 +115,7 @@ import Conversation from "./Conversation";
 import { LiveAgentPhase } from "./agents/AgentPhase";
 import { localTime } from "../local-time";
 import { useOfflineSendFeedback } from "./message-delivery/useOfflineSendFeedback";
-import { createOutbox, type OutgoingMessage } from "../sync/send";
+import type { OutgoingMessage } from "../sync/send";
 
 type Props = ComponentProps<typeof Conversation>;
 const agent = {
@@ -296,80 +296,4 @@ it("retains terminal transcript errors after delivery instead of duplicating the
     error: "Provider failed",
   } as Props["agent"];
   expect(renderActivity(false, failed)).toBe("");
-});
-it("keeps queued feedback through a real in-flight send and clears it only after its receipt", async () => {
-  let record = { id: saved.id, payload: JSON.stringify(saved) };
-  const doc = {
-    id: record.id,
-    get payload() {
-      return record.payload;
-    },
-    getLatest: () => record,
-    incrementalModify: async (modify: (row: typeof record) => typeof record) =>
-      (record = modify(record)),
-  };
-  const entries = (): OutgoingMessage[] => [
-    { ...JSON.parse(record.payload), id: record.id },
-  ];
-  const db = {
-    outbox: {
-      findOne: () => ({ exec: async () => doc }),
-      find: () => ({ exec: async () => [doc] }),
-    },
-  };
-  let receipt!: (value: { id: string; status: "delivered" }) => void;
-  let started!: () => void;
-  const requestStarted = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  const post = vi.fn((_path: string, _body: unknown) => {
-    started();
-    return new Promise<{ id: string; status: "delivered" }>((resolve) => {
-      receipt = resolve;
-    });
-  });
-  const outbox = createOutbox({
-    api: {
-      command: {
-        send: async (body: unknown) => ({
-          rows: [
-            {
-              collection: "messageReceipt",
-              payload: await post("/api/commands", body),
-            },
-          ],
-        }),
-      },
-      syncGet: vi.fn(async () => ({ workspaceId: "workspace" })),
-      refreshSession: vi.fn(async () => ({ token: "token" })),
-      isApiSchemaMismatch: () => false,
-      onApiSchemaMismatch: () => () => {},
-    } as unknown as Parameters<typeof createOutbox>[0]["api"],
-    syncDatabase: vi.fn(async () => ({
-      db,
-      workspaceId: "workspace",
-    })) as unknown as Parameters<typeof createOutbox>[0]["syncDatabase"],
-    storage: { getItem: () => null } as unknown as Storage,
-  });
-  expect(feedback(entries(), ["Failed to fetch"]).pending).toBe(true);
-  h.online = true;
-  vi.stubGlobal("navigator", { onLine: true });
-  const send = outbox.durableSend(saved.body);
-  await requestStarted;
-  const repeat = outbox.durableSend(saved.body);
-  expect(required(entries()[0]).status).toBe("queued");
-  expect(renderActivity(feedback(entries()).pending)).not.toContain(
-    "Connection lost",
-  );
-  expect(feedback(entries()).pending).toBe(true);
-  receipt({ id: saved.id, status: "delivered" });
-  await Promise.all([send, repeat]);
-  expect(post).toHaveBeenCalledTimes(1);
-  expect(required(required(post.mock.calls[0])[1])).toEqual(saved.body);
-  expect(required(entries()[0]).status).toBe("accepted");
-  const completed = feedback(entries(), ["Failed to fetch"]);
-  expect(completed.pending).toBe(false);
-  expect(completed.owns("Failed to fetch")).toBe(true);
-  expect(feedback(entries()).owns("Failed to fetch")).toBe(false);
-  expect(renderActivity(completed.pending)).toContain("Thinking");
 });

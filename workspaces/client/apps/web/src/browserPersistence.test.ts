@@ -125,6 +125,7 @@ it("removes retired draft and upload data without touching identities", async ()
       { name: "codex-studio-dictation" },
       { name: "codex-studio-uploads:server:remote" },
       { name: "studio-automatic-ui-access-v1" },
+      { name: "studio-thin-cache" },
       { name: "studio-device-key-v1" },
       { name: "studio-monitor-input-journal-v1" },
     ],
@@ -153,5 +154,6 @@ it("removes retired draft and upload data without touching identities", async ()
     "codex-studio-dictation",
     "codex-studio-uploads:server:remote",
     "studio-automatic-ui-access-v1",
+    "studio-thin-cache",
   ]);
 });

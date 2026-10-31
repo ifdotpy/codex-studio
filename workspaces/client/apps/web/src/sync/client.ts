@@ -21,13 +21,6 @@ import {
 } from "./draftReplication";
 
 import {
-  createUnsentStore,
-  indexedDbKeyValue,
-  outboxSettled,
-  type KeyValue,
-} from "./thinCache";
-
-import {
   applyEntityRows,
   emptyEntityProjection,
   type UiPreferenceProjection,
@@ -175,8 +168,6 @@ export type SyncClientOptions = {
     typeof import("./transcriptCache").createTranscriptCache
   >;
   databaseSuffix: string;
-  /** Local storage for unresolved outbox and draft input. */
-  keyValue?: () => KeyValue | undefined;
 };
 export function createSyncClient(options: SyncClientOptions) {
   const { syncGet, syncPost, saved, save, setWorkspace, isApiSchemaMismatch } =
@@ -211,30 +202,16 @@ export function createSyncClient(options: SyncClientOptions) {
 
   let pending: ReturnType<typeof open> | undefined;
 
-  /** Drafts and the outbox hold unsent input: in memory, and on disk at once. */
+  /** Open the in-memory workspace collections. */
   async function openWorkspaceDatabase(workspaceId: string) {
-    const kv = options.keyValue?.();
-    const unsent = createUnsentStore(
-      kv,
-      `${workspaceId}${serverDatabaseSuffix}`,
-    );
     const name = workspaceDatabaseName(workspaceId, serverDatabaseSuffix);
     const draftConflicts = createDraftConflictHandler();
     const drafts = createDraftStore(
       `${name}:drafts`,
       draftConflicts.conflictHandler,
     );
-    const outbox = new LocalCollection(`${name}:outbox`, {
-      durable: {
-        put: (row) =>
-          outboxSettled(row.payload)
-            ? unsent.remove("outbox", row.id)
-            : unsent.put("outbox", { row }),
-      },
-    });
-    await outbox.hydrate((await unsent.load("outbox")).map(({ row }) => row));
     return {
-      db: { drafts: drafts.collection, outbox },
+      db: { drafts: drafts.collection },
       draftStore: drafts,
       draftConflicts,
     };
@@ -329,9 +306,6 @@ export function createSyncClient(options: SyncClientOptions) {
       throw error;
     }));
   }
-
-  /** Drafts and the outbox open with the rest of the workspace database. */
-  const outboxDatabase = syncDatabase;
 
   async function applyCommandRows(
     documents: components["schemas"]["SyncEntity"][],
@@ -3062,7 +3036,6 @@ export function createSyncClient(options: SyncClientOptions) {
   }
   return {
     syncDatabase,
-    outboxDatabase,
     applyCommandRows,
     persistResourceEntityChanges,
     persistStagedEntityTransfer,
@@ -3102,11 +3075,9 @@ const defaultSyncClient = createSyncClient({
     subscribeTranscript,
   },
   databaseSuffix: serverDatabaseSuffix,
-  keyValue: () => indexedDbKeyValue(),
 });
 export const {
   syncDatabase,
-  outboxDatabase,
   applyCommandRows,
   persistResourceEntityChanges,
   persistStagedEntityTransfer,

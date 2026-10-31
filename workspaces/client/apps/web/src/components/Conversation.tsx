@@ -1408,6 +1408,7 @@ export default function Conversation(p: {
         <OutboxControls
           entry={p.outgoing?.find((entry) => entry.id === m.clientMessageId)}
           edit={editOutgoing}
+          onResolved={(id) => p.onObserved?.([id])}
         />
       )}
       {m.deliveryError &&

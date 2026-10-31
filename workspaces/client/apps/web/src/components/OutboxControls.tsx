@@ -2,26 +2,35 @@ import { useServerOutbox } from "../servers/ServerServicesContext";
 import { Button } from "@mantine/core";
 import { useState } from "react";
 import { errorText } from "../api";
-import { type OutgoingMessage } from "../sync/send";
+import type { OutgoingMessage } from "../sync/send";
 
 export default function OutboxControls({
   entry,
-  edit,
+  onResolved,
 }: {
   entry?: OutgoingMessage | undefined;
   edit: (entry: OutgoingMessage) => Promise<void>;
+  onResolved?: (id: string) => void;
 }) {
   const { changeOutbox } = useServerOutbox();
-
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  if (!entry || !["queued", "paused"].includes(entry.status)) return null;
-  const run = async (action: () => Promise<void>) => {
+  if (
+    !entry ||
+    !["queued", "paused", "uncertain", "failed"].includes(entry.status)
+  )
+    return null;
+  const run = async (action: "resume" | "cancel") => {
     if (busy) return;
     setBusy(true);
     setError("");
     try {
-      await action();
+      const result = await changeOutbox(entry.id, action);
+      if (
+        action === "cancel" ||
+        (result && result.status !== "uncertain" && result.status !== "failed")
+      )
+        onResolved?.(entry.id);
     } catch (failure) {
       setError(errorText(failure));
     } finally {
@@ -31,43 +40,21 @@ export default function OutboxControls({
   return (
     <div className="outbox-controls">
       <div className="outbox-buttons">
-        {entry.attempted === false ? (
-          <>
-            <Button
-              size="compact-xs"
-              disabled={busy}
-              onClick={() => void run(() => edit(entry))}
-            >
-              Edit message
-            </Button>
-            <Button
-              size="compact-xs"
-              disabled={busy}
-              onClick={() => void run(() => changeOutbox(entry.id, "cancel"))}
-            >
-              Cancel send
-            </Button>
-          </>
-        ) : (
-          <Button
-            size="compact-xs"
-            disabled={busy}
-            onClick={() =>
-              void run(() =>
-                changeOutbox(
-                  entry.id,
-                  entry.status === "paused" ? "resume" : "pause",
-                ),
-              )
-            }
-          >
-            {entry.status === "paused" ? "Resume retries" : "Stop retries"}
-          </Button>
-        )}
+        <Button
+          size="compact-xs"
+          disabled={busy}
+          onClick={() => void run("resume")}
+        >
+          Retry
+        </Button>
+        <Button
+          size="compact-xs"
+          disabled={busy}
+          onClick={() => void run("cancel")}
+        >
+          Discard
+        </Button>
       </div>
-      {entry.attempted !== false && (
-        <p>Stops retries. Work already sent continues.</p>
-      )}
       {error && <p role="alert">{error}</p>}
     </div>
   );

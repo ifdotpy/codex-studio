@@ -1,4 +1,4 @@
-/** Name of the drafts and outbox store of one workspace. */
+/** Name of the in-memory draft collection of one workspace. */
 export function workspaceDatabaseName(workspaceId: string, serverSuffix = "") {
   return `studio${workspaceId}${serverSuffix}`;
 }

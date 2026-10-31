@@ -130,6 +130,12 @@ changes with the wire contract. Draft and outbox storage keep their workspace id
 The old RxDB migration is removed. A browser that did not open Studio after the
 migration was introduced cannot recover unresolved sends left in that old store.
 
+The browser saves each pending message command and workspace identity before its
+POST. A reconnect or explicit retry reuses the exact command; a failed or damaged
+entry can be discarded without blocking other messages. The retired
+`studio-thin-cache` database is deleted on startup. Its unsent messages and drafts
+are not migrated.
+
 ## Protocol 4: resource changes
 
 User actions, media transport, and recovery of an already accepted write retain

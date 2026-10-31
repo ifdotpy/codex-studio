@@ -392,34 +392,6 @@
     "callee": "localStorage.setItem"
   },
   {
-    "file": "sync/outboxWriteFailure.test.ts",
-    "callee": "syncPost"
-  },
-  {
-    "file": "sync/send.test.ts",
-    "callee": "syncPost"
-  },
-  {
-    "file": "sync/send.ts",
-    "callee": "localStorage"
-  },
-  {
-    "file": "sync/send.ts",
-    "callee": "syncGet"
-  },
-  {
-    "file": "sync/send.ts",
-    "callee": "syncGet"
-  },
-  {
-    "file": "sync/send.ts",
-    "callee": "localStorage"
-  },
-  {
-    "file": "sync/thinCache.ts",
-    "callee": "globalThis.indexedDB"
-  },
-  {
     "file": "sync/uiPreferenceStore.test.ts",
     "callee": "localStorage.getItem"
   },
@@ -430,10 +402,6 @@
   {
     "file": "sync/uploads.ts",
     "callee": "syncPost"
-  },
-  {
-    "file": "sync/useOutbox.test.ts",
-    "callee": "mocks.syncPost"
   },
   {
     "file": "usage/accountUsage.test.ts",

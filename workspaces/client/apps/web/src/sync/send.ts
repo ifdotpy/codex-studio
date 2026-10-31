@@ -1,69 +1,21 @@
-import { outboxRequests } from "../browserPersistence";
-import { serverLocalStorage as localStorage } from "../servers/storage";
-
 import { useEffect, useState } from "react";
-
+import { outboxRequestKeys, outboxRequests } from "../browserPersistence";
+import { serverLocalStorage } from "../servers/storage";
+import { ApiError, command, errorText, getStreamSession } from "../api";
 import {
-  isApiSchemaMismatch,
-  onApiSchemaMismatch,
-  syncGet,
-  command,
-  ApiError,
-  ApiSchemaMismatchError,
-  errorText,
-  refreshSession,
-} from "../api";
-
-import type { Doc } from "./localCollection";
-import { messageReceipt } from "../commands";
-import type { MessageDelivery, SendMessageBody } from "../commands";
-import { DeliveryStatusValues } from "../generated/persistence";
-
-import { syncDatabase, type SyncDocument } from "./client";
-
-import { onResume } from "./resume";
-
-import {
-  checkedMessageReceipts,
-  receiptOutgoing,
-  type MessageReceipt,
-} from "./messageReceipts";
-
+  messageReceipt,
+  type CommandRequest,
+  type MessageDelivery,
+  type SendMessageBody,
+} from "../commands";
 import type { Attachment } from "../components/ComposerAttachments";
+import { watchResourceConnection } from "./subscriptions/events";
+import { DeliveryStatus } from "../generated/api";
+import type { MessageReceipt } from "./messageReceipts";
 
-type MessageBody = SendMessageBody;
-
-type StoredMessageReceipt = Pick<MessageDelivery, "id" | "status"> &
-  Partial<Pick<MessageDelivery, "deliveries" | "error" | "materialized">>;
-
-const acknowledgedStatuses = {
-  queued: true,
-  pending: true,
-  reserved: true,
-  dispatching: true,
-  delivered: true,
-  accepted: true,
-  sent: true,
-  uncertain: true,
-  failed: true,
-  cancelled: true,
-  stored_only: true,
-} satisfies Record<MessageDelivery["status"], true>;
-const AGENT_ENTITY_ID_PREFIX = "entity:agent:";
-const OUTBOX_RETRY_DELAY_MS = 5_000;
-
-export function matchesMessageDelivery(value: unknown, messageId: string) {
-  if (!value || typeof value !== "object") return false;
-  if (!("id" in value) || value.id !== messageId || !("status" in value))
-    return false;
-  return (
-    typeof value.status === "string" &&
-    Object.hasOwn(acknowledgedStatuses, value.status)
-  );
-}
-
+type SendCommand = Extract<CommandRequest, { kind: "send" }>;
 type Intention = {
-  body: MessageBody;
+  body: SendMessageBody;
   status:
     | "queued"
     | "paused"
@@ -73,19 +25,17 @@ type Intention = {
     | "failed";
   attempted?: boolean;
   error?: string | undefined;
-  receipt?: StoredMessageReceipt | undefined;
+  receipt?: MessageDelivery | undefined;
   created: number;
   displayPending?: boolean;
   attachments?: Attachment[] | undefined;
   displayText?: string;
 };
-
 export type OutboxEntry = Intention & { id: string };
-
 export type OutgoingMessage = Omit<OutboxEntry, "status"> & {
   status: OutboxEntry["status"] | "sending";
 };
-
+type SavedSend = Intention & { request: SendCommand; workspaceId: string };
 type SendResult =
   | (MessageDelivery & { kind: "server"; queued: boolean })
   | {
@@ -96,432 +46,264 @@ type SendResult =
       error?: string | undefined;
     };
 
-type DecodedIntention =
-  | { kind: "valid"; intention: Intention }
-  | { kind: "invalid"; id: string };
-
-const intentionStatuses = {
-  queued: true,
-  paused: true,
-  cancelled: true,
-  accepted: true,
-  uncertain: true,
-  failed: true,
-} satisfies Record<Intention["status"], true>;
-const deliveryMoments = {
-  current_turn: true,
-  next_turn: true,
-  queue: true,
-  steer: true,
-  after_tool: true,
-  after_turn: true,
-} satisfies Record<NonNullable<MessageBody["delivery"]>, true>;
-
-function validStoredReceipt(value: unknown, id: string) {
-  if (!matchesMessageDelivery(value, id) || !value || typeof value !== "object")
-    return false;
-  const receipt = value as Record<string, unknown>;
-  const deliveries = receipt.deliveries;
+const statuses = new Set([
+  "queued",
+  "pending",
+  "reserved",
+  "dispatching",
+  "delivered",
+  "accepted",
+  "sent",
+  "uncertain",
+  "failed",
+  "cancelled",
+  "stored_only",
+]);
+export function matchesMessageDelivery(value: unknown, id: string) {
   return (
-    (receipt.error == null || typeof receipt.error === "string") &&
-    (receipt.materialized == null ||
-      typeof receipt.materialized === "boolean") &&
-    (deliveries == null ||
-      (typeof deliveries === "object" &&
-        !Array.isArray(deliveries) &&
-        Object.values(deliveries).every(
-          (item) =>
-            item !== null &&
-            typeof item === "object" &&
-            !Array.isArray(item) &&
-            "status" in item &&
-            DeliveryStatusValues.some((status) => status === item.status) &&
-            (!("error" in item) ||
-              item.error === null ||
-              typeof item.error === "string"),
-        )))
+    !!value &&
+    typeof value === "object" &&
+    "id" in value &&
+    value.id === id &&
+    "status" in value &&
+    typeof value.status === "string" &&
+    statuses.has(value.status)
   );
 }
 
-function decodeIntention(payload: string, id: string): DecodedIntention {
-  const invalid: DecodedIntention = { kind: "invalid", id };
-  let value: unknown;
-  try {
-    value = JSON.parse(payload);
-  } catch {
-    return invalid;
-  }
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return invalid;
-  const record = value as Record<string, unknown>;
-  const body = record.body;
-  if (!body || typeof body !== "object" || Array.isArray(body)) return invalid;
-  const message = body as Record<string, unknown>;
-  if (
-    message.id !== id ||
-    typeof message.room !== "string" ||
-    !message.room ||
-    typeof message.text !== "string" ||
-    (message.assets !== undefined &&
-      (!Array.isArray(message.assets) ||
-        !message.assets.every((asset) => typeof asset === "string"))) ||
-    (message.delivery !== undefined &&
-      (typeof message.delivery !== "string" ||
-        !Object.hasOwn(deliveryMoments, message.delivery))) ||
-    typeof record.status !== "string" ||
-    !Object.hasOwn(intentionStatuses, record.status) ||
-    typeof record.created !== "number" ||
-    !Number.isFinite(record.created) ||
-    (record.attempted !== undefined && typeof record.attempted !== "boolean") ||
-    (record.displayPending !== undefined &&
-      typeof record.displayPending !== "boolean") ||
-    (record.displayText !== undefined &&
-      typeof record.displayText !== "string") ||
-    (record.error !== undefined &&
-      record.error !== null &&
-      typeof record.error !== "string") ||
-    (record.receipt !== undefined && !validStoredReceipt(record.receipt, id)) ||
-    (record.status === "accepted" && record.receipt === undefined) ||
-    (record.status === "cancelled" &&
-      record.receipt !== undefined &&
-      (!record.receipt ||
-        typeof record.receipt !== "object" ||
-        !("status" in record.receipt) ||
-        record.receipt.status !== "cancelled")) ||
-    (record.attachments !== undefined &&
-      (!Array.isArray(record.attachments) ||
-        !record.attachments.every(
-          (item) =>
-            item &&
-            typeof item === "object" &&
-            typeof item.id === "string" &&
-            typeof item.name === "string" &&
-            typeof item.mime === "string" &&
-            typeof item.image === "boolean" &&
-            typeof item.size === "number" &&
-            (item.preview === undefined || typeof item.preview === "string"),
-        )))
-  )
-    return invalid;
-  return {
-    kind: "valid",
-    intention: {
-      ...(value as Intention),
-      ...(record.error === null ? { error: undefined } : {}),
-    },
-  };
-}
-
-function readIntention(payload: string, id: string): Intention {
-  const decoded = decodeIntention(payload, id);
-  if (decoded.kind === "invalid")
-    throw new Error(
-      `Saved message ${id} could not be read; its delivery is uncertain.`,
-    );
-  return decoded.intention;
-}
-
-const snapshots = (docs: Doc[]) =>
-  docs.map((doc) => ({
-    doc,
-    decoded: decodeIntention(doc.getLatest().payload, doc.id),
-  }));
-
-const queuedDocuments = (entries: ReturnType<typeof snapshots>) =>
-  entries
-    .flatMap(({ doc, decoded }) =>
-      decoded.kind === "valid" && decoded.intention.status === "queued"
-        ? [{ doc, intention: decoded.intention }]
-        : [],
-    )
-    .sort(
-      (a, b) =>
-        a.intention.created - b.intention.created ||
-        a.doc.id.localeCompare(b.doc.id),
-    );
-
-const updateIntention = (doc: Doc, change: Partial<Intention>) =>
-  doc.incrementalModify((record) => ({
-    ...record,
-    payload: JSON.stringify({
-      ...readIntention(record.payload, doc.id),
-      ...change,
-    }),
-  }));
-
-export const intentionResult = (value: Intention): SendResult =>
-  value.receipt
-    ? {
-        ...value.receipt,
-        ...(value.receipt.deliveries
-          ? { deliveries: value.receipt.deliveries }
-          : {}),
-        kind: "server",
-        queued: value.receipt.status === "queued",
-      }
-    : {
-        kind: "local",
-        id: value.body.id,
-        queued: value.status === "queued" || value.status === "paused",
-        status: value.status,
-        error: value.error,
-      };
-
-export function retainQueuedSchemaMismatch(
-  value: Intention,
-  error: unknown,
-): Intention {
-  return { ...value, error: errorText(error) };
-}
-
-const removalFence = (workspaceId: string, id: string) =>
-  JSON.stringify([workspaceId, id]);
-type SyncDatabaseHandle = Awaited<ReturnType<typeof syncDatabase>>;
-type OutboxDatabaseHandle = Pick<
-  SyncDatabaseHandle,
-  "workspaceId" | "verifyWorkspace"
-> & {
-  db: Pick<SyncDatabaseHandle["db"], "outbox" | "projections">;
-};
-
 export function createOutbox(options: {
-  api: Pick<
-    import("../api").ServerApi,
-    | "isApiSchemaMismatch"
-    | "onApiSchemaMismatch"
-    | "syncGet"
-    | "command"
-    | "refreshSession"
-  >;
-  syncDatabase: () => Promise<OutboxDatabaseHandle>;
+  api: Pick<import("../api").ServerApi, "command" | "getStreamSession">;
   storage: Storage;
+  watchResourceConnection: typeof watchResourceConnection;
 }) {
-  const {
-    isApiSchemaMismatch,
-    onApiSchemaMismatch,
-    syncGet,
-    command,
-    refreshSession,
-  } = options.api;
-  const { syncDatabase } = options;
-  const localStorage = options.storage;
-  const outboxFences = outboxRequests(localStorage);
-
+  const { command } = options.api;
+  const outbox = outboxRequests(options.storage);
+  const listeners = new Set<() => void>();
   const active = new Map<string, Promise<SendResult>>();
-
-  const sendingRooms = new Set<string>();
-
-  async function deliver(
-    doc: Pick<Doc, "id" | "getLatest" | "incrementalModify">,
-  ): Promise<SendResult> {
-    let value: Intention = readIntention(doc.getLatest().payload, doc.id);
-    if (value.status !== "queued" || !navigator.onLine)
-      return intentionResult(value);
-    try {
-      const { workspaceId } = await syncDatabase();
-      const [identity, session] = await Promise.all([
-        syncGet("/api/sync/identity"),
-        refreshSession(),
-      ]);
-      if (identity.workspaceId !== workspaceId)
-        throw new ApiError(
-          "The server workspace changed. Reload before sending.",
-          409,
-        );
-      // Claim the current content before HTTP. Cancellation uses the same atomic
-      // update and can succeed only before this request starts.
-      const claimed = await doc.incrementalModify((record) => {
-        const current: Intention = readIntention(record.payload, doc.id);
-        if (
-          current.status === "queued" &&
-          outboxFences.get("removedSend", removalFence(workspaceId, doc.id)) ===
-            "1"
-        ) {
-          const cancelled = current.attempted === false;
-          return {
-            ...record,
-            payload: JSON.stringify({
-              ...current,
-              status: cancelled ? "cancelled" : "paused",
-              ...(cancelled
-                ? { receipt: { id: doc.id, status: "cancelled" } }
-                : {}),
-            }),
-          };
+  const key = (room: string, id: string) => JSON.stringify([room, id]);
+  const publish = () => listeners.forEach((listener) => listener());
+  function list(): OutboxEntry[] {
+    return outboxRequestKeys(options.storage, "messageSend", "")
+      .flatMap((suffix) => {
+        let identity: unknown;
+        try {
+          identity = JSON.parse(suffix);
+        } catch {
+          return [];
         }
-        return current.status === "queued"
-          ? {
-              ...record,
-              payload: JSON.stringify({ ...current, attempted: true }),
-            }
-          : record;
-      });
-      value = readIntention(claimed.payload, doc.id);
-      if (value.status !== "queued") return intentionResult(value);
-      const result = messageReceipt(
-        await command.send(value.body, {
-          workspaceId,
-          sessionToken: session.token,
-        }),
-      );
-      if (!matchesMessageDelivery(result, value.body.id) || !result)
-        throw new Error("The delivery response does not match this message.");
-      if (result.status === "failed" || result.status === "cancelled")
-        throw new ApiError(
-          result.error ||
-            (result.status === "cancelled"
-              ? "This message was cancelled."
-              : "The message was not sent."),
-          400,
-        );
-      const current = await doc.incrementalModify((record) => {
-        const stored: Intention = readIntention(record.payload, doc.id);
-        // Preserve confirmed delivery against an older queue receipt. A matching
-        // later reply can still resolve queue acceptance or an uncertain outcome.
-        const confirmed = (receipt: StoredMessageReceipt | undefined) =>
-          receipt?.status === "delivered" ||
-          receipt?.status === "accepted" ||
-          receipt?.status === "sent";
         if (
-          stored.status === "cancelled" ||
-          (["accepted", "uncertain"].includes(stored.status) &&
-            (confirmed(stored.receipt) ||
-              (!confirmed(result) && result.status !== "uncertain")))
+          !Array.isArray(identity) ||
+          identity.length !== 2 ||
+          !identity.every((value) => typeof value === "string")
         )
-          return record;
-        return {
-          ...record,
-          payload: JSON.stringify({
-            ...stored,
-            status: result.status === "uncertain" ? "uncertain" : "accepted",
-            receipt: result,
-            error: result.error,
-          }),
-        };
-      });
-      return intentionResult(readIntention(current.payload, doc.id));
-    } catch (error) {
-      if (error instanceof ApiSchemaMismatchError) {
-        const current = await doc.incrementalModify((record) => {
-          const stored: Intention = readIntention(record.payload, doc.id);
-          if (stored.status !== "queued") return record;
-          return {
-            ...record,
-            payload: JSON.stringify(retainQueuedSchemaMismatch(stored, error)),
-          };
-        });
-        return intentionResult(readIntention(current.payload, doc.id));
-      }
-      // A lost response is retried only at the existing idempotent message endpoint.
+          return [];
+        const [room, id] = identity as [string, string];
+        const value = read(room, id);
+        return [
+          value
+            ? { ...value, id }
+            : {
+                id,
+                body: { id, room, text: "Saved message could not be read." },
+                status: "failed" as const,
+                error:
+                  "This saved message cannot be read. Discard it to remove it.",
+                created: 0,
+                displayPending: true,
+              },
+        ];
+      })
+      .sort((a, b) => a.created - b.created);
+  }
+  function read(room: string, id: string): SavedSend | undefined {
+    const raw = outbox.get("messageSend", key(room, id));
+    if (!raw) return;
+    try {
+      const row: unknown = JSON.parse(raw);
+      if (!row || typeof row !== "object") return;
+      const value = row as SavedSend;
       if (
-        !(error instanceof ApiError) ||
-        error.status >= 500 ||
-        error.status === 408 ||
-        error.status === 429
-      ) {
-        const current = await doc.incrementalModify((record) => {
-          const stored: Intention = readIntention(record.payload, doc.id);
-          if (!["queued", "paused"].includes(stored.status)) return record;
-          return {
-            ...record,
-            payload: JSON.stringify({ ...stored, error: errorText(error) }),
-          };
-        });
-        return intentionResult(readIntention(current.payload, doc.id));
-      }
-      const current = await doc.incrementalModify((record) => {
-        const stored: Intention = readIntention(record.payload, doc.id);
-        if (!["queued", "paused"].includes(stored.status)) return record;
-        return {
-          ...record,
-          payload: JSON.stringify({
-            ...stored,
-            status: "failed",
-            error: errorText(error),
-          }),
-        };
-      });
-      const stored: Intention = readIntention(current.payload, doc.id);
-      if (stored.status !== "failed") return intentionResult(stored);
-      throw error;
+        value.body?.id !== id ||
+        value.body.room !== room ||
+        typeof value.body.text !== "string" ||
+        value.request?.id !== id ||
+        value.request.kind !== "send" ||
+        value.request.target !== room ||
+        typeof value.request.client !== "string" ||
+        !Number.isSafeInteger(value.request.number) ||
+        typeof value.workspaceId !== "string" ||
+        typeof value.created !== "number" ||
+        !["queued", "paused", "uncertain", "failed"].includes(value.status)
+      )
+        return;
+      const expected = {
+        text: value.body.text,
+        ...(value.body.assets ? { assets: value.body.assets } : {}),
+        ...(value.body.delivery ? { delivery: value.body.delivery } : {}),
+      };
+      if (JSON.stringify(value.request.body) !== JSON.stringify(expected))
+        return;
+      return value;
+    } catch {
+      return;
     }
   }
-
-  function once(doc: Doc): Promise<SendResult> {
-    let task = active.get(doc.id);
-    if (!task) {
-      task = (async () => {
-        const { db, workspaceId } = await syncDatabase();
-        const value: Intention = readIntention(doc.getLatest().payload, doc.id);
-        if (value.status !== "queued" || !navigator.onLine)
-          return intentionResult(value);
-        const room = `${workspaceId}:${JSON.stringify(value.body.room)}`;
-        if (sendingRooms.has(room)) return intentionResult(value);
-        const first = queuedDocuments(
-          snapshots(await db.outbox.find().exec()),
-        ).find(({ intention }) => intention.body.room === value.body.room);
-        if (first && first.doc.id !== doc.id) return intentionResult(value);
-        // Serialize each chat on this device, including browsers without Web Locks.
-        if (sendingRooms.has(room)) return intentionResult(value);
-        sendingRooms.add(room);
-        try {
-          // Another tab can retry the same oldest request while this tab is
-          // suspended. The server owns deduplication by immutable message ID.
-          return await deliver(doc);
-        } finally {
-          sendingRooms.delete(room);
+  function write(value: SavedSend) {
+    outbox.set(
+      "messageSend",
+      key(value.body.room, value.body.id),
+      JSON.stringify(value),
+    );
+    publish();
+  }
+  function remove(room: string, id: string) {
+    outbox.remove("messageSend", key(room, id));
+    publish();
+  }
+  function find(id: string) {
+    return list().find((entry) => entry.id === id);
+  }
+  function result(value: SavedSend): SendResult {
+    return {
+      kind: "local",
+      id: value.body.id,
+      queued: value.status === "queued" || value.status === "paused",
+      status: value.status,
+      error: value.error,
+    };
+  }
+  function send(
+    value: SavedSend,
+    onPersist?: () => void | Promise<void>,
+  ): Promise<SendResult> {
+    const id = value.body.id;
+    const existing = active.get(id);
+    if (existing) return existing;
+    const task = (async (): Promise<SendResult> => {
+      await onPersist?.();
+      try {
+        if (!read(value.body.room, id))
+          return { kind: "local", id, queued: false, status: "cancelled" };
+        const current = options.api.getStreamSession();
+        if (!current) throw new Error("The server connection is not ready.");
+        if (current.workspaceId !== value.workspaceId)
+          throw new ApiError(
+            "The server workspace changed. Reload before sending.",
+            409,
+          );
+        write({ ...value, attempted: true });
+        const response = await command.run(value.request, {
+          workspaceId: value.workspaceId,
+        });
+        const receipt =
+          messageReceipt(response) ??
+          (response.status === "applied" &&
+          response.ref_kind === "message" &&
+          response.ref_id === id
+            ? { id, status: DeliveryStatus.pending }
+            : undefined);
+        if (!receipt || !matchesMessageDelivery(receipt, id))
+          throw new Error("The delivery response does not match this message.");
+        if (receipt.status === "failed" || receipt.status === "cancelled") {
+          const failed = {
+            ...value,
+            status: "failed" as const,
+            attempted: true,
+            error: receipt.error || "The message was not sent.",
+          };
+          if (read(value.body.room, id)) write(failed);
+          return result(failed);
         }
-      })().finally(() => active.delete(doc.id));
-      active.set(doc.id, task);
-    }
+        remove(value.body.room, id);
+        return {
+          ...receipt,
+          kind: "server",
+          queued: receipt.status === "queued",
+        };
+      } catch (error) {
+        const definitive =
+          error instanceof ApiError &&
+          error.status < 500 &&
+          error.status !== 408 &&
+          error.status !== 429;
+        const failed = {
+          ...value,
+          attempted: true,
+          status: definitive ? ("failed" as const) : ("uncertain" as const),
+          error: errorText(error),
+        };
+        if (read(value.body.room, id)) write(failed);
+        return result(failed);
+      }
+    })().finally(() => active.delete(id));
+    active.set(id, task);
     return task;
   }
-
   async function durableSend(
-    body: MessageBody,
+    body: SendMessageBody,
     attachments: Attachment[] = [],
     onPersist?: () => void | Promise<void>,
   ) {
-    if (typeof body.id !== "string" || !body.id)
-      throw new Error("A message identity is required");
-    const { db } = await syncDatabase();
-    let doc = await db.outbox.findOne(body.id).exec();
-    if (!doc) {
-      try {
-        doc = await db.outbox.insert({
-          id: body.id,
-          seq: 0,
-          payload: JSON.stringify({
-            body,
-            status: "queued",
-            attempted: false,
-            created: Date.now(),
-            displayPending: true,
-            attachments,
-          } satisfies Intention),
-        });
-      } catch (error) {
-        doc = await db.outbox.findOne(body.id).exec();
-        if (!doc) throw error;
-      }
-    }
-    const old: Intention = readIntention(doc.payload, doc.id);
-    if (JSON.stringify(old.body) !== JSON.stringify(body))
+    if (!body.id) throw new Error("A message identity is required");
+    let value = read(body.room, body.id);
+    if (value && JSON.stringify(value.body) !== JSON.stringify(body))
       throw new Error("Message identity already has different content");
-    if (old.status === "failed")
-      throw new ApiError(old.error || "Message failed", 400);
-    await onPersist?.();
-    return once(doc);
+    if (!value) {
+      if (outbox.get("messageSend", key(body.room, body.id)) !== null)
+        throw new Error(
+          "This saved message cannot be read. Discard it to remove it.",
+        );
+      const session = options.api.getStreamSession();
+      if (!session) throw new Error("The server connection is not ready.");
+      const { workspaceId } = session;
+      const request = command.make(
+        "send",
+        body.room,
+        {
+          text: body.text,
+          ...(body.assets ? { assets: body.assets } : {}),
+          ...(body.delivery ? { delivery: body.delivery } : {}),
+        },
+        body.id,
+      );
+      value = {
+        body,
+        request,
+        workspaceId,
+        status: "queued",
+        attempted: false,
+        created: Date.now(),
+        displayPending: true,
+        attachments,
+      };
+      write(value);
+    }
+    return send(value, onPersist);
   }
-
+  async function changeOutbox(id: string, action: "cancel" | "resume") {
+    const entry = find(id);
+    if (!entry) throw new Error("This message is no longer on this device.");
+    const value = read(entry.body.room, id);
+    if (action === "cancel") {
+      remove(entry.body.room, id);
+      return;
+    }
+    if (!value) throw new Error("This saved message cannot be retried.");
+    return send(value);
+  }
+  async function stopRemovedMessage(id: string) {
+    const entry = find(id);
+    if (!entry) return false;
+    const neverAttempted = entry.attempted === false;
+    remove(entry.body.room, id);
+    return neverAttempted;
+  }
   async function acknowledgeOutbox(ids: string[]) {
-    const { db } = await syncDatabase();
     for (const id of ids) {
-      const doc = await db.outbox.findOne(id).exec();
-      if (doc) await updateIntention(doc, { displayPending: false });
+      const entry = find(id);
+      if (entry) remove(entry.body.room, id);
     }
   }
-
   async function reconcileOutboxReceipts(
     room: string,
     receipts: MessageReceipt[],
@@ -529,498 +311,80 @@ export function createOutbox(options: {
     signal?: AbortSignal,
   ) {
     if (signal?.aborted) return;
-    const current = await syncDatabase();
-    if (signal?.aborted) return;
-    if (current.workspaceId !== workspaceId) return;
-    await current.verifyWorkspace();
-    if (signal?.aborted) return;
     for (const receipt of receipts) {
-      if (signal?.aborted) return;
-      const doc = await current.db.outbox.findOne(receipt.id).exec();
-      if (signal?.aborted) return;
-      if (!doc) continue;
-      await doc.incrementalModify((record) => {
-        if (signal?.aborted) return record;
-        const decoded = decodeIntention(record.payload, doc.id);
-        if (decoded.kind === "invalid") return record;
-        const value = decoded.intention;
-        if (value.body.room !== room) return record;
-        const next = receiptOutgoing(value, receipt);
-        const payload = JSON.stringify(
-          next.status === "accepted" &&
-            next.receipt?.status === "delivered" &&
-            next.receipt.materialized === true
-            ? { ...next, displayPending: false }
-            : next,
-        );
-        return payload === record.payload ? record : { ...record, payload };
-      });
+      const value = read(room, receipt.id);
+      if (value?.workspaceId === workspaceId) remove(room, receipt.id);
     }
-  }
-  function confirmedDeletedAgentProjection(value: unknown, room: string) {
-    if (!value || typeof value !== "object") return false;
-    const document = value as {
-      id?: unknown;
-      seq?: unknown;
-      _deleted?: unknown;
-      entity?: { collection?: unknown; id?: unknown; value?: unknown };
-    };
-    if (
-      document.id !== `${AGENT_ENTITY_ID_PREFIX}${room}` ||
-      !Number.isSafeInteger(document.seq) ||
-      (document.seq as number) <= 0
-    )
-      return false;
-    if (document._deleted === true) return true;
-    const record = document.entity;
-    if (
-      record?.collection !== "agent" ||
-      record.id !== room ||
-      !record.value ||
-      typeof record.value !== "object"
-    )
-      return false;
-    const agent = record.value as { id?: unknown; deletedAt?: unknown };
-    return agent.id === room && Boolean(agent.deletedAt);
-  }
-
-  async function recoverAcknowledgedOutbox() {
-    const { db, workspaceId, verifyWorkspace } = await syncDatabase();
-    await verifyWorkspace();
-    const rooms = new Map<string, string[]>();
-    for (const doc of await db.outbox.find().exec()) {
-      const decoded = decodeIntention(doc.getLatest().payload, doc.id);
-      if (decoded.kind === "invalid") continue;
-      const value = decoded.intention;
-      if (
-        value.displayPending === false ||
-        !["accepted", "uncertain"].includes(value.status)
-      )
-        continue;
-      const ids = rooms.get(value.body.room) || [];
-      ids.push(doc.id);
-      rooms.set(value.body.room, ids);
-    }
-    const roomBatches = [...rooms].map(([room, ids]) => ({
-      room,
-      batches: Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) =>
-        ids.slice(index * 100, (index + 1) * 100),
-      ),
-    }));
-    const batchCount = roomBatches.reduce(
-      (count, item) => count + item.batches.length,
-      0,
-    );
-    if (!batchCount) return;
-
-    const deletedRooms = new Set<string>();
-    const controllers = new Map(
-      [...rooms.keys()].map((room) => [room, new AbortController()] as const),
-    );
-    const markDeleted = (document: unknown) => {
-      if (!document || typeof document !== "object") return;
-      const id = (document as { id?: unknown }).id;
-      if (typeof id !== "string" || !id.startsWith(AGENT_ENTITY_ID_PREFIX))
-        return;
-      const room = id.slice(AGENT_ENTITY_ID_PREFIX.length);
-      const controller = controllers.get(room);
-      if (!controller || !confirmedDeletedAgentProjection(document, room))
-        return;
-      deletedRooms.add(room);
-      controller.abort();
-    };
-    const projectionSubscription = db.projections.$.subscribe((event) =>
-      markDeleted(event.documentData),
-    );
-    const nextRoom = roomBatches.values();
-    let failure: unknown;
-    try {
-      const currentAgents =
-        await db.projections.storageInstance.findDocumentsById(
-          [...rooms.keys()].map((room) => `${AGENT_ENTITY_ID_PREFIX}${room}`),
-          true,
-        );
-      for (const document of currentAgents) markDeleted(document);
-
-      await Promise.all(
-        Array.from({ length: Math.min(4, roomBatches.length) }, async () => {
-          for (const { room, batches } of nextRoom) {
-            const controller = controllers.get(room)!;
-            for (const ids of batches) {
-              if (deletedRooms.has(room) || controller.signal.aborted) break;
-              try {
-                const response = await syncGet("/api/messages/receipts", {
-                  query: { agent: room, ids: JSON.stringify(ids) },
-                  workspaceId,
-                  signal: controller.signal,
-                });
-                if (deletedRooms.has(room) || controller.signal.aborted) break;
-                await reconcileOutboxReceipts(
-                  room,
-                  checkedMessageReceipts(response, room, ids, workspaceId),
-                  workspaceId,
-                  controller.signal,
-                );
-              } catch (error) {
-                if (!controller.signal.aborted) failure ??= error;
-              }
-            }
-          }
-        }),
-      );
-    } finally {
-      projectionSubscription.unsubscribe();
-    }
-    if (failure) throw failure;
   }
   async function editOutboxDisplay(id: string, text: string) {
-    const { db } = await syncDatabase();
-    const doc = await db.outbox.findOne(id).exec();
-    if (doc) await updateIntention(doc, { displayText: text });
+    const entry = find(id);
+    const value = entry && read(entry.body.room, id);
+    if (value) write({ ...value, displayText: text });
   }
-
-  async function changeOutbox(
-    id: string,
-    action: "cancel" | "pause" | "resume",
-  ) {
-    const { db, workspaceId } = await syncDatabase();
-    const doc = await db.outbox.findOne(id).exec();
-    if (!doc) throw new Error("This message is no longer on this device.");
-    const updated = await doc.incrementalModify((record) => {
-      const current: Intention = readIntention(record.payload, doc.id);
-      if (!["queued", "paused"].includes(current.status))
-        throw new Error("This message already left the device queue.");
-      const next = { ...current };
-      if (action === "cancel") {
-        // Older records lack this marker and may already have reached the server.
-        if (current.attempted !== false)
-          throw new Error(
-            "Delivery may have started. Stop retrying or check the conversation.",
-          );
-        next.status = "cancelled";
-        next.error = undefined;
-        next.receipt = { id, status: "cancelled" };
-      } else {
-        if (action === "resume")
-          outboxFences.remove("removedSend", removalFence(workspaceId, id));
-        next.status = action === "pause" ? "paused" : "queued";
-      }
-      return { ...record, payload: JSON.stringify(next) };
-    });
-    if (action === "resume") void once(updated).catch(() => {});
-  }
-
-  async function stopRemovedMessage(id: string) {
-    const { db, workspaceId } = await syncDatabase();
-    // The card can be removed before durableSend has inserted its document.
-    // The HTTP claim checks this fence, including claims from another tab.
-    outboxFences.set("removedSend", removalFence(workspaceId, id), "1");
-    const doc = await db.outbox.findOne(id).exec();
-    if (!doc) return false;
-    const updated = await doc.incrementalModify((record) => {
-      const current: Intention = readIntention(record.payload, doc.id);
-      if (!["queued", "paused"].includes(current.status)) return record;
-      // A claimed request can still finish. Keep its identity and receipt.
-      const cancelled = current.attempted === false;
-      return {
-        ...record,
-        payload: JSON.stringify({
-          ...current,
-          status: cancelled ? "cancelled" : "paused",
-          ...(cancelled ? { receipt: { id, status: "cancelled" } } : {}),
-        }),
-      };
-    });
-    return readIntention(updated.payload, doc.id).status === "cancelled";
-  }
-
   function useOutbox() {
     const [entries, setEntries] = useState<OutboxEntry[]>([]);
     const [error, setError] = useState("");
-    const [invalidError, setInvalidError] = useState("");
     useEffect(() => {
-      let stop = false,
-        draining = false;
-      let unsubscribe = () => {};
-      let queuedIdentity = "";
-      let drainAgain = false;
-      let retryTimer: ReturnType<typeof setTimeout> | undefined;
-      const clearRetry = () => {
-        if (retryTimer === undefined) return;
-        clearTimeout(retryTimer);
-        retryTimer = undefined;
-      };
-      const scheduleRetry = () => {
-        if (
-          retryTimer !== undefined ||
-          stop ||
-          isApiSchemaMismatch() ||
-          !navigator.onLine
-        )
-          return;
-        retryTimer = setTimeout(() => {
-          retryTimer = undefined;
-          if (stop || isApiSchemaMismatch() || !navigator.onLine) return;
-          if (subscribed) void drain();
-          else void subscribe();
-        }, OUTBOX_RETRY_DELAY_MS);
-      };
-      const drain = async () => {
-        if (stop || isApiSchemaMismatch() || !navigator.onLine) return;
-        if (draining) {
-          drainAgain = true;
-          return;
-        }
-        draining = true;
-        drainAgain = false;
+      const update = () => {
         try {
-          const { db } = await syncDatabase();
-          const rooms = [
-            ...new Set<string>(
-              queuedDocuments(snapshots(await db.outbox.find().exec())).map(
-                ({ intention }) => intention.body.room,
-              ),
-            ),
-          ];
-          let nextRoom = 0;
-          const worker = async () => {
-            while (!stop && !isApiSchemaMismatch() && nextRoom < rooms.length) {
-              const room = rooms[nextRoom++];
-              while (!stop && !isApiSchemaMismatch()) {
-                // Re-read after acceptance so a message saved during HTTP does
-                // not wait for the polling timer. Preserve order within each chat.
-                const queued = queuedDocuments(
-                  snapshots(await db.outbox.find().exec()),
-                ).find(({ intention }) => intention.body.room === room);
-                if (!queued) break;
-                const result = await once(queued.doc).catch((e) => {
-                  // Per-message rejection is already stored beside that message.
-                  if (!(e instanceof ApiError)) throw e;
-                });
-                if (
-                  result?.kind === "local" &&
-                  result.status === "queued" &&
-                  result.error
-                )
-                  scheduleRetry();
-                if (result?.queued) break;
-              }
-            }
-          };
-          // Bound reconnect traffic while letting another chat pass a stalled one.
-          await Promise.all(
-            Array.from({ length: Math.min(4, rooms.length) }, worker),
-          );
-          if (!stop && !isApiSchemaMismatch()) setError("");
-        } catch (e) {
-          if (!stop) {
-            setError(errorText(e));
-            scheduleRetry();
-          }
-        } finally {
-          draining = false;
-          if (
-            drainAgain &&
-            retryTimer === undefined &&
-            !stop &&
-            !isApiSchemaMismatch()
-          )
-            void drain();
+          setEntries(list());
+          setError("");
+        } catch (failure) {
+          setError(errorText(failure));
         }
       };
-      let subscribing = false,
-        subscribed = false;
-      let recoveringReceipts = false;
-      const recoverReceipts = () => {
-        if (stop || recoveringReceipts || isApiSchemaMismatch()) return;
-        recoveringReceipts = true;
-        void recoverAcknowledgedOutbox()
-          .catch(() => {})
-          .finally(() => {
-            recoveringReceipts = false;
-          });
-      };
-      const handleOutboxDocuments = (docs: Doc[]) => {
-        const entries = snapshots(docs);
-        const invalid = entries.flatMap(({ decoded }) =>
-          decoded.kind === "invalid" ? [decoded.id] : [],
-        );
-        setInvalidError(
-          invalid.length
-            ? `Saved messages could not be read; delivery is uncertain: ${invalid.join(", ")}.`
-            : "",
-        );
-        const nextQueued = JSON.stringify(
-          queuedDocuments(entries).map(({ doc }) => doc.id),
-        );
-        const queuedChanged = nextQueued !== queuedIdentity;
-        if (queuedChanged) {
-          queuedIdentity = nextQueued;
-          clearRetry();
-          void drain();
-        }
-        setEntries(
-          entries
-            .flatMap(({ doc, decoded }) =>
-              decoded.kind === "valid"
-                ? [{ id: doc.id, ...decoded.intention }]
-                : [],
-            )
-            .sort((a, b) => a.created - b.created),
-        );
-        return entries;
-      };
-      const subscribe = async () => {
-        if (stop || subscribing || subscribed) return;
-        subscribing = true;
+      const retry = () => {
         try {
-          const { db, workspaceId } = await syncDatabase();
-          if (stop) return;
-          let subscriptionReady = false;
-          let bufferedDocs: Doc[] | undefined;
-          const sub = db.outbox.find().$.subscribe(
-            (docs: Doc[]) => {
-              if (!subscriptionReady) bufferedDocs = docs;
-              else handleOutboxDocuments(docs);
-            },
-            (error: unknown) => {
-              subscribed = false;
-              unsubscribe();
-              unsubscribe = () => {};
-              if (!stop) {
-                setError(errorText(error));
-                scheduleRetry();
-              }
-            },
-          );
-          unsubscribe = () => sub.unsubscribe();
-          if (sub.closed) {
-            unsubscribe();
-            unsubscribe = () => {};
-            subscribed = false;
-            scheduleRetry();
-            return;
-          }
-          const receiptController = new AbortController();
-          let receiptQueue = Promise.resolve();
-          const applyReceipt = (document: SyncDocument) => {
-            const entity = document.entity;
+          for (const entry of list()) {
+            const value = read(entry.body.room, entry.id);
             if (
-              document._deleted ||
-              entity?.collection !== "messageReceipt" ||
-              document.id !== `entity:messageReceipt:${entity.id}` ||
-              typeof entity.value.agent !== "string" ||
-              !matchesMessageDelivery(entity.value, entity.id)
+              value &&
+              (value.status === "queued" || value.status === "uncertain")
             )
-              return;
-            const room = entity.value.agent;
-            const receipt = entity.value;
-            receiptQueue = receiptQueue
-              .then(async () => {
-                if (!stop && !receiptController.signal.aborted)
-                  await reconcileOutboxReceipts(
-                    room,
-                    [receipt],
-                    workspaceId,
-                    receiptController.signal,
-                  );
-              })
-              .catch((error: unknown) => {
-                if (!stop) setError(errorText(error));
-              });
-          };
-          const receiptSubscription = db.projections.$.subscribe((event) =>
-            applyReceipt(event.documentData),
-          );
-          unsubscribe = () => {
-            sub.unsubscribe();
-            receiptSubscription.unsubscribe();
-            receiptController.abort();
-          };
-          subscribed = true;
-          clearRetry();
-          subscriptionReady = true;
-          const bufferedEntries =
-            bufferedDocs && handleOutboxDocuments(bufferedDocs);
-          void drain();
-          recoverReceipts();
-          // A hidden accepted row still owns delivery state. Read cached receipts
-          // once, then apply their persisted stream changes without another GET.
-          const outbox = bufferedDocs ?? (await db.outbox.find().exec());
-          const ids = (bufferedEntries || handleOutboxDocuments(outbox))
-            .filter(
-              ({ decoded }) =>
-                decoded.kind === "valid" &&
-                ["accepted", "uncertain"].includes(decoded.intention.status),
-            )
-            .map(({ doc }) => `entity:messageReceipt:${doc.id}`);
-          if (ids.length) {
-            const receipts =
-              await db.projections.storageInstance.findDocumentsById(ids, true);
-            for (const receipt of receipts) applyReceipt(receipt);
+              void send(value).catch((failure) => setError(errorText(failure)));
           }
-        } catch (error) {
-          if (!stop) {
-            setError(errorText(error));
-            scheduleRetry();
-          }
-        } finally {
-          subscribing = false;
+        } catch (failure) {
+          setError(errorText(failure));
         }
       };
-      const resume = () => {
-        clearRetry();
-        void subscribe();
-        void drain();
-      };
-      void subscribe();
-      const stopForSchemaMismatch = onApiSchemaMismatch(() => {
-        clearRetry();
+      listeners.add(update);
+      window.addEventListener("storage", update);
+      let wasLive = false;
+      const stopConnection = options.watchResourceConnection((status) => {
+        const reconnected = status === "live" && !wasLive;
+        wasLive = status === "live";
+        if (reconnected) retry();
       });
-      const stopResume = onResume(() => {
-        resume();
-        recoverReceipts();
-      });
+      update();
       return () => {
-        stop = true;
-        clearRetry();
-        unsubscribe();
-        stopResume();
-        stopForSchemaMismatch();
+        listeners.delete(update);
+        window.removeEventListener("storage", update);
+        stopConnection();
       };
     }, []);
-    return { entries, error: invalidError || error };
+    return { entries, error };
   }
   return {
-    deliver,
     durableSend,
     acknowledgeOutbox,
     reconcileOutboxReceipts,
-    recoverAcknowledgedOutbox,
     editOutboxDisplay,
     changeOutbox,
     stopRemovedMessage,
     useOutbox,
   };
 }
+
 export const {
-  deliver,
   durableSend,
   acknowledgeOutbox,
   reconcileOutboxReceipts,
-  recoverAcknowledgedOutbox,
   editOutboxDisplay,
   changeOutbox,
   stopRemovedMessage,
   useOutbox,
 } = createOutbox({
-  api: {
-    isApiSchemaMismatch,
-    onApiSchemaMismatch,
-    syncGet,
-    command,
-    refreshSession,
-  },
-  syncDatabase,
-  storage: localStorage,
+  api: { command, getStreamSession },
+  storage: serverLocalStorage,
+  watchResourceConnection,
 });
