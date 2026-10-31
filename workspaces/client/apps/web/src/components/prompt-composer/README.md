@@ -19,6 +19,9 @@ wait in [`draftSyncTiming.ts`](../../sync/draftSyncTiming.ts). Stream snapshots
 and changes restore saved drafts. Unconfirmed edits remain in memory until they
 are saved or the page closes.
 
+An incoming message displays as plain, wrapped text while its turn is active.
+When the turn finishes, the completed message is parsed and shown as Markdown.
+
 From `workspaces/client/apps/web/`, run:
 
 ```sh

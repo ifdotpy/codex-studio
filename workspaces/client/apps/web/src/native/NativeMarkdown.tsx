@@ -26,24 +26,13 @@ const textContent = (node: MarkdownNode): string =>
 // Both native and WASM hosts use the same Rust parser and sentence segmenter.
 export const NativeMarkdownBlock = memo(function NativeMarkdownBlock({
   block,
-  enter,
   agentId,
   basePath,
-}: { block: Tree; enter: boolean } & Context) {
-  const [initialLength] = useState(enter ? 0 : block.length);
+}: { block: Tree } & Context) {
   function render(node: MarkdownNode, key: string): ReactNode {
     if (!node.tag) {
       if (!node.sentences?.length) return node.text || "";
-      return node.sentences.map((sentence) => (
-        <span
-          key={`${key}:${sentence.index}`}
-          className={
-            sentence.index >= initialLength ? "sentence-enter" : undefined
-          }
-        >
-          {sentence.text}
-        </span>
-      ));
+      return node.sentences.map((sentence) => sentence.text).join("");
     }
     if (node.tag === "img")
       return (
@@ -90,75 +79,54 @@ export default function NativeMarkdown({
   streaming: boolean;
 } & Context) {
   const [parsed, setParsed] = useState<
-    { text: string; blocks: Block[]; complete: boolean } | undefined
+    { text: string; blocks: Block[] } | undefined
   >(() => {
     const blocks = !streaming
       ? (completedMarkdown.get(text) as Block[] | undefined)
       : undefined;
-    return blocks ? { text, blocks, complete: true } : undefined;
+    return blocks ? { text, blocks } : undefined;
   });
   const parsedRef = useRef(parsed);
   parsedRef.current = parsed;
   const [error, setError] = useState("");
-  const initial = useRef<number | undefined>(parsed?.blocks.length);
   useEffect(() => {
+    if (streaming) return;
     let current = true;
     setError("");
-    // A cache hit on mount is already the complete tree rendered by this instance.
-    // Streaming output still needs a final parse when the turn completes.
-    if (
-      !streaming &&
-      parsedRef.current?.complete &&
-      parsedRef.current.text === text
-    )
-      return;
-    const cached = !streaming
-      ? (completedMarkdown.get(text) as Block[] | undefined)
-      : undefined;
+    if (parsedRef.current?.text === text) return;
+    const cached = completedMarkdown.get(text) as Block[] | undefined;
     if (cached) {
-      initial.current ??= cached.length;
-      setParsed({ text, blocks: cached, complete: true });
+      setParsed({ text, blocks: cached });
       return;
     }
-    // Coalesce live tokens only. Completed history must not wait another frame.
-    // Late replies cannot replace newer text.
     const controller = new AbortController();
-    const parse = () => {
-      const request = hasNativeClient()
-        ? nativeRequest<Block[]>(
-            "markdown.parse",
-            { text, streaming },
-            undefined,
-            controller.signal,
-          )
-        : parseMarkdown(text, streaming);
-      void request.then(
-        (blocks) => {
-          if (!streaming) completedMarkdown.set(text, blocks);
-          if (!current) return;
-          initial.current ??= streaming ? 0 : blocks.length;
-          setParsed({ text, blocks, complete: !streaming });
-        },
-        (reason: unknown) => {
-          if (current)
-            setError(reason instanceof Error ? reason.message : String(reason));
-        },
-      );
-    };
-    const timer = streaming ? setTimeout(parse, 16) : undefined;
-    if (!streaming) parse();
+    const request = hasNativeClient()
+      ? nativeRequest<Block[]>(
+          "markdown.parse",
+          { text, streaming: false },
+          undefined,
+          controller.signal,
+        )
+      : parseMarkdown(text);
+    void request.then(
+      (blocks) => {
+        completedMarkdown.set(text, blocks);
+        if (current) setParsed({ text, blocks });
+      },
+      (reason: unknown) => {
+        if (current)
+          setError(reason instanceof Error ? reason.message : String(reason));
+      },
+    );
     return () => {
       current = false;
-      clearTimeout(timer);
       controller.abort();
     };
   }, [text, streaming]);
-  const usable =
-    parsed &&
-    (parsed.text === text || (streaming && text.startsWith(parsed.text)));
+  const usable = !streaming && parsed?.text === text;
   return (
     <>
-      {error && <p role="alert">{error}</p>}
+      {!streaming && error && <p role="alert">{error}</p>}
       {usable ? (
         parsed.blocks.map((block, index) =>
           "kind" in block ? (
@@ -167,7 +135,6 @@ export default function NativeMarkdown({
             <NativeMarkdownBlock
               key={index}
               block={block}
-              enter={streaming && index >= (initial.current ?? 0)}
               agentId={agentId}
               basePath={basePath}
             />

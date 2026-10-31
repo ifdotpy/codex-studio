@@ -123,13 +123,15 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
       );
     }
     const streamingText = "Streaming-only **prefix**.";
+    const beforeStreaming = await page.evaluate(() => window.compilations);
     await page.evaluate((text) => window.text(text, true), streamingText);
-    await expect(page.locator("article strong")).toHaveText("prefix");
+    await expect(page.locator("article")).toHaveText(streamingText);
+    await expect(page.locator("article strong")).toHaveCount(0);
     await page.evaluate(() => {
       window.hide();
       window.markdownShow();
     });
-    await expect(page.locator("article strong")).toHaveText("prefix");
+    await expect(page.locator("article")).toHaveText(streamingText);
     assert.equal(
       await page.evaluate(
         (text) => window.markdownCache.get(text),
@@ -137,6 +139,16 @@ test("Completed Markdown Cache Browser", async ({ page }) => {
       ),
       undefined,
       "Streaming-only text is never shared in the completed cache",
+    );
+    assert.equal(
+      await page.evaluate(() => window.compilations),
+      beforeStreaming,
+    );
+    await page.evaluate((text) => window.text(text, false), streamingText);
+    await expect(page.locator("article strong")).toHaveText("prefix");
+    assert.equal(
+      await page.evaluate(() => window.compilations),
+      beforeStreaming + 1,
     );
     await page.evaluate(() =>
       window.text(

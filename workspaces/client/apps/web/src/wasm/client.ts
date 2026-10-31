@@ -16,10 +16,7 @@ export async function sha256(bytes: Uint8Array): Promise<Uint8Array> {
   return hashSha256(bytes);
 }
 
-export async function parseMarkdown(
-  text: string,
-  streaming: boolean,
-): Promise<MarkdownBlock[]> {
+export async function parseMarkdown(text: string): Promise<MarkdownBlock[]> {
   await initialize();
-  return JSON.parse(parse_markdown(text, streaming));
+  return JSON.parse(parse_markdown(text, false));
 }

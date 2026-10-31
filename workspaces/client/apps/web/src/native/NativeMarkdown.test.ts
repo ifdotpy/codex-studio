@@ -6,7 +6,14 @@ import { completedMarkdown } from "./markdownCache";
 
 const { effects, request } = vi.hoisted(() => ({
   effects: [] as Array<() => void | (() => void)>,
-  request: vi.fn(async () => []),
+  request: vi.fn(
+    async (
+      _method: string,
+      _params: unknown,
+      _options: unknown,
+      _signal: AbortSignal,
+    ) => [],
+  ),
 }));
 vi.mock("./client", async (original) => ({
   ...(await original<typeof import("./client")>()),
@@ -24,6 +31,19 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+it("shows streaming markdown literally without invoking the parser", async () => {
+  vi.useFakeTimers();
+  const text = "**Still streaming**\n\n```ts\nconst x = 1;";
+  const html = renderToStaticMarkup(
+    createElement(NativeMarkdown, { text, streaming: true }),
+  );
+  for (const effect of effects.splice(0)) effect();
+  await vi.runAllTimersAsync();
+  expect(html).toContain("**Still streaming**");
+  expect(html).toContain("white-space:pre-wrap");
+  expect(request).not.toHaveBeenCalled();
+});
+
 it("reuses the completed tree hydrated on mount instead of decoding it again in the effect", () => {
   const text = "Cached completed paragraph.";
   completedMarkdown.set(text, [
@@ -38,10 +58,9 @@ it("reuses the completed tree hydrated on mount instead of decoding it again in 
   expect(read).toHaveBeenCalledTimes(1);
 });
 
-it("renders the native tree as text and preserves file links and sentence offsets", () => {
+it("renders the native tree as text and preserves file links", () => {
   const html = renderToStaticMarkup(
     createElement(NativeMarkdownBlock, {
-      enter: false,
       block: {
         length: 5,
         nodes: [
@@ -68,29 +87,25 @@ it("renders the native tree as text and preserves file links and sentence offset
   );
   expect(html).toContain("&lt;script&gt;");
   expect(html).not.toContain("<script>");
-  expect(html).toContain('class="sentence-enter">🦀 New');
+  expect(html).toContain("🦀 New");
   expect(html).toContain('href="src/file.ts:12"');
 });
 
-it("still parses streaming text even when a completed tree has the same source", async () => {
+it("renders live text literally even when a completed tree has the same source", async () => {
   vi.useFakeTimers();
   const text = "Streaming source.";
   completedMarkdown.set(text, []);
-  renderToStaticMarkup(
+  const html = renderToStaticMarkup(
     createElement(NativeMarkdown, { text, streaming: true }),
   );
   const cleanups = effects.splice(0).map((effect) => effect());
   await vi.runAllTimersAsync();
-  expect(request).toHaveBeenCalledWith(
-    "markdown.parse",
-    { text, streaming: true },
-    undefined,
-    expect.any(AbortSignal),
-  );
+  expect(html).toContain(text);
+  expect(request).not.toHaveBeenCalled();
   for (const cleanup of cleanups) cleanup?.();
 });
 
-it("starts completed history parsing immediately and still cancels a superseded stream", () => {
+it("starts completed history parsing immediately and cancels it on cleanup", () => {
   vi.useFakeTimers();
   renderToStaticMarkup(
     createElement(NativeMarkdown, {
@@ -101,17 +116,7 @@ it("starts completed history parsing immediately and still cancels a superseded 
   const completedCleanups = effects.splice(0).map((effect) => effect());
   expect(request).toHaveBeenCalledTimes(1);
   expect(vi.getTimerCount()).toBe(0);
+  const signal = request.mock.calls[0]?.[3];
   completedCleanups.forEach((cleanup) => cleanup?.());
-  request.mockClear();
-  renderToStaticMarkup(
-    createElement(NativeMarkdown, {
-      text: "Superseded live token",
-      streaming: true,
-    }),
-  );
-  const streamingCleanups = effects.splice(0).map((effect) => effect());
-  expect(request).not.toHaveBeenCalled();
-  streamingCleanups.forEach((cleanup) => cleanup?.());
-  vi.runAllTimers();
-  expect(request).not.toHaveBeenCalled();
+  expect(signal?.aborted).toBe(true);
 });
