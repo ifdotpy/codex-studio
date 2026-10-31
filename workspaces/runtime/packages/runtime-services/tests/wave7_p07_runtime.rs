@@ -844,6 +844,61 @@ async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notificat
 }
 
 #[tokio::test]
+async fn recovery_scan_skips_deleted_task_owners_before_reading_receipts() {
+    let root = fixture();
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+    let mut deleted = corpus()["connection"][0]["before"].clone();
+    deleted["id"] = json!("deleted");
+    deleted["rootId"] = json!("deleted");
+    deleted["deletedAt"] = json!(1.0);
+    store.transaction(move |tx| {
+        tx.execute("INSERT INTO runtime_agents(id,record) VALUES('deleted',?1)", [deleted.to_string()])?;
+        tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('deleted:task',?1)",
+            [json!({"id":"deleted:task","agent":"deleted","type":"dynamicToolCall","status":"running"}).to_string()])?;
+        for (id, marker) in [("live-zero", json!(0)), ("live-false", json!(false))] {
+            let mut live = deleted.clone();
+            live["id"] = json!(id);
+            live["rootId"] = json!(id);
+            live["deletedAt"] = marker;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", rusqlite::params![id,live.to_string()])?;
+            let task = TaskRecord::new(
+                id.to_owned(), "item".into(), "turn".into(),
+                serde::Deserialize::deserialize(serde::de::value::F64Deserializer::<serde_json::Error>::new(1.0))?,
+                studio_runtime_schema::task_record::TaskType::CommandExecution, "command".into(),
+            );
+            TaskRepository::put(tx, &task)?;
+        }
+        Ok(())
+    }).await.expect("deleted owner and its retained legacy task");
+    let mut cursor = RecoveryCursor::sweep();
+    let mut task_owners = std::collections::BTreeSet::new();
+    while !cursor.swept() {
+        let jobs = load_recovery_jobs(&store, "default", &mut cursor)
+            .await
+            .expect("deleted task cannot block the recovery sweep");
+        for job in jobs {
+            if let RecoveryJob::Task(snapshot) = &job {
+                task_owners.insert(
+                    snapshot.agent().record()["id"]
+                        .as_str()
+                        .expect("owner id")
+                        .to_owned(),
+                );
+            }
+            let owner = match &job {
+                RecoveryJob::Turn(snapshot) | RecoveryJob::Connection { snapshot, .. } => snapshot,
+                RecoveryJob::Task(snapshot) => snapshot.agent(),
+            };
+            assert_ne!(owner.record()["id"], "deleted");
+        }
+    }
+    assert_eq!(
+        task_owners,
+        std::collections::BTreeSet::from(["live-false".to_owned(), "live-zero".to_owned()])
+    );
+}
+
+#[tokio::test]
 async fn stored_scan_pages_alternate_without_starving_later_agents_or_foreign_scope() {
     let root = fixture();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));

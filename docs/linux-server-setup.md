@@ -41,6 +41,12 @@ The receipts migration took about six minutes on the live data in the
 interrupted migration resumes from its committed checkpoints on the newer
 binary. Delivery does not automatically roll back after startup.
 
+Older installations can retain indexes on retired agent start columns. The
+[index retirement migration](../workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_31_retired_start_indexes.rs)
+removes those dependencies before column retirement; startup then recreates the
+current indexes. If an older release stopped at column retirement, deliver the
+corrected release against the same state directory.
+
 Delivery requires systemd 254 or newer and a working systemd user manager.
 The minimum version in [deliver.sh](../workspaces/runtime/apps/runtime-server/deliver.sh)
 ensures literal command arguments are supported; older versions fail before

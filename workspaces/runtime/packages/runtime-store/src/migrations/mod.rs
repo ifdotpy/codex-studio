@@ -44,6 +44,7 @@ mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
 mod m2026_10_31_native_status_error;
+mod m2026_10_31_retired_start_indexes;
 mod m2026_10_31_transfer_history_pages;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -307,6 +308,16 @@ static CATALOG: &[&dyn Migration] = &[
         apply: |c| {
             m2026_10_26_provider_identity::migrate_canvas_2026_10_26(c.transaction, c.accounts)
         },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-retired-start-indexes",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent indexes referencing retired start-attempt columns",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_31_retired_start_indexes::apply(c.transaction),
     },
     &SqlMigration {
         definition: MigrationDefinition {
@@ -928,6 +939,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_domain_model::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-restore-startup-agent-indexes",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Retired agent indexes with completed receipt migration families",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::StartupRecoveryRepository::prepare_agent_indexes(c.transaction),
     },
 ];
 
@@ -1802,6 +1823,11 @@ mod tests {
         };
         assert!(position("2026-10-28-receipts-tools") < position("2026-10-28-receipts-requests"));
         assert!(position("2026-10-28-receipts-requests") < position("2026-10-28-receipts-remote"));
+        assert!(
+            position("2026-10-31-retired-start-indexes")
+                < position("2026-10-30-unused-agent-columns")
+        );
+        assert!(position(AGENT_STORAGE_ID) < position("2026-10-31-restore-startup-agent-indexes"));
         let mut ids = std::collections::BTreeSet::new();
         for entry in catalog() {
             assert!(ids.insert(entry.id), "duplicate migration ID");
