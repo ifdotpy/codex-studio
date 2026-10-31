@@ -311,11 +311,13 @@ fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreRes
         ))?;
     transaction.pragma_update(None, "user_version", version)?;
     if schema_name == "canvas.sqlite3" {
+        crate::schema::prepare_peer_update_settings(&transaction)?;
         crate::bootstrap::prepare_runtime_event_indexes(&transaction)?;
         crate::AgentRepository::prepare_change_journal(&transaction)?;
         crate::MonitorsRepository::prepare_indexes(&transaction)?;
         crate::migrations::seed_receipt_finish_markers(&transaction)?;
     } else {
+        crate::schema::prepare_publication_overflow_receipts(&transaction)?;
         crate::schema::ensure_analytics_limits_index(&transaction)?;
         prepare_analytics_revision_schema(&transaction)?;
         transaction.execute(

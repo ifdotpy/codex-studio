@@ -1531,10 +1531,6 @@ exit 0"#;
         let f = fixture().await;
         f.mac
             .transaction(|tx| {
-                tx.execute(
-                    "CREATE TABLE runtime_peer_update_settings(id INTEGER PRIMARY KEY CHECK(id=1), auto_update INTEGER NOT NULL)",
-                    [],
-                )?;
                 tx.execute("INSERT INTO runtime_peer_update_settings VALUES(1,0)", [])?;
                 Ok::<(), studio_runtime_store::StoreError>(())
             })

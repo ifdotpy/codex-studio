@@ -6,6 +6,16 @@ use sha2::{Digest, Sha256};
 
 use crate::{StoreError, StoreResult};
 
+pub(crate) fn prepare_peer_update_settings(connection: &Connection) -> StoreResult<()> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS runtime_peer_update_settings(id INTEGER PRIMARY KEY CHECK(id=1), auto_update INTEGER NOT NULL)")?;
+    Ok(())
+}
+
+pub(crate) fn prepare_publication_overflow_receipts(connection: &Connection) -> StoreResult<()> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS analytics_publication_overflow_receipts (receipt_id TEXT PRIMARY KEY,analytics_overflow INTEGER NOT NULL,publication_overflow INTEGER NOT NULL)")?;
+    Ok(())
+}
+
 /// Current receipt-owner query columns. The JSON record owns domain state;
 /// only quarantine remains independent so malformed agent JSON can be held.
 pub(crate) fn receipt_owner_columns() -> Vec<(&'static str, &'static str, String)> {

@@ -741,10 +741,6 @@ pub async fn record_publication_overflow(
         return Err(CaptureError::Invalid("/receiptId"));
     }
     store.analytics_projection_transaction(move |tx| {
-        tx.execute_cached(
-            "CREATE TABLE IF NOT EXISTS analytics_publication_overflow_receipts (receipt_id TEXT PRIMARY KEY,analytics_overflow INTEGER NOT NULL,publication_overflow INTEGER NOT NULL)",
-            [],
-        )?;
         let prior: Option<(i64, i64)> = tx
             .query_row_cached(
                 "SELECT analytics_overflow,publication_overflow FROM analytics_publication_overflow_receipts WHERE receipt_id=?1",

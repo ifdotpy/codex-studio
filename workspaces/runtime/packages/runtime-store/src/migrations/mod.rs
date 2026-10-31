@@ -734,6 +734,26 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| crate::fresh_state::prepare_analytics_revision_schema(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-peer-update-settings",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Stores with optional peer update settings",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::schema::prepare_peer_update_settings(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-publication-overflow-receipts",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Analytics,
+            supported_source: "Stores with optional publication overflow receipts",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::schema::prepare_publication_overflow_receipts(c.transaction),
+    },
 ];
 
 /// Operator-facing catalog; implementation and metadata have one owner.
