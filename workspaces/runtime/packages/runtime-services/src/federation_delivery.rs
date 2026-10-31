@@ -345,7 +345,6 @@ async fn request(
         now,
         &transport::new_nonce()?,
         &body,
-        now,
     )?;
     budget.remaining()?;
     let response = transport

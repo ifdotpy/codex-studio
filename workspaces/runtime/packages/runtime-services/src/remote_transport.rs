@@ -457,9 +457,8 @@ pub fn federation_signed_headers(
     timestamp: i64,
     nonce: &str,
     body: &[u8],
-    now: i64,
 ) -> RemoteTransportResult<Vec<(String, String)>> {
-    validate_federation_nonce(nonce, timestamp, now)?;
+    validate_federation_nonce(nonce, timestamp, timestamp)?;
     let path = canonical_request_target(url)?;
     let signature = identity.sign(&federation_signing_bytes(
         method, &path, timestamp, nonce, body,
@@ -477,7 +476,7 @@ pub fn federation_signed_headers(
             nonce,
             body,
         },
-        now,
+        timestamp,
     )?;
     headers.extend([
         ("X-Studio-Federation-State".to_owned(), identity.id.clone()),
@@ -2114,7 +2113,6 @@ pub(crate) mod tests {
                 1_700_000_000,
                 nonce,
                 body,
-                1_700_000_000,
             )
             .expect("federation headers sign exact path")
             .iter()
