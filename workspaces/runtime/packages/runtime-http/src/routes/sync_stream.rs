@@ -3350,6 +3350,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn state_stream_with_a_wrong_contract_hash_is_refused_in_the_first_frame() {
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router(http).expect("router");
+        let request = Request::builder()
+            .uri(format!(
+                "/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%5D&tokenRates=false&{}=wrong",
+                crate::schema::API_SCHEMA_HASH_PARAM
+            ))
+            .header("host", "127.0.0.1:4321")
+            .header("x-canvas-token", "token")
+            .extension(ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 12345))))
+            .body(Body::empty())
+            .expect("request");
+        let response = app.oneshot(request).await.expect("stream");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let first = body.next().await.expect("first frame").expect("bytes");
+        let text = std::str::from_utf8(&first).expect("UTF8");
+        assert!(text.starts_with("event: api-schema\n"), "{text}");
+        let data: Value = serde_json::from_str(
+            text.lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data"),
+        )
+        .expect("JSON");
+        assert_eq!(data[crate::schema::API_SCHEMA_MISMATCH_FIELD], true);
+        assert_eq!(data["hash"], api_schema_hash());
+        assert!(body.next().await.is_none(), "no frame follows the refusal");
+    }
+
+    #[tokio::test]
     async fn state_stream_subscription_post_token_interest_reenable_starts_full() {
         fn document_bytes(bytes: &[u8]) -> Value {
             let text = std::str::from_utf8(bytes).expect("UTF8");

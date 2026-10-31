@@ -830,6 +830,10 @@ pub async fn exchange_multi_server(
     let headers = multi_server_signed_headers_normalized(identity, &request, &method, now)?;
     let mut owned_headers = headers;
     owned_headers.push(("Accept-Encoding".to_owned(), "identity".to_owned()));
+    owned_headers.push((
+        studio_runtime_schema::api_schema::API_SCHEMA_HASH_HEADER.to_owned(),
+        crate::sync_views::api_schema_hash().to_owned(),
+    ));
     if !input.body.is_empty() {
         owned_headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
     }
@@ -1011,6 +1015,10 @@ async fn exchange_multi_server_with(
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect::<Vec<_>>();
     headers.push(("Accept-Encoding", "identity"));
+    headers.push((
+        studio_runtime_schema::api_schema::API_SCHEMA_HASH_HEADER,
+        crate::sync_views::api_schema_hash(),
+    ));
     if !input.body.is_empty() {
         headers.push(("Content-Type", "application/json"));
     }
