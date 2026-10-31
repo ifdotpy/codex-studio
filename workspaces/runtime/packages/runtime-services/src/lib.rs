@@ -37,7 +37,6 @@ mod approval_sync;
 pub mod atomic_file;
 pub mod bounded_child;
 pub mod browser;
-mod approval_sync;
 pub mod browser_answer;
 pub mod browser_cards;
 pub mod browser_environment;
