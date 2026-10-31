@@ -9,7 +9,7 @@ pub const STORE_DIRECTORY: &str = "store";
 /// Length of a SHA-256 project ID, in hexadecimal bytes.
 pub(super) const PROJECT_ID_HEX_BYTES: usize = 64;
 /// Host Layr release required by Studio's command contract.
-pub const LAYR_VERSION: &str = "0.4.0";
+pub const LAYR_VERSION: &str = "0.5.1";
 
 pub fn store_path(state_dir: &Path) -> PathBuf {
     state_dir.join(NATIVE_LAYR_DIRECTORY).join(STORE_DIRECTORY)
@@ -697,7 +697,7 @@ mod turn_save_tests {
             .await
             .expect("fixture operation succeeds");
         store.transaction_with(|tx| -> Result<(), StoreError> {
-            let record = json!({"accountKey":"default","provider":"codex","id":"native-save-agent","rootId":"native-save-agent","epoch":0,
+            let record = json!({"compactions":0,"accountKey":"default","provider":"codex","id":"native-save-agent","rootId":"native-save-agent","epoch":0,
                 "status":"idle","autoWake":true,"workspaceMode":"layr-native","layrReady":true,"cwd":"/native/main"});
             AgentRepository::put(tx,&AgentRecord::from_value(record).map_err(StoreError::from)?)?;
             stage_turn_save(tx,"native-save-agent","turn-1")?;

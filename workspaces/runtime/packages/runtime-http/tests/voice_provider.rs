@@ -98,7 +98,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>)
             .await
             .expect("voice store"),
     );
-    let actor = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+    let actor = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
         "id":"voice-http-agent", "rootId":"voice-http-agent", "epoch":7,
         "status":"idle", "isLead":true, "autoWake":true,
         "threadId":"voice-http-thread", "accountKey":"voice-http-account"
@@ -108,7 +108,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, Arc<RecordingPort>)
             "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
             rusqlite::params!["voice-http-agent", actor.to_string()],
         )?;
-        let start_actor = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+        let start_actor = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"voice-start-agent", "rootId":"voice-start-agent", "epoch":7,
             "status":"idle", "isLead":true, "autoWake":true,
             "threadId":"voice-http-thread", "accountKey":"voice-http-account"
@@ -406,7 +406,10 @@ async fn voice_monitor_approval_uses_monitor_transaction_and_dispatch_wake() {
         .get(&request_id)
         .expect("get monitor approval")
         .expect("monitor approval");
-    assert_eq!(request.value()["answerDecision"], "accept");
+    assert_eq!(
+        request.answer_decision.map(|value| value.as_str()),
+        Some("accept")
+    );
 
     // A saved accepted voice receipt must replay without the optional runtime.
     let replayed = approve(false).await.expect("approval replay");

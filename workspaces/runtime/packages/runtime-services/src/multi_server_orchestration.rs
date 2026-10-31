@@ -929,8 +929,7 @@ impl RuntimeOrchestrationEffects {
                 )
             })?
             .ok()
-            .and_then(|value| value.get("gitOrigin").cloned())
-            .unwrap_or(Value::Null);
+            .and_then(|value| value.git_origin);
             let project_id_for_write = project_id.to_owned();
             let principal_for_write = principal.to_owned();
             let home_project_for_write = home_project.to_owned();

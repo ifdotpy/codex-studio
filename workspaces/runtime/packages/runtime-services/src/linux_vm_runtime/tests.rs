@@ -859,7 +859,7 @@ async fn the_store_names_the_vm_chats_and_shows_each_restart_notice() {
             .unwrap(),
     );
     let agent = |id: &str, mode: &str, status: &str, deleted: bool| {
-        let mut record = json!({"id": id, "rootId": id, "epoch": 1, "status": status,
+        let mut record = json!({"compactions":0,"id": id, "rootId": id, "epoch": 1, "status": status,
             "isLead": true, "name": id, "provider": "codex", "accountKey": "default",
             "executionMode": mode, "cwd": "/line"});
         if deleted {

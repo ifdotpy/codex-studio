@@ -126,7 +126,8 @@ async fn installed_runtime_drives_input_through_http() {
         .expect("case")
         .clone();
     case["before"]["interactive"] = json!(true);
-    crate::monitor_fixtures::checked(case["before"].clone(), case["actor"].clone()).expect("valid monitor fixture");
+    crate::monitor_fixtures::checked(case["before"].clone(), case["actor"].clone())
+        .expect("valid monitor fixture");
     let store = Arc::new(fixtures::store(root.path(), "http").await);
     let mut monitor = crate::monitor_fixtures::monitor(root.path());
     monitor.interactive = true;
@@ -448,14 +449,14 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
         fixtures::seed(&store, &case, monitor).await;
         let id = case["before"]["id"].as_str().expect("monitor id");
         let request_id = format!("monitor-approval:{id}");
-        let request = RequestRecord::from_value(json!({
+        let request: RequestRecord = serde_json::from_str(&json!({
             "id":request_id,
             "method":"monitor/approve",
             "agent":"agent",
             "params":{"monitorId":id,"command":case["before"]["command"],"cwd":case["before"]["cwd"]},
             "status":"pending",
             "createdAt":1000.0
-        }))
+        }).to_string())
         .expect("approval request");
         store
             .transaction(move |tx| Table::<RequestRecord>::new(tx).put(&request))
@@ -491,8 +492,11 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
             .get(&request_id)
             .expect("get approval request")
             .expect("approval request");
-        assert_eq!(request.value()["status"], "answered");
-        assert_eq!(request.value()["answerDecision"], decision);
+        assert_eq!(request.status.as_str(), "answered");
+        assert_eq!(
+            request.answer_decision.map(|value| value.as_str()),
+            Some(decision)
+        );
         let monitor = serde_json::to_value(
             MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
                 .expect("get monitor")

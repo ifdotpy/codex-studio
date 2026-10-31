@@ -39,14 +39,21 @@ pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
         [], |row| row.get(0),
     )?;
     if needs_materialization {
-        tx.execute_batch("DROP TRIGGER IF EXISTS runtime_agent_volatile_journal_insert;
+        tx.execute_batch(
+            "DROP TRIGGER IF EXISTS runtime_agent_volatile_journal_insert;
             DROP TRIGGER IF EXISTS runtime_agent_volatile_journal_update;
             DROP TRIGGER IF EXISTS runtime_agent_volatile_transcript_insert;
             DROP TRIGGER IF EXISTS runtime_agent_volatile_transcript_update;
-            INSERT OR IGNORE INTO runtime_agent_volatile(id) SELECT id FROM runtime_agents;")?;
-        let assignments = fields.iter().map(|field| format!("\"{field}\"=NULLIF(\"{field}\",'null')"))
-            .collect::<Vec<_>>().join(",");
-        tx.execute_batch(&format!("UPDATE runtime_agent_volatile SET {assignments} WHERE {changed}"))?;
+            INSERT OR IGNORE INTO runtime_agent_volatile(id) SELECT id FROM runtime_agents;",
+        )?;
+        let assignments = fields
+            .iter()
+            .map(|field| format!("\"{field}\"=NULLIF(\"{field}\",'null')"))
+            .collect::<Vec<_>>()
+            .join(",");
+        tx.execute_batch(&format!(
+            "UPDATE runtime_agent_volatile SET {assignments} WHERE {changed}"
+        ))?;
     }
     crate::agent_volatile::prepare(tx)
 }
@@ -76,7 +83,7 @@ mod tests {
             .unwrap();
         for (id, deleted) in [("true", "true"), ("false", "false")] {
             let record = format!(
-                r#"{{"id":"{id}","rootId":"{id}","epoch":1,"status":"idle","accountKey":"default","deletedAt":{deleted}}}"#
+                r#"{{"id":"{id}","rootId":"{id}","epoch":1,"status":"idle","accountKey":"default","compactions":0,"deletedAt":{deleted}}}"#
             );
             db.execute("INSERT INTO runtime_agents VALUES(?1,?2)", [id, &record])
                 .unwrap();
@@ -134,7 +141,7 @@ mod tests {
             .unwrap();
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .unwrap();
-        db.execute("INSERT INTO runtime_agents VALUES('a',?1)", [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","events":2}"#]).unwrap();
+        db.execute("INSERT INTO runtime_agents VALUES('a',?1)", [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0,"events":2}"#]).unwrap();
         let tx = db.transaction().unwrap();
         apply(&tx).unwrap();
         let (events, activity): (Option<String>, Option<String>) = tx

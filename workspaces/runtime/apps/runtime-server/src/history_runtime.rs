@@ -1101,6 +1101,7 @@ mod tests {
         value["rootId"] = value["id"].clone();
         value["epoch"] = json!(0);
         value["status"] = json!("idle");
+        value["compactions"] = json!(0);
         AgentRecord::from_value(value).expect("typed fixture actor")
     }
 
@@ -1214,7 +1215,7 @@ mod tests {
             "event journal changes must not scan the history agent roster"
         );
 
-        let actor = AgentRecord::from_value(json!({"accountKey":"default",
+        let actor = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
             "id":"history-agent", "rootId":"history-agent", "parentId":null,
             "name":"History fixture", "epoch":0, "status":"running",
             "accountHistory":[], "provider":"codex", "threadId":"history-thread",
@@ -1237,14 +1238,10 @@ mod tests {
     fn retired_tombstones_leave_the_roster_until_their_deletion_changes() {
         let settled = BTreeMap::from([("gone".to_owned(), json!(1.0))]);
         let live = typed_actor(json!({"id":"live","threadId":"t","deletedAt":null}));
-        let never_started =
-            typed_actor(json!({"id":"empty","threadId":"","deletedAt":1.0}));
-        let settled_tombstone =
-            typed_actor(json!({"id":"gone","threadId":"t","deletedAt":1.0}));
-        let pending_tombstone =
-            typed_actor(json!({"id":"late","threadId":"t","deletedAt":1.0}));
-        let redeleted =
-            typed_actor(json!({"id":"gone","threadId":"t","deletedAt":2.0}));
+        let never_started = typed_actor(json!({"id":"empty","threadId":"","deletedAt":1.0}));
+        let settled_tombstone = typed_actor(json!({"id":"gone","threadId":"t","deletedAt":1.0}));
+        let pending_tombstone = typed_actor(json!({"id":"late","threadId":"t","deletedAt":1.0}));
+        let redeleted = typed_actor(json!({"id":"gone","threadId":"t","deletedAt":2.0}));
         assert!(!is_retired(&live, &settled));
         assert!(is_retired(&never_started, &settled));
         assert!(is_retired(&settled_tombstone, &settled));
@@ -1268,7 +1265,7 @@ mod tests {
             ("owed", json!(6.0)),
             ("claude-done", json!(7.0)),
         ] {
-            let actor = AgentRecord::from_value(json!({"accountKey":"default",
+            let actor = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
                 "id":id, "rootId":id, "parentId":null,
                 "name":"Tombstone fixture", "epoch":0, "status":"idle",
                 "accountHistory":[], "provider":if id.starts_with("claude") { "claude" } else { "codex" },
@@ -1359,21 +1356,11 @@ mod tests {
             &mut row_ids,
             vec![
                 (1, None),
-                (
-                    2,
-                    Some(typed_actor(
-                        json!({"id":"b","deletedAt":1.0}),
-                    )),
-                ),
+                (2, Some(typed_actor(json!({"id":"b","deletedAt":1.0})))),
             ],
         );
         assert_eq!(row_ids, vec![2]);
-        assert_eq!(
-            actors,
-            vec![typed_actor(
-                json!({"id":"b","deletedAt":1.0})
-            )]
-        );
+        assert_eq!(actors, vec![typed_actor(json!({"id":"b","deletedAt":1.0}))]);
     }
 
     #[test]
@@ -1398,7 +1385,7 @@ mod tests {
         let root = tempdir().expect("temporary store");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         for id in ["row-agent-a", "row-agent-b"] {
-            let actor = AgentRecord::from_value(json!({"accountKey":"default",
+            let actor = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
                 "id":id, "rootId":id, "parentId":null,
                 "name":"Row fixture", "epoch":0, "status":"running",
                 "accountHistory":[], "provider":"codex", "threadId":id,
@@ -1793,7 +1780,7 @@ mod tests {
         }
         let accounts = Arc::new(AccountDriver::open(&account_path).expect("account driver"));
         let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
-        let agent = json!({"accountKey":"default",
+        let agent = json!({"compactions":0,"accountKey":"default",
             "id": "history-agent", "rootId": "history-agent", "parentId": null,
             "name": "History fixture", "epoch": 0, "status": "running",
             "accountHistory": [], "provider": "codex",
@@ -1860,7 +1847,7 @@ mod tests {
         let attempts_before_failure = wake.step_attempts.load(Ordering::Acquire);
         let completions_before_failure = wake.step_completions.load(Ordering::Acquire);
 
-        let second_agent = AgentRecord::from_value(json!({"accountKey":"default",
+        let second_agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
             "id": "history-agent-after-recovery", "rootId": "history-agent-after-recovery",
             "parentId": null, "name": "History recovery fixture", "epoch": 0,
             "status": "running", "accountHistory": [], "provider": "codex",
@@ -1964,7 +1951,7 @@ mod tests {
         .expect("fixture account registry");
         let accounts = Arc::new(AccountDriver::open(&account_path).expect("account driver"));
         let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
-        let agent = json!({
+        let agent = json!({"compactions":0,
             "id": "history-agent", "rootId": "history-agent", "parentId": null,
             "name": "History fixture", "epoch": 0, "status": "running",
             "accountKey": "default", "accountHistory": [], "provider": "codex",
@@ -2081,7 +2068,7 @@ mod tests {
         .expect("fixture account registry");
         let accounts = Arc::new(AccountDriver::open(&account_path).expect("account driver"));
         let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
-        let agent = json!({
+        let agent = json!({"compactions":0,
             "id": "history-agent", "rootId": "history-agent", "parentId": null,
             "name": "History fixture", "epoch": 0, "status": "running",
             "accountKey": "login-removed", "accountHistory": [], "provider": "codex",

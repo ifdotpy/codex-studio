@@ -320,7 +320,10 @@ pub(super) async fn lifecycle_completion(
                     agent: agent.clone(),
                     method: "item/completed".into(),
                     params: json!({"threadId":agent["threadId"],"turnId":turn_id,"item":item}),
-                    observed_at: timestamp,
+                    observed_at: crate::notification_dispatch::ObservationTime::new(timestamp)
+                        .ok_or(
+                            crate::notification_dispatch::NotificationDispatchError::invalid(),
+                        )?,
                 },
             );
             // Keep multiple recovered items staged in this same transaction.

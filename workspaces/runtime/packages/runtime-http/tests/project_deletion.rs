@@ -74,9 +74,9 @@ impl Fixture {
             .expect("publisher");
         store.transaction(move |tx| {
             for path in ["/p","/prefix"] {
-                ProjectsRepository::put_project(tx,&json!({"id":path,"path":path,"name":path,"created":1,"homeServerId":"owner","locations":[{"serverId":"owner","path":path,"projectId":path}]}))?;
+                ProjectsRepository::put_project(tx,&json!({"id":path,"path":path,"name":path,"created":1,"homeServerId":"owner","peerTeams":[],"locations":[{"serverId":"owner","path":path,"projectId":path}]}))?;
             }
-            for agent in agents { AgentRepository::put(tx,&AgentRecord::from_value(agent)?)?; }
+            for mut agent in agents { agent.as_object_mut().expect("agent fixture").entry("compactions").or_insert(json!(0)); AgentRepository::put(tx,&AgentRecord::from_value(agent)?)?; }
             for room in rooms {
                 tx.execute("INSERT INTO runtime_rooms(id,record) VALUES(?1,?2)",rusqlite::params![room["id"].as_str(),room.to_string()])?;
                 SyncDocumentsRepository::put_entity(tx,"room",room["id"].as_str().expect("id"),room.clone(),false)?;
@@ -162,7 +162,7 @@ impl Fixture {
     }
 }
 fn agent(id: &str, parent: Option<&str>, path: &str) -> Value {
-    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":if parent.is_some(){"lead"}else{id},"parentId":parent,"epoch":1,"status":"idle","isLead":parent.is_none(),"autoWake":true,"cwd":path})
+    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":if parent.is_some(){"lead"}else{id},"parentId":parent,"epoch":1,"status":"idle","isLead":parent.is_none(),"autoWake":true,"cwd":path})
 }
 
 #[tokio::test]
@@ -236,7 +236,7 @@ async fn project_deletion_receipt_replay_changed_body_and_new_lifetime() {
     let first = f.call(f.body.clone()).await;
     assert_eq!(first.0, 200, "{}", first.1);
     let epoch = f.agent("lead")["epoch"].clone();
-    f.store.transaction(|tx|ProjectsRepository::put_project(tx,&json!({"id":"/p","path":"/p","name":"Recreated","created":3,"homeServerId":"owner","locations":[{"serverId":"owner","path":"/p","projectId":"/p"}]}))).await.expect("re-register");
+    f.store.transaction(|tx|ProjectsRepository::put_project(tx,&json!({"id":"/p","path":"/p","name":"Recreated","created":3,"homeServerId":"owner","peerTeams":[],"locations":[{"serverId":"owner","path":"/p","projectId":"/p"}]}))).await.expect("re-register");
     assert_eq!(f.call(f.body.clone()).await, first);
     assert_eq!(f.agent("lead")["epoch"], epoch);
     assert_eq!(f.ports.wakes.load(Ordering::SeqCst), 1);
@@ -655,7 +655,7 @@ async fn project_deletion_local_aliases_belong_to_one_scope() {
     f.store.transaction(|tx|{
         let mut physical=ProjectsRepository::get(tx,"/p")?.expect("physical").1;
         physical["projectAliases"]=json!([{"serverId":"owner","projectId":"logical-id"}]);ProjectsRepository::put_project(tx,&physical)?;
-        ProjectsRepository::put_project(tx,&json!({"id":"logical-id","path":"/p","name":"Logical","created":1,"homeServerId":"owner","locations":[{"serverId":"owner","path":"/p","projectId":"/p"}]}))
+        ProjectsRepository::put_project(tx,&json!({"id":"logical-id","path":"/p","name":"Logical","created":1,"homeServerId":"owner","peerTeams":[],"locations":[{"serverId":"owner","path":"/p","projectId":"/p"}]}))
     }).await.expect("logical alias");
     let mut body = f.body.clone();
     body["expected_project_seq"] = json!(

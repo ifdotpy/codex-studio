@@ -290,7 +290,11 @@ impl RequestResults {
             return Ok(Admission::Replay(row));
         }
         identity.validate(now_ms, Self::expired_before_ms(tx)?)?;
-        Ok(Admission::Fresh(AdmittedRequest::from_persisted_fields(identity.id().into(), signature.into(), identity.issued_ms())))
+        Ok(Admission::Fresh(AdmittedRequest::from_persisted_fields(
+            identity.id().into(),
+            signature.into(),
+            identity.issued_ms(),
+        )))
     }
 
     /// Completion remains allowed after expiry; it never authorizes another external attempt.

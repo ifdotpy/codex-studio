@@ -140,6 +140,8 @@ fn profile_read_error(error: StoreError) -> ApiError {
         }
         StoreError::RequestResult(error) => error.into(),
         StoreError::Outbox(error) => error.into(),
+        error @ (StoreError::TranscriptFullTextUnavailable { .. }
+        | StoreError::TranscriptInputsIncomplete { .. }) => ApiError::stored(error),
         StoreError::StateDirectory(_)
         | StoreError::AlreadyOwned
         | StoreError::MissingDatabase(_)

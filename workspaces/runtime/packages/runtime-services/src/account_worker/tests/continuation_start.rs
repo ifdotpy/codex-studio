@@ -29,7 +29,7 @@ async fn child_of_lead(state: &State) {
                 lead.in_flight = Some(false);
                 lead.thread_id = Some("lead-thread".to_string());
                 lead.extra.insert("concurrency".into(), json!(8));
-                lead.extra.remove("startAttempt");
+                lead.start_attempt.take();
                 AgentRepository::put(tx, &lead)?;
                 row.root_id = AgentId::from(LEAD);
                 row.parent_id = Some((LEAD).to_string());

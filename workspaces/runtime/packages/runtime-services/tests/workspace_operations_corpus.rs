@@ -287,7 +287,7 @@ async fn committed_turn_captures_once_preserving_user_index_and_files() {
     std::fs::write(f.repo.join("file"), "dirty\n").expect("dirty file");
     let index = std::fs::read(f.repo.join(".git/index")).expect("index");
     let request = CompletedTurn::from_record(&f.actor).expect("request");
-    let checkpoint = checkpoint_after_turn(Arc::clone(&f.store), &request)
+    let checkpoint = Box::pin(checkpoint_after_turn(Arc::clone(&f.store), &request))
         .await
         .expect("capture")
         .expect("checkpoint");
@@ -303,7 +303,7 @@ async fn committed_turn_captures_once_preserving_user_index_and_files() {
     );
     let state = f.snapshot();
     assert_eq!(
-        checkpoint_after_turn(Arc::clone(&f.store), &request)
+        Box::pin(checkpoint_after_turn(Arc::clone(&f.store), &request))
             .await
             .expect("replay"),
         Some(checkpoint)
@@ -319,7 +319,7 @@ async fn late_completion_and_missing_receipt_write_nothing() {
     f.patch("epoch", json!(2)).await;
     let before = f.snapshot();
     assert_eq!(
-        checkpoint_after_turn(Arc::clone(&f.store), &request)
+        Box::pin(checkpoint_after_turn(Arc::clone(&f.store), &request))
             .await
             .expect("stale"),
         None
@@ -335,7 +335,7 @@ async fn late_completion_and_missing_receipt_write_nothing() {
         .expect("remove receipt");
     let before = f.snapshot();
     assert_eq!(
-        checkpoint_after_turn(Arc::clone(&f.store), &request)
+        Box::pin(checkpoint_after_turn(Arc::clone(&f.store), &request))
             .await
             .expect("no receipt"),
         None
@@ -413,7 +413,7 @@ async fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpo
             .await
             .expect("arm failpoint");
         assert!(
-            checkpoint_after_turn(Arc::clone(&f.store), &request)
+            Box::pin(checkpoint_after_turn(Arc::clone(&f.store), &request))
                 .await
                 .is_err(),
             "{name}"
@@ -443,7 +443,7 @@ async fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpo
             .expect("next isolated failpoint");
     }
     assert!(
-        checkpoint_after_turn(Arc::clone(&f.store), &request)
+        Box::pin(checkpoint_after_turn(Arc::clone(&f.store), &request))
             .await
             .expect("capture after faults")
             .is_some()
@@ -572,7 +572,7 @@ async fn restart_after_each_committed_capture_stage_never_repeats_git() {
                 .expect("restart"),
         );
         assert_eq!(
-            checkpoint_after_turn(Arc::clone(&reopened), &request)
+            Box::pin(checkpoint_after_turn(Arc::clone(&reopened), &request))
                 .await
                 .expect("recovered callback"),
             None

@@ -139,20 +139,39 @@ impl CheckpointsRepository {
         agent_id: &str,
         checkpoint_id: &str,
     ) -> StoreResult<Option<String>> {
-        let operations = read_active(
-            connection,
+        use studio_runtime_schema::workspace_operation::OperationKind;
+
+        if !table_exists(connection, "runtime_workspace_operations")? {
+            return Ok(None);
+        }
+        let mut statement = connection.prepare_cached(&active_query(
             "runtime_workspace_operations",
             "phase",
-            ACTIVE_OPERATION_PHASES,
-        )?;
+            ACTIVE_OPERATION_PHASES.len(),
+        ))?;
+        let mut rows = statement.query(rusqlite::params_from_iter(ACTIVE_OPERATION_PHASES))?;
+        let table = Table::<crate::WorkspaceOperationRecord>::new(connection);
+        let mut operations = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let encoded: String = row.get(1)?;
+            let operation = table.decode_stored(&id, &encoded)?;
+            if operation.agent.is_empty() {
+                return Err(invalid_record("runtime_workspace_operations", &id));
+            }
+            operations.push(operation);
+        }
         Ok(operations.into_iter().find_map(|operation| {
-            (operation.record.get("kind").and_then(Value::as_str) == Some("restore")
-                && operation.record.get("agent").and_then(Value::as_str) == Some(agent_id)
-                && operation.record.get("checkpoint").and_then(Value::as_str)
+            (operation.kind == OperationKind::Restore
+                && operation.agent == agent_id
+                && operation
+                    .extensions()
+                    .get("checkpoint")
+                    .and_then(Value::as_str)
                     == Some(checkpoint_id))
             .then(|| {
                 operation
-                    .record
+                    .extensions()
                     .get("expectedTree")
                     .and_then(Value::as_str)
                     .map(str::to_owned)
@@ -897,12 +916,7 @@ fn read_active(
     if !table_exists(connection, table)? || values.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = std::iter::repeat_n("?", values.len())
-        .collect::<Vec<_>>()
-        .join(",");
-    let mut statement = connection.prepare_cached(&format!(
-        "SELECT id,record FROM {table} WHERE json_extract(record,'$.{field}') IN ({placeholders}) ORDER BY rowid"
-    ))?;
+    let mut statement = connection.prepare_cached(&active_query(table, field, values.len()))?;
     let rows = statement.query_map(rusqlite::params_from_iter(values.iter()), read_stored_row)?;
     let records = collect_records(connection, rows, table)?;
     for record in &records {
@@ -916,6 +930,13 @@ fn read_active(
         }
     }
     Ok(records)
+}
+
+fn active_query(table: &str, field: &str, count: usize) -> String {
+    let placeholders = vec!["?"; count].join(",");
+    format!(
+        "SELECT id,record FROM {table} WHERE json_extract(record,'$.{field}') IN ({placeholders}) ORDER BY rowid"
+    )
 }
 
 fn read_object(
@@ -1106,13 +1127,7 @@ mod tests {
             [r#"{"id":"other","id":"c"}"#],
         )
         .unwrap();
-        assert_eq!(
-            CheckpointsRepository::checkpoint(&db, "c")
-                .unwrap()
-                .unwrap()
-                .record,
-            json!({"id":"c"})
-        );
+        assert!(CheckpointsRepository::checkpoint(&db, "c").is_err());
         db.execute(
             "UPDATE runtime_checkpoints SET record=?1",
             [r#"{"id":"c","id":"other"}"#],
@@ -1159,7 +1174,7 @@ mod tests {
     fn workspace_activity_ignores_unrelated_record_metadata() {
         let agent = StoredCheckpointObject {
             id: "agent".to_owned(),
-            record: json!({
+            record: json!({"compactions":0,
                 "id": "agent",
                 "provider": "codex",
                 "cwd": "/workspace",
@@ -1233,5 +1248,26 @@ mod tests {
                 |row| row.get::<_, String>(0),
             )
             .is_ok_and(|phase| phase == "capture_running"));
+    }
+
+    #[test]
+    fn restore_tree_refuses_duplicate_operation_fields() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE runtime_workspace_operations(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             INSERT INTO runtime_workspace_operations VALUES
+             ('op','{\"id\":\"op\",\"kind\":\"capture\",\"kind\":\"restore\",\"phase\":\"provider_pending\",\"agent\":\"a\",\"checkpoint\":\"c\",\"expectedTree\":\"tree\"}');",
+        ).unwrap();
+        assert!(CheckpointsRepository::restore_expected_tree(&connection, "a", "c").is_err());
+        connection.execute(
+            "UPDATE runtime_workspace_operations SET record=?1 WHERE id='op'",
+            [r#"{"id":"op","kind":"restore","phase":"provider_pending","agent":"a","checkpoint":"c","expectedTree":"tree"}"#],
+        ).unwrap();
+        assert_eq!(
+            CheckpointsRepository::restore_expected_tree(&connection, "a", "c")
+                .unwrap()
+                .as_deref(),
+            Some("tree")
+        );
     }
 }

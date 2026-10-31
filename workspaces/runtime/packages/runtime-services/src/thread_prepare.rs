@@ -126,13 +126,7 @@ pub struct Account {
     pub supervisor_identity: Option<SupervisorIdentity>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SupervisorIdentity {
-    pub state_dir: String,
-    pub handle: String,
-    pub generation: u64,
-}
+pub use studio_runtime_schema::start_attempt::SupervisorIdentity;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Root {

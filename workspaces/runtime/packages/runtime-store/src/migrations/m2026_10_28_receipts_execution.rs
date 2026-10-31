@@ -280,7 +280,7 @@ mod tests {
         db.execute("INSERT INTO runtime_execution_runs VALUES('run','agent','account',1,1,?1)",[json!({"id":"run","agent":"agent","accountKey":"account","epoch":1,"created":1,"status":"unknown","latestAttemptId":"attempt-0"}).to_string()]).expect("run");
         db.execute(
             "INSERT INTO runtime_agents VALUES('agent',?1)",
-            [json!({"id":"agent","rootId":"agent","status":"idle","epoch":1,"accountKey":"account","startAttempt":{"id":"attempt-0"}}).to_string()],
+            [json!({"compactions":0,"id":"agent","rootId":"agent","status":"idle","epoch":1,"accountKey":"account","startAttempt":{"id":"attempt-0"}}).to_string()],
         )
         .expect("agent");
     }
@@ -427,7 +427,7 @@ mod tests {
         for (account, epoch) in [("account", 2), ("moved-account", 1)] {
             let mut db = Connection::open_in_memory().expect("database");
             fixture(&db);
-            db.execute("UPDATE runtime_agents SET record=?1 WHERE id='agent'",[json!({"id":"agent","rootId":"agent","status":"idle","accountKey":account,"epoch":epoch,"startAttempt":{"id":"old-attempt"}}).to_string()]).expect("advanced owner");
+            db.execute("UPDATE runtime_agents SET record=?1 WHERE id='agent'",[json!({"compactions":0,"id":"agent","rootId":"agent","status":"idle","accountKey":account,"epoch":epoch,"startAttempt":{"id":"old-attempt"}}).to_string()]).expect("advanced owner");
             db.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES('old-attempt','run','{}')",[]).expect("old start identity");
             batch(&mut db, "runtime_agents").expect("pointer hydration");
             let raw: String = db
@@ -461,7 +461,7 @@ mod tests {
         for attempt in [Some("current-attempt"), None] {
             let mut db = Connection::open_in_memory().expect("database");
             fixture(&db);
-            db.execute("UPDATE runtime_agents SET record=?1 WHERE id='agent'",[json!({"id":"agent","rootId":"agent","status":"idle","accountKey":"account","epoch":2,"threadId":"fork-thread","startAttempt":{"id":"old-attempt"}}).to_string()]).expect("owner after fork");
+            db.execute("UPDATE runtime_agents SET record=?1 WHERE id='agent'",[json!({"compactions":0,"id":"agent","rootId":"agent","status":"idle","accountKey":"account","epoch":2,"threadId":"fork-thread","startAttempt":{"id":"old-attempt"}}).to_string()]).expect("owner after fork");
             db.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES('old-attempt','run','{}')",[]).expect("old start identity");
             db.execute("INSERT INTO runtime_execution_runs VALUES('current','agent','account',2,2,?1)",[json!({"id":"current","agent":"agent","accountKey":"account","epoch":2,"threadId":"source-thread","created":2,"status":"completed","latestAttemptId":attempt}).to_string()]).expect("terminal current run");
             db.execute("INSERT INTO runtime_execution_runs VALUES('other','agent','other-account',2,10,?1)",[json!({"id":"other","agent":"agent","accountKey":"other-account","epoch":2,"created":10,"status":"running","latestAttemptId":"other-attempt"}).to_string()]).expect("newer foreign-account history");

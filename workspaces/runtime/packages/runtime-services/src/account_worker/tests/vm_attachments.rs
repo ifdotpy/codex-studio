@@ -152,7 +152,8 @@ async fn start_and_next_turn(provider: &'static str) {
                         AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.expect("actor");
                     record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
                     record.thread_id = None;
-                    record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+                    record.workspace_mode =
+                        Some(studio_runtime_schema::records::WorkspaceMode::Layr);
                     record.cwd = Some("/guest/line".into());
                     for (key, value) in [
                         ("layrReady", json!(true)),

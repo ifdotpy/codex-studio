@@ -937,15 +937,18 @@ async fn workspace_with_vm_action(
     let record = workspace_agent(&store, &intent.agent_id).await?;
     if record.execution_mode == Some(studio_runtime_store::AgentExecutionMode::Vm) {
         if record.extra.get("layrReady").and_then(Value::as_bool) != Some(true) {
-            let start_attempt = record.extra.get("startAttempt").unwrap_or(&Value::Null);
+            let start_attempt = record
+                .start_attempt
+                .as_ref()
+                .ok_or_else(|| refusal("workspace-state/vm-start-attempt".into()))?;
             let attempt_id = start_attempt
-                .get("id")
-                .and_then(Value::as_str)
+                .id
+                .as_deref()
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| refusal("workspace-state/vm-start-attempt".into()))?;
             let action_request_id = start_attempt
-                .get("actionRequestId")
-                .and_then(Value::as_str)
+                .action_request_id
+                .as_deref()
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("vm-turn-preparation:{attempt_id}"));
@@ -1016,7 +1019,9 @@ async fn workspace_with_vm_action(
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| refusal("workspace-readiness/vm-host-project-required".into()))?
         } else {
-            ready.cwd.as_deref()
+            ready
+                .cwd
+                .as_deref()
                 .filter(|value| value.starts_with('/'))
                 .ok_or_else(|| refusal("workspace-state/vm-cwd".into()))?
         };
@@ -1030,9 +1035,12 @@ async fn workspace_with_vm_action(
         );
     }
     // Git provisioning acquires its own short transactions. No store transaction is held here.
-    match Box::pin(crate::workspace_ready_git::prepare(Arc::clone(&store), intent.agent_id.clone()))
-        .await
-        .map_err(|e| refusal(e.to_string()))?
+    match Box::pin(crate::workspace_ready_git::prepare(
+        Arc::clone(&store),
+        intent.agent_id.clone(),
+    ))
+    .await
+    .map_err(|e| refusal(e.to_string()))?
     {
         crate::workspace_ready::WorkspaceDecision::Ready { token } => Ok(token),
         crate::workspace_ready::WorkspaceDecision::Refuse(e) => Err(refusal(e.to_string())),
@@ -1372,7 +1380,10 @@ pub(crate) async fn prepare_monitor_command(
     .await
 }
 
-fn validate_monitor_actor(record: &studio_runtime_store::AgentRecord, epoch: u64) -> Result<(), WorkerError> {
+fn validate_monitor_actor(
+    record: &studio_runtime_store::AgentRecord,
+    epoch: u64,
+) -> Result<(), WorkerError> {
     if crate::legacy_image_workspace::is_legacy(&record.value()) {
         return Err(refusal("This legacy workspace is finished".into()));
     }
@@ -2426,7 +2437,7 @@ mod daybreak_tests {
 
     #[test]
     fn monitor_preparation_accepts_submitted_running_actor_without_start_admission() {
-        let record = studio_runtime_store::AgentRecord::from_value(json!({
+        let record = studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,
             "id":"agent", "rootId":"agent", "accountKey":"default", "epoch":7, "autoWake":true, "deletedAt":null,
             "provider":studio_runtime_schema::ProviderKind::Codex,
             "status":"running", "startAttempt":{"id":"submitted","submitted":true}
@@ -2574,12 +2585,12 @@ mod claimed_input_tests {
             .expect("runtime store opens");
         store
             .transaction(|tx| {
-                let lead = json!({"id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                let lead = json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,"status":"queued",
                     "isLead":true,"autoWake":true,"name":"Lead","cwd":"/work",
                     "provider":"claude","accountKey":"default","threadId":"lead-thread",
                     "events":0});
                 AgentRepository::put(tx, &AgentRecord::from_value(lead).expect("lead"))?;
-                let child = json!({"id":"child","rootId":"lead","parentId":"lead","epoch":1,
+                let child = json!({"compactions":0,"id":"child","rootId":"lead","parentId":"lead","epoch":1,
                     "status":"running","autoWake":true,"name":"child","cwd":"/work",
                     "provider":"claude","accountKey":"default"});
                 AgentRepository::put(tx, &AgentRecord::from_value(child).expect("child"))?;
@@ -2735,7 +2746,7 @@ mod team_progress_delivery_tests {
             .expect("runtime store opens");
         store
             .transaction(move |tx| {
-                let lead = json!({"id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                let lead = json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,"status":"queued",
                     "isLead":true,"autoWake":true,"name":"Lead","cwd":"/work",
                     "provider":provider,"accountKey":"default","threadId":"lead-thread",
                     "events":0});
@@ -2746,7 +2757,7 @@ mod team_progress_delivery_tests {
                     ("busy", "running"),
                     ("waiting", "queued"),
                 ] {
-                    let child = json!({"id":id,"rootId":"lead","parentId":"lead","epoch":1,
+                    let child = json!({"compactions":0,"id":id,"rootId":"lead","parentId":"lead","epoch":1,
                         "status":status,"autoWake":true,"name":id,"cwd":"/work",
                         "provider":provider,"accountKey":"default"});
                     AgentRepository::put(tx, &AgentRecord::from_value(child).expect("child"))?;

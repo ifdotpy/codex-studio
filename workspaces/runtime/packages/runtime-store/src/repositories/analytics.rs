@@ -35,6 +35,26 @@ impl CostReader {
 }
 
 impl RuntimeStore {
+    /// Run a read on the retained analytics reader without blocking an async executor.
+    pub async fn with_cost_reader_async<
+        T: Send + 'static,
+        E: From<AnalyticsStoreError> + Send + 'static,
+    >(
+        &self,
+        operation: impl FnOnce(&mut Connection) -> Result<T, E> + Send + 'static,
+    ) -> Result<T, E> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.cost_reader
+            .0
+            .send(Box::new(move |db| {
+                let _undelivered = sender.send(operation(db));
+            }))
+            .map_err(|_| AnalyticsStoreError::CostReaderClosed)?;
+        receiver
+            .await
+            .map_err(|_| AnalyticsStoreError::CostReaderClosed)?
+    }
+
     /// Run one synchronous cost computation on the store's retained reader thread.
     pub fn with_cost_reader<T: Send + 'static, E: From<AnalyticsStoreError> + Send + 'static>(
         &self,
@@ -996,35 +1016,24 @@ fn chart_rows(filter: &ScopeFilter) -> Result<Vec<Value>, AnalyticsError> {
 
 /// Stored `captureErrors` metadata, served as `AnalyticsCaptureErrors`.
 #[derive(Default, serde::Serialize, serde::Deserialize)]
-struct CaptureErrors {
-    count: u64,
-    last: Option<CaptureErrorRecord>,
+pub struct CaptureErrors {
+    pub count: u64,
+    pub last: Option<CaptureErrorRecord>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct CaptureErrorRecord {
-    /// Unit: epoch seconds. Older rows stored it as a decimal string.
+pub struct CaptureErrorRecord {
+    /// Unit: epoch seconds.
     #[serde(deserialize_with = "epoch_seconds")]
     at: f64,
     operation: String,
-    #[serde(default)]
     code: Option<String>,
-    error: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error_type: Option<String>,
 }
 fn epoch_seconds<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
-    #[derive(serde::Deserialize)]
-    #[serde(untagged)]
-    enum Stored {
-        Number(f64),
-        Text(String),
-    }
-    match <Stored as serde::Deserialize>::deserialize(deserializer)? {
-        Stored::Number(at) => Ok(at),
-        Stored::Text(at) => at.parse().map_err(serde::de::Error::custom),
-    }
-    .and_then(|at: f64| {
+    <f64 as serde::Deserialize>::deserialize(deserializer).and_then(|at| {
         if at.is_finite() && at >= 0.0 {
             Ok(at)
         } else {
@@ -1032,19 +1041,8 @@ fn epoch_seconds<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f6
         }
     })
 }
-/// Failure count and latest failure message of the analytics `captureErrors` metadata.
-#[derive(Default, serde::Deserialize)]
-pub struct CaptureErrorSummary {
-    /// Unit: capture failures since tracking began.
-    pub count: u64,
-    pub last: Option<CaptureErrorLast>,
-}
-#[derive(serde::Deserialize)]
-pub struct CaptureErrorLast {
-    pub error: String,
-}
 /// Read the capture failure summary; an absent row means no failure was recorded.
-pub fn capture_error_summary(db: &Connection) -> Result<CaptureErrorSummary, AnalyticsError> {
+pub fn capture_error_summary(db: &Connection) -> Result<CaptureErrors, AnalyticsError> {
     Ok(metadata(db, "captureErrors")?.unwrap_or_default())
 }
 fn metadata<T: serde::de::DeserializeOwned>(
@@ -1650,10 +1648,6 @@ fn table_exists(db: &Connection, name: &str) -> Result<bool, rusqlite::Error> {
         |r| r.get(0),
     )
 }
-#[derive(serde::Serialize)]
-struct TurnErrors {
-    turns: Vec<Value>,
-}
 pub fn require_agent(db: &Connection, agent: &str) -> Result<(), AnalyticsError> {
     let known: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM analytics_agents WHERE id=?1) OR EXISTS(SELECT 1 FROM canvas.runtime_agents WHERE id=?1)",[agent],|r|r.get(0))?;
     if known {
@@ -1666,12 +1660,36 @@ pub fn turn_errors(db: &Connection, keys: Vec<String>) -> Result<Value, Analytic
     let rows = ScopeFilter::new(db)
         .members("id", keys)
         .page("analytics_turns", "id", (-1, 0))?;
-    Ok(serde_json::to_value(TurnErrors {
-        turns: rows
-            .iter()
-            .map(|row| project(row, &["agentId", "threadId", "turnId", "status", "error"]))
+    let turns = rows
+        .iter()
+        .map(|row| project(row, &["agentId", "threadId", "turnId", "status", "error"]))
+        .collect();
+    Ok(Value::Object(
+        [("turns".into(), Value::Array(turns))]
+            .into_iter()
             .collect(),
-    })?)
+    ))
+}
+
+#[cfg(test)]
+mod turn_errors_tests {
+    use super::*;
+
+    #[test]
+    fn projects_only_requested_turn_error_fields() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE analytics_turns(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        db.execute("INSERT INTO analytics_turns VALUES(?1,?2)", rusqlite::params!["key", r#"{"agentId":"a","threadId":"t","turnId":"u","status":"failed","error":{"message":"no"},"private":"omit"}"#]).unwrap();
+        assert_eq!(
+            turn_errors(&db, vec!["key".into()]).unwrap(),
+            json!({"turns":[{"agentId":"a","threadId":"t","turnId":"u","status":"failed","error":{"message":"no"}}]})
+        );
+        assert_eq!(
+            turn_errors(&db, vec!["other".into()]).unwrap(),
+            json!({"turns":[]})
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1679,14 +1697,19 @@ mod capture_error_tests {
     use super::CaptureErrors;
 
     #[test]
-    fn legacy_string_capture_error_time_is_served_as_a_number() {
-        let stored = r#"{"count":2,"last":{"at":"1792320464","operation":"analytics_capture_queue","code":"queueOverflow","error":"Publication queue limit reached"}}"#;
+    fn current_capture_error_rejects_string_timestamp() {
+        let raw = r#"{"count":2,"last":{"at":"1792320464","operation":"analytics_capture_queue","code":"queueOverflow","error":"Publication queue limit reached"}}"#;
+        assert!(serde_json::from_str::<CaptureErrors>(raw).is_err());
+    }
+
+    #[test]
+    fn numeric_capture_error_time_is_served_as_a_number() {
+        let stored = r#"{"count":2,"last":{"at":1792320464,"operation":"analytics_capture_queue","code":"queueOverflow","error":"Publication queue limit reached"}}"#;
         let read: CaptureErrors = serde_json::from_str(stored).expect("stored capture errors");
-        let served = serde_json::to_value(&read).expect("served capture errors");
-        assert_eq!(served["count"], 2);
-        assert!(served["last"]["at"].is_number(), "{served}");
-        assert_eq!(served["last"]["at"].as_f64(), Some(1_792_320_464.0));
-        assert_eq!(served["last"]["error"], "Publication queue limit reached");
+        assert_eq!(read.count, 2);
+        let last = read.last.expect("last error");
+        assert_eq!(last.at, 1_792_320_464.0);
+        assert_eq!(last.error, "Publication queue limit reached");
     }
 }
 

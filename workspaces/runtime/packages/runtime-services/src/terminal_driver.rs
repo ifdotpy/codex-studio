@@ -403,8 +403,7 @@ impl<S: TerminalSession> TerminalDriver<S> {
                     return Ok(false);
                 };
                 if current_agent.is_deleted()
-                    || current_agent.cwd.as_deref()
-                        != Some(agent_cwd.as_str())
+                    || current_agent.cwd.as_deref() != Some(agent_cwd.as_str())
                 {
                     return Ok(false);
                 }

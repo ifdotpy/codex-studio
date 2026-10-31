@@ -1936,7 +1936,7 @@ mod tests {
                 tx.execute_batch("DROP TABLE IF EXISTS runtime_operation_receipts")?;
                 AgentRepository::put(
                     tx,
-                    &studio_runtime_store::AgentRecord::from_value(json!({
+                    &studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,
                         "id":"agent-1","rootId":"agent-1","epoch":9,"status":"running",
                         "provider":"codex","accountKey":"default","executionMode":"vm"
                     }))?,
@@ -3199,7 +3199,7 @@ mod tests {
             .transaction(|tx| {
                 AgentRepository::put(
                     tx,
-                    &studio_runtime_store::AgentRecord::from_value(json!({
+                    &studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,
                         "id":"agent-1","rootId":"agent-1","epoch":9,"status":"running",
                         "provider":"claude","accountKey":"account-1","executionMode":"vm"
                     }))?,

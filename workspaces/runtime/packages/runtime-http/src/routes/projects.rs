@@ -31,6 +31,29 @@ enum LocationAdmission {
     Replay(LocationResult),
     Pending(AdmittedRequest, String),
 }
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectAliasesPatch<'a> {
+    project_aliases: &'a [studio_runtime_schema::project_record::ProjectAlias],
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectLocationsPatch<'a> {
+    locations: &'a [studio_runtime_schema::project_record::ProjectLocation],
+    locations_revision: u64,
+}
+
+#[derive(serde::Serialize)]
+struct RegistrationPatch {
+    registration: RegistrationStatus,
+}
+
+#[derive(serde::Serialize)]
+struct RegistrationStatus {
+    status: WorkEffectStatus,
+}
 #[derive(Clone, Copy)]
 struct LocationRequest<'a> {
     raw_key: &'a str,
@@ -411,11 +434,18 @@ async fn write_project(
         ));
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let account_policy = state
-        .account_policy
-        .clone()
-        .ok_or_else(ApiError::internal)?;
-    let accounts = account_policy.accounts();
+    let driver = state.account_driver.clone().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "Not implemented: requires account-driver/runtime",
+        )
+    })?;
+    let accounts = studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-http/routes/projects/accounts",
+        move || driver.listing_snapshot().map_err(|_| ApiError::internal()),
+    )
+    .await
+    .map_err(|_| ApiError::internal())??;
     let known = accounts.accounts.clone();
     let default = accounts
         .default_account_key
@@ -569,7 +599,7 @@ async fn local_project_registration(
         if matches!(admission, LocationAdmission::Replay(_)) { return Ok(admission); }
         if studio_runtime_store::ProjectsRepository::get(tx, &first_project_id)?.is_none() {
             let project = json!({"id":first_project_id,"path":first_project_id,"name":first_name,"created":now,
-                "homeServerId":first_local_server,"locations":[],"locationsRevision":0,
+                "homeServerId":first_local_server,"locations":[],"locationsRevision":0,"peerTeams":[],
                 "accountKey":first_default_account,"accountRevision":1,
                 "registration":{"server":registration["server"],"path":registration["path"],"name":registration["name"],"signature":registration_signature,"requestId":first_operation_id,"status":WorkEffectStatus::Unknown}});
             studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
@@ -610,10 +640,7 @@ async fn local_project_registration(
     )
     .await
     .map_err(|_| ApiError::internal())?;
-    let git_origin = origin
-        .ok()
-        .and_then(|value| value.get("gitOrigin").cloned())
-        .unwrap_or(Value::Null);
+    let git_origin = origin.ok().and_then(|value| value.git_origin);
     let value = json!({"serverId":local_server,"path":path,"canonicalPath":canonical,
         "projectId":physical_id,"gitOrigin":git_origin,"homeProjectId":project_id,
         "requestId":operation_id});
@@ -634,53 +661,85 @@ async fn local_project_registration(
     let result_for_write = result.clone();
     store
         .transaction_with_error(move |tx| -> Result<(), ApiError> {
-            if replay_request::<LocationResult>(tx, request.id(), request.signature(), now * 1000)?.is_some() {
+            if replay_request::<LocationResult>(tx, request.id(), request.signature(), now * 1000)?
+                .is_some()
+            {
                 return Ok(());
             }
             if physical_id_for_write != project_id_for_write
-                && let Some((_, mut physical)) =
-                    studio_runtime_store::ProjectsRepository::get(tx, &physical_id_for_write)?
+                && let Some(mut physical) = studio_runtime_store::ProjectsRepository::get_record(
+                    tx,
+                    &physical_id_for_write,
+                )?
             {
-                let mut aliases = physical
-                    .get("projectAliases")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-                aliases.retain(|alias| {
-                    alias.get("serverId").and_then(Value::as_str)
-                        != Some(local_server_for_write.as_str())
-                        || alias.get("projectId").and_then(Value::as_str)
-                            != Some(project_id_for_write.as_str())
+                physical.project_aliases.retain(|alias| {
+                    alias.server_id != local_server_for_write
+                        || alias.project_id != project_id_for_write
                 });
-                aliases.push(json!({"serverId":local_server_for_write,"projectId":project_id_for_write,"name":name_for_write}));
-                physical["projectAliases"] = Value::Array(aliases);
-                studio_runtime_store::ProjectsRepository::put_project(tx, &physical)?;
+                physical.project_aliases.push(
+                    studio_runtime_schema::project_record::ProjectAlias {
+                        server_id: local_server_for_write.clone(),
+                        project_id: project_id_for_write.clone(),
+                        name: name_for_write,
+                        extensions: Default::default(),
+                    },
+                );
+                studio_runtime_store::ProjectsRepository::patch_project(
+                    tx,
+                    &physical_id_for_write,
+                    &ProjectAliasesPatch {
+                        project_aliases: &physical.project_aliases,
+                    },
+                )?;
             }
-            let (_, mut logical) = studio_runtime_store::ProjectsRepository::get(tx, &project_id_for_write)?
-                .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "The project is unavailable"))?;
-            let mut locations = logical
-                .get("locations")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-            if !locations.iter().any(|location| {
-                location.get("serverId").and_then(Value::as_str)
-                    == Some(local_server_for_write.as_str())
-            }) {
-                locations.push(json!({"serverId":local_server_for_write,"path":canonical_for_write,
-                    "projectId":physical_id_for_write,"gitOrigin":git_origin_for_write}));
+            let mut logical =
+                studio_runtime_store::ProjectsRepository::get_record(tx, &project_id_for_write)?
+                    .ok_or_else(|| {
+                        ApiError::new(StatusCode::BAD_REQUEST, "The project is unavailable")
+                    })?;
+            if !logical
+                .locations
+                .iter()
+                .any(|location| location.server_id == local_server_for_write)
+            {
+                logical
+                    .locations
+                    .push(studio_runtime_schema::project_record::ProjectLocation {
+                        server_id: local_server_for_write,
+                        path: canonical_for_write,
+                        project_id: physical_id_for_write,
+                        git_origin: git_origin_for_write,
+                        requested_path: None,
+                        extensions: Default::default(),
+                    });
             }
-            logical["locations"] = Value::Array(locations);
-            logical["locationsRevision"] = json!(logical.get("locationsRevision")
-                .and_then(Value::as_u64).unwrap_or(0).saturating_add(1));
-            studio_runtime_store::ProjectsRepository::put_project(tx, &logical)?;
-            logical["registration"]["status"] = json!(WorkEffectStatus::Applied);
-            studio_runtime_store::ProjectsRepository::put_project(tx, &logical)?;
-            settle_location(tx, &project_id_for_write, &operation_for_write, &request, &result_for_write)?;
+            studio_runtime_store::ProjectsRepository::patch_project(
+                tx,
+                &project_id_for_write,
+                &ProjectLocationsPatch {
+                    locations: &logical.locations,
+                    locations_revision: logical.locations_revision.saturating_add(1),
+                },
+            )?;
+            studio_runtime_store::ProjectsRepository::patch_project(
+                tx,
+                &project_id_for_write,
+                &RegistrationPatch {
+                    registration: RegistrationStatus {
+                        status: WorkEffectStatus::Applied,
+                    },
+                },
+            )?;
+            settle_location(
+                tx,
+                &project_id_for_write,
+                &operation_for_write,
+                &request,
+                &result_for_write,
+            )?;
             Ok(())
         })
-        .await
-        ?;
+        .await?;
     Ok(result)
 }
 
@@ -844,12 +903,11 @@ async fn remote_project_write(
         let (record, admission) = project_store
             .read_async("runtime-http/routes/projects/project-read", move |db| {
                 let record =
-                    studio_runtime_store::ProjectsRepository::get(db, &project_id_for_read)
+                    studio_runtime_store::ProjectsRepository::get_record(db, &project_id_for_read)
                         .map_err(ApiError::stored)?
                         .ok_or_else(|| {
                             ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project")
-                        })?
-                        .1;
+                        })?;
                 let admission = studio_runtime_services::project_locations::location_admission(
                     db,
                     &project_id_for_read,
@@ -859,14 +917,8 @@ async fn remote_project_write(
                 Ok::<_, ApiError>((record, admission))
             })
             .await?;
-        let locations = record
-            .get("locations")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let existing = locations
-            .iter()
-            .find(|row| row.get("serverId").and_then(Value::as_str) == Some(server));
+        let locations = &record.locations;
+        let existing = locations.iter().find(|row| row.server_id == server);
         if action == "remove_location" && locations.len() <= 1 {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
@@ -874,7 +926,7 @@ async fn remote_project_write(
             ));
         }
 
-        let mut payload = json!({"project":project,"name":record.get("name"),"path":path,
+        let mut payload = json!({"project":project,"name":record.name,"path":path,
             "request":signature_data,"signature":studio_runtime_store::sha256_hex(
                 canonical_json(&signature_data).as_bytes()),
             "location":existing});
@@ -947,7 +999,7 @@ async fn remote_project_write(
             if studio_runtime_store::ProjectsRepository::get(tx, &project_for_registration)?.is_none() {
                 let name = registration_for_write["name"].as_str().unwrap_or("Project");
                 let project = json!({"id":project_for_registration,"path":project_for_registration,"name":name,"created":now,
-                    "homeServerId":local_for_registration,"locations":[],"locationsRevision":0,"accountKey":account_for_registration,
+                    "homeServerId":local_for_registration,"locations":[],"locationsRevision":0,"accountKey":account_for_registration,"peerTeams":[],
                     "accountRevision":1,"registration":{"server":registration_for_write["server"],"path":registration_for_write["path"],"name":registration_for_write["name"],"signature":creation_signature,"requestId":registration_operation,"status":WorkEffectStatus::Unknown}});
                 studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
             }
@@ -1140,8 +1192,7 @@ async fn remote_location_request(
             let project_id = project_id.ok_or_else(|| {
                 ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project")
             })?;
-            studio_runtime_store::ProjectsRepository::get(db, &project_id)?
-                .map(|(_, value)| value)
+            studio_runtime_store::ProjectsRepository::get_record(db, &project_id)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project"))
         })
         .await?;
@@ -1159,34 +1210,21 @@ async fn remote_location_request(
 /// checkout's Git origin, so it runs on a blocking thread.
 fn remote_location_action(
     query: &Value,
-    project: &Value,
+    project: &studio_runtime_schema::project_record::ProjectRecord,
     server: String,
 ) -> Result<(String, String, Value), ApiError> {
     let action = if query.get("action").and_then(Value::as_str) == Some("matches") {
         let origin = project
-            .get("locations")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find_map(|row| {
-                row.get("gitOrigin")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
+            .locations
+            .iter()
+            .find_map(|row| row.git_origin.clone())
             .or_else(|| {
-                project
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .filter(|path| !path.starts_with("project:"))
+                (!project.path.starts_with("project:"))
+                    .then_some(project.path.as_str())
                     .and_then(|path| {
                         studio_runtime_services::projects::peer_location_info(path).ok()
                     })
-                    .and_then(|value| {
-                        value
-                            .get("gitOrigin")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    })
+                    .and_then(|value| value.git_origin)
             })
             .ok_or_else(|| {
                 ApiError::new(StatusCode::BAD_REQUEST, "The project has no Git origin")
@@ -1202,14 +1240,10 @@ fn remote_location_action(
             .filter(|path| !path.is_empty())
             .or_else(|| {
                 project
-                    .get("locations")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .find(|row| {
-                        row.get("serverId").and_then(Value::as_str) == Some(server.as_str())
-                    })
-                    .and_then(|row| row.get("path").and_then(Value::as_str))
+                    .locations
+                    .iter()
+                    .find(|row| row.server_id == server)
+                    .map(|row| row.path.as_str())
             })
             .ok_or_else(|| {
                 ApiError::new(
@@ -1281,7 +1315,7 @@ async fn peer_teams(
         .await
         .map_err(projects_error)?;
     let result = super::generated_json::<crate::generated::PeerProjectResponse>(value)
-        .map(PeerTeamWriteResponse::Project)?;
+        .map(|project| PeerTeamWriteResponse::Project(Box::new(project)))?;
     Ok(Json(result))
 }
 
@@ -1290,7 +1324,7 @@ async fn peer_teams(
 enum PeerTeamWriteResponse {
     Radio(studio_runtime_services::radio_runtime::RadioReply),
     Conversion(studio_runtime_services::peer_conversion::ConversionReply),
-    Project(crate::generated::PeerProjectResponse),
+    Project(Box<crate::generated::PeerProjectResponse>),
 }
 
 fn projects_error(error: ProjectsError) -> ApiError {
@@ -1326,6 +1360,70 @@ inventory::submit! {
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod local_registration_tests {
+    #[test]
+    fn remote_location_uses_typed_project_location() {
+        let project = serde_json::from_str::<studio_runtime_schema::project_record::ProjectRecord>(
+            r#"{"id":"project","path":"project:id","peerTeams":[],"locations":[{"serverId":"server","path":"/folder","projectId":"id","gitOrigin":"origin"}]}"#,
+        ).unwrap();
+        let (_, action, payload) =
+            super::remote_location_action(&json!({}), &project, "server".into()).unwrap();
+        assert_eq!(action, "location_info");
+        assert_eq!(payload, json!({"cwd":"/folder"}));
+        let (_, action, payload) =
+            super::remote_location_action(&json!({"action":"matches"}), &project, "server".into())
+                .unwrap();
+        assert_eq!(action, "location_matches");
+        assert_eq!(payload, json!({"origin":"origin","cwd":null}));
+    }
+
+    #[test]
+    fn project_record_refuses_malformed_locations() {
+        let raw =
+            r#"{"id":"project","path":"/project","peerTeams":[],"locations":[{"serverId":42}]}"#;
+        assert!(
+            serde_json::from_str::<studio_runtime_schema::project_record::ProjectRecord>(raw)
+                .is_err()
+        );
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute(
+            "CREATE TABLE runtime_projects(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO runtime_projects VALUES('project', ?1)", [raw])
+            .unwrap();
+        assert!(studio_runtime_store::ProjectsRepository::get_record(&db, "project").is_err());
+        let valid = r#"{"id":"project","path":"/project","peerTeams":[],"locations":[{"serverId":"server","path":"/folder","projectId":"id","vendor":{"n":  1}}]}"#;
+        db.execute(
+            "UPDATE runtime_projects SET record=?1 WHERE id='project'",
+            [valid],
+        )
+        .unwrap();
+        let project = studio_runtime_store::ProjectsRepository::get_record(&db, "project")
+            .unwrap()
+            .unwrap();
+        let location = &project.locations[0];
+        assert_eq!(location.server_id, "server");
+        assert_eq!(location.extensions["vendor"].get(), r#"{"n":  1}"#);
+        assert!(
+            serde_json::to_string(location)
+                .unwrap()
+                .contains(r#""vendor":{"n":  1}"#)
+        );
+    }
+
+    #[test]
+    fn project_record_refuses_malformed_aliases_and_revision() {
+        for raw in [
+            r#"{"id":"project","path":"/project","peerTeams":[],"projectAliases":[{"serverId":42}]}"#,
+            r#"{"id":"project","path":"/project","peerTeams":[],"locationsRevision":"bad"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<studio_runtime_schema::project_record::ProjectRecord>(raw)
+                    .is_err()
+            );
+        }
+    }
     use serde_json::json;
     use std::sync::{
         Arc,
@@ -1340,10 +1438,29 @@ mod local_registration_tests {
     };
     use studio_runtime_store::{ProjectsRepository, RuntimeStore};
 
+    fn account_driver(
+        root: &std::path::Path,
+    ) -> Arc<studio_runtime_services::account_driver::AccountDriver> {
+        let path = root.join("test-accounts.json");
+        std::fs::write(&path, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string()).expect("fixture registry");
+        Arc::new(
+            studio_runtime_services::account_driver::AccountDriver::open(path)
+                .expect("account driver"),
+        )
+    }
+
     struct ProjectPeer(Arc<AtomicUsize>);
 
     async fn post_project(
         app: &axum::Router,
+        body: &serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        post(app, "/api/projects", body).await
+    }
+
+    async fn post(
+        app: &axum::Router,
+        path: &str,
         body: &serde_json::Value,
     ) -> (axum::http::StatusCode, serde_json::Value) {
         use axum::{
@@ -1355,7 +1472,7 @@ mod local_registration_tests {
 
         let request = Request::builder()
             .method("POST")
-            .uri("/api/projects")
+            .uri(path)
             .header("host", "127.0.0.1:4621")
             .header("content-type", "application/json")
             .header("x-canvas-token", "token")
@@ -1383,6 +1500,66 @@ mod local_registration_tests {
         )
         .expect("response JSON");
         (status, body)
+    }
+
+    #[tokio::test]
+    async fn project_account_write_uses_newly_registered_account() {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store"),
+        );
+        store
+            .set_local_server_id(Some("fixture-server".to_owned()))
+            .expect("local server identity");
+        let registry = root.path().join("registry.json");
+        let registry_data = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string();
+        std::fs::write(&registry, &registry_data).expect("registry");
+        let policy =
+            AccountPolicyState::from_startup(Some(registry_data.as_bytes()), []).expect("policy");
+        let driver = Arc::new(
+            studio_runtime_services::account_driver::AccountDriver::open(registry).expect("driver"),
+        );
+        let account_home = root.path().join("profile");
+        std::fs::create_dir(&account_home).expect("account home");
+        std::fs::write(
+            account_home.join("auth.json"),
+            r#"{"OPENAI_API_KEY":"fixture"}"#,
+        )
+        .expect("fixture auth");
+        let project = root.path().join("project");
+        std::fs::create_dir(&project).expect("project");
+        let state = crate::router::HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().to_string_lossy().into_owned(),
+            4621,
+            None,
+            Some(store),
+            Some(Arc::new(policy)),
+        )
+        .with_account_driver(driver);
+        let app = crate::router::router(state).expect("HTTP router");
+        let (status, accounts) = post(
+            &app,
+            "/api/accounts/register",
+            &json!({"home":account_home}),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{accounts}");
+        let account = accounts["accounts"]
+            .as_array()
+            .expect("accounts")
+            .iter()
+            .find(|row| row["label"] == "profile")
+            .expect("registered account");
+        let (status, registered) =
+            post_project(&app, &json!({"action":"register", "path":project})).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{registered}");
+        let (status, updated) = post_project(&app, &json!({"action":"set_account", "path":project, "account_key":account["id"], "expected_revision":registered["accountRevision"]})).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "{updated}");
+        assert_eq!(updated["accountKey"], account["id"]);
     }
 
     impl PairedTransport for ProjectPeer {
@@ -1469,7 +1646,8 @@ mod local_registration_tests {
             Some(Arc::clone(&store)),
             Some(Arc::new(policy)),
         );
-        let app = crate::router::router(state).expect("projects HTTP router");
+        let app = crate::router::router(state.with_account_driver(account_driver(root.path())))
+            .expect("projects HTTP router");
         let (status, first) = post_project(&app, &body).await;
         assert_eq!(status, axum::http::StatusCode::OK);
         let (status, replay) = post_project(&app, &body).await;
@@ -1563,7 +1741,8 @@ mod local_registration_tests {
             Some(Arc::new(policy)),
         );
         state.orchestration_driver = Some(Arc::clone(&driver));
-        let app = crate::router::router(state).expect("projects HTTP router");
+        let app = crate::router::router(state.with_account_driver(account_driver(root.path())))
+            .expect("projects HTTP router");
         let (first_status, first) = post_project(&app, &body).await;
         assert_eq!(
             first_status,
@@ -1620,7 +1799,8 @@ mod local_registration_tests {
             Some(Arc::clone(&store)),
             Some(Arc::new(policy)),
         );
-        let app = crate::router::router(state).expect("projects HTTP router");
+        let app = crate::router::router(state.with_account_driver(account_driver(root.path())))
+            .expect("projects HTTP router");
         let path = project_path.to_string_lossy();
         let (status, _) = post_project(
             &app,

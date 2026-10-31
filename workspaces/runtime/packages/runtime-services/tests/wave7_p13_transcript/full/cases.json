@@ -29942,7 +29942,7 @@
             },
             {
               "id": "agent:dynamic",
-              "role": "tool",
+              "role": "output",
               "title": "dynamicToolCall",
               "text": "{\"id\": \"call\", \"type\": \"dynamicToolCall\", \"status\": \"completed\", \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}], \"success\": true}",
               "truncated": false,
@@ -30132,7 +30132,7 @@
             },
             {
               "id": "agent:dynamic",
-              "role": "tool",
+              "role": "output",
               "title": "dynamicToolCall",
               "text": "{\"id\": \"call\", \"type\": \"dynamicToolCall\", \"status\": \"completed\", \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}], \"success\": true}",
               "truncated": false,
@@ -30322,7 +30322,7 @@
             },
             {
               "id": "agent:dynamic",
-              "role": "tool",
+              "role": "output",
               "title": "dynamicToolCall",
               "text": "{\"id\": \"call\", \"type\": \"dynamicToolCall\", \"status\": \"completed\", \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}], \"success\": true}",
               "truncated": false,
@@ -30512,7 +30512,7 @@
             },
             {
               "id": "agent:dynamic",
-              "role": "tool",
+              "role": "output",
               "title": "dynamicToolCall",
               "text": "{\"id\": \"call\", \"type\": \"dynamicToolCall\", \"status\": \"completed\", \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}], \"success\": true}",
               "truncated": false,
@@ -30973,7 +30973,14 @@
         "text": "needle detail",
         "status": "open",
         "agent": "agent",
-        "kind": "complaint"
+        "kind": "complaint",
+        "recipient": "lead",
+        "author": null,
+        "created": null,
+        "updated": null,
+        "readAt": null,
+        "version": null,
+        "responses": []
       },
       "chat-peer": {
         "seq": 2,
@@ -31335,7 +31342,7 @@
             },
             {
               "id": "agent:dynamic",
-              "role": "tool",
+              "role": "output",
               "title": "dynamicToolCall",
               "text": "{\"id\": \"call\", \"type\": \"dynamicToolCall\", \"status\": \"completed\", \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}], \"success\": true}",
               "truncated": false,
@@ -31610,7 +31617,7 @@
             },
             {
               "id": "agent:dynamic",
-              "role": "tool",
+              "role": "output",
               "title": "dynamicToolCall",
               "text": "{\"id\": \"call\", \"type\": \"dynamicToolCall\", \"status\": \"completed\", \"contentItems\": [{\"type\": \"inputText\", \"text\": \"external tool payload\"}], \"success\": true}",
               "truncated": false,
@@ -31831,7 +31838,7 @@
             },
             {
               "id": "agent:dynamic",
-              "role": "tool",
+              "role": "output",
               "title": "dynamicToolCall",
               "text": "{\"id\": \"call\", \"type\": \"dynamicToolCall\", \"status\": \"completed\", \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}], \"success\": true}",
               "truncated": false,
@@ -39038,7 +39045,7 @@
             },
             {
               "id": "agent:dynamic",
-              "role": "tool",
+              "role": "output",
               "title": "dynamicToolCall",
               "text": "{\"id\": \"call\", \"type\": \"dynamicToolCall\", \"status\": \"completed\", \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}], \"success\": true}",
               "truncated": false,
@@ -46259,7 +46266,7 @@
             },
             {
               "id": "agent:dynamic",
-              "role": "tool",
+              "role": "output",
               "title": "dynamicToolCall",
               "text": "{\"id\": \"call\", \"type\": \"dynamicToolCall\", \"status\": \"completed\", \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}], \"success\": true}",
               "truncated": false,
@@ -46480,7 +46487,7 @@
             },
             {
               "id": "agent:dynamic",
-              "role": "tool",
+              "role": "output",
               "title": "dynamicToolCall",
               "text": "{\"id\": \"call\", \"type\": \"dynamicToolCall\", \"status\": \"completed\", \"contentItems\": [{\"type\": \"inputText\", \"text\": \"needle durable tool receipt\"}], \"success\": true}",
               "truncated": false,

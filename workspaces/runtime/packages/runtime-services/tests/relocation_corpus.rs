@@ -37,11 +37,18 @@ impl Fixture {
             for pointer in ["/agent", "/expected/agent"] {
                 if let Some(agent) = case.pointer_mut(pointer).and_then(Value::as_object_mut) {
                     agent.insert("provider".into(), json!("codex"));
+                    agent.entry("compactions").or_insert(json!(0));
                 }
             }
         }
         for case in data["cases"].as_array_mut().expect("cases") {
             if case["family"] == "location" {
+                for pointer in ["/project", "/expected/project"] {
+                    if let Some(project) = case.pointer_mut(pointer).and_then(Value::as_object_mut)
+                    {
+                        project.entry("peerTeams").or_insert(json!([]));
+                    }
+                }
                 let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
                 let identity = studio_runtime_schema::persistence::RequestIdentity::new(
                     "project-location",
@@ -119,7 +126,7 @@ impl Fixture {
                 studio_runtime_store::remote_outbox::RemoteOutbox::put(tx,studio_runtime_store::remote_outbox::RemoteEffect::ServerRequest,text(outbox,"server"),text(outbox,"id"),"fingerprint",if text(outbox,"state")=="queued"{studio_runtime_schema::persistence::OutboxStatus::Pending}else{studio_runtime_schema::persistence::OutboxStatus::Submitted},Some(0),json!({"body":outbox["body"].to_string(),"admission":{"id":"fixture","signature":"fingerprint","created":1},"attempts":0,"error":null}),1)?;
             } else if case["family"] == "tool" {
                 let record=&case["record"];let outbox=&case["outbox"];
-                AgentRepository::put(tx,&AgentRecord::from_value(json!({
+                AgentRepository::put(tx,&AgentRecord::from_value(json!({"compactions":0,
                     "id":record["agent"],"rootId":record["agent"],"epoch":record["epoch"],"status":"idle","accountKey":"default","provider":"codex"
                 })).expect("tool actor record"))?;
                 let mut owner = record.clone();
@@ -153,7 +160,9 @@ impl Fixture {
                 }
             } else {
                 AgentMoveRepository::save(tx,&case["operation"])?;
-                AgentRepository::put(tx,&AgentRecord::from_value(case["agent"].clone()).expect("Python agent"))?;
+                let mut agent = case["agent"].clone();
+                agent["compactions"] = json!(0);
+                AgentRepository::put(tx,&AgentRecord::from_value(agent).expect("Python agent"))?;
             }
             Ok(())
         }).await.expect("seed Python records without rebuilding snapshots");
@@ -184,7 +193,6 @@ fn snapshot(store: &RuntimeStore) -> Value {
         "runtime_agents",
         "runtime_tool_requests",
         "sync_entities",
-        "sync_versions",
     ] {
         let mut statement = db
             .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
@@ -1129,6 +1137,7 @@ async fn move_expiry_and_cache_failpoints_reopen_without_partial_effects() {
             let (_, store) = fixture.store("stale-move-epoch").await;
             fixture.seed(&store, case).await;
             let mut changed_agent = case["agent"].clone();
+            changed_agent["compactions"] = json!(0);
             changed_agent["epoch"] = json!(2);
             store
                 .transaction(move |tx| {

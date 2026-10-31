@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, time::Duration};
 use studio_client_domain::{
-    json_object::JsonObject,
+    json_object::{JsonObject, LenientField},
     sync_entity::{EntityChange, SYNC_ENTITY_PAGE_LIMIT},
 };
 
@@ -82,14 +82,6 @@ pub async fn open(backend: &Backend, sender: &StoreSender) -> Result<Value, Comm
     }
 }
 
-// Historical transcript payloads may contain non-object items and non-string IDs.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum TranscriptField<T> {
-    Value(T),
-    Other(serde::de::IgnoredAny),
-}
-
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum TranscriptPayload {
@@ -100,26 +92,26 @@ enum TranscriptPayload {
 #[derive(Deserialize)]
 struct TranscriptObject {
     #[serde(default)]
-    delta: Option<TranscriptField<bool>>,
+    delta: Option<LenientField<bool>>,
     #[serde(default)]
-    items: Option<TranscriptField<Vec<TranscriptField<JsonObject<TranscriptItem>>>>>,
+    items: Option<LenientField<Vec<LenientField<JsonObject<TranscriptItem>>>>>,
     #[serde(default)]
-    removed: Option<TranscriptField<Vec<TranscriptField<String>>>>,
+    removed: Option<LenientField<Vec<LenientField<String>>>>,
     #[serde(default)]
-    order: Option<TranscriptField<Vec<TranscriptField<String>>>>,
+    order: Option<LenientField<Vec<LenientField<String>>>>,
     #[serde(flatten)]
     fields: serde_json::Map<String, Value>,
 }
 #[derive(Deserialize)]
 struct TranscriptItem {
     // Missing and null identities both leave the item unidentified.
-    id: Option<TranscriptField<String>>,
+    id: Option<LenientField<String>>,
     #[serde(flatten)]
     fields: serde_json::Map<String, Value>,
 }
 impl TranscriptItem {
     fn identified(mut self) -> Option<(String, Value)> {
-        let Some(TranscriptField::Value(id)) = self.id else {
+        let Some(LenientField::Value(id)) = self.id else {
             return None;
         };
         self.fields.insert("id".into(), Value::String(id.clone()));
@@ -128,7 +120,7 @@ impl TranscriptItem {
 }
 impl TranscriptObject {
     fn is_delta(&self) -> bool {
-        matches!(self.delta, Some(TranscriptField::Value(true)))
+        matches!(self.delta, Some(LenientField::Value(true)))
     }
 }
 fn merge_transcript_delta(
@@ -143,7 +135,7 @@ fn merge_transcript_delta(
             "Transcript projection base has no items.",
         ));
     };
-    let Some(TranscriptField::Value(base_items)) = base.items else {
+    let Some(LenientField::Value(base_items)) = base.items else {
         return Err(error(
             "invalid_projection",
             "Transcript projection base has no items.",
@@ -152,23 +144,23 @@ fn merge_transcript_delta(
     let mut items = BTreeMap::new();
     let mut base_order = Vec::new();
     for entry in base_items {
-        if let TranscriptField::Value(JsonObject(item)) = entry
+        if let LenientField::Value(JsonObject(item)) = entry
             && let Some((id, item)) = item.identified()
         {
             base_order.push(id.clone());
             items.insert(id, item);
         }
     }
-    if let Some(TranscriptField::Value(removed)) = incoming.removed {
+    if let Some(LenientField::Value(removed)) = incoming.removed {
         for id in removed {
-            if let TranscriptField::Value(id) = id {
+            if let LenientField::Value(id) = id {
                 items.remove(&id);
             }
         }
     }
-    if let Some(TranscriptField::Value(changed)) = incoming.items {
+    if let Some(LenientField::Value(changed)) = incoming.items {
         for item in changed {
-            let TranscriptField::Value(JsonObject(item)) = item else {
+            let LenientField::Value(JsonObject(item)) = item else {
                 return Err(error(
                     "invalid_projection",
                     "Transcript delta item has no identity.",
@@ -184,11 +176,11 @@ fn merge_transcript_delta(
         }
     }
     let order = match incoming.order {
-        Some(TranscriptField::Value(order)) => order
+        Some(LenientField::Value(order)) => order
             .into_iter()
             .filter_map(|id| match id {
-                TranscriptField::Value(id) => Some(id),
-                TranscriptField::Other(_) => None,
+                LenientField::Value(id) => Some(id),
+                LenientField::Other(_) => None,
             })
             .collect(),
         _ => base_order,
@@ -793,6 +785,45 @@ mod tests {
         for field in ["items", "order", "removed"] {
             assert_eq!(delta["properties"][field]["type"], "array");
         }
+    }
+
+    #[tokio::test]
+    async fn pull_checks_workspace_before_decoding_malformed_documents() {
+        let workspace = "a".repeat(32);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend = Backend::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let expected = workspace.clone();
+        let server = tokio::spawn(async move {
+            for index in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                crate::backend::tests::read_http(&mut stream).await;
+                let body = if index < 2 {
+                    json!({"workspaceId":expected,"unknown":{"preserve":true}})
+                } else {
+                    json!({"workspaceId":"b".repeat(32),"documents":false})
+                }
+                .to_string();
+                crate::backend::tests::reply(&mut stream, &body).await;
+            }
+        });
+        let (sender, mut receive) = mpsc::channel::<crate::delivery::StoreCommand>(8);
+        let worker = tokio::spawn(async move {
+            let mut store = crate::store::Store::open(std::path::Path::new(":memory:")).unwrap();
+            while let Some(command) = receive.recv().await {
+                command.execute(&mut store);
+            }
+        });
+        let failure = pull(&backend, &sender, &workspace, "transcript:a")
+            .await
+            .unwrap_err();
+        assert_eq!(failure.code, "workspace_changed");
+        assert_eq!(
+            failure.message,
+            "The server workspace changed during synchronization."
+        );
+        drop(sender);
+        worker.await.unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]

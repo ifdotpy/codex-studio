@@ -281,7 +281,9 @@ mod tests {
             serde_json::from_str::<RuleKind>(r#"{"kind":"low_workers","minimumWorkers":1}"#)
                 .is_err()
         );
-        assert!(serde_json::from_str::<RuleKind>(r#"{"kind":"file","path":"fixture-file"}"#).is_ok());
+        assert!(
+            serde_json::from_str::<RuleKind>(r#"{"kind":"file","path":"fixture-file"}"#).is_ok()
+        );
         assert!(
             serde_json::from_str::<RuleKind>(
                 r#"{"kind":"low_workers","minimumWorkers":1,"durationMinutes":5}"#
@@ -299,12 +301,16 @@ mod tests {
         serde_json::from_str::<RuleRecord>(valid).expect("valid file rule");
     }
     #[test]
-    fn stored_rule_schema_matches_type() { check_schema_parity().unwrap(); }
+    fn stored_rule_schema_matches_type() {
+        check_schema_parity().unwrap();
+    }
     #[test]
     fn launch_intent_requires_nullable_identity_fields() {
         let raw = r#"{"ruleId":"r","checkNumber":1,"agentId":"a","epoch":2,"accountKey":null,"threadId":null,"monitorId":"m","command":"run","timeoutMs":1000,"liveness":false}"#;
         let intent: LaunchIntent = serde_json::from_str(raw).unwrap();
         assert_eq!((intent.account_key, intent.thread_id), (None, None));
-        assert!(serde_json::from_str::<LaunchIntent>(&raw.replace(",\"threadId\":null", "")).is_err());
+        assert!(
+            serde_json::from_str::<LaunchIntent>(&raw.replace(",\"threadId\":null", "")).is_err()
+        );
     }
 }

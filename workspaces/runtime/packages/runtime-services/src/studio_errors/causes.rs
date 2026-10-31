@@ -19,6 +19,8 @@ pub fn store_error_kind(error: &studio_runtime_store::StoreError) -> InternalErr
         StoreError::InvalidSyncObject { .. }
         | StoreError::InvalidStoredRecord { .. }
         | StoreError::InvalidStoredObject { .. }
+        | StoreError::TranscriptFullTextUnavailable { .. }
+        | StoreError::TranscriptInputsIncomplete { .. }
         | StoreError::InvalidSyncObjectField { .. }
         | StoreError::Json(_)
         | StoreError::SchemaValidation(_) => K::StoreData,
@@ -53,6 +55,16 @@ pub fn json_cause(error: &serde_json::Error) -> Cause {
 pub fn store_causes(error: &studio_runtime_store::StoreError) -> Vec<Cause> {
     use studio_runtime_store::StoreError;
     let detail = match error {
+        StoreError::TranscriptFullTextUnavailable { id } => Some(Cause::StoredRecord {
+            object: "runtime_item_fulltext".into(),
+            id: id.clone(),
+            pointer: None,
+        }),
+        StoreError::TranscriptInputsIncomplete { id } => Some(Cause::StoredRecord {
+            object: "runtime_items".into(),
+            id: id.clone(),
+            pointer: None,
+        }),
         StoreError::Migration {
             id,
             target,

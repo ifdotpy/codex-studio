@@ -1440,7 +1440,7 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
         1
     });
     let (_root, store) = store().await;
-    let mut record = json!({"id":request_id,"method":"browser/open","status":"answered","params":{"bridgeId":bridge_id,"forward":{"tokenHash":""},"redirect":{"host":"127.0.0.1","port":port}}});
+    let mut record = json!({"id":request_id,"agent":"fixture","createdAt":1,"method":"browser/open","status":"answered","params":{"bridgeId":bridge_id,"forward":{"tokenHash":""},"redirect":{"host":"127.0.0.1","port":port,"path":"/callback"}}});
     let digest = sha2::Sha256::digest(token.as_bytes());
     let digest = digest
         .iter()

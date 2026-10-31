@@ -34,7 +34,7 @@ async fn claim_retry(state: &State) -> String {
                     ] {
                         row.extra.insert(key.into(), value);
                     }
-                    row.extra.remove("startAttempt");
+                    row.start_attempt.take();
                     AgentRepository::put(tx, &row)?;
                     let raw = ContinuationRepository::snapshot(
                         tx,

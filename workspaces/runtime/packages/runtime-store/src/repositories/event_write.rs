@@ -394,7 +394,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  INSERT INTO sync_entities VALUES('agent','a',1,'old', '{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"status\":\"idle\",\"overview\":{\"result\":\"stale\",\"resultTruncated\":true,\"resultTurnId\":\"turn-old\",\"task\":\"keep\"}}}',0);",
             )
             .expect("projection fixture creates");
@@ -426,7 +426,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  INSERT INTO sync_entities VALUES('agent','a',1,'old', '{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"status\":\"starting\",\"inFlight\":false,\"turnId\":null}}',0);",
             )
             .expect("projection fixture creates");
@@ -442,7 +442,7 @@ mod tests {
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
                 [
-                    json!({"accountKey":"default","id":"a","provider":"codex","rootId":"a","name":"Agent","status":"running","epoch":2,
+                    json!({"compactions":0,"accountKey":"default","id":"a","provider":"codex","rootId":"a","name":"Agent","status":"running","epoch":2,
                 "inFlight":true,"turnId":"turn-1","lastAnswer":"",
                 "disconnectRecovery":{"epoch":2,"turnId":"turn-1"},
                 "startOutcomeHold":{"stage":"held","reason":"pending"},
@@ -499,7 +499,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  INSERT INTO sync_entities VALUES('agent','a',1,'old','{\"collection\":\"agent\",\"id\":\"a\",\"value\":{\"id\":\"a\",\"name\":\"Old\",\"manualName\":false,\"needsTitle\":true,\"role\":\"orchestrator\"}}',0);",
             )
             .expect("projection fixture creates");

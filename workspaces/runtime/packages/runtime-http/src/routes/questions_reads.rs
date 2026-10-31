@@ -117,6 +117,10 @@ fn map_store_error(error: studio_runtime_store::StoreError) -> ApiError {
         }
         studio_runtime_store::StoreError::RequestResult(error) => error.into(),
         studio_runtime_store::StoreError::Outbox(error) => error.into(),
+        error @ (studio_runtime_store::StoreError::TranscriptFullTextUnavailable { .. }
+        | studio_runtime_store::StoreError::TranscriptInputsIncomplete { .. }) => {
+            ApiError::stored(error)
+        }
         studio_runtime_store::StoreError::StateDirectory(_)
         | studio_runtime_store::StoreError::AlreadyOwned
         | studio_runtime_store::StoreError::MissingDatabase(_)

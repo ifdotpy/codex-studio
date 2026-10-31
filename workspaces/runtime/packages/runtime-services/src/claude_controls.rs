@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn stored_snapshot_preserves_control_validation_and_replay_evidence() {
-        let agent = json!({"id":"agent","rootId":"agent","epoch":2,"cwd":"/fixture",
+        let agent = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":2,"cwd":"/fixture",
             "provider":"claude","accountKey":"account","threadId":"thread","status":"paused"});
         let base = json!({"id":"op","requestId":"request","kind":"claude_settings","agent":"agent",
             "signature":"a".repeat(64),"source":{},"phase":"completed","created":1,

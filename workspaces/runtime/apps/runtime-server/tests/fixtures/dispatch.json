@@ -23,7 +23,7 @@
     "runtime_projects": [
       {
         "id": "/fixture/state",
-        "record": "{\"id\": \"/fixture/state\", \"path\": \"/fixture/state\", \"name\": \"tmptyr0axwh\", \"created\": 1792684202.1027343, \"accountKey\": \"default\", \"accountRevision\": 1, \"homeServerId\": \"5d2499a8dd714b99b5e5b7e4bd64527e\", \"locations\": [{\"serverId\": \"5d2499a8dd714b99b5e5b7e4bd64527e\", \"path\": \"/fixture/state\", \"projectId\": \"/fixture/state\"}], \"locationsRevision\": 0}"
+        "record": "{\"id\": \"/fixture/state\", \"path\": \"/fixture/state\", \"name\": \"tmptyr0axwh\", \"created\": 1792684202.1027343, \"accountKey\": \"default\", \"accountRevision\": 1, \"homeServerId\": \"5d2499a8dd714b99b5e5b7e4bd64527e\", \"locations\": [{\"serverId\": \"5d2499a8dd714b99b5e5b7e4bd64527e\", \"path\": \"/fixture/state\", \"projectId\": \"/fixture/state\"}], \"locationsRevision\": 0, \"peerTeams\": []}"
       }
     ]
   }

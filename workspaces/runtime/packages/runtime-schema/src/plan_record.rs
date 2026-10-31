@@ -89,12 +89,11 @@ impl PlanRecord {
         self.value()
     }
     pub fn update_native(&mut self, native: Value, updated: f64) -> Result<(), serde_json::Error> {
-        let steps = serde_json::from_value(
-            native
-                .get("plan")
-                .cloned()
-                .unwrap_or_else(|| Value::Array(Vec::new())),
-        )?;
+        let steps = native
+            .get("plan")
+            .map(Deserialize::deserialize)
+            .transpose()?
+            .unwrap_or_default();
         let native: Option<BTreeMap<String, Value>> = Deserialize::deserialize(native)?;
         self.native = native.map_or(Field::Null, Field::Value);
         self.steps = Some(steps);
@@ -120,6 +119,23 @@ pub(crate) fn check_schema_parity() -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn native_plan_updates_keep_opaque_data_and_require_array_steps() {
+        let mut record = PlanRecord::from_value(
+            json!({"id":"a","rootId":"r","text":"x","version":1,"updated":null}),
+        )
+        .unwrap();
+        let native = json!({"plan":[{"future":[1.0,null]}],"extension":{"keep":true}});
+        record.update_native(native.clone(), 2.0).unwrap();
+        assert_eq!(record.value()["native"], native);
+        assert_eq!(record.value()["steps"], json!([{"future":[1.0,null]}]));
+        assert!(record.update_native(json!({"plan":null}), 3.0).is_err());
+        record
+            .update_native(json!({"extension":true}), 4.0)
+            .unwrap();
+        assert_eq!(record.value()["steps"], json!([]));
+    }
 
     #[test]
     fn schema_and_typed_plan_agree_on_shapes_and_version_bounds() {

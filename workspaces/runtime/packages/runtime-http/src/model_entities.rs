@@ -13,19 +13,16 @@ use tokio::sync::oneshot;
 const MODEL_COLLECTION: &str = "model";
 const MODEL_ID_SEPARATOR: &str = ":";
 
-/// The account needed to retire an existing model entity. Other entity and
-/// provider metadata stays opaque; the full JSON value is read first so that
-/// duplicate fields retain the existing last-value behavior.
+/// The account needed to retire an existing model entity.
 #[derive(Deserialize)]
-struct StoredModelEnvelope<'a> {
-    #[serde(borrow)]
-    value: Option<studio_runtime_schema::json_object::JsonObject<StoredModelAccount<'a>>>,
+struct StoredModelEnvelope {
+    value: Option<studio_runtime_schema::json_object::JsonObject<StoredModelAccount>>,
 }
 
 #[derive(Deserialize)]
-struct StoredModelAccount<'a> {
-    #[serde(rename = "accountKey", borrow)]
-    account_key: Option<&'a str>,
+struct StoredModelAccount {
+    #[serde(rename = "accountKey")]
+    account_key: Option<String>,
 }
 
 enum ModelPublication {
@@ -141,12 +138,12 @@ fn publish_catalog(
         .collect::<Result<Vec<_>, _>>()?;
     drop(statement);
     for id in existing.into_iter().filter_map(|(id, payload)| {
-        let belongs_to_account = serde_json::from_str::<Value>(&payload).ok().is_some_and(|payload| {
-            studio_runtime_schema::json_object::JsonObject::<StoredModelEnvelope<'_>>::deserialize(&payload)
-                .ok()
-                .and_then(|envelope| envelope.0.value)
-                .is_some_and(|model| model.0.account_key == Some(account))
-        });
+        let belongs_to_account = serde_json::from_str::<
+            studio_runtime_schema::json_object::JsonObject<StoredModelEnvelope>,
+        >(&payload)
+        .ok()
+        .and_then(|envelope| envelope.0.value)
+        .is_some_and(|model| model.0.account_key.as_deref() == Some(account));
         (belongs_to_account && id.starts_with(&prefix) && !next_ids.contains(&id)).then_some(id)
     }) {
         changed |= SyncDocumentsRepository::put_entity(
@@ -181,6 +178,7 @@ mod tests {
                 r#"{"value":{"accountKey":"one","extra":{"x":1}}}"#,
             ),
             ("one:keep", r#"{"value":{"accountKey":"one"}}"#),
+            ("one:escaped", r#"{"value":{"accountKey":"o\u006ee"}}"#),
             ("one:bad", "{"),
             ("one:missing", r#"{"value":{}}"#),
             ("one:null", r#"{"value":{"accountKey":null}}"#),
@@ -214,7 +212,7 @@ mod tests {
         for (id, deleted, _) in actual {
             assert_eq!(
                 deleted,
-                matches!(id.as_str(), "one:remove" | "one:duplicate"),
+                matches!(id.as_str(), "one:remove" | "one:escaped"),
                 "{id}"
             );
         }

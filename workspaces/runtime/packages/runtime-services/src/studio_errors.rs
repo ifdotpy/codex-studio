@@ -97,14 +97,24 @@ fn monitor_kind(record: &studio_runtime_store::MonitorRecord) -> Option<Kind> {
     match record.status {
         MonitorStatus::Lost => Some(Kind::MonitorOutcomeLost),
         MonitorStatus::Failed if record.exit_code.is_none() => {
-            let Some(error) = record.error.as_ref().map(|v| v.as_str()).filter(|v| !v.is_empty()) else {
+            let Some(error) = record
+                .error
+                .as_ref()
+                .map(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+            else {
                 return Some(Kind::UnclassifiedFailure);
             };
-            let owner_stopped = error == MONITOR_OWNER_STOPPED_ERROR || error.ends_with(&format!(": {MONITOR_OWNER_STOPPED_ERROR}"));
+            let owner_stopped = error == MONITOR_OWNER_STOPPED_ERROR
+                || error.ends_with(&format!(": {MONITOR_OWNER_STOPPED_ERROR}"));
             (!owner_stopped).then_some(Kind::MonitorNotRecorded)
         }
-        MonitorStatus::Approval | MonitorStatus::Starting | MonitorStatus::Running
-        | MonitorStatus::Completed | MonitorStatus::Failed | MonitorStatus::Cancelled => None,
+        MonitorStatus::Approval
+        | MonitorStatus::Starting
+        | MonitorStatus::Running
+        | MonitorStatus::Completed
+        | MonitorStatus::Failed
+        | MonitorStatus::Cancelled => None,
     }
 }
 
@@ -133,27 +143,47 @@ fn retained_causes(kind: Kind, error: &str) -> Vec<Cause> {
 
 /// Project known machine facts through their actual record owners; never copy transport extensions.
 fn monitor_evidence(record: &studio_runtime_store::MonitorRecord) -> Cause {
-    let operation = record.operation.as_ref().map(|operation| MonitorOperationIdentity {
-        agent: operation.agent.as_str().to_owned(), epoch: operation.epoch.get(),
-        account_key: operation.account_key.as_str().to_owned(), connection_id: operation.connection_id.as_str().to_owned(),
-    });
+    let operation = record
+        .operation
+        .as_ref()
+        .map(|operation| MonitorOperationIdentity {
+            agent: operation.agent.as_str().to_owned(),
+            epoch: operation.epoch.get(),
+            account_key: operation.account_key.as_str().to_owned(),
+            connection_id: operation.connection_id.as_str().to_owned(),
+        });
     let recovery = record.reattach_recovery.as_ref().and_then(|recovery| {
         let (status, started_at) = match recovery.state {
-            studio_runtime_schema::monitor_record::ReattachState::Running { started_at } => (studio_runtime_schema::studio_errors::MonitorRecoveryStatus::Running, Some(started_at)),
-            studio_runtime_schema::monitor_record::ReattachState::NotReattachable { started_at } => (studio_runtime_schema::studio_errors::MonitorRecoveryStatus::NotReattachable, started_at),
+            studio_runtime_schema::monitor_record::ReattachState::Running { started_at } => (
+                studio_runtime_schema::studio_errors::MonitorRecoveryStatus::Running,
+                Some(started_at),
+            ),
+            studio_runtime_schema::monitor_record::ReattachState::NotReattachable {
+                started_at,
+            } => (
+                studio_runtime_schema::studio_errors::MonitorRecoveryStatus::NotReattachable,
+                started_at,
+            ),
         };
         started_at.map(|started_at| MonitorRecoveryEvidence {
-            status, started_at,
+            status,
+            started_at,
             proof: recovery.proof.as_deref().map(|proof| {
                 let de = serde::de::value::StrDeserializer::<serde::de::value::Error>::new(proof);
                 match <MonitorRecoveryReason as serde::Deserialize>::deserialize(de) {
                     Ok(reason) => MonitorRecoveryProof::Recognized { reason },
-                    Err(_) => MonitorRecoveryProof::Unclassified { sha256: studio_runtime_store::sha256_hex(proof.as_bytes()) },
+                    Err(_) => MonitorRecoveryProof::Unclassified {
+                        sha256: studio_runtime_store::sha256_hex(proof.as_bytes()),
+                    },
                 }
             }),
         })
     });
-    Cause::Monitor { status: record.status, operation, recovery }
+    Cause::Monitor {
+        status: record.status,
+        operation,
+        recovery,
+    }
 }
 
 fn invalid_monitor(id: &str, at: f64, pointer: Option<String>, cause: Cause) -> StudioError {
@@ -214,9 +244,7 @@ fn event_source(tx: &Transaction<'_>, id: &str) -> Result<EventSource, StoreErro
 
 fn read_owner(tx: &Transaction<'_>, id: &str) -> Result<SourceOwner, StoreError> {
     match studio_runtime_store::AgentRepository::get(tx, &studio_runtime_store::AgentId::from(id)) {
-        Ok(Some(record)) if record.is_deleted() => {
-            Ok(SourceOwner::Deleted)
-        }
+        Ok(Some(record)) if record.is_deleted() => Ok(SourceOwner::Deleted),
         Ok(Some(record)) => Ok(SourceOwner::Live(std::sync::Arc::new(record))),
         Ok(None) => Ok(SourceOwner::Missing),
         Err(error) if malformed_source(&error) => Ok(SourceOwner::Invalid(store_causes(&error))),
@@ -225,9 +253,7 @@ fn read_owner(tx: &Transaction<'_>, id: &str) -> Result<SourceOwner, StoreError>
 }
 
 fn owner_name(record: &studio_runtime_store::AgentRecord) -> String {
-    record.name.as_deref()
-        .unwrap_or("Agent")
-        .to_owned()
+    record.name.as_deref().unwrap_or("Agent").to_owned()
 }
 
 fn invalid_source(
@@ -314,18 +340,37 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
     let mut groups = std::collections::BTreeMap::<(String, String), MonitorGroup>::new();
     for (id, raw) in found {
         let mut deserializer = serde_json::Deserializer::from_str(&raw);
-        let record: studio_runtime_store::MonitorRecord = match serde_path_to_error::deserialize(&mut deserializer) {
-            Ok(record) => record,
-            Err(error) => {
-                let path = error.path().to_string();
-                let pointer = (path != ".").then(|| format!("/{path}"));
-                push(&mut rows, invalid_monitor(&id, now, pointer, json_cause(error.inner())));
-                continue;
-            }
-        };
-        let at = record.finished.as_ref().map(|v| v.seconds()).unwrap_or(record.created.seconds());
+        let record: studio_runtime_store::MonitorRecord =
+            match serde_path_to_error::deserialize(&mut deserializer) {
+                Ok(record) => record,
+                Err(error) => {
+                    let path = error.path().to_string();
+                    let pointer = (path != ".").then(|| format!("/{path}"));
+                    push(
+                        &mut rows,
+                        invalid_monitor(&id, now, pointer, json_cause(error.inner())),
+                    );
+                    continue;
+                }
+            };
+        let at = record
+            .finished
+            .as_ref()
+            .map(|v| v.seconds())
+            .unwrap_or(record.created.seconds());
         if record.id != id {
-            push(&mut rows, invalid_monitor(&id, now, Some("/id".into()), Cause::SchemaViolation { pointer: "/id".into(), keyword: "identity".into() }));
+            push(
+                &mut rows,
+                invalid_monitor(
+                    &id,
+                    now,
+                    Some("/id".into()),
+                    Cause::SchemaViolation {
+                        pointer: "/id".into(),
+                        keyword: "identity".into(),
+                    },
+                ),
+            );
             continue;
         }
         let evidence = monitor_evidence(&record);
@@ -364,14 +409,16 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         if dismissed.contains_key(&format!("{MONITOR_ROW_PREFIX}{id}")) {
             continue;
         }
-        let rule = record.rule_id.as_ref().filter(|rule| !rule.is_empty()).cloned();
+        let rule = record
+            .rule_id
+            .as_ref()
+            .filter(|rule| !rule.is_empty())
+            .cloned();
         let key = match &rule {
             Some(rule) => format!("rule:{rule}"),
             None => format!(
                 "command:{agent_id}:{}",
-                &studio_runtime_store::sha256_hex(
-                    record.command.as_str().as_bytes()
-                )[..16]
+                &studio_runtime_store::sha256_hex(record.command.as_str().as_bytes())[..16]
             ),
         };
         let failure = MonitorFailure {
@@ -409,7 +456,7 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
             },
         };
         groups
-            .entry((key, kind_code(kind)?))
+            .entry((key, kind.as_str().to_owned()))
             .or_insert_with(|| MonitorGroup {
                 rule,
                 failures: Vec::new(),
@@ -647,11 +694,9 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         };
         let decoded = match encoded {
             rusqlite::types::Value::Text(encoded) => {
-                match serde_json::from_str::<Value>(&encoded).and_then(|value| {
-                    serde_json::from_value::<StudioError>(value).map(|mut incident| {
-                        incident.level = incident.kind.level();
-                        incident
-                    })
+                match serde_json::from_str::<StudioError>(&encoded).map(|mut incident| {
+                    incident.level = incident.kind.level();
+                    incident
                 }) {
                     Ok(incident) => Ok(incident),
                     Err(error) => Err(vec![source.clone(), json_cause(&error)]),
@@ -881,12 +926,17 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
         if is_published(tx, &format!("monitor:{id}"))? {
             return Ok(true);
         }
-        let candidate =
-            studio_runtime_store::MonitorsRepository::studio_error_candidate(tx, id, since)?;
+        let candidate = studio_runtime_store::MonitorsRepository::studio_error_candidate(tx, id)?;
         if let Some(raw) = candidate {
             match serde_json::from_str::<studio_runtime_store::MonitorRecord>(&raw) {
-                Err(_) => return Ok(true),
-                Ok(record) if monitor_kind(&record).is_some() => return Ok(true),
+                Err(_) if malformed_monitor_may_be_candidate(&raw, since) => return Ok(true),
+                Err(_) => {}
+                Ok(record)
+                    if (record.created.seconds() == 0.0 || record.created.seconds() >= since)
+                        && monitor_kind(&record).is_some() =>
+                {
+                    return Ok(true);
+                }
                 Ok(_) => {}
             }
         }
@@ -917,6 +967,45 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
         }
     }
     Ok(false)
+}
+
+/// Preserve the SQL candidate superset for malformed typed records. Duplicate
+/// fields or invalid JSON stay candidates so diagnostics remain visible.
+fn malformed_monitor_may_be_candidate(raw: &str, since: f64) -> bool {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Fields {
+        status: Option<MonitorStatus>,
+        created: Option<Value>,
+        exit_code: Option<Value>,
+    }
+    let Ok(fields) = serde_json::from_str::<Fields>(raw) else {
+        return true;
+    };
+    let created = fields
+        .created
+        .as_ref()
+        .and_then(Value::as_f64)
+        .filter(|value| *value >= 0.0)
+        .unwrap_or(0.0);
+    if created != 0.0 && created < since {
+        return false;
+    }
+    match fields.status {
+        Some(MonitorStatus::Lost) => true,
+        Some(MonitorStatus::Failed) => !fields
+            .exit_code
+            .as_ref()
+            .is_some_and(|value| value.as_i64().is_some() || value.as_u64().is_some()),
+        Some(
+            MonitorStatus::Approval
+            | MonitorStatus::Starting
+            | MonitorStatus::Running
+            | MonitorStatus::Completed
+            | MonitorStatus::Cancelled,
+        ) => false,
+        None => true,
+    }
 }
 
 /// Whether a write of agent `id` can change the list: through its own error
@@ -1015,16 +1104,6 @@ struct MonitorGroup {
     failures: Vec<MonitorFailure>,
 }
 
-/// The serialized code of `kind`, owned by the schema enum.
-fn kind_code(kind: Kind) -> Result<String, StoreError> {
-    match serde_json::to_value(kind)? {
-        Value::String(code) => Ok(code),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
-            Err(StoreError::SchemaMismatch("studio error kind".into()))
-        }
-    }
-}
-
 /// Unix seconds of the start of the latest successful run of `rule` that
 /// started at or after `since`.
 fn last_rule_success(
@@ -1096,6 +1175,22 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn monitor_group_kind_codes_match_serialized_wire_values() {
+        let (_, kinds) = studio_runtime_schema::persistence::ENUM_CONTRACTS
+            .iter()
+            .find(|(name, _)| *name == "IncidentKind")
+            .expect("incident kind contract");
+        for wire in *kinds {
+            let kind: Kind = wire.parse().expect("known kind");
+            assert_eq!(
+                serde_json::to_string(&kind).unwrap(),
+                format!("\"{}\"", kind.as_str())
+            );
+            assert_eq!(kind.as_str(), *wire);
+        }
+    }
+
     #[tokio::test]
     async fn a_success_retires_the_published_failure_group_without_a_timer() {
         use studio_runtime_store::{
@@ -1110,7 +1205,7 @@ mod tests {
             .expect("valid group publication fixture");
         let now = crate::event_write::unix_time().expect("valid group publication fixture");
         store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"owner","rootId":"owner","epoch":0,"status":"idle","provider":"codex"}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"owner","rootId":"owner","epoch":0,"status":"idle","provider":"codex"}))?)?;
             let raw = format!(r#"{{"id":"failed","agent":"owner","ruleId":"rule","epoch":0,"status":"failed","requestId":"fixture","created":{},"finished":{},"activityAt":0,"activityGeneration":0,"bytes":0,"command":"check","cwd":"/fixture","interactive":false,"livenessCommand":"","log":"/fixture/watch.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit","error":"No live provider session","exitCode":null}}"#, now - 10., now - 9.);
             Table::new(tx).put(&serde_json::from_str::<MonitorRecord>(&raw)?)?;
             Ok::<_, StoreError>(())
@@ -1140,8 +1235,7 @@ mod tests {
     #[test]
     fn monitor_evidence_omits_closed_recovery_without_start() {
         let record = json!({"status":"lost","reattachRecovery":{"accountKey":"account","epoch":2,"status":"not_reattachable","proof":"legacy"}});
-        let encoded =
-            serde_json::to_value(monitor_evidence(&monitor(record))).unwrap();
+        let encoded = serde_json::to_value(monitor_evidence(&monitor(record))).unwrap();
         assert!(encoded.get("recovery").is_none() || encoded["recovery"].is_null());
     }
 
@@ -1170,9 +1264,9 @@ mod tests {
             Some(Kind::MonitorOutcomeLost)
         );
         assert_eq!(
-            monitor_kind(
-                &monitor(json!({"status":"failed","exitCode":null,"error":"Monitor changed during preparation"}))
-            ),
+            monitor_kind(&monitor(
+                json!({"status":"failed","exitCode":null,"error":"Monitor changed during preparation"})
+            )),
             Some(Kind::MonitorNotRecorded)
         );
         assert_eq!(
@@ -1292,7 +1386,7 @@ mod tests {
                     ("owner", json!({"name":"Fixture worker"})),
                     ("gone", json!({"name":"Deleted worker","deletedAt":now})),
                 ] {
-                    let mut agent = json!({"id":id,"rootId":id,"epoch":0,"status":"waiting",
+                    let mut agent = json!({"compactions":0,"id":id,"rootId":id,"epoch":0,"status":"waiting",
                         "autoWake":true,"cwd":std::env::temp_dir().to_string_lossy(),
                         "accountKey":"default","provider":"codex"});
                     agent.as_object_mut().expect("object").extend(

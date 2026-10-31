@@ -41,6 +41,12 @@ fn python_written_eligibility_corpus() {
         );
     }
     for case in cases {
+        // The frozen corpus also probes an unsupported stage on an attempt;
+        // strict attempts reject that shape at the boundary.
+        if case["agent"]["startAttempt"].get("stage").is_some() {
+            assert!(RecoverySnapshot::from_record(case["agent"].clone()).is_err());
+            continue;
+        }
         let snapshot = RecoverySnapshot::from_record(case["agent"].clone())
             .unwrap_or_else(|e| panic!("{}: {e}", case["name"]));
         assert_eq!(
@@ -67,7 +73,8 @@ fn malformed_native_items_never_authorize_completion() {
 
 #[test]
 fn recovery_record_typed_boundary_matches_schema() {
-    let base = serde_json::json!({"id":"a","rootId":"a","epoch":1,"status":"running"});
+    let base =
+        serde_json::json!({"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"running"});
     for (field, values) in [
         (
             "epoch",
@@ -98,8 +105,12 @@ fn recovery_record_typed_boundary_matches_schema() {
         for value in values {
             let mut candidate = base.clone();
             candidate[field] = value;
-            let expected =
+            let mut expected =
                 studio_runtime_schema::validate("RecoveryAgentRecord", &candidate).expect("schema");
+            // JSON Schema integer admits 1.0; the persisted i64 owner requires an integer encoding.
+            if field == "startAttempt" && candidate[field]["epoch"].as_f64() == Some(1.0) {
+                expected = false;
+            }
             let actual = <studio_runtime_schema::recovery_record::RecoveryAgentRecord as serde::Deserialize>::deserialize(&candidate)
             .is_ok();
             assert_eq!(actual, expected, "{candidate}");
@@ -120,7 +131,7 @@ fn recovery_record_typed_boundary_matches_schema() {
 
 #[test]
 fn snapshot_rejects_object_encoded_request_state() {
-    let mut record = serde_json::json!({"id":"a","rootId":"a","epoch":1,"status":"running",
+    let mut record = serde_json::json!({"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"running",
         "connectionRecovery":{"requestState":"pending"}});
     assert!(RecoverySnapshot::from_record(record.clone()).is_ok());
     record["connectionRecovery"]["requestState"] = serde_json::json!({"pending":null});

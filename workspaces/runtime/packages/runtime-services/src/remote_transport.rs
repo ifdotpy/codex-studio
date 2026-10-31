@@ -1082,6 +1082,8 @@ fn map_outbound_error(error: StoreError) -> RemoteTransportError {
         | StoreError::InvalidSyncObject { .. }
         | StoreError::InvalidSyncObjectField { .. }
         | StoreError::InvalidStoredRecord { .. }
+        | StoreError::TranscriptFullTextUnavailable { .. }
+        | StoreError::TranscriptInputsIncomplete { .. }
         | StoreError::SchemaObjectMismatch { .. }
         | StoreError::Sqlite(_)
         | StoreError::CommitOutcomeUnknown(_)
