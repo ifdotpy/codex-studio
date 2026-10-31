@@ -1175,7 +1175,7 @@ fn protocol_item(
                 let s = item["error"]
                     .as_str()
                     .map(str::to_owned)
-                    .unwrap_or_else(|| python_json_compact(&item["error"]));
+                    .unwrap_or_else(|| item["error"].to_string());
                 row["error"] = json!(s.chars().take(2000).collect::<String>());
             }
             let supplied = number(&item["durationMs"]);
