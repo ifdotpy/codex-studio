@@ -84,7 +84,17 @@ it("sends, removes and cancels after one outbox write failed", async () => {
       isApiSchemaMismatch: () => false,
       onApiSchemaMismatch: () => () => {},
       syncGet: async () => ({ workspaceId: WORKSPACE_ID }),
-      syncPost,
+      // The command path returns the delivery receipt of the message as a row.
+      command: {
+        send: async (body: { id: string }) => ({
+          rows: [
+            {
+              collection: "messageReceipt",
+              payload: await syncPost("/api/commands", body),
+            },
+          ],
+        }),
+      },
       refreshSession: async () => ({ token: "session" }),
     },
     syncDatabase: async () => ({

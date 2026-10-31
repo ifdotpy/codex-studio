@@ -92,7 +92,7 @@ impl TurnState {
     fn session(&self) -> Option<&SessionId> {
         match self {
             Self::Running { session } => Some(session),
-            _ => None,
+            Self::Starting | Self::Completed | Self::Failed | Self::Interrupted => None,
         }
     }
 
