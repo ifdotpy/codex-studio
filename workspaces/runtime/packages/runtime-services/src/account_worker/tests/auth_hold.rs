@@ -570,10 +570,11 @@ async fn held_start_wakes_nothing_until_an_account_change() {
             "the signed-out credential invalidation must be published before measuring no wakes"
         );
         tokio::time::pause();
+        account.driver.change_signal().publish_session_change();
         tokio::time::advance(NO_WAKE_INTERVAL).await;
         assert!(
             seen.try_recv().is_err(),
-            "a held start woke the release loop"
+            "a session-only change or timer woke the release loop"
         );
         account.sign_in(SIGNED_IN);
         // A status read persists the login and publishes the account change.

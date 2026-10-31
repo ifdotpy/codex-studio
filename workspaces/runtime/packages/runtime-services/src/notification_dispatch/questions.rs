@@ -4,6 +4,9 @@ use super::snapshot::checked;
 use super::{NotificationDispatchError, stored};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use studio_runtime_schema::complaint_record::{
+    ComplaintRecipient, ComplaintSource, ComplaintStatus,
+};
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::system_reads as records;
 use studio_runtime_store::{
@@ -23,9 +26,7 @@ struct Question {
     is_secret: bool,
 }
 fn fields(value: &Value) -> Result<Vec<Value>, NotificationDispatchError> {
-    let questions: Vec<Question> =
-        serde_json::from_value(value.clone()).map_err(|_| NotificationDispatchError::invalid())?;
-    questions.into_iter().enumerate().map(|(index,q)| {
+    Vec::<Question>::deserialize(value).map_err(|_| NotificationDispatchError::invalid())?.into_iter().enumerate().map(|(index,q)| {
         let options=q.options.unwrap_or_default().into_iter().map(|option|match option {
             Value::String(label)=>Ok(json!({"label":label})),
             Value::Object(ref object) if object.get("label").is_some_and(Value::is_string)=>Ok(option),
@@ -41,7 +42,7 @@ pub(crate) fn submit_agent_complaint(
     request_id: &str,
     text: &str,
     at: f64,
-) -> Result<Value, NotificationDispatchError> {
+) -> Result<ComplaintRecord, NotificationDispatchError> {
     let agent_id = agent["id"]
         .as_str()
         .ok_or(NotificationDispatchError::invalid())?;
@@ -69,12 +70,31 @@ pub(crate) fn submit_agent_complaint(
         {
             return Err(NotificationDispatchError::ConflictingInput);
         }
-        return Ok(previous.into_value());
+        return Ok(previous);
     }
-    let recipient = if agent_id == lead_id { "user" } else { "lead" };
-    let record = json!({"id":complaint_id,"leadId":lead_id,"author":agent_id,"text":text,"recipient":recipient,"version":1,"status":"open","created":at,"updated":at,"readAt":null,"responses":[]});
+    let recipient = if agent_id == lead_id {
+        ComplaintRecipient::User
+    } else {
+        ComplaintRecipient::Lead
+    };
+    let typed = ComplaintRecord {
+        id: complaint_id.clone(),
+        lead_id: Some(lead_id.to_owned()),
+        author: Some(agent_id.to_owned()),
+        text: Some(text.to_owned()),
+        recipient,
+        version: Some(1),
+        status: ComplaintStatus::Open,
+        created: Some(at),
+        updated: Some(at),
+        read_at: None,
+        responses: Vec::new(),
+        source_type: None,
+        title: None,
+    };
+    let record = typed.clone().into_value();
     checked("runtime_complaints", &record)?;
-    Table::<ComplaintRecord>::new(tx).put(&ComplaintRecord::from_value(record.clone())?)?;
+    Table::<ComplaintRecord>::new(tx).put(&typed)?;
     let context = crate::sync_views::ComplaintViewContext {
         agents: &[
             serde::Deserialize::deserialize(agent.clone())?,
@@ -84,7 +104,7 @@ pub(crate) fn submit_agent_complaint(
     let view = crate::sync_views::complaint_entity_view(&record, &context)
         .ok_or_else(|| stored("runtime_complaints", &complaint_id))?;
     SyncDocumentsRepository::put_entity(tx, "complaint", &complaint_id, view, false)?;
-    if recipient == "lead" {
+    if recipient == ComplaintRecipient::Lead {
         let complaint = ordered_text(
             &json!({"complaint_id":complaint_id,"author":agent_id,"author_name":agent.get("name").unwrap_or(&agent["id"]),"text":text,"status":"open","created":at}),
             [
@@ -116,7 +136,7 @@ pub(crate) fn submit_agent_complaint(
             tx.execute_cached("UPDATE runtime_event_meta SET record=json_set(record,'$.timing.fastSkipReason','autoWake') WHERE id=?1", [format!("complaint:{complaint_id}")]).map_err(studio_runtime_store::StoreError::from)?;
         }
     }
-    Ok(record)
+    Ok(typed)
 }
 
 /// Python `send_to_user`: the lead submits a complaint to itself, which is
@@ -127,12 +147,12 @@ pub(super) fn submit_user_message(
     request_id: &str,
     text: &str,
     at: f64,
-) -> Result<Value, NotificationDispatchError> {
+) -> Result<ComplaintRecord, NotificationDispatchError> {
     if lead["id"] != lead["rootId"] {
         return Err(NotificationDispatchError::invalid());
     }
     let mut message = submit_agent_complaint(tx, lead, request_id, text, at)?;
-    message["sourceType"] = json!("message");
+    message.source_type = Some(ComplaintSource::Message);
     save_complaint_projection(tx, &message)?;
     Ok(message)
 }
@@ -162,7 +182,7 @@ pub(crate) fn agent_complaint_action(
             let text = args["text"]
                 .as_str()
                 .ok_or(NotificationDispatchError::invalid())?;
-            submit_agent_complaint(tx, actor, request_id, text, at)
+            submit_agent_complaint(tx, actor, request_id, text, at).map(ComplaintRecord::into_value)
         }
         Some("read") => {
             if args.get("complaint_id").is_some()
@@ -172,9 +192,10 @@ pub(crate) fn agent_complaint_action(
                 return Err(NotificationDispatchError::invalid());
             }
             let requested = args["complaint_id"].as_str();
-            let mut complaints = records::all(tx, "runtime_complaints")?;
+            let mut complaints = Table::<ComplaintRecord>::new(tx).list()?;
             complaints.retain(|complaint| {
-                complaint["leadId"] == root_id && requested.is_none_or(|id| complaint["id"] == id)
+                complaint.lead_id() == Some(root_id)
+                    && requested.is_none_or(|id| complaint.id == id)
             });
             if requested.is_some() && complaints.is_empty() {
                 return Err(NotificationDispatchError::invalid());
@@ -183,19 +204,19 @@ pub(crate) fn agent_complaint_action(
                 needs_agent_response(right)
                     .cmp(&needs_agent_response(left))
                     .then_with(|| {
-                        right["created"]
-                            .as_f64()
+                        right
+                            .created
                             .unwrap_or_default()
-                            .total_cmp(&left["created"].as_f64().unwrap_or_default())
+                            .total_cmp(&left.created.unwrap_or_default())
                     })
             });
             let total = complaints.len();
             for complaint in complaints.iter_mut().take(50) {
                 if actor_id == root_id
-                    && complaint["recipient"] == "lead"
-                    && complaint["readAt"].is_null()
+                    && complaint.recipient == ComplaintRecipient::Lead
+                    && complaint.read_at.is_none()
                 {
-                    complaint["readAt"] = json!(at);
+                    complaint.read_at = Some(at);
                     save_complaint_projection(tx, complaint)?;
                 }
             }
@@ -215,51 +236,64 @@ pub(crate) fn agent_complaint_action(
                 .ok_or(NotificationDispatchError::invalid())?;
             let raw = studio_runtime_store::QuestionsWriteRepository::complaint(tx, id)?
                 .ok_or(NotificationDispatchError::invalid())?;
-            let complaint: ComplaintRecord =
+            let mut complaint: ComplaintRecord =
                 serde_json::from_str(&raw).map_err(|_| stored("runtime_complaints", id))?;
             if complaint.id() != id {
                 return Err(stored("runtime_complaints", id));
             }
-            let authorized = complaint.lead_id() == Some(actor_id);
-            let mut complaint = complaint.into_value();
-            if !authorized || complaint["recipient"] == "user" {
+            if complaint.lead_id() != Some(actor_id)
+                || complaint.recipient == ComplaintRecipient::User
+            {
                 return Err(NotificationDispatchError::invalid());
             }
             let text = args["text"]
                 .as_str()
                 .ok_or(NotificationDispatchError::invalid())?
                 .trim();
-            let status = args["status"]
-                .as_str()
-                .filter(|status| matches!(*status, "in_progress" | "resolved" | "declined"))
-                .ok_or(NotificationDispatchError::invalid())?;
+            let status = studio_runtime_schema::complaints::ComplaintResponseStatus::deserialize(
+                &args["status"],
+            )
+            .map_err(|_| NotificationDispatchError::invalid())?;
             if text.is_empty() || text.chars().count() > 12_000 {
                 return Err(NotificationDispatchError::invalid());
             }
-            let responses = complaint["responses"]
-                .as_array_mut()
-                .ok_or_else(|| stored("runtime_complaints", id))?;
-            if let Some(existing) = responses
+            if let Some(existing) = complaint
+                .responses
                 .iter()
-                .find(|response| response["id"] == request_id)
+                .find(|response| response.id == request_id)
             {
-                if existing["text"] != text || existing["status"] != status {
+                if existing.text != text || existing.status != status {
                     return Err(NotificationDispatchError::ConflictingInput);
                 }
-                return Ok(complaint);
+                return Ok(complaint.into_value());
             }
-            let response =
-                json!({"id":request_id,"author":actor_id,"text":text,"status":status,"at":at});
-            responses.push(response.clone());
-            complaint["status"] = json!(status);
-            complaint["updated"] = json!(at);
-            if complaint["readAt"].is_null() {
-                complaint["readAt"] = json!(at);
+            let response = studio_runtime_schema::complaint_record::ComplaintResponse {
+                id: request_id.to_owned(),
+                author: actor_id.to_owned(),
+                text: text.to_owned(),
+                status,
+                at,
+            };
+            complaint.responses.push(response.clone());
+            complaint.status = match status {
+                studio_runtime_schema::complaints::ComplaintResponseStatus::InProgress => {
+                    ComplaintStatus::InProgress
+                }
+                studio_runtime_schema::complaints::ComplaintResponseStatus::Resolved => {
+                    ComplaintStatus::Resolved
+                }
+                studio_runtime_schema::complaints::ComplaintResponseStatus::Declined => {
+                    ComplaintStatus::Declined
+                }
+            };
+            complaint.updated = Some(at);
+            if complaint.read_at.is_none() {
+                complaint.read_at = Some(at);
             }
-            complaint["version"] = json!(complaint["version"].as_i64().unwrap_or(0) + 1);
+            complaint.version = Some(complaint.version.unwrap_or(0) + 1);
             save_complaint_projection(tx, &complaint)?;
             reconcile_complaint_notifications(tx, actor_id)?;
-            let author = complaint["author"].as_str().unwrap_or_default();
+            let author = complaint.author().unwrap_or_default();
             if author != "user" && author != actor_id {
                 let reporter = AgentRepository::get(tx, &AgentId::from(author))?
                     .ok_or_else(|| stored("runtime_agents", author))?;
@@ -276,26 +310,28 @@ pub(crate) fn agent_complaint_action(
                     .map_err(|_| stored("runtime_events", id))?;
                 }
             }
-            Ok(complaint)
+            Ok(complaint.into_value())
         }
         _ => Err(NotificationDispatchError::invalid()),
     }
 }
 
-fn needs_agent_response(complaint: &Value) -> bool {
-    if matches!(complaint["status"].as_str(), Some("resolved" | "declined")) {
+fn needs_agent_response(complaint: &ComplaintRecord) -> bool {
+    if matches!(
+        complaint.status,
+        ComplaintStatus::Resolved | ComplaintStatus::Declined
+    ) {
         return false;
     }
-    let responsible = if complaint["recipient"] == "user" {
+    let responsible = if complaint.recipient == ComplaintRecipient::User {
         "user"
     } else {
-        complaint["leadId"].as_str().unwrap_or_default()
+        complaint.lead_id().unwrap_or_default()
     };
-    !complaint["responses"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .any(|response| response["author"] == responsible)
+    !complaint
+        .responses
+        .iter()
+        .any(|response| response.author == responsible)
 }
 
 fn reconcile_complaint_notifications(
@@ -341,7 +377,7 @@ fn reconcile_complaint_notifications(
             };
             if complaint.id() != id
                 || complaint.lead_id() != Some(lead_id)
-                || needs_agent_response(&complaint.into_value())
+                || needs_agent_response(&complaint)
             {
                 all_answered = false;
                 break;
@@ -359,19 +395,16 @@ fn reconcile_complaint_notifications(
 
 fn save_complaint_projection(
     tx: &Transaction<'_>,
-    complaint: &Value,
+    complaint: &ComplaintRecord,
 ) -> Result<(), NotificationDispatchError> {
-    let id = complaint["id"]
-        .as_str()
-        .ok_or(NotificationDispatchError::invalid())?;
-    let typed = ComplaintRecord::from_value(complaint.clone())?;
-    Table::<ComplaintRecord>::new(tx).put(&typed)?;
+    let id = complaint.id();
+    Table::<ComplaintRecord>::new(tx).put(complaint)?;
     let agents: Vec<_> = records::all(tx, "runtime_agents")?
         .into_iter()
         .map(serde::Deserialize::deserialize)
         .collect::<Result<_, _>>()?;
     let context = crate::sync_views::ComplaintViewContext { agents: &agents };
-    let view = crate::sync_views::complaint_entity_view(complaint, &context)
+    let view = crate::sync_views::complaint_entity_view(&complaint.clone().into_value(), &context)
         .ok_or_else(|| stored("runtime_complaints", id))?;
     SyncDocumentsRepository::put_entity(tx, "complaint", id, view, false)?;
     Ok(())
@@ -392,7 +425,31 @@ pub(super) fn completed(
         return Ok(());
     }
     if agent["isLead"] == true {
-        let record = json!({"id":id,"method":"agent/asyncQuestion","agent":agent["id"],"epoch":agent["epoch"],"turnId":params.get("turnId").filter(|v|!v.is_null() && **v != "").unwrap_or(&agent["turnId"]),"params":{"questions":questions},"status":"pending","createdAt":at});
+        #[derive(serde::Serialize)]
+        struct Params<'a> {
+            questions: &'a [Value],
+        }
+        let payload = serde_json::value::to_raw_value(&Params {
+            questions: &questions,
+        })?;
+        let mut record = RequestRecord::new(
+            id,
+            agent["id"]
+                .as_str()
+                .ok_or(NotificationDispatchError::invalid())?
+                .to_owned(),
+            studio_runtime_schema::request_record::RequestMethod::AsyncQuestion,
+            studio_runtime_schema::persistence::RequestCardStatus::Pending,
+            at,
+            payload,
+        );
+        record.epoch = agent["epoch"].as_u64();
+        record.turn_id = params
+            .get("turnId")
+            .filter(|v| !v.is_null() && **v != "")
+            .unwrap_or(&agent["turnId"])
+            .as_str()
+            .map(str::to_owned);
         put_request(tx, &record)?;
     } else {
         let text = format!(
@@ -429,32 +486,37 @@ pub(super) fn resolved(
         RecordOrder::RowId,
     )?;
     let mut pending = false;
-    for record in records {
-        let connection_id = record.connection_id().map(str::to_owned);
-        let mut status = record.status().map(str::to_owned);
-        let mut record = record.into_value();
+    for mut record in records {
         // A card names its provider generation: the Rust account worker stores
         // it under `supervisor`; Python named the connection after it.
-        let same_generation = record
-            .pointer("/supervisor/generation")
-            .and_then(Value::as_u64)
+        let same_generation = record.supervisor.as_ref().map(|scope| scope.generation)
             == Some(generation)
-            || connection_id.as_deref() == Some(format!("connection-{generation}").as_str());
-        if record["rpcId"] == params["requestId"]
-            && record.get("accountKey").unwrap_or(&json!("default")) == account
+            || record.connection_id.as_deref() == Some(format!("connection-{generation}").as_str());
+        #[derive(serde::Deserialize)]
+        struct Params {
+            #[serde(rename = "threadId")]
+            thread_id: Option<String>,
+        }
+        let thread = serde_json::from_str::<Params>(record.params.get())
+            .ok()
+            .and_then(|p| p.thread_id);
+        if json!(record.rpc_id) == params["requestId"]
+            && record.account_key.as_deref().unwrap_or("default") == account
             && same_generation
-            && record["params"]["threadId"] == params["threadId"]
+            && json!(thread) == params["threadId"]
             && matches!(
-                status.as_deref(),
-                Some("pending" | "answering" | "uncertain" | "blocked")
+                record.status,
+                studio_runtime_schema::persistence::RequestCardStatus::Pending
+                    | studio_runtime_schema::persistence::RequestCardStatus::Answering
+                    | studio_runtime_schema::persistence::RequestCardStatus::Uncertain
+                    | studio_runtime_schema::persistence::RequestCardStatus::Blocked
             )
         {
-            record["status"] = json!("resolved");
-            status = Some("resolved".into());
-            record["resolvedAt"] = json!(at);
+            record.status = studio_runtime_schema::persistence::RequestCardStatus::Resolved;
+            record.resolved_at = Some(at);
             put_request(tx, &record)?;
         }
-        pending |= status.as_deref() == Some("pending");
+        pending |= record.status == studio_runtime_schema::persistence::RequestCardStatus::Pending;
     }
     if agent["status"] == "approval"
         && !pending
@@ -465,19 +527,20 @@ pub(super) fn resolved(
     }
     Ok(())
 }
-fn put_request(tx: &Transaction<'_>, record: &Value) -> Result<(), NotificationDispatchError> {
-    let typed = RequestRecord::from_value(record.clone()).map_err(|_| {
-        stored(
-            "runtime_requests",
-            record["id"].as_str().unwrap_or("<missing>"),
-        )
-    })?;
-    Table::new(tx).put(&typed)?;
-    let id = record["id"]
-        .as_str()
-        .ok_or(NotificationDispatchError::invalid())?;
-    let view = crate::sync_views::project_persisted_record("request", record)
+fn put_request(
+    tx: &Transaction<'_>,
+    record: &RequestRecord,
+) -> Result<(), NotificationDispatchError> {
+    Table::new(tx).put(record)?;
+    let id = record.id.as_str();
+    let view = crate::sync_views::project_persisted_record("request", &json!(record))
         .ok_or_else(|| stored("runtime_requests", id))?;
-    SyncDocumentsRepository::put_entity(tx, "request", id, view, record["status"] != "pending")?;
+    SyncDocumentsRepository::put_entity(
+        tx,
+        "request",
+        id,
+        view,
+        record.status != studio_runtime_schema::persistence::RequestCardStatus::Pending,
+    )?;
     Ok(())
 }

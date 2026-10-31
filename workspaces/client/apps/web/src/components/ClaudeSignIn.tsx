@@ -143,6 +143,8 @@ export default function ClaudeSignIn({
         if (
           progress.resource.kind !== "auth-progress" ||
           !progress.value ||
+          progress.value.status === "duplicate" ||
+          progress.value.status === "uncertain" ||
           typeof progress.value !== "object" ||
           !live ||
           lock.current ||
@@ -150,7 +152,11 @@ export default function ClaudeSignIn({
         )
           return;
         statusReadGeneration.current += 1;
-        store(progress.value, requestId, true);
+        store(
+          { ...progress.value, status: progress.value.status },
+          requestId,
+          true,
+        );
       },
       readStatus,
       (failure) => {

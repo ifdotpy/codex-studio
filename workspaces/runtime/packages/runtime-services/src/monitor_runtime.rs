@@ -84,53 +84,51 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
     let request_rows = StartupRecoveryRepository::unsettled_requests(tx)?;
     let mut count = 0;
     for (id, raw) in request_rows {
-        let mut value = match serde_json::from_str::<Value>(&raw) {
-            Ok(value) if value.is_object() => value,
+        use studio_runtime_schema::{
+            persistence::RequestCardStatus as Status, request_record::RequestMethod,
+        };
+        let mut request = match serde_json::from_str::<RequestRecord>(&raw) {
+            Ok(request) if request.id == id => request,
             _ => {
                 eprintln!("startup request recovery skipped row id={id}: invalid record");
                 continue;
             }
         };
-        match value.get("status").and_then(Value::as_str) {
-            Some("answering") => {
-                value["status"] = json!("uncertain");
-                value["answerError"] = json!("Server restarted before answer delivery completed");
+        match request.status {
+            Status::Answering => {
+                request.status = Status::Uncertain;
+                request.answer_error =
+                    Some("Server restarted before answer delivery completed".into());
             }
-            Some("pending")
-                if !retained_question(tx, &value)? && !retained_monitor_approval(tx, &value)? =>
+            Status::Pending
+                if !retained_question(tx, &request)?
+                    && !retained_monitor_approval(tx, &request)? =>
             {
-                value["status"] = json!("expired");
-                // A sign-in request lives in its bridge across the restart; the card poll gives
-                // the card back while that request is open (`browser_cards::apply`).
-                if value.get("method").and_then(Value::as_str) == Some(crate::browser_cards::METHOD)
-                {
-                    value["closeReason"] = json!(crate::browser_cards::RESTART_CLOSE_REASON);
+                request.status = Status::Expired;
+                if request.method == RequestMethod::BrowserOpen {
+                    request.close_reason = Some(crate::browser_cards::RESTART_CLOSE_REASON.into());
                 }
             }
-            _ => continue,
+            Status::Pending
+            | Status::Answered
+            | Status::Uncertain
+            | Status::Blocked
+            | Status::Resolved
+            | Status::Expired
+            | Status::Deleted => continue,
         }
-        let Some(payload_id) = value.get("id").and_then(Value::as_str).map(str::to_owned) else {
-            eprintln!("startup request recovery skipped row id={id}: record id must be a string");
-            continue;
-        };
         tx.execute_batch("SAVEPOINT startup_request_recovery_row")
             .map_err(studio_runtime_store::StoreError::from)?;
         let apply = (|| {
-            let request = RequestRecord::from_value(value).map_err(|_| {
-                studio_runtime_store::StoreError::InvalidStoredObject {
-                    table: "runtime_requests",
-                    id: payload_id,
-                }
-            })?;
             Table::<RequestRecord>::new(tx).put(&request)?;
-            let view = crate::sync_views::project_persisted_record("request", &request.value())
+            let view = crate::sync_views::project_persisted_record("request", &json!(request))
                 .ok_or(MonitorError::Refused("Invalid request projection"))?;
             SyncDocumentsRepository::put_entity(
                 tx,
                 "request",
                 request.id(),
                 view,
-                request.status() != Some("pending"),
+                request.status != Status::Pending,
             )?;
             Ok::<(), MonitorError>(())
         })();
@@ -153,41 +151,33 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
 }
 
 /// Monitor approvals are local durable intents, independent of a native turn.
-fn retained_monitor_approval(tx: &Transaction<'_>, request: &Value) -> Result<bool, MonitorError> {
-    #[derive(Deserialize)]
-    enum Method {
-        #[serde(rename = "monitor/approve")]
-        Approve,
+fn retained_monitor_approval(
+    tx: &Transaction<'_>,
+    request: &RequestRecord,
+) -> Result<bool, MonitorError> {
+    if request.method != studio_runtime_schema::request_record::RequestMethod::MonitorApprove {
+        return Ok(false);
     }
     #[derive(Deserialize)]
     struct Params {
         #[serde(rename = "monitorId")]
         monitor_id: String,
     }
-    #[derive(Deserialize)]
-    struct Approval {
-        #[serde(rename = "method")]
-        _method: Method,
-        agent: String,
-        params: Params,
-    }
-    let Ok(approval) = serde_json::from_value::<Approval>(request.clone()) else {
+    let Ok(params) = serde_json::from_str::<Params>(request.params.get()) else {
         return Ok(false);
     };
-    match snapshot(tx, &approval.params.monitor_id) {
-        Ok((monitor, _)) => Ok(monitor.retains_approval_for(&approval.agent)),
+    match snapshot(tx, &params.monitor_id) {
+        Ok((monitor, _)) => Ok(monitor.retains_approval_for(&request.agent)),
         Err(error) if startup_store_failure(&error) => Err(error),
         Err(_) => Ok(false),
     }
 }
 
-fn retained_question(tx: &Transaction<'_>, request: &Value) -> Result<bool, MonitorError> {
-    if request.get("method").and_then(Value::as_str) != Some("agent/asyncQuestion") {
+fn retained_question(tx: &Transaction<'_>, request: &RequestRecord) -> Result<bool, MonitorError> {
+    if request.method != studio_runtime_schema::request_record::RequestMethod::AsyncQuestion {
         return Ok(false);
     }
-    let Some(id) = request.get("agent").and_then(Value::as_str) else {
-        return Ok(false);
-    };
+    let id = &request.agent;
     let raw: Option<String> = tx
         .query_row(
             "SELECT record FROM runtime_agents WHERE id=?1",
@@ -204,7 +194,7 @@ fn retained_question(tx: &Transaction<'_>, request: &Value) -> Result<bool, Moni
             return Ok(false);
         }
     };
-    let same_epoch = agent.get("epoch") == request.get("epoch");
+    let same_epoch = agent.get("epoch").and_then(Value::as_u64) == request.epoch;
     if event_write::truthy(agent.get("deletedAt")) || !same_epoch {
         return Ok(false);
     }
@@ -381,7 +371,9 @@ pub async fn answer_approval(
             let Some(mut request) = Table::<RequestRecord>::new(tx).get(&request_id)? else {
                 return Ok(None);
             };
-            if request.method() != Some("monitor/approve") {
+            if request.method
+                != studio_runtime_schema::request_record::RequestMethod::MonitorApprove
+            {
                 return Ok(None);
             }
             let decision = data
@@ -390,10 +382,19 @@ pub async fn answer_approval(
                 .filter(|decision| matches!(*decision, "accept" | "decline" | "cancel"))
                 .ok_or(MonitorError::Refused("Invalid monitor approval decision"))?;
             let accepted = decision == "accept";
-            let monitor_id = request
-                .extension("params")
-                .and_then(|params| params.get("monitorId"))
-                .and_then(Value::as_str)
+            #[derive(Deserialize)]
+            struct ApprovalParams {
+                #[serde(rename = "monitorId")]
+                monitor_id: String,
+            }
+            let params: ApprovalParams =
+                serde_json::from_str(request.params.get()).map_err(|_| {
+                    MonitorError::InvalidStored {
+                        id: request_id.clone(),
+                        location: "params/monitorId".into(),
+                    }
+                })?;
+            let monitor_id = Some(params.monitor_id.as_str())
                 .filter(|id| !id.is_empty())
                 .ok_or(MonitorError::InvalidStored {
                     id: request_id.clone(),
@@ -401,13 +402,13 @@ pub async fn answer_approval(
                 })?;
             let (snapshot, actor) = snapshot(tx, monitor_id)?;
             event_write::refuse_remote(&actor)?;
-            if request.agent() != Some(snapshot.agent()) {
+            if request.agent != snapshot.agent() {
                 return Err(MonitorError::Refused("Monitor approval identity changed"));
             }
-            if request.status() == Some("answered") {
+            if request.status == studio_runtime_schema::persistence::RequestCardStatus::Answered {
                 let saved = request
-                    .extension("answerDecision")
-                    .and_then(Value::as_str)
+                    .answer_decision
+                    .map(|value| value.as_str())
                     .or_else(|| match snapshot.record().status {
                         studio_runtime_schema::studio_errors::MonitorStatus::Starting
                         | studio_runtime_schema::studio_errors::MonitorStatus::Running
@@ -434,7 +435,7 @@ pub async fn answer_approval(
                     accepted,
                 }));
             }
-            if request.status() != Some("pending")
+            if request.status != studio_runtime_schema::persistence::RequestCardStatus::Pending
                 || snapshot.record().status
                     != studio_runtime_schema::studio_errors::MonitorStatus::Approval
                 || snapshot.record().epoch.get() != actor.epoch
@@ -493,27 +494,18 @@ pub async fn answer_approval(
             Table::new(tx).put(&monitor)?;
             crate::agent_progress::publish_owner(tx, &actor.id.0)?;
             crate::sync_policy::publish_monitor_change(tx, Some(&snapshot), &after)?;
-            request.set_status("answered");
-            request
-                .set_extension("answerDecision", json!(decision))
-                .map_err(studio_runtime_store::StoreError::from)?;
-            request
-                .set_extension(
-                    "answerSignature",
-                    json!(event_write::request_signature(
-                        &json!({"decision":decision})
-                    )),
-                )
-                .map_err(studio_runtime_store::StoreError::from)?;
-            request
-                .set_extension("answeredBy", json!("user"))
-                .map_err(studio_runtime_store::StoreError::from)?;
-            request
-                .set_extension("answeredAt", json!(now))
-                .map_err(studio_runtime_store::StoreError::from)?;
-            request
-                .set_extension("decision", json!(decision))
-                .map_err(studio_runtime_store::StoreError::from)?;
+            request.status = studio_runtime_schema::persistence::RequestCardStatus::Answered;
+            request.answer_decision = Some(
+                decision
+                    .parse()
+                    .map_err(|_| MonitorError::Refused("Invalid monitor approval decision"))?,
+            );
+            request.answer_signature = Some(event_write::request_signature(
+                &json!({"decision":decision}),
+            ));
+            request.answered_by = Some("user".into());
+            request.answered_at = Some(now);
+            request.decision = request.answer_decision;
             Table::<RequestRecord>::new(tx).put(&request)?;
             SyncDocumentsRepository::put_entity(tx, "request", &request_id, json!({}), true)?;
             Ok(Some(MonitorApprovalAnswer {
@@ -637,19 +629,10 @@ pub fn settle_provider_call(
         Err(error) if malformed_monitor_owner(&error) => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    let Some(_record) = record else {
+    let Some(record) = record else {
         return Ok(true);
     };
-    #[derive(Deserialize)]
-    struct StoredOperation {
-        operation: Operation,
-    }
-    let Some((_, raw)) =
-        Table::<studio_runtime_store::MonitorRecord>::new(tx).get_with_raw(&id.to_owned())?
-    else {
-        return Ok(false);
-    };
-    let Ok(StoredOperation { operation }) = serde_json::from_str(&raw) else {
+    let Some(operation) = record.operation else {
         return Ok(false);
     };
     let Some(actor) = &call.actor else {
@@ -921,7 +904,7 @@ pub fn apply_with_rule(
             }
             Effect::ExpireApprovals => {
                 for mut request in repository::pending_approvals(tx, before.id())? {
-                    request.set_status("expired");
+                    request.status = studio_runtime_schema::persistence::RequestCardStatus::Expired;
                     Table::new(tx).put(&request)?;
                     SyncDocumentsRepository::put_entity(
                         tx,
@@ -1575,12 +1558,29 @@ pub fn create_in_transaction(
     repository::put(tx, &record)?;
     crate::agent_progress::publish_owner(tx, &actor.id.0)?;
     if record.status == studio_runtime_schema::studio_errors::MonitorStatus::Approval {
-        let approval = studio_runtime_store::RequestRecord::from_value(json!({
-            "id":format!("monitor-approval:{id}"), "method":"monitor/approve", "agent":actor_id,
-            "params":{"monitorId":id,"command":record.command,"cwd":record.cwd}, "status":"pending", "createdAt":now
-        })).map_err(studio_runtime_store::StoreError::from)?;
+        #[derive(serde::Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct ApprovalParams<'a> {
+            monitor_id: &'a str,
+            command: &'a str,
+            cwd: &'a str,
+        }
+        let params = serde_json::value::to_raw_value(&ApprovalParams {
+            monitor_id: id,
+            command: record.command.as_str(),
+            cwd: &record.cwd,
+        })
+        .map_err(studio_runtime_store::StoreError::from)?;
+        let approval = studio_runtime_store::RequestRecord::new(
+            format!("monitor-approval:{id}"),
+            actor_id.to_owned(),
+            studio_runtime_schema::request_record::RequestMethod::MonitorApprove,
+            studio_runtime_schema::persistence::RequestCardStatus::Pending,
+            now,
+            params,
+        );
         Table::new(tx).put(&approval)?;
-        let view = crate::sync_views::project_persisted_record("request", &approval.value())
+        let view = crate::sync_views::project_persisted_record("request", &json!(approval))
             .ok_or_else(|| invalid(id, "request"))?;
         SyncDocumentsRepository::put_entity(tx, "request", approval.id(), view, false)?;
     }
@@ -1783,7 +1783,7 @@ mod recovery_selection_tests {
         use studio_runtime_store::request_results::{Admission, RequestResults, ResultEnvelope};
         let mut db = Connection::open_in_memory().expect("database");
         studio_runtime_store::receipt_schema::create(&db).expect("schema");
-        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)").expect("owners");
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL)").expect("owners");
         let issued = REQUEST_RESULT_TTL_MS * 2;
         let root =
             uuid::Uuid::from_u128(((issued as u128) << 80) | (7 << 76) | (2 << 62)).to_string();
@@ -1825,7 +1825,7 @@ mod recovery_selection_tests {
             json!({"id":"watch","agent":"agent","epoch":3,"status":"running","operation":operation,"streamQueue":[{"kind":"output","cursor":"output:1","operation":operation,"offset":0,"byteLength":1,"deltaBase64":"YQ==","stream":"stdout"}]}),
         );
         tx.execute(
-            "INSERT INTO runtime_monitors(id,record) VALUES('watch',?1)",
+            "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
             [record.to_string()],
         )
         .expect("owner and prior output");
@@ -1908,7 +1908,7 @@ mod recovery_selection_tests {
         let mut connection = Connection::open_in_memory().expect("in-memory database");
         connection
             .execute_batch(
-                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
                  INSERT INTO runtime_monitors(id, record) VALUES
                     ('z-running', '{\"status\":\"running\",\"futureField\":{\"enabled\":true}}'),
                     ('b-starting', '{\"status\":\"starting\"}'),
@@ -1922,15 +1922,16 @@ mod recovery_selection_tests {
                     ('duplicate-invalid-last', '{\"status\":\"running\",\"status\":17}'),
                     ('duplicate-unknown-last', '{\"status\":\"running\",\"status\":\"future-status\"}'),
                     ('duplicate-escaped-key', '{\"status\":\"completed\",\"sta\\u0074us\":\"approval\"}'),
-                    ('malformed', '{invalid json}');",
+                    ('malformed', '{invalid json}');
+                 UPDATE runtime_monitors SET monitor_status=CASE WHEN json_valid(record) THEN json_extract(record,'$.status') END;",
             )
             .expect("monitor fixture");
         studio_runtime_store::StartupRecoveryRepository::prepare_indexes(&connection)
             .expect("startup recovery indexes");
         let tx = connection.transaction().expect("fixture transaction");
 
-        // Selection uses SQLite's JSON reader through the startup partial
-        // index: a duplicated key resolves to its first literal occurrence.
+        // The migration uses SQLite's JSON reader to populate the index key:
+        // a duplicated key resolves to its first literal occurrence.
         // No writer produces duplicate keys; malformed rows stay unselected.
         assert_eq!(
             active_monitor_ids(&tx).expect("active monitor selection"),

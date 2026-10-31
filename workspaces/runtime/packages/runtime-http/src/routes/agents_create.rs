@@ -231,7 +231,7 @@ mod workspace_admission_tests {
     #[test]
     fn native_parent_admits_native_layr_without_image_metadata() {
         let native = studio_runtime_store::AgentRecord::from_value(
-            serde_json::json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            serde_json::json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"native-parent","rootId":"native-parent","epoch":1,"status":"queued",
                 "workspaceMode":"layr-native","cwd":"/fake/project"
             }),
@@ -250,7 +250,7 @@ mod workspace_admission_tests {
             .expect("runtime store opens");
         let record = |id: &str, epoch: i64, status: &str| {
             studio_runtime_store::AgentRecord::from_value(
-                serde_json::json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                serde_json::json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                     "id":id,"rootId":"lead","epoch":epoch,"status":status,
                     "workspaceMode":"shared","cwd":"/fake/project"
                 }),
@@ -1790,7 +1790,7 @@ mod title_http_tests {
                 .await
                 .expect("runtime store opens"),
         );
-        let agent = AgentRecord::from_value(json!({
+        let agent = AgentRecord::from_value(json!({"compactions":0,
             "id":"title-http-agent",
             "rootId":"title-http-agent",
             "epoch":1,

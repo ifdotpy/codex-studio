@@ -383,9 +383,7 @@ fn send_states<R: Read, W: Write>(
     peer_states: &BTreeSet<String>,
     features: SendFeatures,
 ) -> Result<(usize, u64)> {
-    for (id, _) in list {
-        crate::secrets::check_state(ctx, repo, id)?;
-    }
+    crate::secrets::check_states(ctx, repo, list.iter().map(|(id, _)| id.as_str()))?;
     let mut bytes = 0;
     let mut have = peer_states.clone();
     let mut identities = features.identities.clone();

@@ -83,7 +83,7 @@ mod tests {
             .unwrap();
         for (id, deleted) in [("true", "true"), ("false", "false")] {
             let record = format!(
-                r#"{{"id":"{id}","rootId":"{id}","epoch":1,"status":"idle","accountKey":"default","deletedAt":{deleted}}}"#
+                r#"{{"id":"{id}","rootId":"{id}","epoch":1,"status":"idle","accountKey":"default","compactions":0,"deletedAt":{deleted}}}"#
             );
             db.execute("INSERT INTO runtime_agents VALUES(?1,?2)", [id, &record])
                 .unwrap();
@@ -141,7 +141,7 @@ mod tests {
             .unwrap();
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .unwrap();
-        db.execute("INSERT INTO runtime_agents VALUES('a',?1)", [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","events":2}"#]).unwrap();
+        db.execute("INSERT INTO runtime_agents VALUES('a',?1)", [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0,"events":2}"#]).unwrap();
         let tx = db.transaction().unwrap();
         apply(&tx).unwrap();
         let (events, activity): (Option<String>, Option<String>) = tx

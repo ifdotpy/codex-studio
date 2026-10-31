@@ -2,26 +2,13 @@
 //! on retry. Workspace/catalog checks stay with the ordinary creation owner.
 use crate::native_actions::{NativeError, Result, bounded, checked_agent, decode};
 use rusqlite::Transaction;
-use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::start_attempt::ReviewTarget as Target;
 use studio_runtime_store::{AgentRecord, AgentRepository, ContextRepairRepository};
 
 const MAX_PROMPT: usize = 32_000;
 const DELIVERY: &str = "The review result wakes you automatically. Finish your turn while waiting.";
-
-#[derive(Deserialize)]
-#[serde(tag = "type", deny_unknown_fields)]
-enum Target {
-    #[serde(rename = "uncommittedChanges")]
-    UncommittedChanges,
-    #[serde(rename = "baseBranch")]
-    BaseBranch { branch: String },
-    #[serde(rename = "commit")]
-    Commit { sha: String, title: Option<String> },
-    #[serde(rename = "custom")]
-    Custom { instructions: String },
-}
 
 /// Preserve the original target (including absent versus null title) after
 /// validating its closed variants. The complete target stays in nativeReview.

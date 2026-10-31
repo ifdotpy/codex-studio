@@ -183,7 +183,7 @@ mod invalid_agent_repair_tests {
     #[test]
     fn valid_agent_repair_clears_the_invalid_record_hold() {
         let mut connection = crate::fresh_state::test_canvas();
-        let agent = AgentRecord::from_value(json!({"accountKey":"default",
+        let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
             "id":"agent", "provider":"codex", "rootId":"agent", "epoch":1, "status":"idle"
         }))
         .expect("valid repair record");
@@ -206,7 +206,7 @@ mod invalid_agent_repair_tests {
     fn receipt_domain_fired_event_set_retains_all_names_and_rolls_back() {
         let mut db = crate::fresh_state::test_canvas();
         let root = AgentRecord::from_value(
-            json!({"accountKey":"default","id":"root","rootId":"root","provider":"codex","epoch":1,"status":"idle"}),
+            json!({"compactions":0,"accountKey":"default","id":"root","rootId":"root","provider":"codex","epoch":1,"status":"idle"}),
         )
         .expect("root");
         AgentRepository::put(&db, &root).expect("save");

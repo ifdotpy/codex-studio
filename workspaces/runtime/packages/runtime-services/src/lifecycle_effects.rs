@@ -325,12 +325,11 @@ impl ProductionLifecyclePorts {
         let mut owner = AgentRepository::get(tx, &AgentId::from(agent))?
             .ok_or(ManagementError::Invalid("Missing interrupt owner"))?;
         owner
-            .extra
-            .get_mut("startAttempt")
-            .and_then(|attempt| attempt.get_mut("interrupt"))
-            .and_then(Value::as_object_mut)
+            .start_attempt
+            .as_mut()
+            .and_then(|attempt| attempt.interrupt.as_mut())
             .ok_or(ManagementError::Invalid("Missing interrupt intent"))?
-            .insert("rootRequestId".into(), json!(root_request_id));
+            .root_request_id = Some(root_request_id.clone());
         AgentRepository::put(tx, &owner)?;
         let terminals = studio_runtime_providers::ProviderKind::of_field(before.get("provider"))
             .ok()
@@ -381,19 +380,23 @@ impl ProductionLifecyclePorts {
             let agent_id = AgentId::from(request.agent.as_str());
             let ticket = request.ticket.clone();
             let epoch = request.epoch;
-            let persisted = self
-                .store
-                .read_async("runtime-services/lifecycle_effects", move |tx| {
-                    let Some(agent) = AgentRepository::get(tx, &agent_id)? else {
-                        return Ok::<_, studio_runtime_store::StoreError>(false);
-                    };
-                    let interrupt =
-                        &agent.extra.get("startAttempt").unwrap_or(&Value::Null)["interrupt"];
-                    Ok(interrupt["requestTicket"].as_str() == Some(ticket.as_str())
-                        && interrupt["outcome"].as_str() == Some("unknown")
-                        && agent.epoch == epoch.saturating_add(1))
-                })
-                .await?;
+            let persisted =
+                self.store
+                    .read_async("runtime-services/lifecycle_effects", move |tx| {
+                        let Some(agent) = AgentRepository::get(tx, &agent_id)? else {
+                            return Ok::<_, studio_runtime_store::StoreError>(false);
+                        };
+                        let interrupt = agent
+                            .start_attempt
+                            .as_ref()
+                            .and_then(|a| a.interrupt.as_ref());
+                        Ok(interrupt.and_then(|v| v.request_ticket.as_deref())
+                            == Some(ticket.as_str())
+                            && interrupt.and_then(|v| v.outcome)
+                                == Some(studio_runtime_store::InterruptOutcome::Unknown)
+                            && agent.epoch == epoch.saturating_add(1))
+                    })
+                    .await?;
             if !persisted {
                 continue;
             }
@@ -1586,10 +1589,10 @@ fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementErro
     agent.turn_id = None;
     agent.activity = None;
     agent.active_tools = Some(Vec::new());
-    if let Some(attempt) = agent.extra.get_mut("startAttempt")
-        && studio_runtime_store::truthy(attempt.get("activeAtReservation"))
+    if let Some(attempt) = agent.start_attempt.as_mut()
+        && attempt.active_at_reservation == Some(true)
     {
-        attempt["activeAtReservation"] = json!(false);
+        attempt.active_at_reservation = Some(false);
     }
     AgentRepository::put(tx, &agent)?;
     Ok(())
@@ -1602,12 +1605,11 @@ fn needs_deleted_settlement(agent: &AgentRecord) -> bool {
                 .turn_id
                 .as_deref()
                 .is_some_and(|turn| !turn.is_empty())
-            || studio_runtime_store::truthy(
-                agent
-                    .extra
-                    .get("startAttempt")
-                    .and_then(|attempt| attempt.get("activeAtReservation")),
-            )
+            || agent
+                .start_attempt
+                .as_ref()
+                .and_then(|a| a.active_at_reservation)
+                == Some(true)
             || studio_runtime_store::startup_recovery::ACTIVE_AGENT_STATUSES
                 .contains(&agent.status.as_str()))
 }
@@ -1702,7 +1704,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = RuntimeStore::open(Some(directory.path())).await.unwrap();
         store.transaction(|tx| {
-            let parent = AgentRecord::from_value(json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"completed","provider":"codex","isLead":true,"autoWake":true,"name":"Lead","cwd":"/work"}))?;
+            let parent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"completed","provider":"codex","isLead":true,"autoWake":true,"name":"Lead","cwd":"/work"}))?;
             AgentRepository::put(tx, &parent)?;
             for (row, work) in [
                 ("first", json!({"owner":"child","rootId":"lead","status":"review","id":{"legacy":1},"updated":"bad","results":[{"agent":"child","id":7}],"decisions":[{"resultId":7,"decision":"reject"}]})),
@@ -1714,7 +1716,7 @@ mod tests {
             }
             Ok(())
         }).await.unwrap();
-        let child = json!({"id":"child","rootId":"lead","parentId":"lead","epoch":1,"status":"failed","name":"Worker","error":"failed"});
+        let child = json!({"compactions":0,"id":"child","rootId":"lead","parentId":"lead","epoch":1,"status":"failed","name":"Worker","error":"failed"});
         let before = json!({"id":"child","turnId":"turn"});
         for mode in ["stop", "start", "hold"] {
             let child = child.clone();

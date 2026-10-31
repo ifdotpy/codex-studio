@@ -680,7 +680,7 @@ impl ServerTools {
                 .await
                 .ok()
                 .flatten()
-                .and_then(|info| info["gitOrigin"].as_str().map(str::to_owned));
+                .and_then(|info| info.git_origin);
             }
         }
         let Some(origin) = origin else {

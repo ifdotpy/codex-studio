@@ -1,6 +1,7 @@
 use super::{model::*, storage, tool_result};
 use crate::tool_requests::{self, admission, lifecycle};
 use rusqlite::{Transaction, params};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use studio_runtime_providers::{RequestId, ResponseBody};
@@ -170,12 +171,7 @@ impl ToolCall {
             return Err(CallbackError::Invalid("Tool arguments must be an object"));
         }
         let watch_action = if name == "orchestration_watch" {
-            Some(
-                serde_json::from_str::<crate::managed_status_watch::WatchActionInput>(
-                    &args.to_string(),
-                )?
-                .action,
-            )
+            Some(crate::managed_status_watch::WatchActionInput::deserialize(&args)?.action)
         } else {
             None
         };
@@ -237,7 +233,9 @@ impl ToolCall {
             studio_runtime_store::python_json_compact(&json!({"tool":name,"arguments":args}))
                 .as_bytes(),
         );
-        let kind = serde_json::from_value(json!(name))?;
+        let kind = ToolKind::deserialize(
+            serde::de::value::StrDeserializer::<serde_json::Error>::new(&name),
+        )?;
         Ok(Self {
             name,
             kind,
@@ -995,6 +993,63 @@ mod local_failure_tests {
     use super::{CallbackError, LocalFailure, ToolCall, ToolKind};
     use crate::managed_host_tools::DispatchedOperation;
     use serde_json::json;
+
+    #[test]
+    fn tool_parser_keeps_watch_actions_and_request_identity() {
+        let context = super::CallbackContext {
+            agent: "agent".into(),
+            account: "default".into(),
+            stream_id: "stream".into(),
+            connection: "connection".into(),
+            generation: 1,
+            epoch: 2,
+            thread: "thread".into(),
+            turn: "turn".into(),
+        };
+        let input = |tool: &str, arguments| super::Input {
+            id: studio_runtime_providers::RequestId::String("rpc".into()),
+            method: "item/tool/call".into(),
+            params: json!({"tool":tool,"arguments":arguments,"callId":"call"}),
+        };
+        let list = ToolCall::parse(
+            &input("orchestration_watch", json!({"action":"list"})),
+            &context,
+        )
+        .unwrap();
+        assert!(matches!(list.kind, ToolKind::Watch));
+        assert!(matches!(
+            list.watch_action,
+            Some(crate::managed_status_watch::WatchAction::List)
+        ));
+        assert_eq!(list.id, "thread:call");
+        assert_eq!(
+            list.signature,
+            studio_runtime_store::sha256_hex(
+                studio_runtime_store::python_json_compact(
+                    &json!({"tool":"orchestration_watch","arguments":{"action":"list"}})
+                )
+                .as_bytes()
+            )
+        );
+        let default = ToolCall::parse(&input("orchestration_watch", json!({})), &context).unwrap();
+        assert!(matches!(
+            default.watch_action,
+            Some(crate::managed_status_watch::WatchAction::Save)
+        ));
+        assert!(
+            ToolCall::parse(
+                &input("orchestration_watch", json!({"action":"invalid"})),
+                &context
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            ToolCall::parse(&input("future_tool", json!({})), &context)
+                .unwrap()
+                .kind,
+            ToolKind::Unknown
+        ));
+    }
 
     #[test]
     fn raw_tool_result_keeps_strings_and_json_payloads() {

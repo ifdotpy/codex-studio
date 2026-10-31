@@ -174,7 +174,7 @@ async fn complaint_http_replays_original_signature_before_version_and_recipient_
                 &json!({
                     "id":"complaint", "leadId":lead, "author":reporter,
                     "text":"Please review", "recipient":"user", "status":"open",
-                    "created":1, "version":1, "responses":[]
+                    "created":1, "updated":null, "readAt":null, "version":1, "responses":[]
                 })
                 .to_string(),
             )
@@ -206,16 +206,36 @@ async fn complaint_http_replays_original_signature_before_version_and_recipient_
     let mut signature_body = body.clone();
     signature_body["operation"] = json!("complaint_response");
     let signature = studio_runtime_services::event_write::request_signature(&signature_body);
-    store.transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
+    let mut legacy_reply = first.clone();
+    legacy_reply.as_object_mut().unwrap().remove("version");
+    let legacy_result = format!(
+        r#"{{ "actor":"user", "reply":{}, "references":[] }}"#,
+        legacy_reply
+    );
+    let legacy_for_store = legacy_result.clone();
+    let identity_id = store.transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
         let identity = studio_runtime_schema::persistence::RequestIdentity::new("complaint_response", &["complaint","user"], &request_root, &[]).unwrap();
         assert!(studio_runtime_services::event_write::replay_request::<studio_runtime_store::ComplaintRecord>(tx, identity.id(), &signature, (studio_runtime_services::event_write::unix_time().unwrap()*1000.0) as i64)?.is_some());
+        tx.execute("UPDATE request_results SET result=?1 WHERE id=?2", rusqlite::params![legacy_for_store, identity.id()])?;
         // A lost reply must replay despite later version/recipient changes.
         tx.execute("UPDATE runtime_complaints SET record=json_set(record,'$.recipient','lead','$.version',9)", [])?;
-        Ok(())
+        Ok(identity.id().to_owned())
     }).await.unwrap();
     let (status, replay) = call(&app, "/api/complaints", body.clone(), "token").await;
     assert_eq!(status, 200, "{replay}");
-    assert_eq!(replay, first);
+    assert_eq!(replay, legacy_reply);
+    let saved = store
+        .read_async("complaint-legacy-replay-witness", move |db| {
+            db.query_row(
+                "SELECT result FROM request_results WHERE id=?1",
+                [identity_id],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(studio_runtime_store::StoreError::from)
+        })
+        .await
+        .unwrap();
+    assert_eq!(saved, legacy_result);
     for field in ["text", "lead"] {
         let mut changed = body.clone();
         if field == "lead" {

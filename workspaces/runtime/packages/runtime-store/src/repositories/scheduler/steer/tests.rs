@@ -172,7 +172,7 @@ fn database() -> Connection {
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER);
-             CREATE TABLE sync_versions(seq INTEGER);"),
+             CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);"),
         )
         .expect("steer tables create");
     connection
@@ -212,17 +212,19 @@ fn database() -> Connection {
 
 fn running() -> AgentRecord {
     let mut extra = BTreeMap::new();
-    for (key, value) in [
-        ("provider", json!("claude")),
-        (
-            "startAttempt",
-            json!({"id":"start","epoch":4,"submitted":true,"turnId":TURN,"threadId":"thread",
-                   "accountKey":"acct","events":["initial"],"connectionGeneration":7}),
-        ),
-    ] {
-        extra.insert(key.to_owned(), value);
-    }
+    extra.insert("provider".to_owned(), json!("claude"));
     AgentRecord {
+        start_attempt: Some(Box::new(crate::StartAttemptView {
+            id: Some("start".into()),
+            epoch: Some(4),
+            submitted: Some(true),
+            turn_id: Some(TURN.into()),
+            thread_id: Some("thread".into()),
+            account_key: Some("acct".into()),
+            events: Some(vec!["initial".into()]),
+            connection_generation: Some(7),
+            ..Default::default()
+        })),
         in_flight: Some(true),
         account_key: "acct".into(),
         thread_id: Some("thread".into()),
@@ -320,7 +322,7 @@ fn terminal(connection: &mut Connection, unapplied: &[&str]) {
 fn retarget(connection: &Connection, turn: &str) {
     let mut record = agent(connection);
     record.turn_id = Some(turn.to_string());
-    record.extra.get_mut("startAttempt").expect("attempt")["turnId"] = json!(turn);
+    record.start_attempt.as_mut().expect("attempt").turn_id = Some(turn.into());
     put_agent(connection, record);
 }
 
@@ -352,8 +354,12 @@ fn claim_takes_eligible_current_turn_input_in_order_once() {
         claim(&mut connection, "s2").is_none(),
         "one open steer at a time"
     );
-    let start = &agent(&connection).extra["startAttempt"];
-    assert_eq!(start["id"], "start", "the running turn keeps its attempt");
+    let start = agent(&connection).start_attempt.unwrap();
+    assert_eq!(
+        start.id.as_deref(),
+        Some("start"),
+        "the running turn keeps its attempt"
+    );
 }
 
 #[test]
@@ -371,7 +377,7 @@ fn explicitly_identified_codex_and_claude_turns_are_steered() {
 #[test]
 fn claim_refuses_every_ineligible_agent_state() {
     type Change = fn(&mut AgentRecord);
-    let cases: [(&str, Change); 8] = [
+    let cases: [(&str, Change); 7] = [
         ("queued", |a| a.status = AgentStatus::Queued),
         ("rejected-this-turn", |a| {
             a.extra.insert("steerRejectedTurnId".into(), json!(TURN));
@@ -380,13 +386,11 @@ fn claim_refuses_every_ineligible_agent_state() {
             a.execution_mode = Some(crate::AgentExecutionMode::Vm);
         }),
         ("unbound-turn", |a| {
-            a.extra.get_mut("startAttempt").expect("attempt")["turnId"] = Value::Null;
+            a.start_attempt.as_mut().expect("attempt").turn_id = None;
         }),
         ("action", |a| {
-            a.extra.get_mut("startAttempt").expect("attempt")["action"] = json!("compact");
-        }),
-        ("invalid-action", |a| {
-            a.extra.get_mut("startAttempt").expect("attempt")["action"] = Value::Null;
+            a.start_attempt.as_mut().expect("attempt").action =
+                Some(crate::StartAttemptAction::Compact);
         }),
         ("held", |a| {
             a.extra.insert("nativeFailureHold".into(), json!(true));
@@ -794,7 +798,11 @@ fn wake_page_selects_running_turns_of_every_provider_with_queued_user_input() {
     let mut codex = running();
     codex.extra.insert("provider".into(), json!("codex"));
     // A submitted Codex attempt with a generation is a recovery candidate.
-    codex.extra.get_mut("startAttempt").expect("attempt")["connectionGeneration"] = Value::Null;
+    codex
+        .start_attempt
+        .as_mut()
+        .expect("attempt")
+        .connection_generation = None;
     put_agent(&connection, codex);
     assert_eq!(
         page(&connection)["acct"][0].agent_id,

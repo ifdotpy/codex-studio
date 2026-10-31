@@ -24,7 +24,7 @@ const OP: &str = "41e0b552-0b0c-4c5c-9c37-2e7483cd05d0";
 async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
     let root = tempfile::tempdir().expect("isolated state");
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-    let agent = AgentRecord::from_value(json!({
+    let agent = AgentRecord::from_value(json!({"compactions":0,
         "id":"lead","rootId":"lead","epoch":3,"status":"queued","isLead":true,
         "autoWake":true,"accountKey":"source","provider":"claude","model":"claude-opus-4-6",
         "threadId":"source-thread","cwd":root.path(),"name":"Lead","error":null,
@@ -106,7 +106,7 @@ async fn subagents_summary_does_not_hold_the_excluded_leads_native_preparation()
             lead.model = Some("gpt-6-astra".into());
             lead.extra.insert("nativeEffort".into(), Value::Null);
             AgentRepository::put(tx, &lead)?;
-            let child = AgentRecord::from_value(json!({
+            let child = AgentRecord::from_value(json!({"compactions":0,
                 "id":"child", "rootId":"lead", "epoch":1, "status":"idle", "isLead":false,
                 "accountKey":"source", "provider":"codex", "cwd":lead.cwd
             }))?;

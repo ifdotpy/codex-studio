@@ -456,7 +456,7 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
             },
         };
         groups
-            .entry((key, kind_code(kind)?))
+            .entry((key, kind.as_str().to_owned()))
             .or_insert_with(|| MonitorGroup {
                 rule,
                 failures: Vec::new(),
@@ -694,11 +694,9 @@ fn build(tx: &Transaction<'_>, now: f64) -> Result<(Vec<StudioError>, Baseline),
         };
         let decoded = match encoded {
             rusqlite::types::Value::Text(encoded) => {
-                match serde_json::from_str::<Value>(&encoded).and_then(|value| {
-                    serde_json::from_value::<StudioError>(value).map(|mut incident| {
-                        incident.level = incident.kind.level();
-                        incident
-                    })
+                match serde_json::from_str::<StudioError>(&encoded).map(|mut incident| {
+                    incident.level = incident.kind.level();
+                    incident
                 }) {
                     Ok(incident) => Ok(incident),
                     Err(error) => Err(vec![source.clone(), json_cause(&error)]),
@@ -928,12 +926,17 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
         if is_published(tx, &format!("monitor:{id}"))? {
             return Ok(true);
         }
-        let candidate =
-            studio_runtime_store::MonitorsRepository::studio_error_candidate(tx, id, since)?;
+        let candidate = studio_runtime_store::MonitorsRepository::studio_error_candidate(tx, id)?;
         if let Some(raw) = candidate {
             match serde_json::from_str::<studio_runtime_store::MonitorRecord>(&raw) {
-                Err(_) => return Ok(true),
-                Ok(record) if monitor_kind(&record).is_some() => return Ok(true),
+                Err(_) if malformed_monitor_may_be_candidate(&raw, since) => return Ok(true),
+                Err(_) => {}
+                Ok(record)
+                    if (record.created.seconds() == 0.0 || record.created.seconds() >= since)
+                        && monitor_kind(&record).is_some() =>
+                {
+                    return Ok(true);
+                }
                 Ok(_) => {}
             }
         }
@@ -964,6 +967,45 @@ fn may_change(tx: &Transaction<'_>, sources: &StudioErrorSources) -> Result<bool
         }
     }
     Ok(false)
+}
+
+/// Preserve the SQL candidate superset for malformed typed records. Duplicate
+/// fields or invalid JSON stay candidates so diagnostics remain visible.
+fn malformed_monitor_may_be_candidate(raw: &str, since: f64) -> bool {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Fields {
+        status: Option<MonitorStatus>,
+        created: Option<Value>,
+        exit_code: Option<Value>,
+    }
+    let Ok(fields) = serde_json::from_str::<Fields>(raw) else {
+        return true;
+    };
+    let created = fields
+        .created
+        .as_ref()
+        .and_then(Value::as_f64)
+        .filter(|value| *value >= 0.0)
+        .unwrap_or(0.0);
+    if created != 0.0 && created < since {
+        return false;
+    }
+    match fields.status {
+        Some(MonitorStatus::Lost) => true,
+        Some(MonitorStatus::Failed) => !fields
+            .exit_code
+            .as_ref()
+            .is_some_and(|value| value.as_i64().is_some() || value.as_u64().is_some()),
+        Some(
+            MonitorStatus::Approval
+            | MonitorStatus::Starting
+            | MonitorStatus::Running
+            | MonitorStatus::Completed
+            | MonitorStatus::Cancelled,
+        ) => false,
+        None => true,
+    }
 }
 
 /// Whether a write of agent `id` can change the list: through its own error
@@ -1062,16 +1104,6 @@ struct MonitorGroup {
     failures: Vec<MonitorFailure>,
 }
 
-/// The serialized code of `kind`, owned by the schema enum.
-fn kind_code(kind: Kind) -> Result<String, StoreError> {
-    match serde_json::to_value(kind)? {
-        Value::String(code) => Ok(code),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
-            Err(StoreError::SchemaMismatch("studio error kind".into()))
-        }
-    }
-}
-
 /// Unix seconds of the start of the latest successful run of `rule` that
 /// started at or after `since`.
 fn last_rule_success(
@@ -1143,6 +1175,22 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn monitor_group_kind_codes_match_serialized_wire_values() {
+        let (_, kinds) = studio_runtime_schema::persistence::ENUM_CONTRACTS
+            .iter()
+            .find(|(name, _)| *name == "IncidentKind")
+            .expect("incident kind contract");
+        for wire in *kinds {
+            let kind: Kind = wire.parse().expect("known kind");
+            assert_eq!(
+                serde_json::to_string(&kind).unwrap(),
+                format!("\"{}\"", kind.as_str())
+            );
+            assert_eq!(kind.as_str(), *wire);
+        }
+    }
+
     #[tokio::test]
     async fn a_success_retires_the_published_failure_group_without_a_timer() {
         use studio_runtime_store::{
@@ -1157,7 +1205,7 @@ mod tests {
             .expect("valid group publication fixture");
         let now = crate::event_write::unix_time().expect("valid group publication fixture");
         store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"owner","rootId":"owner","epoch":0,"status":"idle","provider":"codex"}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"owner","rootId":"owner","epoch":0,"status":"idle","provider":"codex"}))?)?;
             let raw = format!(r#"{{"id":"failed","agent":"owner","ruleId":"rule","epoch":0,"status":"failed","requestId":"fixture","created":{},"finished":{},"activityAt":0,"activityGeneration":0,"bytes":0,"command":"check","cwd":"/fixture","interactive":false,"livenessCommand":"","log":"/fixture/watch.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit","error":"No live provider session","exitCode":null}}"#, now - 10., now - 9.);
             Table::new(tx).put(&serde_json::from_str::<MonitorRecord>(&raw)?)?;
             Ok::<_, StoreError>(())
@@ -1338,7 +1386,7 @@ mod tests {
                     ("owner", json!({"name":"Fixture worker"})),
                     ("gone", json!({"name":"Deleted worker","deletedAt":now})),
                 ] {
-                    let mut agent = json!({"id":id,"rootId":id,"epoch":0,"status":"waiting",
+                    let mut agent = json!({"compactions":0,"id":id,"rootId":id,"epoch":0,"status":"waiting",
                         "autoWake":true,"cwd":std::env::temp_dir().to_string_lossy(),
                         "accountKey":"default","provider":"codex"});
                     agent.as_object_mut().expect("object").extend(

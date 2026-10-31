@@ -100,8 +100,8 @@ const PROVIDER_COLUMN: AgentColumn =
     column("provider", "TEXT", "record->>'$.provider'", "NOT NULL");
 
 /// The indexed agent fields; see the module documentation. Changing this list
-/// changes the table: it needs a new dated migration that rebuilds the table.
-pub const AGENT_COLUMNS: [AgentColumn; 45] = [
+/// changes the table and needs a new dated migration.
+pub const AGENT_COLUMNS: [AgentColumn; 40] = [
     column("root_id", "TEXT", "record->>'$.rootId'", ""),
     column("parent_id", "TEXT", "record->>'$.parentId'", ""),
     column("status", "TEXT", "record->>'$.status'", ""),
@@ -147,18 +147,6 @@ pub const AGENT_COLUMNS: [AgentColumn; 45] = [
         "",
     ),
     column(
-        "native_reset_pending",
-        "",
-        "record->>'$.nativeRelease.resetPending'",
-        "",
-    ),
-    column(
-        "start_attempt_action",
-        "TEXT",
-        "record->>'$.startAttempt.action'",
-        "",
-    ),
-    column(
         "start_attempt_submitted",
         "",
         "record->>'$.startAttempt.submitted'",
@@ -174,24 +162,6 @@ pub const AGENT_COLUMNS: [AgentColumn; 45] = [
         "start_attempt_active_at_reservation",
         "",
         "record->>'$.startAttempt.activeAtReservation'",
-        "",
-    ),
-    column(
-        "capacity_retry_id",
-        "TEXT",
-        "record->>'$.capacityRetry.id'",
-        "",
-    ),
-    column(
-        "capacity_retry_status",
-        "TEXT",
-        "record->>'$.capacityRetry.status'",
-        "",
-    ),
-    column(
-        "capacity_retry_due_at",
-        "",
-        "record->>'$.capacityRetry.dueAt'",
         "",
     ),
     column(
@@ -405,14 +375,14 @@ mod tests {
 
     fn agents() -> Vec<Value> {
         vec![
-            json!({"id":"lead","rootId":"lead","epoch":2,"status":"running","accountKey":"acct",
+            json!({"compactions":0,"id":"lead","rootId":"lead","epoch":2,"status":"running","accountKey":"acct",
                 "provider":"claude","threadId":"t1","turnId":"u1","inFlight":true,"autoWake":true,
                 "cwd":"/w","workspaceOperation":"branch","startAttempt":{"submitted":true,
                 "connectionGeneration":4,"activeAtReservation":false},"prompt":"keep"}),
-            json!({"id":"child","provider":"codex","rootId":"lead","parentId":"lead","epoch":0,"status":"completed","accountKey":"default",
+            json!({"compactions":0,"id":"child","provider":"codex","rootId":"lead","parentId":"lead","epoch":0,"status":"completed","accountKey":"default",
                 "role":"reviewer","reviewArchiveScheduled":"",
                 "restartRecovery":{"stage":"held"},"deletedAt":5.5}),
-            json!({"id":"bare","provider":"codex","rootId":"bare","epoch":0,"status":"idle","accountKey":"default"}),
+            json!({"compactions":0,"id":"bare","provider":"codex","rootId":"bare","epoch":0,"status":"idle","accountKey":"default"}),
         ]
     }
 
@@ -639,7 +609,11 @@ mod tests {
                 // dependent partial index that must be dropped before its column.
                 let old_table = table_sql("runtime_agents_capacity_fixture").replace(
                     "record TEXT NOT NULL",
-                    "start_attempt_capacity_retry_id TEXT GENERATED ALWAYS AS \
+                    "start_attempt_action TEXT GENERATED ALWAYS AS \
+                 (record->>'$.startAttempt.action') STORED,\
+                 capacity_retry_id TEXT GENERATED ALWAYS AS \
+                 (record->>'$.capacityRetry.id') STORED,\
+                 start_attempt_capacity_retry_id TEXT GENERATED ALWAYS AS \
                  (record->>'$.startAttempt.capacityRetryId') STORED,record TEXT NOT NULL",
                 );
                 tx.execute_batch(&old_table)?;
@@ -701,6 +675,30 @@ mod tests {
                 assert_eq!(&indexes, previous, "reopening changes no indexes");
             }
             indexes_after = Some(indexes);
+        }
+    }
+
+    #[test]
+    fn unused_agent_columns_are_not_computed_on_write() {
+        let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        connection
+            .execute_batch(agent_table_sql())
+            .expect("table creates");
+        for column in [
+            "native_reset_pending",
+            "capacity_retry_id",
+            "capacity_retry_status",
+            "capacity_retry_due_at",
+            "start_attempt_action",
+        ] {
+            let exists: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_xinfo('runtime_agents') WHERE name=?1)",
+                [column], |row| row.get(0),
+            ).expect("schema reads");
+            assert!(
+                !exists,
+                "unused generated column {column} must not be computed"
+            );
         }
     }
 

@@ -59,7 +59,7 @@ async fn async_question_answer_wakes_idle_lead_once() {
             AgentRepository::put(
                 tx,
                 &AgentRecord::from_value(
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":agent_id,"rootId":agent_id,"epoch":0,"status":"idle",
                         "cwd":cwd,"isLead":true,"autoWake":true,
                     }),

@@ -307,9 +307,9 @@ async fn answered_approval_retires_card_and_replays_without_another_start() {
         let selected = id.clone();
         store.transaction(move |tx| {
             tx.execute("UPDATE runtime_monitors SET record=json_remove(json_set(record,'$.status','approval'),'$.operation') WHERE id=?1", [&selected])?;
-            let request = studio_runtime_store::RequestRecord::from_value(json!({"id":"approval","agent":"agent","method":"monitor/approve","status":"pending","params":{"monitorId":selected},"createdAt":2000.0}))?;
+            let request = serde_json::from_str::<studio_runtime_store::RequestRecord>(&json!({"id":"approval","agent":"agent","method":"monitor/approve","status":"pending","params":{"monitorId":selected},"createdAt":2000.0}).to_string())?;
             studio_runtime_store::Table::new(tx).put(&request)?;
-            let view = studio_runtime_services::sync_views::project_persisted_record("request", &request.value()).expect("pending view");
+            let view = studio_runtime_services::sync_views::project_persisted_record("request", &json!(request)).expect("pending view");
             studio_runtime_store::SyncDocumentsRepository::put_entity(tx, "request", "approval", view, false)?;
             Ok(())
         }).await.expect("pending approval");
@@ -382,7 +382,7 @@ async fn restart_preserves_unsubmitted_start_and_pending_approval() {
         store.transaction(move |tx| {
             tx.execute("UPDATE runtime_monitors SET record=json_remove(json_set(record,'$.status',?1),'$.operation') WHERE id=?2", (status, &selected))?;
             if status == "approval" {
-                studio_runtime_store::Table::new(tx).put(&studio_runtime_store::RequestRecord::from_value(json!({"id":"approval","agent":"agent","method":"monitor/approve","status":"pending","params":{"monitorId":selected},"createdAt":2000.0}))?)?;
+                studio_runtime_store::Table::new(tx).put(&serde_json::from_str::<studio_runtime_store::RequestRecord>(&json!({"id":"approval","agent":"agent","method":"monitor/approve","status":"pending","params":{"monitorId":selected},"createdAt":2000.0}).to_string())?)?;
             }
             Ok(())
         }).await.expect("persist unsubmitted intent");
@@ -419,7 +419,7 @@ async fn restart_preserves_unsubmitted_start_and_pending_approval() {
                     .get(&"approval".to_owned())
                     .expect("request read")
                     .expect("approval");
-                assert_eq!(request.value()["status"], "pending");
+                assert_eq!(request.status.as_str(), "pending");
             }
         }
         if status == "approval" {

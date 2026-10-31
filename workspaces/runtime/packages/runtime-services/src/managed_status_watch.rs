@@ -1493,14 +1493,14 @@ mod tests {
             .transaction_with(move |tx| {
                 studio_runtime_store::receipt_schema::create(tx)?;
                 for record in [
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"lead","rootId":"lead","epoch":3,"status":"running",
                         "isLead":true,"autoWake":true,"cwd":cwd,
                         "concurrency":2,"maxAgents":8,
                         "workerDefaults":{"model":"gpt-fixture","effort":"high","fastMode":false}
                     }),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
                 ] {
                     AgentRepository::put(
                         tx,
@@ -1633,67 +1633,6 @@ mod tests {
             status["capacity"]["queued"][0]["reasons"][0]["reason"],
             "dependency"
         );
-    }
-
-    #[tokio::test]
-    async fn legacy_incomplete_waits_keep_status_and_sync_available() {
-        let (_directory, store) = fixture().await;
-        for wait in [
-            json!({"reason":"slot","epoch":4}),
-            json!({"reason":"pause","epoch":4,"until":null}),
-            json!({"reason":"slot","epoch":3,"runningTurns":"invalid"}),
-            json!({"reason":"slot","epoch":3}),
-            json!({"reason":"pause","epoch":3,"until":null}),
-        ] {
-            let saved = wait.clone();
-            store
-                .transaction_with(move |tx| {
-                    let mut agent = AgentRepository::get(tx, &"queued".into())?.expect("agent");
-                    agent.auto_wake = Some(true);
-                    agent.extra.insert("startWait".into(), saved);
-                    AgentRepository::put(tx, &agent)
-                })
-                .await
-                .expect("seed wait");
-            let view = store
-                .read_async("test/legacy-view", |tx| {
-                    let agent = AgentRepository::get(tx, &"queued".into())?.expect("agent");
-                    Ok::<_, StoreError>(crate::sync_views::agent_entity_view(
-                        &agent.value(),
-                        &Default::default(),
-                    ))
-                })
-                .await
-                .expect("read")
-                .expect("agent remains visible");
-            let expected = if wait["epoch"] == 4 {
-                json!(null)
-            } else {
-                json!({"reason":"dispatch_pending","epoch":4})
-            };
-            assert_eq!(view["startWait"], expected);
-            let status = model_directory(&store, "lead", 3, &json!({}), 103.0)
-                .await
-                .expect("status remains available");
-            let reasons = status["capacity"]["queued"][0]["reasons"].clone();
-            assert_eq!(
-                reasons,
-                if expected.is_null() {
-                    json!([])
-                } else {
-                    json!([expected])
-                }
-            );
-        }
-        let record = json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"starting","startWait":{"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3,"until":null}});
-        let view = crate::sync_views::agent_entity_view(&record, &Default::default())
-            .expect("valid legacy wait");
-        assert_eq!(
-            view["startWait"],
-            json!({"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3})
-        );
-        let record = json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"running","startWait":{"reason":"slot","epoch":4}});
-        assert!(crate::sync_views::agent_entity_view(&record, &Default::default()).is_some());
     }
 
     #[tokio::test]

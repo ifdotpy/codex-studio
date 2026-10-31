@@ -1444,7 +1444,7 @@ mod lifecycle_scope_parity_tests {
     use std::collections::{BTreeMap, BTreeSet};
 
     fn agent(id: &str, root: &str, parent: Option<&str>, lead: bool) -> Value {
-        let mut record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+        let mut record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
             "id":id,
             "rootId":root,
             "epoch":1,
@@ -1526,16 +1526,16 @@ mod lifecycle_scope_parity_tests {
                 (
                     "runtime_requests".to_owned(),
                     vec![
-                        json!({"id":"worker-request","agent":"worker","status":"pending","method":"user/input"}),
-                        json!({"id":"approval-request","agent":"nested","status":"pending","method":"monitor/approve"}),
-                        json!({"id":"unrelated-request","agent":"other-lead","status":"pending","method":"user/input"}),
+                        json!({"id":"worker-request","agent":"worker","status":"pending","method":"item/tool/requestUserInput","createdAt":1,"params":{}}),
+                        json!({"id":"approval-request","agent":"nested","status":"pending","method":"monitor/approve","createdAt":1,"params":{}}),
+                        json!({"id":"unrelated-request","agent":"other-lead","status":"pending","method":"item/tool/requestUserInput","createdAt":1,"params":{}}),
                     ],
                 ),
                 (
                     "runtime_tasks".to_owned(),
                     vec![
-                        json!({"id":"worker-task","agent":"worker","status":"pending"}),
-                        json!({"id":"unrelated-task","agent":"other-lead","status":"running"}),
+                        json!({"id":"worker-task","agent":"worker","status":"pending","created":1,"itemId":"worker-task","turnId":"turn","kind":"command","type":"commandExecution","name":"command"}),
+                        json!({"id":"unrelated-task","agent":"other-lead","status":"running","created":1,"itemId":"unrelated-task","turnId":"turn","kind":"command","type":"commandExecution","name":"command"}),
                     ],
                 ),
                 (
@@ -1640,9 +1640,9 @@ mod lifecycle_scope_parity_tests {
                 (
                     "runtime_tasks".to_owned(),
                     vec![
-                        json!({"id":"nested-task","agent":"nested","status":"running"}),
-                        json!({"id":"archived-child-task","agent":"archived-child","status":"completed"}),
-                        json!({"id":"unrelated-task","agent":"other-lead","status":"running"}),
+                        json!({"id":"nested-task","agent":"nested","status":"running","created":1,"itemId":"nested-task","turnId":"turn","kind":"command","type":"commandExecution","name":"command"}),
+                        json!({"id":"archived-child-task","agent":"archived-child","status":"completed","created":1,"itemId":"archived-child-task","turnId":"turn","kind":"command","type":"commandExecution","name":"command"}),
+                        json!({"id":"unrelated-task","agent":"other-lead","status":"running","created":1,"itemId":"unrelated-task","turnId":"turn","kind":"command","type":"commandExecution","name":"command"}),
                     ],
                 ),
                 (
@@ -1723,10 +1723,7 @@ mod lifecycle_scope_parity_tests {
             Action::RemoteStop { .. } => unreachable!("not a scoped lifecycle fixture"),
         }
         assert_eq!(full_decision.result, scoped_decision.result);
-        assert_eq!(
-            serde_json::to_value(&full_decision.writes).expect("full writes"),
-            serde_json::to_value(&scoped_decision.writes).expect("scoped writes")
-        );
+        assert_eq!(json!(&full_decision.writes), json!(&scoped_decision.writes));
         assert_eq!(full_decision.cancel_pending, scoped_decision.cancel_pending);
         assert_eq!(
             effect_values(&full_decision),
@@ -1749,7 +1746,7 @@ mod archive_parity_tests {
                 (
                     "runtime_agents".to_owned(),
                     vec![
-                        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":4,"status":"running",
+                        json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":4,"status":"running",
                             "autoWake":true,"isLead":true}),
                         worker,
                     ],
@@ -1761,7 +1758,7 @@ mod archive_parity_tests {
     }
 
     fn worker(fields: Value) -> Value {
-        let mut record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","parentId":"lead","epoch":2,
+        let mut record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","parentId":"lead","epoch":2,
             "status":"completed","autoWake":true,"isLead":false,"role":"reviewer",
             "threadId":"thread-1","lastCompletedTurn":"turn-9",
             "lastCompletedTurnStatus":"completed"});
@@ -1798,7 +1795,9 @@ mod archive_parity_tests {
                 json!({"id":"tool-done","agent":"worker","stage":"completed","outcome":"applied"}),
                 json!({"id":"tool-lost","agent":"worker","stage":"failed","outcome":"unknown"}),
             ],
-            vec![json!({"id":"task-done","agent":"worker","status":"completed"})],
+            vec![
+                json!({"id":"task-done","agent":"worker","status":"completed","created":1,"itemId":"task-done","turnId":"turn","kind":"command","type":"commandExecution","name":"command"}),
+            ],
         ));
         assert_eq!(result["status"], "archived", "{result}");
     }
@@ -1851,7 +1850,9 @@ mod archive_parity_tests {
             records(
                 worker(json!({})),
                 Vec::new(),
-                vec![json!({"id":"task-open","agent":"worker","status":"running"})],
+                vec![
+                    json!({"id":"task-open","agent":"worker","status":"running","created":1,"itemId":"task-open","turnId":"turn","kind":"command","type":"commandExecution","name":"command"}),
+                ],
             ),
             "background_tasks",
         );

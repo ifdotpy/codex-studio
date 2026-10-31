@@ -225,7 +225,99 @@ pub struct Project<'a> {
 }
 
 pub struct Lock {
-    _f: fs::File,
+    f: Option<fs::File>,
+    /// When the lock was taken, how long the command waited for it, and the log of slow holds.
+    since: std::time::Instant,
+    waited: std::time::Duration,
+    log: PathBuf,
+    trash: PathBuf,
+}
+
+/// The store locks this process holds. The trash is emptied when the last one goes.
+static HELD_LOCKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A wait for or a hold of the store lock this long goes to `meta/lock-slow.log`: one lock
+/// serializes the commands of every user of the project, so a slow hold stops all of them.
+const SLOW_LOCK: std::time::Duration = std::time::Duration::from_secs(1);
+/// The log starts again above this size (bytes).
+const SLOW_LOCK_LOG_MAX: u64 = 1 << 20;
+
+impl Drop for Lock {
+    fn drop(&mut self) {
+        let held = self.since.elapsed();
+        drop(self.f.take());
+        if std::env::var_os("LAYR_TRACE").is_some() {
+            eprintln!("trace {:>8.1} ms  store lock held", held.as_secs_f64() * 1000.0);
+        }
+        if HELD_LOCKS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+            // Deleting build output takes minutes: it runs after the last lock, so other
+            // commands do not wait for it.
+            empty_trash(&self.trash);
+        }
+        if held < SLOW_LOCK && self.waited < SLOW_LOCK {
+            return;
+        }
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let mut command = args.join(" ");
+        command.truncate(300);
+        let line = format!(
+            "{}\t{}\twait_ms={}\theld_ms={}\t{}\n",
+            crate::ids::now_ms(),
+            std::process::id(),
+            self.waited.as_millis(),
+            held.as_millis(),
+            command.replace(['\t', '\n'], " ")
+        );
+        if fs::metadata(&self.log).map(|m| m.len() > SLOW_LOCK_LOG_MAX).unwrap_or(false) {
+            let _ = fs::remove_file(&self.log);
+        }
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(&self.log) {
+            use std::io::Write;
+            let _ = f.write_all(line.as_bytes());
+        }
+    }
+}
+
+/// Delete what is in the trash, without a store lock. A tree that another process is deleting
+/// at the same time may fail; the next process deletes the rest.
+/// The trash of the store whose lock this process holds (`Store::trash_dir`).
+static LOCK_TRASH: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Delete a temporary tree. Under a store lock on APFS it only moves to the trash, which the
+/// last lock empties: a copy of a working folder took seconds to delete, and every other
+/// command of the project waited for it.
+pub fn discard_tree(path: &Path) {
+    #[cfg(target_os = "macos")]
+    if HELD_LOCKS.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+        let dir = LOCK_TRASH.lock().ok().and_then(|d| d.clone());
+        if let (Some(dir), Some(name)) = (dir, path.file_name()) {
+            if fs::symlink_metadata(path).is_err() {
+                return;
+            }
+            let to = dir.join(format!("{}.{}", name.to_string_lossy(), crate::ids::new_id()));
+            if fs::create_dir_all(&dir).is_ok() && crate::storage::move_tree(path, &to).is_ok() {
+                return;
+            }
+        }
+    }
+    let _ = crate::storage::delete_tree(path);
+}
+
+pub fn empty_trash(dir: &Path) {
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let _ = crate::storage::delete_tree(&e.path());
+        }
+    }
+}
+
+impl Store {
+    /// Trees that left a project of the store and that no record or command reads any more
+    /// (APFS). Under a lock a command only renames a tree here; `Lock` deletes them after the
+    /// last lock of the process.
+    pub fn trash_dir(&self) -> PathBuf {
+        self.root.join("trash")
+    }
 }
 
 impl<'a> Project<'a> {
@@ -261,6 +353,29 @@ impl<'a> Project<'a> {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub fn deltas_dir(&self) -> PathBuf {
         self.dir.join("deltas")
+    }
+    /// Remove the tree `path` of this project. On APFS deleting build output takes minutes, so
+    /// under a lock the tree is only renamed into the store's trash, which `Lock` empties after
+    /// the last lock. A tree that cannot move, and any tree on the other file systems (whose
+    /// snapshots delete at once), is deleted in place.
+    pub fn trash(&self, path: &Path) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            let _t = crate::trace::span(format!("trash {}", path.display()));
+            if fs::symlink_metadata(path).is_err() {
+                return Ok(());
+            }
+            let dir = self.store.trash_dir();
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let to = dir.join(format!("{name}.{}", crate::ids::new_id()));
+            match fs::create_dir_all(&dir).map_err(anyhow::Error::from).and_then(|_| crate::storage::move_tree(path, &to)) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    let _t = crate::trace::span(format!("delete in place ({e:#}) {}", path.display()));
+                }
+            }
+        }
+        crate::storage::delete_tree(path)
     }
     /// Delete the trees of a state. On APFS a state that another thin state uses as its base
     /// stays until that state goes (`thin::delete_state`); this returns false then.
@@ -448,10 +563,25 @@ impl<'a> Project<'a> {
 
     pub fn lock(&self) -> Result<Lock> {
         let f = fs::OpenOptions::new().create(true).write(true).truncate(false).open(self.meta_dir().join("lock"))?;
+        let asked = std::time::Instant::now();
         rustix::fs::flock(&f, rustix::fs::FlockOperation::LockExclusive)?;
+        HELD_LOCKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if std::env::var_os("LAYR_TRACE").is_some() {
+            eprintln!("trace {:>8.1} ms  store lock taken", asked.elapsed().as_secs_f64() * 1000.0);
+        }
+        if let Ok(mut d) = LOCK_TRASH.lock() {
+            *d = Some(self.store.trash_dir());
+        }
+        let lock = Lock {
+            f: Some(f),
+            since: std::time::Instant::now(),
+            waited: asked.elapsed(),
+            log: self.meta_dir().join("lock-slow.log"),
+            trash: self.store.trash_dir(),
+        };
         #[cfg(target_os = "macos")]
         crate::apfs_commit::recover(self)?;
-        Ok(Lock { _f: f })
+        Ok(lock)
     }
 
     fn state_present(&self) -> impl Fn(&str) -> bool + '_ {

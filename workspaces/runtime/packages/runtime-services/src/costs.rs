@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_store::cost_aggregate::{
     CostGroup, CostMember, CostReceipt, CostTokens, DEFAULT_ACCOUNT, JournalReceiptCache,
-    cost_groups,
+    journal_partition_and_adjustments_cached,
 };
 use studio_runtime_store::{AnalyticsStoreError, RuntimeStore, StoreError, analytics};
 use thiserror::Error;
@@ -58,6 +58,18 @@ struct GroupPriceCache {
 }
 
 impl GroupPriceCache {
+    fn snapshot(&self) -> Self {
+        Self {
+            total: self.total,
+            priced_count: self.priced_count,
+            tiers: self.tiers,
+            models: self.models.clone(),
+            provider_totals: self.provider_totals.clone(),
+            unknown: self.unknown.clone(),
+            ..Self::default()
+        }
+    }
+
     fn apply(&mut self, price: &GroupPrice, add: bool) {
         let Some(amount) = price.amount else {
             let count = self.unknown.entry(price.model.clone()).or_default();
@@ -199,7 +211,7 @@ fn group_prices_incremental(
     root: &str,
     loaded: &std::sync::Arc<crate::pricing::LoadedPricing>,
     providers: &BTreeMap<&str, &'static str>,
-) -> Result<GroupPriceSummary, CostsError> {
+) -> Result<GroupPriceCache, CostsError> {
     PRICE_CACHES.with_borrow_mut(|caches| {
         if !caches.contains_key(root)
             && caches
@@ -282,7 +294,7 @@ fn group_prices_incremental(
             *cache = GroupPriceCache::default();
             return Err(CostsError::Computation);
         }
-        Ok(cache.summary())
+        Ok(cache.snapshot())
     })
 }
 
@@ -377,12 +389,13 @@ fn session_cost_on_reader(
             )
         })
         .collect::<BTreeSet<CostReceipt>>();
-    let partition = RECEIPT_CACHES.with_borrow_mut(|caches| {
+    let (partition, adjustments) = RECEIPT_CACHES.with_borrow_mut(|caches| {
         if caches.len() >= RECEIPT_CACHE_ROOTS && !caches.contains_key(&root) {
             caches.clear();
         }
-        studio_runtime_store::cost_aggregate::partition_journal_receipts_cached(
+        journal_partition_and_adjustments_cached(
             &tx,
+            &root,
             &receipts,
             &members,
             caches.entry(root.clone()).or_default(),
@@ -399,31 +412,35 @@ fn session_cost_on_reader(
         .ok_or(CostsError::Dependency("costs/pricing-refresh"))?;
     let catalog = loaded.catalog.as_ref().ok_or(CostsError::InvalidPricing)?;
 
-    let summary = if partition.accepted.is_empty() {
-        group_prices_incremental(&tx, &root, &loaded, &providers_by_account)?
-    } else {
-        let mut totals = GroupPriceCache::default();
-        for group in cost_groups(&tx, &root, &partition)? {
-            if let Some(price) = price_group(&group, catalog, &providers_by_account, None) {
-                totals.apply(&price, true);
-            }
+    let mut totals = group_prices_incremental(&tx, &root, &loaded, &providers_by_account)?;
+    for (before, after) in adjustments {
+        if let Some(price) = before
+            .as_ref()
+            .and_then(|group| price_group(group, catalog, &providers_by_account, None))
+        {
+            totals.apply(&price, false);
         }
-        for row in local_claude {
-            let group = CostGroup {
-                model: Some(row.usage.model),
-                account_key: String::new(),
-                tokens: row.usage.tokens,
-                input_uncached: row.usage.tokens.input_tokens.is_some(),
-                count: 1,
-            };
-            if let Some(price) =
-                price_group(&group, catalog, &providers_by_account, Some("anthropic"))
-            {
-                totals.apply(&price, true);
-            }
+        if let Some(price) = after
+            .as_ref()
+            .and_then(|group| price_group(group, catalog, &providers_by_account, None))
+        {
+            totals.apply(&price, true);
         }
-        totals.summary()
-    };
+    }
+    for row in local_claude {
+        let group = CostGroup {
+            model: Some(row.usage.model),
+            account_key: String::new(),
+            tokens: row.usage.tokens,
+            input_uncached: row.usage.tokens.input_tokens.is_some(),
+            count: 1,
+        };
+        if let Some(price) = price_group(&group, catalog, &providers_by_account, Some("anthropic"))
+        {
+            totals.apply(&price, true);
+        }
+    }
+    let summary = totals.summary();
     tx.commit()?;
     if !summary.total.is_finite() {
         return Err(CostsError::Computation);
@@ -1410,6 +1427,7 @@ fn read_local_claude_usage_inner(
     }
 
     let mut rows = BTreeMap::new();
+    let mut logs = Vec::new();
     for (account_key, thread_id) in sessions {
         if let Some(budget) = budget.as_deref_mut()
             && !budget.visit()
@@ -1524,6 +1542,10 @@ fn read_local_claude_usage_inner(
                     };
                     log
                 };
+                if budget.is_none() {
+                    logs.push((account_key.clone(), thread_id.clone(), log));
+                    continue;
+                }
                 for usage in log.iter() {
                     if rows.len() >= MAX_RECONCILIATION_RESPONSES && budget.is_some() {
                         if let Some(budget) = budget.as_deref_mut() {
@@ -1546,7 +1568,36 @@ fn read_local_claude_usage_inner(
             }
         }
     }
-    Ok(rows.into_values().collect())
+    if budget.is_some() {
+        return Ok(rows.into_values().collect());
+    }
+    // Borrow cached log rows while ordering and merging duplicate receipts; only
+    // the final distinct rows need owned identities and usage values.
+    let mut borrowed = logs
+        .iter()
+        .flat_map(|(account, thread, log)| {
+            log.iter()
+                .map(move |usage| (account.as_str(), thread.as_str(), usage))
+        })
+        .collect::<Vec<_>>();
+    borrowed.sort_by(|a, b| (a.0, a.1, a.2.id.as_str()).cmp(&(b.0, b.1, b.2.id.as_str())));
+    let mut result: Vec<LocalClaudeUsage> = Vec::new();
+    for (account, thread, usage) in borrowed {
+        if let Some(first) = result.last_mut().filter(|first| {
+            first.account_key == account && first.thread_id == thread && first.usage.id == usage.id
+        }) {
+            first.usage.conflicting_usage |= usage.conflicting_usage
+                || first.usage.tokens != usage.tokens
+                || first.usage.model != usage.model;
+        } else {
+            result.push(LocalClaudeUsage {
+                account_key: account.to_owned(),
+                thread_id: thread.to_owned(),
+                usage: usage.clone(),
+            });
+        }
+    }
+    Ok(result)
 }
 
 fn account_claude_config(
@@ -2865,6 +2916,54 @@ mod tests {
     }
 
     #[test]
+    fn borrowed_local_usage_matches_bounded_dedup_with_conflicting_journals() {
+        let temp = tempdir().expect("state");
+        let state = temp.path();
+        let profile = state.join("profile");
+        let project = profile.join("projects/project");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(state.join("account-servers/claude/sessions")).unwrap();
+        fs::write(
+            state.join("account-servers/claude/sessions/thread.json"),
+            json!({"nativeId":"native"}).to_string(),
+        )
+        .unwrap();
+        let row = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z","message":{"id":"response","model":"m","usage":{"input_tokens":10,"output_tokens":2}}});
+        let mut changed = row.clone();
+        changed["message"]["usage"]["output_tokens"] = json!(7);
+        fs::write(project.join("native.jsonl"), format!("{row}\n")).unwrap();
+        fs::write(project.join("thread.jsonl"), format!("{changed}\n")).unwrap();
+        let accounts = BTreeMap::from([(
+            "claude".into(),
+            <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+            )
+            .unwrap(),
+        )]);
+        let members = vec![(
+            "agent".into(),
+            member(json!({"provider":"claude","accountKey":"claude","threadId":"thread"})),
+        )];
+        let fast = super::read_local_claude_usage_inner(state, &members, &accounts, None).unwrap();
+        let mut budget = super::EvidenceBudget::default();
+        let bounded =
+            super::read_local_claude_usage_inner(state, &members, &accounts, Some(&mut budget))
+                .unwrap();
+        assert_eq!(fast.len(), 1);
+        assert_eq!(bounded.len(), 1);
+        assert!(fast[0].usage.conflicting_usage);
+        assert_eq!(fast[0].account_key, bounded[0].account_key);
+        assert_eq!(fast[0].thread_id, bounded[0].thread_id);
+        assert_eq!(fast[0].usage.id, bounded[0].usage.id);
+        assert_eq!(fast[0].usage.model, bounded[0].usage.model);
+        assert_eq!(fast[0].usage.tokens, bounded[0].usage.tokens);
+        assert_eq!(
+            fast[0].usage.conflicting_usage,
+            bounded[0].usage.conflicting_usage
+        );
+    }
+
+    #[test]
     fn local_claude_session_usage_is_thread_scoped_deduplicated_and_uses_account_history() {
         let _counter = hold_skipped_line_counter();
         let temp = tempdir().expect("temporary fixture directory");
@@ -3174,6 +3273,7 @@ mod tests {
 
     #[tokio::test]
     async fn usage_reconciliation_session_cost_preserves_final_rows_and_fills_legacy_history() {
+        thread_local! { static FULL_GROUP_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; static JOURNAL_DELTA_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
         let temp = tempdir().expect("temporary fixture directory");
         let store = RuntimeStore::open(Some(temp.path()))
             .await
@@ -3283,6 +3383,66 @@ mod tests {
         assert_eq!(result["totalUSD"], json!(0.000135));
         assert_eq!(result["claudeHistoryIncomplete"], true);
         assert_eq!(result["unknownModels"], json!(["claude-sonnet-4-5"]));
+        store
+            .with_cost_reader(
+                |db| -> Result<(), studio_runtime_store::analytics::AnalyticsStoreError> {
+                    FULL_GROUP_READS.set(0);
+                    JOURNAL_DELTA_READS.set(0);
+                    db.trace_v2(
+                        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+                        Some(|event| {
+                            if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+                        && sql.contains("SELECT model,account,input,cached,cache_write,output,uncached,count,cache_write_1h")
+                            {
+                                FULL_GROUP_READS.set(FULL_GROUP_READS.get() + 1);
+                            }
+                            if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+                                && sql.contains("FROM analytics_cost_rows") {
+                                JOURNAL_DELTA_READS.set(JOURNAL_DELTA_READS.get() + 1);
+                            }
+                        }),
+                    );
+                    Ok(())
+                },
+            )
+            .expect("trace cost reads");
+        let repeated =
+            session_cost_with_account_profiles(&store, "agent", &accounts).expect("repeated cost");
+        assert_eq!(
+            serde_json::to_vec(&repeated).expect("cached JSON"),
+            serde_json::to_vec(&result).expect("initial JSON")
+        );
+        let full_reads = store
+            .with_cost_reader(
+                |db| -> Result<usize, studio_runtime_store::analytics::AnalyticsStoreError> {
+                    db.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+                    assert_eq!(
+                        JOURNAL_DELTA_READS.get(),
+                        0,
+                        "unchanged receipts must not recompute journal group deltas"
+                    );
+                    Ok(FULL_GROUP_READS.get())
+                },
+            )
+            .expect("read trace");
+        assert_eq!(
+            full_reads, 0,
+            "unchanged journal receipts must not scan all cost groups"
+        );
+        store
+            .with_cost_reader(
+                |_| -> Result<(), studio_runtime_store::analytics::AnalyticsStoreError> {
+                    super::RECEIPT_CACHES.with_borrow_mut(|caches| caches.clear());
+                    Ok(())
+                },
+            )
+            .expect("clear receipt cache");
+        let uncached =
+            session_cost_with_account_profiles(&store, "agent", &accounts).expect("uncached cost");
+        assert_eq!(
+            serde_json::to_vec(&uncached).expect("uncached JSON"),
+            serde_json::to_vec(&repeated).expect("cached JSON")
+        );
 
         // Cached log parses and the cached catalog follow the files: a second answer
         // in the log is priced, and new rates replace the old ones.

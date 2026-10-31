@@ -19,9 +19,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 
-use studio_runtime_schema::desktop::{
-    PeerUpdateBuild, PeerUpdateEvent, PeerUpdatePending, PeerUpdateStatus,
-};
+use studio_runtime_schema::desktop::PeerUpdateBuild;
 use studio_runtime_store::RuntimeStore;
 
 use crate::atomic_file;
@@ -666,57 +664,6 @@ fn read_pending(root: &Path) -> Option<Value> {
         .then(|| json!({"id": id, "app": app, "build": build, "from": source}))
 }
 
-/// The update state of `/api/desktop` (`peerUpdate`), read from the files that the puller and
-/// the installer write. `installed` is the installed app of this process, when it runs from one.
-pub fn status(root: &Path, installed: Option<&Path>) -> PeerUpdateStatus {
-    let saved = read_json(&root.join(STATUS_FILE)).unwrap_or_else(|| json!({}));
-    PeerUpdateStatus {
-        build: installed
-            .and_then(peer_updates::read_build)
-            .and_then(|build| build_struct(&build)),
-        checked_at: saved["checkedAt"].as_f64(),
-        last_pull: event(&saved["lastPull"], "server"),
-        pending: read_pending(root).and_then(|pending| {
-            Some(PeerUpdatePending {
-                build: build_struct(&pending["build"])?,
-                server: pending["from"].as_str()?.to_owned(),
-            })
-        }),
-        last_install: event(
-            &read_json(&root.join(RECEIPT_FILE)).unwrap_or_default(),
-            "from",
-        ),
-    }
-}
-
-/// One attempt record: a pull in the status file, or the installer receipt.
-fn event(value: &Value, server_field: &str) -> Option<PeerUpdateEvent> {
-    value.is_object().then(|| PeerUpdateEvent {
-        at: value["at"].as_f64(),
-        server: value[server_field].as_str().map(bounded),
-        build: value
-            .get("build")
-            .and_then(peer_updates::valid_build)
-            .and_then(|build| build_struct(&build)),
-        outcome: value["outcome"].as_str().map(bounded),
-        reason: value["reason"].as_str().map(bounded),
-    })
-}
-
-fn build_struct(build: &Value) -> Option<PeerUpdateBuild> {
-    Some(PeerUpdateBuild {
-        version: u8::try_from(build["version"].as_u64()?).ok()?,
-        built_at: build["builtAt"].as_f64()?,
-        commit: build["commit"].as_str()?.to_owned(),
-        commit_time: build["commitTime"].as_u64()?,
-        branch: build["branch"].as_str()?.to_owned(),
-    })
-}
-
-fn bounded(text: &str) -> String {
-    text.chars().take(REASON_CHARS).collect()
-}
-
 /// The failure records that are still within the record age.
 fn kept_failures(status: &Value, now: i64) -> Value {
     Value::Object(
@@ -1301,66 +1248,6 @@ exit 0"#;
         f.puller.pull().await.unwrap();
         assert!(read_pending(&f.state()).is_none());
         assert!(read_names(&f.state().join("updates")).is_empty());
-    }
-
-    #[test]
-    fn status_reads_the_files_of_the_last_pass() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let installed = make_app(&root.join("apps"), &old_build(), "Studio Local Signing");
-        std::fs::write(
-            root.join(STATUS_FILE),
-            json!({
-                "checkedAt": NOW,
-                "failures": {},
-                "lastPull": {"at": NOW, "server": "server", "build": new_build(),
-                             "outcome": "failed", "reason": "Invalid update archive chunk"},
-            })
-            .to_string(),
-        )
-        .unwrap();
-        let staged = root.join(UPDATES_DIR).join("1791980000.25").join(APP_NAME);
-        std::fs::write(
-            root.join(PENDING_FILE),
-            json!({"id": "x", "app": staged.to_string_lossy(), "build": new_build(), "from": "server"})
-                .to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            root.join(RECEIPT_FILE),
-            json!({"id": "r", "build": old_build(), "outcome": "installed", "at": NOW - 100,
-                   "from": "server", "backend": "rust", "window": null})
-            .to_string(),
-        )
-        .unwrap();
-        let value = status(root, Some(installed.as_path()));
-        assert_eq!(
-            value,
-            serde_json::from_str::<PeerUpdateStatus>(
-                &json!({
-                    "build": old_build(),
-                    "checkedAt": NOW as f64,
-                    "lastPull": {"at": NOW as f64, "server": "server", "build": new_build(),
-                                 "outcome": "failed", "reason": "Invalid update archive chunk"},
-                    "pending": {"build": new_build(), "server": "server"},
-                    "lastInstall": {"at": (NOW - 100) as f64, "server": "server",
-                                    "build": old_build(), "outcome": "installed", "reason": null},
-                })
-                .to_string()
-            )
-            .unwrap()
-        );
-        // Without any file, the status has no build, pass or update.
-        let empty = status(&root.join("empty"), None);
-        assert_eq!(
-            empty,
-            serde_json::from_str::<PeerUpdateStatus>(
-                &json!({"build": null, "checkedAt": null, "lastPull": null,
-                   "pending": null, "lastInstall": null})
-                .to_string()
-            )
-            .unwrap()
-        );
     }
 
     #[test]

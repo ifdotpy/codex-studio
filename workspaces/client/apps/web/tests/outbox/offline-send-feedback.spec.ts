@@ -55,9 +55,12 @@ test("offline send has one saved-message status and preserves its delivery ident
             await route.continue();
           });
           await page.goto(`http://127.0.0.1:${port}`);
-          await page.getByLabel("Toggle conversations").waitFor();
+          const sidebarToggle = page.getByLabel(
+            width < 760 ? "Back to chats" : "Toggle conversations",
+          );
+          await sidebarToggle.waitFor();
           if (!(await page.locator("#sidebar").isVisible()))
-            await page.getByLabel("Toggle conversations").click();
+            await sidebarToggle.click();
           await page
             .locator("[data-chat]")
             .filter({ hasText: "Release lead" })
@@ -84,8 +87,7 @@ test("offline send has one saved-message status and preserves its delivery ident
             .getByRole("button", { name: "Send message", exact: true })
             .click();
           const status = page.getByRole("status").filter({
-            hasText:
-              "Connection lost. Your message is saved and will send when connected.",
+            hasText: "Your message is saved and waiting for delivery.",
           });
           await expect(status).toHaveCount(1);
           await expect(status).toBeVisible();

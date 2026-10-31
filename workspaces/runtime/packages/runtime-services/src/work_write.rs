@@ -193,7 +193,7 @@ async fn run_accepted_archive(
     let intent: ArchiveIntent =
         serde_json::from_str(&encoded_intent).map_err(studio_runtime_store::StoreError::from)?;
     let task_id_for_read = task_id.clone();
-    let Some(encoded_work) = store
+    let Some(work) = store
         .read_async("runtime-services/work_write", move |connection| {
             Ok::<_, WorkWriteError>(WorkItemsRepository::work_record(
                 connection,
@@ -204,16 +204,12 @@ async fn run_accepted_archive(
     else {
         return Ok(ArchiveRun::Skipped);
     };
-    let work = encoded_work;
     if work.status() != studio_runtime_store::WorkStatus::Accepted {
         return Ok(ArchiveRun::Skipped);
     }
     let intent_id = &intent.intent_id;
     let owner_id = work.owner().unwrap_or_default().to_owned();
-    let root_id = work.value()["rootId"]
-        .as_str()
-        .unwrap_or_default()
-        .to_owned();
+    let root_id = work.root_id().unwrap_or_default().to_owned();
     if intent_id.is_empty() || owner_id.is_empty() || root_id.is_empty() {
         return Ok(ArchiveRun::Skipped);
     }
@@ -227,7 +223,7 @@ async fn run_accepted_archive(
                     .ok_or(Error::InvalidRequest("Unknown work item"))?;
                 if current.status() != studio_runtime_store::WorkStatus::Accepted
                     || current.owner() != Some(owner_for_claim.as_str())
-                    || current.value()["rootId"] != root_for_claim
+                    || current.root_id() != Some(root_for_claim.as_str())
                 {
                     return Ok(None);
                 }
@@ -336,7 +332,7 @@ async fn run_accepted_archive(
         None if prior_status == WorkEffectStatus::Unknown => return Ok(ArchiveRun::Skipped),
         None => {
             let guard = ArchiveGuard {
-                work: work.value(),
+                work: work.clone(),
                 owner: owner_snapshot.clone().expect("preflight requires owner"),
                 task_id: task_id.clone(),
                 owner_id: owner_id.clone(),
@@ -392,7 +388,7 @@ async fn run_accepted_archive(
     let owner_for_settlement = owner_id.clone();
     let root_for_settlement = root_id.clone();
     let terminal_guard = verify_terminal.then(|| ArchiveGuard {
-        work: work.value(),
+        work: work.clone(),
         owner: owner_snapshot.expect("preflight requires owner"),
         task_id: task_id.clone(),
         owner_id: owner_id.clone(),
@@ -413,7 +409,7 @@ async fn run_accepted_archive(
             };
             if current.status() != studio_runtime_store::WorkStatus::Accepted
                 || current.owner() != Some(owner_for_settlement.as_str())
-                || current.value()["rootId"] != root_for_settlement
+                || current.root_id() != Some(root_for_settlement.as_str())
             {
                 return Ok(ArchiveRun::Skipped);
             }
@@ -841,7 +837,7 @@ pub async fn next_archive_retry_at(
 }
 
 struct ArchiveGuard {
-    work: Value,
+    work: WorkItemRecord,
     owner: Value,
     task_id: String,
     owner_id: String,
@@ -864,8 +860,8 @@ impl ArchiveGuard {
             .map_err(|_| changed())?
             .ok_or_else(changed)?;
         if current.status() != WorkStatus::Accepted
-            || current.value()["version"] != self.work["version"]
-            || current.value()["results"] != self.work["results"]
+            || current.version() != self.work.version()
+            || current.results() != self.work.results()
             || owner.value() != self.owner
             || accepted_archive_preflight(
                 tx,
@@ -1757,15 +1753,13 @@ fn work_receipt_in(
     let Some(saved) = saved else {
         return Ok(None);
     };
-    let value = saved.reply.into_value();
-    let Some(id) = value.get("id").and_then(Value::as_str) else {
-        return Err(invalid("runtime_work", request_id).into());
-    };
-    if value.get("rootId").and_then(Value::as_str) != Some(agent.root_id.0.as_str()) {
+    let reply = saved.reply;
+    if reply.get("rootId").and_then(Value::as_str) != Some(agent.root_id.0.as_str()) {
         return Err(Error::InvalidRequest("Invalid request").into());
     }
-    WorkItemsRepository::validate_work(connection, id, &value).map_err(WorkWriteError::Store)?;
-    Ok(Some(value))
+    WorkItemsRepository::validate_work(connection, reply.id().as_ref(), reply.value())
+        .map_err(WorkWriteError::Store)?;
+    Ok(Some(reply.into_value()))
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -2433,17 +2427,21 @@ fn continuation_work_pending(agent: &AgentRecord) -> bool {
 
     let capacity = agent.extra.get("capacityRetry").unwrap_or(&Value::Null);
     let usage = agent.extra.get("usageResume").unwrap_or(&Value::Null);
-    let restart = agent.extra.get("restartRecovery").unwrap_or(&Value::Null);
+    let restart = agent.restart_recovery.as_deref();
     matches(capacity, &["scheduled", "starting", "unknown"], "turnId")
         || matches(usage, &["scheduled", "started", "unknown"], "turnId")
-        || (restart.get("stage").and_then(Value::as_str) == Some("pending")
+        || (restart.and_then(|v| v.stage.as_deref()) == Some("pending")
+            && restart.and_then(|v| v.auto_wake) == Some(true)
             && restart
-                .get("autoWake")
-                .is_some_and(|value| event_write::truthy(Some(value)))
-            && restart.get("accountKey").unwrap_or(&default_account) == &account
-            && restart.get("threadId").and_then(Value::as_str) == thread
+                .and_then(|v| v.account_key.as_deref())
+                .unwrap_or("default")
+                == agent.account_key
+            && restart.and_then(|v| v.thread_id.as_deref()) == thread
             && thread.is_some_and(|thread| !thread.is_empty())
-            && restart.get("epoch").and_then(Value::as_i64) == Some(epoch))
+            && restart
+                .and_then(|v| v.epoch.as_ref())
+                .and_then(|v| v.number().as_i64())
+                == Some(epoch))
 }
 
 struct WorkSnapshot<'a> {
@@ -2587,7 +2585,7 @@ fn decide_accept(
     if record.status() != studio_runtime_store::WorkStatus::Review {
         return Err(Error::InvalidRequest("Submit a result before review"));
     }
-    crate::task_gate::require_pass(&record.value(), override_reason)?;
+    crate::task_gate::require_pass(record, override_reason)?;
     let mut updated = record.clone();
     if crate::event_write::python_strip(reason).is_empty() {
         return Err(Error::InvalidRequest("Field must not be empty"));
@@ -3167,7 +3165,7 @@ fn submit(
             &lead,
             format!("work-result:{result_id}"),
             "work_review",
-            json!({"task":input.task_id,"title":work.value()["title"],"result":result}).to_string(),
+            json!({"task":input.task_id,"title":work.title(),"result":result}).to_string(),
             now,
         )?;
     }
@@ -3574,8 +3572,7 @@ pub fn work_item_view(
 }
 
 fn single_view(tx: &Transaction<'_>, work: &WorkItemRecord) -> Result<Value, Error> {
-    let statuses = dependency_statuses(tx, work)?;
-    Ok(crate::work_policy::work_item_view(work, &statuses))
+    Ok(work_item_view(tx, work)?)
 }
 
 fn validate_dependencies(
@@ -3959,8 +3956,8 @@ mod actor_tests {
     fn database() -> Connection {
         let connection = studio_runtime_store::test_canvas();
         for agent in [
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"inFlight":true,"agentMode":"multi","concurrency":8}),
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"running","autoWake":true,"inFlight":true,"agentMode":"multi","concurrency":8}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"inFlight":true,"agentMode":"multi","concurrency":8}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"running","autoWake":true,"inFlight":true,"agentMode":"multi","concurrency":8}),
         ] {
             connection
                 .execute(
@@ -4030,8 +4027,8 @@ mod actor_tests {
         let request = root.clone();
         store.transaction_with_error(move |tx| -> Result<(), super::WorkWriteError> {
             for agent in [
-                json!({"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":true,"executionMode":"vm"}),
-                json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"idle","autoWake":true,"executionMode":"vm"}),
+                json!({"compactions":0,"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":true,"executionMode":"vm"}),
+                json!({"compactions":0,"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"idle","autoWake":true,"executionMode":"vm"}),
             ] { AgentRepository::put(tx, &AgentRecord::from_value(agent).expect("agent"))?; }
             let mut item = work("retry", Some("worker"), "review", json!([{"id":"result-1","agent":"worker","text":"done","checks":"checked","revision":"state","files":[]}]));
             item["vmAccept"] = json!({"status":"completed","requestId":"merge","taskId":"retry","owner":"worker","revision":"state","resultId":"result-1","created":1.0});
@@ -4060,8 +4057,8 @@ mod actor_tests {
         let request = root.clone();
         store.transaction_with_error(move |tx| -> Result<(), super::WorkWriteError> {
             for agent in [
-                json!({"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true}),
-                json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"idle","autoWake":true,"executionMode":"vm"}),
+                json!({"compactions":0,"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true}),
+                json!({"compactions":0,"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"idle","autoWake":true,"executionMode":"vm"}),
             ] { AgentRepository::put(tx, &AgentRecord::from_value(agent).expect("fixture agent"))?; }
             let mut item = work("unknown", Some("worker"), "review", json!([{"id":"result-1","agent":"worker","text":"done","checks":"checked","revision":"state","files":[]}]));
             item["vmAccept"] = json!({"status":"completed","requestId":"merge","taskId":"unknown","owner":"worker","revision":"state","resultId":"result-1","created":1.0});
@@ -4137,7 +4134,7 @@ mod actor_tests {
     #[test]
     fn receipt_domain_refusal_reads_current_owner_without_receipt_history() {
         let connection = database();
-        let owner = AgentRecord::from_value(json!({"accountKey":"default",
+        let owner = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
             "id":"worker", "rootId":"worker", "provider":"codex", "epoch":3,
             "status":"idle"
         }))
@@ -4542,8 +4539,8 @@ mod actor_tests {
         store
             .transaction(|tx| {
                 for agent in [
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running"}),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"paused",
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running"}),
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"paused",
                         "remoteWorker":{"server":"remote","link":"worker-link"}}),
                 ] {
                     AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
@@ -4621,8 +4618,8 @@ mod actor_tests {
         store
             .transaction(|tx| {
                 for agent in [
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running"}),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"paused",
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running"}),
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"paused",
                         "remoteWorker":{"server":"remote","link":"worker-link"}}),
                 ] {
                     AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
@@ -4698,9 +4695,9 @@ mod actor_tests {
         store
             .transaction(move |tx| {
                 for agent in [
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,
                         "epoch":1,"status":"running","autoWake":true,"isLead":true}),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"lead","parentId":"lead",
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"lead","parentId":"lead",
                         "epoch":2,"status":"completed","autoWake":false,"inFlight":false,
                         "role":role}),
                 ] {
@@ -5067,7 +5064,7 @@ mod actor_tests {
         let revision = git(&["rev-parse", "HEAD"]).trim().to_owned();
         let dir = tempfile::tempdir().expect("state");
         let store = Arc::new(RuntimeStore::open(Some(dir.path())).await.expect("store"));
-        let owner = json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"paused","cwd":repo.path().to_str().expect("path")});
+        let owner = json!({"compactions":0,"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","epoch":2,"status":"paused","cwd":repo.path().to_str().expect("path")});
         let item = work(
             "race",
             Some("worker"),
@@ -5075,9 +5072,9 @@ mod actor_tests {
             json!([{"id":"result-1","agent":"worker","text":"done","checks":"checked","revision":revision,"files":[]}]),
         );
         let saved_owner = owner.clone();
-        let saved_work = item.clone();
+        let saved_work = super::WorkItemRecord::checked(&item).expect("checked work");
         store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running"}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running"}))?)?;
             AgentRepository::put(tx, &AgentRecord::from_value(owner)?)?;
             WorkItemsRepository::put_work(tx, "race", &item)?;
             Ok(())
@@ -5137,7 +5134,7 @@ mod actor_tests {
         let public_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let mut connection = database();
         for id in ["worker", "replacement-worker"] {
-            let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":id,"rootId":"lead","epoch":2,"status":"running","autoWake":true,
                 "inFlight":true,"agentMode":"multi","concurrency":8,"executionMode":"vm",
                 "layrProjectId":"project","layrLine":id
@@ -5486,7 +5483,7 @@ mod actor_tests {
     ) {
         let mut connection = database();
         for (id, role) in [("lead", "lead"), ("worker", "reviewer")] {
-            let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":id,"rootId":"lead","epoch":2,"status":"running","autoWake":true,
                 "inFlight":true,"agentMode":"multi","concurrency":8,"executionMode":execution_mode,"workspaceMode":workspace_mode,
                 "isLead":(id == "lead"),"role":role,"layrProjectId":"project","layrLine":id
@@ -5628,7 +5625,7 @@ mod actor_tests {
         let store = RuntimeStore::open(Some(state.path())).await.expect("store");
         let request_root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let cwd = project.path().to_string_lossy().into_owned();
-        let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running",
+        let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running",
             "autoWake":true,"cwd":cwd});
         let item = work("file-submission", Some("lead"), "running", json!([]));
         store
@@ -5822,7 +5819,7 @@ mod release_tests {
 
     #[test]
     fn continuation_identity_only_preserves_an_exact_pending_retry() {
-        let agent = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+        let agent = AgentRecord::from_value(json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"worker","rootId":"lead","epoch":7,"status":"failed",
             "autoWake":true,"accountKey":"acct","threadId":"thread",
             "lastCompletedTurn":"turn-3",
@@ -5858,8 +5855,8 @@ mod release_tests {
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         for agent in [
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"paused","autoWake":false}),
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"failed","parentId":"lead","autoWake":false,"error":"worker exited"}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"paused","autoWake":false}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"failed","parentId":"lead","autoWake":false,"error":"worker exited"}),
         ] {
             connection
                 .execute(
@@ -5885,7 +5882,7 @@ mod release_tests {
             )
             .expect("work items insert");
         let failed = AgentRecord::from_value(
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"worker","rootId":"lead","epoch":2,"status":"failed",
                 "parentId":"lead","autoWake":false,"error":"worker exited"
             }),

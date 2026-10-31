@@ -41,10 +41,10 @@ const PUBLICATION_INVALIDATION: PublicationClass = PublicationClass::Invalidatio
 /// Signature of every other pending publication receipt.
 const PUBLICATION_PENDING: PublicationClass = PublicationClass::Pending;
 
-pub(super) fn save_publication(
+pub(super) fn save_publication<T: serde::Serialize>(
     tx: &studio_runtime_store::Transaction<'_>,
     operation: &str,
-    payload: Publication,
+    payload: Publication<T>,
 ) -> Result<(), WorkerError> {
     type Effect = crate::notification_dispatch::NotificationPostCommit;
     let old = Outbox::get::<Publication<Effect>>(tx, operation).map_err(|error| match error {
@@ -409,8 +409,11 @@ fn journal_frame_payload(frame: &Frame, operation: &str) -> Result<Vec<u8>, Work
 /// Whether `attempt` is the attempt of the agent's last completed turn. Such
 /// an attempt is history, not a live start: an earlier build restored it from
 /// a stale disconnect record.
-fn completed_attempt(agent: &studio_runtime_store::AgentRecord, attempt: &Value) -> bool {
-    attempt["turnId"].as_str().is_some_and(|turn| {
+fn completed_attempt(
+    agent: &studio_runtime_store::AgentRecord,
+    attempt: &studio_runtime_store::StartAttemptView,
+) -> bool {
+    attempt.turn_id.as_deref().is_some_and(|turn| {
         !turn.is_empty()
             && agent.extra.get("lastCompletedTurn").and_then(Value::as_str) == Some(turn)
     })
@@ -637,8 +640,8 @@ pub(super) async fn recover(
         }
         for (id, attempt) in restore {
             let mut agent = stored_agent(tx, &id)?;
-            if agent.extra.get("startAttempt").is_none_or(Value::is_null) {
-                agent.extra.insert("startAttempt".into(), attempt);
+            if agent.start_attempt.is_none() {
+                agent.start_attempt = Some(Box::new(attempt));
                 AgentRepository::put(tx, &agent)?;
             }
         }
@@ -673,9 +676,7 @@ pub(super) async fn recover(
                 if !continued_thread_call(tx, &context)? && current.as_ref().is_some_and(|a| {
                     a.epoch == context.intent.epoch
                         && account_key(a) == account
-                        && a.extra.get("startAttempt").is_none_or(|attempt| {
-                            attempt.is_null() || completed_attempt(a, attempt)
-                        })
+                        && a.start_attempt.as_ref().is_none_or(|attempt| completed_attempt(a, attempt))
                         && (a.auto_wake == Some(true)
                             || a.start_outcome_hold.as_ref()
                                 .and_then(studio_runtime_store::StoredStartOutcomeHold::operation_id)
@@ -829,11 +830,11 @@ pub(super) async fn claim(
                 }
                 let pending = record
                     .as_ref()
-                    .and_then(|a| a.extra.get("startAttempt"))
+                    .and_then(|a| a.start_attempt.as_ref())
                     .filter(|a| {
-                        a["submitted"] == false
+                        a.submitted == Some(false)
                             && matches!(
-                                a["prepareError"].as_str(),
+                                a.prepare_error.as_deref(),
                                 Some(
                                     "workspace-readiness/pending" | "model-catalog/refresh-pending"
                                 )
@@ -842,7 +843,7 @@ pub(super) async fn claim(
                 let attempt = if guarding {
                     &attempt
                 } else {
-                    pending.and_then(|a| a["id"].as_str()).unwrap_or(&attempt)
+                    pending.and_then(|a| a.id.as_deref()).unwrap_or(&attempt)
                 };
                 if let Some(prepared) = &prepared {
                     prepared
@@ -1249,10 +1250,9 @@ pub(super) async fn submitted(
                 | Method::ProviderGenerationStarted
                 | Method::ProtocolError => {
                     agent.epoch == i.epoch
-                        && agent.extra.get("startAttempt").unwrap_or(&Value::Null)["id"]
-                            == i.attempt_id
-                        && agent.extra.get("startAttempt").unwrap_or(&Value::Null)["submitted"]
-                            == false
+                        && agent.start_attempt.as_ref().and_then(|a| a.id.as_deref())
+                            == Some(i.attempt_id.as_str())
+                        && agent.start_attempt.as_ref().and_then(|a| a.submitted) == Some(false)
                         && agent.auto_wake == Some(true)
                         && agent.extra.get("nativeFailureHold").unwrap_or(&Value::Null) != true
                 }
@@ -2652,7 +2652,8 @@ fn journal_one(
                                         Some(&agent),
                                         &frame,
                                         &delivery,
-                                        now(),
+                                        crate::notification_dispatch::ObservationTime::new(now())
+                                            .ok_or_else(|| invalid(&identity.agent_id))?,
                                         &crate::notification_dispatch::DispatchOutcome::Written,
                                     ),
                             );
@@ -2735,7 +2736,8 @@ fn journal_one(
                                         Some(&agent_after),
                                         &frame,
                                         &delivery,
-                                        now(),
+                                        crate::notification_dispatch::ObservationTime::new(now())
+                                            .ok_or_else(|| invalid(&identity.agent_id))?,
                                         &crate::notification_dispatch::DispatchOutcome::Written,
                                     ),
                             );
@@ -2862,10 +2864,12 @@ pub(super) async fn stop(
         let Some(agent) = AgentRepository::get(tx, &AgentId::from(agent.as_str()))? else {
             return Ok(None);
         };
-        let attempt = &agent.extra.get("startAttempt").unwrap_or(&Value::Null);
-        let turn = attempt["turnId"]
-            .as_str()
-            .or_else(|| attempt["observedTurnId"].as_str());
+        let turn = agent.start_attempt.as_ref().and_then(|attempt| {
+            attempt
+                .turn_id
+                .as_deref()
+                .or(attempt.observed_turn_id.as_deref())
+        });
         let effect = turn
             .zip(agent.thread_id.as_deref())
             .map(|(turn, thread)| Effect::Interrupt {
@@ -2890,33 +2894,38 @@ pub(super) fn interrupt_intent(
     };
     let provider = studio_runtime_providers::ProviderKind::of_field(a.extra.get("provider"))
         .map_err(|_| WorkerError::PreparationRefused("agent/provider".into()))?;
-    let attempt = &a.extra.get("startAttempt").unwrap_or(&Value::Null);
-    let interrupt = &attempt["interrupt"];
-    if interrupt["threadId"] == thread
-        && matches!(interrupt["outcome"].as_str(), Some("unknown" | "accepted"))
-    {
+    let Some(attempt) = a.start_attempt.as_ref() else {
+        return Ok(None);
+    };
+    if attempt.interrupt.as_ref().is_some_and(|interrupt| {
+        interrupt.thread_id.as_deref() == Some(thread)
+            && matches!(
+                interrupt.outcome,
+                Some(
+                    studio_runtime_store::InterruptOutcome::Unknown
+                        | studio_runtime_store::InterruptOutcome::Accepted
+                )
+            )
+    }) {
         return Ok(None);
     }
-    Ok(attempt["id"]
-        .as_str()
-        .zip(attempt["epoch"].as_i64())
-        .map(|(id, epoch)| {
-            (
-                TurnIntent {
-                    agent_id: agent.into(),
-                    epoch,
-                    attempt_id: id.into(),
-                    account_key: a.account_key.as_str().into(),
-                    provider,
-                    thread_id: Some(thread.into()),
-                    cwd: None,
-                    model: None,
-                    events: vec![],
-                    radio_authorized: false,
-                },
-                a.epoch,
-            )
-        }))
+    Ok(attempt.id.as_deref().zip(attempt.epoch).map(|(id, epoch)| {
+        (
+            TurnIntent {
+                agent_id: agent.into(),
+                epoch,
+                attempt_id: id.into(),
+                account_key: a.account_key.as_str().into(),
+                provider,
+                thread_id: Some(thread.into()),
+                cwd: None,
+                model: None,
+                events: vec![],
+                radio_authorized: false,
+            },
+            a.epoch,
+        )
+    }))
 }
 pub(super) fn id_string(id: &RequestId) -> String {
     match id {
@@ -3529,7 +3538,7 @@ fn persist_publication_batch_in(
             save_publication(
                 tx,
                 &operation,
-                Publication {
+                Publication::<&crate::notification_dispatch::NotificationPostCommit> {
                     account: account.to_owned(),
                     sequence: batch.sequence,
                     index: batch.effects.len(),
@@ -3607,7 +3616,7 @@ fn save_publication_effect(
             sequence: batch.sequence,
             index,
             class: signature,
-            effect: Some(serde_json::value::to_raw_value(effect).map_err(StoreError::from)?),
+            effect: Some(effect),
             ..Default::default()
         },
     )?;
@@ -3876,6 +3885,9 @@ pub(super) struct AccountStreams {
     metadata: NotificationStreamBuffer,
 }
 
+const VM_STREAM_OWNERS_SQL: &str = "SELECT id FROM runtime_agents INDEXED BY runtime_agent_vm_stream_owner WHERE account_key=?1 AND execution_mode='vm' AND hold_status='clear'";
+const VM_STREAM_LANES_SQL: &str = "SELECT id,json_extract(record,'$.providerStream.streams') FROM runtime_agents WHERE account_key=?1 AND execution_mode='vm' AND json_type(record,'$.providerStream.streams')='object' AND hold_status='clear'";
+
 fn persist_stream_lane(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
@@ -3884,7 +3896,7 @@ fn persist_stream_lane(
     revision: &str,
     lane: &NotificationStreamBuffer,
 ) -> Result<AccountStreams, WorkerError> {
-    let (metadata, pending) = lane.persisted_parts().map_err(|_| invalid(scope))?;
+    let (metadata, pending) = lane.persisted_parts();
     let id = format!("streams:{scope}");
     let old = Outbox::get::<crate::notification_dispatch::NotificationPendingStreams>(tx, &id)
         .map_err(outbox_error)?;
@@ -3928,7 +3940,7 @@ fn persist_stream_lane(
     }
     Ok(AccountStreams {
         revision: revision.to_owned(),
-        metadata: serde_json::from_str(&metadata).map_err(|_| invalid(scope))?,
+        metadata,
     })
 }
 
@@ -3939,7 +3951,7 @@ pub(crate) fn persist_streams(
 ) -> Result<(), WorkerError> {
     let revision = uuid::Uuid::new_v4().to_string();
     let mut host = streams.clone();
-    let mut query=tx.prepare_cached("SELECT id FROM runtime_agents WHERE account_key=?1 AND json_extract(record,'$.executionMode')='vm' AND hold_status='clear'")?;
+    let mut query = tx.prepare_cached(VM_STREAM_OWNERS_SQL)?;
     let actors = query
         .query_map([account], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -4011,7 +4023,7 @@ pub(super) fn load_streams(
             metadata: NotificationStreamBuffer::default(),
         }
     };
-    let mut query=tx.prepare_cached("SELECT id,json_extract(record,'$.providerStream.streams') FROM runtime_agents WHERE account_key=?1 AND json_extract(record,'$.executionMode')='vm' AND json_type(record,'$.providerStream.streams')='object' AND hold_status='clear'")?;
+    let mut query = tx.prepare_cached(VM_STREAM_LANES_SQL)?;
     let lanes = query
         .query_map([account], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -4089,7 +4101,7 @@ pub(super) fn pending_preparations(
 ) -> Result<Vec<(String, i64)>, WorkerError> {
     // Python persists deferred preparation on startAttempt.prepareError and
     // clears it when preparation resumes (codex_runtime.py:7316, 7502-7505).
-    let mut query = db.prepare("SELECT id FROM runtime_agents WHERE COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND (json_type(record,'$.startAttempt.prepareError')='text' OR (json_type(record,'$.startAttempt') IS NULL AND json_type(record,'$.lastWorkspaceWait.attemptId')='text')) AND json_extract(record,'$.deletedAt') IS NULL ORDER BY id")?;
+    let mut query = db.prepare("SELECT id FROM runtime_agents WHERE account_key=?1 AND auto_wake=1 AND deleted_at IS NULL AND COALESCE(json_extract(record,'$.accountKey'),'default')=?1 AND json_extract(record,'$.autoWake')=1 AND (json_type(record,'$.startAttempt.prepareError')='text' OR (json_type(record,'$.startAttempt') IS NULL AND json_type(record,'$.lastWorkspaceWait.attemptId')='text')) ORDER BY id")?;
     let ids = query
         .query_map([account], |row| row.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()?;
@@ -4100,6 +4112,154 @@ pub(super) fn pending_preparations(
             Ok((id, row.epoch))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod stream_owner_query_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[test]
+    fn vm_stream_queries_skip_json_for_host_agents() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
+            .unwrap();
+        db.execute_batch("CREATE INDEX runtime_agent_vm_stream_owner ON runtime_agents(account_key,id) WHERE execution_mode='vm' AND hold_status='clear'").unwrap();
+        for n in 0..20 {
+            let id = format!("host-{n}");
+            let raw = serde_json::json!({"compactions":0,"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default","executionMode":"host"});
+            db.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, raw.to_string()],
+            )
+            .unwrap();
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        db.create_scalar_function(
+            "json_extract",
+            2,
+            rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC
+                | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
+            move |_| {
+                counted.fetch_add(1, Ordering::Relaxed);
+                Ok(None::<i64>)
+            },
+        )
+        .unwrap();
+        for sql in [super::VM_STREAM_OWNERS_SQL, super::VM_STREAM_LANES_SQL] {
+            assert!(
+                db.prepare(sql)
+                    .unwrap()
+                    .query(["default"])
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+}
+
+#[cfg(test)]
+mod pending_preparation_scan_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    #[test]
+    fn pending_scan_skips_json_for_agents_with_autowake_disabled() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
+            .unwrap();
+        for n in 0..20 {
+            let id = format!("disabled-{n}");
+            let raw = serde_json::json!({"compactions":0,"id":id,"rootId":id,"provider":"codex","epoch":1,"status":"idle","accountKey":"default","autoWake":false});
+            db.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, raw.to_string()],
+            )
+            .unwrap();
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&calls);
+        db.create_scalar_function(
+            "json_extract",
+            2,
+            rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC
+                | rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS,
+            move |_| {
+                counted.fetch_add(1, Ordering::Relaxed);
+                Ok(None::<i64>)
+            },
+        )
+        .unwrap();
+        assert!(
+            super::pending_preparations(&db, "default")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn pending_scan_preserves_account_and_legacy_wait_selection() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
+            .unwrap();
+        db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
+            .unwrap();
+        for (id, account, auto_wake, extra) in [
+            (
+                "a",
+                "default",
+                true,
+                serde_json::json!({"startAttempt":{"prepareError":"waiting"}}),
+            ),
+            (
+                "b",
+                "default",
+                true,
+                serde_json::json!({"lastWorkspaceWait":{"attemptId":"old"}}),
+            ),
+            (
+                "c",
+                "default",
+                true,
+                serde_json::json!({"startAttempt":null,"lastWorkspaceWait":{"attemptId":"old"}}),
+            ),
+            (
+                "d",
+                "other",
+                true,
+                serde_json::json!({"startAttempt":{"prepareError":"waiting"}}),
+            ),
+            (
+                "e",
+                "default",
+                false,
+                serde_json::json!({"startAttempt":{"prepareError":"waiting"}}),
+            ),
+        ] {
+            let mut row = serde_json::json!({"compactions":0,"id":id,"rootId":id,"provider":"codex","epoch":2,"status":"idle","accountKey":account,"autoWake":auto_wake});
+            row.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            db.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params![id, row.to_string()],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            super::pending_preparations(&db, "default").unwrap(),
+            vec![("a".into(), 2), ("b".into(), 2)]
+        );
+    }
 }
 
 /// A failed turn whose error proves the account's credentials rejected ends
@@ -4225,21 +4385,21 @@ fn pending_needs_record(
     attempt_id: &str,
     epoch: i64,
 ) -> bool {
-    let Some(attempt) = row.extra.get("startAttempt") else {
+    let Some(attempt) = row.start_attempt.as_ref() else {
         return false;
     };
     let wait = owner.wait(epoch);
-    let recorded = row
-        .extra
-        .get(studio_runtime_schema::agent_progress::START_WAIT_FIELD)
-        == Some(&json!(wait))
-        && attempt.get("prepareError").and_then(Value::as_str) == Some(reason)
+    let recorded = row.start_wait.as_ref() == Some(&wait)
+        && attempt.prepare_error.as_deref() == Some(reason)
         && (reason != preparation::WORKSPACE_PENDING_REASON
             || row
                 .extra
                 .get("lastWorkspaceWait")
                 .is_some_and(|wait| wait["attemptId"] == attempt_id));
-    !recorded && row.epoch == epoch && attempt["id"] == attempt_id && attempt["submitted"] == false
+    !recorded
+        && row.epoch == epoch
+        && attempt.id.as_deref() == Some(attempt_id)
+        && attempt.submitted == Some(false)
 }
 
 /// Record a changed pending blocker on the unsubmitted attempt.
@@ -4261,16 +4421,10 @@ async fn record_pending(
         let mut row = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
             .ok_or_else(|| invalid(&agent_id))?;
         if pending_needs_record(&row, &reason, owner, &attempt_id, epoch)
-            && let Some(attempt) = row
-                .extra
-                .get_mut("startAttempt")
-                .and_then(Value::as_object_mut)
+            && let Some(attempt) = row.start_attempt.as_mut()
         {
-            attempt.insert("prepareError".into(), json!(reason));
-            row.extra.insert(
-                studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),
-                serde_json::to_value(owner.wait(epoch)).map_err(StoreError::from)?,
-            );
+            attempt.prepare_error = Some(reason.clone());
+            row.start_wait = Some(owner.wait(epoch));
             if reason == preparation::WORKSPACE_PENDING_REASON {
                 // Python's WorkspaceWaitRecord uses these fields
                 // (codex_workspace_delivery.py:43-46).

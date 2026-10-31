@@ -29,6 +29,8 @@ pub(super) const DELETED_SETTINGS_REPORT: &str = "deleted-completed-c:settings";
 pub(super) const DELETED_USER_MESSAGE_REPORT: &str = "deleted-completed-c:user-message";
 const DELETED_MODE_REPORT: &str = "deleted-completed-c:agent-mode";
 const DELETED_WORK_REFUSAL_REPORT: &str = "deleted-completed-c:work-refusal";
+/// Inbound location effects of the retired Python backend; no Rust code reads them.
+const DELETED_LOCATION_EFFECT_REPORT: &str = "deleted-completed-c:location-effect";
 /// Closed W2e audit (89dabbd591): these synchronous owners saved only the reply,
 /// never the exact original body. Their old spaced hashes cannot be normalized.
 const CHANGED_SYNCHRONOUS_SIGNATURES: &[(&str, &str)] = &[
@@ -47,6 +49,25 @@ struct WorkspaceKindView {
     source: Option<WorkspaceSource>,
     provider_admission: Option<AdmittedRequest>,
     root_request_id: Option<String>,
+}
+
+/// The exact reply shapes of the retired Python `add_location` and `remove_location` receiver.
+fn retired_location_effect(reply: &Value) -> bool {
+    let Some(object) = reply.as_object() else {
+        return false;
+    };
+    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let added = [
+        "canonicalPath",
+        "gitOrigin",
+        "homeProjectId",
+        "path",
+        "projectId",
+        "requestId",
+        "serverId",
+    ];
+    keys == added || (keys == ["removed", "serverId"] && reply["removed"] == true)
 }
 
 #[derive(Deserialize)]
@@ -356,6 +377,15 @@ impl ReceiptFamilyMigration for Family {
             if reply["requestId"] == row.id && reply["outcome"] == "unknown" {
                 migrate_location(tx, &row, &reply, checkpoint.cutover_ms)?;
                 delete_source(tx, source, row.rowid)?;
+                continue;
+            }
+            if hash_signature && retired_location_effect(&reply) {
+                discard_completed_reply(
+                    tx,
+                    &row,
+                    DELETED_LOCATION_EFFECT_REPORT,
+                    checkpoint.cutover_ms,
+                )?;
                 continue;
             }
             if let Some((prefix, report)) = CHANGED_SYNCHRONOUS_SIGNATURES
@@ -1043,6 +1073,19 @@ fn schema(name: &str, reply: &Value) -> bool {
     studio_runtime_schema::validate(name, reply).unwrap_or(false)
 }
 
+// Frozen 2026-10-28 complaint reply schema: only id is required and the
+// four known fields may be strings or null. Unknown fields were accepted.
+fn historical_complaint_reply(reply: &Value) -> bool {
+    reply.as_object().is_some_and(|object| {
+        object.get("id").is_some_and(Value::is_string)
+            && ["author", "leadId", "status", "text"].iter().all(|field| {
+                object
+                    .get(*field)
+                    .is_none_or(|value| value.is_null() || value.is_string())
+            })
+    })
+}
+
 fn exact_reply(row: &SourceReceipt, reply: &Value) -> bool {
     if row.id.starts_with("plan-request:") || row.id.starts_with("plan:") {
         return schema("PersistedPlanRecord", reply);
@@ -1053,7 +1096,7 @@ fn exact_reply(row: &SourceReceipt, reply: &Value) -> bool {
             && reply["capabilities"].is_object();
     }
     if row.id.starts_with("user:") {
-        return schema("PersistedComplaintRecord", reply);
+        return historical_complaint_reply(reply);
     }
     if row.id.starts_with("park-request:") {
         return reply["event"].is_string() && reply["count"].is_u64() && reply["woken"].is_array();
@@ -1432,6 +1475,16 @@ mod tests {
     use rusqlite::Connection;
     const CUTOVER: i64 = 1_000_000;
     const SIGNATURE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn historical_complaint_reply_does_not_follow_current_row_schema() {
+        assert!(historical_complaint_reply(
+            &json!({"id":"c","status":"future","extra":[1]})
+        ));
+        assert!(historical_complaint_reply(&json!({"id":"c","text":null})));
+        assert!(!historical_complaint_reply(&json!({"id":"c","text":true})));
+        assert!(!historical_complaint_reply(&json!({"status":"open"})));
+    }
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct TestWorkspaceAdmission {
@@ -1925,6 +1978,33 @@ mod tests {
         let tx = db.transaction().expect("transaction");
         Family.finish(&tx).expect("finish");
         tx.commit().expect("finish commit");
+    }
+
+    #[test]
+    fn receipts_requests_retired_location_effects_are_dropped_and_counted() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let added = json!({"serverId":"local","path":"/p","canonicalPath":"/p","projectId":"/p","gitOrigin":null,"homeProjectId":"/home","requestId":"r"});
+        let removed = json!({"removed":true,"serverId":"local"});
+        for (id, reply) in [
+            ("3b1efb00-845b-5e6f-afad-dfd507aa33d2", added),
+            ("e3fedacf-2ef0-5323-97f6-4784f4a47bde", removed),
+        ] {
+            db.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+                params![id, "a".repeat(64), reply.to_string()],
+            )
+            .expect("retired effect");
+        }
+        migrate(&mut db);
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, DELETED_LOCATION_EFFECT_REPORT)
+                .expect("report")
+                .expect("count")
+                .cursor,
+            2
+        );
     }
 
     #[test]

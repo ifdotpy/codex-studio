@@ -26,7 +26,7 @@ mod snapshot;
 pub use effects::{
     NotificationDependency, NotificationEffects, NotificationHourMetrics, NotificationObservation,
     NotificationPostCommit, NotificationPublicationBatch, NotificationStreamMetrics,
-    RecoveredNotificationObservation, SharedJson, UnavailableNotificationEffects,
+    ObservationTime, RecoveredNotificationObservation, SharedJson, UnavailableNotificationEffects,
 };
 
 #[path = "notification_dispatch/stream.rs"]
@@ -273,6 +273,8 @@ impl From<StoreError> for NotificationDispatchError {
             | error @ StoreError::SchemaMismatch(_)
             | error @ StoreError::InvalidSyncObjectField { .. }
             | error @ StoreError::InvalidStoredRecord { .. }
+            | error @ StoreError::TranscriptFullTextUnavailable { .. }
+            | error @ StoreError::TranscriptInputsIncomplete { .. }
             | error @ StoreError::SchemaObjectMismatch { .. }
             | error @ StoreError::Sqlite(_)
             | error @ StoreError::CommitOutcomeUnknown(_)
@@ -383,7 +385,7 @@ pub(crate) fn submit_user_message(
     request_id: &str,
     text: &str,
     now: f64,
-) -> Result<Value, NotificationDispatchError> {
+) -> Result<studio_runtime_store::ComplaintRecord, NotificationDispatchError> {
     questions::submit_user_message(tx, lead, request_id, text, now)
 }
 
@@ -571,7 +573,8 @@ pub fn dispatch_notification_with_effects(
                     Some(&agent),
                     &notification_payload(notification),
                     delivery,
-                    observed_at,
+                    ObservationTime::new(observed_at)
+                        .ok_or_else(NotificationDispatchError::invalid)?,
                     &DispatchOutcome::Written,
                 ) {
                     if let NotificationPostCommit::Analytics { observation, .. } = effect {
@@ -892,7 +895,7 @@ pub fn dispatch_notification_with_effects(
                 after,
                 &notification_payload(notification),
                 delivery,
-                observed_at,
+                ObservationTime::new(observed_at).ok_or_else(NotificationDispatchError::invalid)?,
                 &outcome,
             );
             if command_output_monitor_present == Some(false) {
@@ -945,7 +948,7 @@ pub(crate) fn put_checked_task_record(
     tx: &Transaction<'_>,
     task: &studio_runtime_store::TaskRecord,
 ) -> Result<(), NotificationDispatchError> {
-    kinds::put_checked_task(tx, task, &task.value())
+    kinds::put_checked_task(tx, task, &studio_runtime_store::projection_value(task))
 }
 
 /// Shared completion formatter for recovery; its caller owns the recovery receipt.
@@ -953,23 +956,21 @@ pub(crate) fn put_checked_task_record(
 pub fn recover_task_in_transaction(
     tx: &Transaction<'_>,
     agent: &Value,
-    previous: &Value,
+    previous: &studio_runtime_store::TaskRecord,
     item: &Value,
     at: f64,
 ) -> Result<(), NotificationDispatchError> {
     in_savepoint(tx, || {
         if !at.is_finite()
             || at < 0.0
-            || previous["agent"] != agent["id"]
-            || previous["itemId"] != item["id"]
-            || previous["type"] != item["type"]
+            || Some(previous.agent()) != agent["id"].as_str()
+            || Some(previous.item_id()) != item["id"].as_str()
+            || Some(previous.task_type().as_str()) != item["type"].as_str()
         {
             return Err(NotificationDispatchError::invalid());
         }
         use studio_runtime_store::{Table, TaskId, TaskRecord};
-        let task_id = previous["id"]
-            .as_str()
-            .ok_or(NotificationDispatchError::invalid())?;
+        let task_id = previous.id().as_ref();
         let current = Table::<TaskRecord>::new(tx).get(&TaskId::from(task_id))?;
         let stored_agent = NotificationDispatchRepository::agent_record(
             tx,
@@ -977,16 +978,16 @@ pub fn recover_task_in_transaction(
                 .as_str()
                 .ok_or(NotificationDispatchError::invalid())?,
         )?;
-        if current.as_ref().map(|record| record.value()).as_ref() != Some(previous)
-            || stored_agent.as_ref() != Some(agent)
-        {
+        if current.as_ref() != Some(previous) || stored_agent.as_ref() != Some(agent) {
             return Err(NotificationDispatchError::invalid());
         }
         let snapshot = snapshot::NotificationSnapshot::from_records(agent.clone(), current, None)?;
-        if snapshot.task().and_then(TaskRecord::status) != Some("running") {
+        if snapshot.task().map(TaskRecord::status)
+            != Some(studio_runtime_schema::task_record::TaskStatus::Running)
+        {
             return Ok(());
         }
-        let params = json!({"item":item,"turnId":previous["turnId"]});
+        let params = json!({"item":item,"turnId":previous.turn_id()});
         if let Some(task) = items::task_transition(
             snapshot.agent(),
             "item/completed",
@@ -995,7 +996,7 @@ pub fn recover_task_in_transaction(
             true,
             at,
         )? {
-            kinds::put_task(tx, &task)?;
+            kinds::put_checked_task(tx, &task, &studio_runtime_store::projection_value(&task))?;
             kinds::write_historical_item(
                 tx,
                 agent["id"]
@@ -2267,13 +2268,13 @@ mod tests {
         let store = RuntimeStore::open(Some(root.path())).await.unwrap();
         store.transaction_with(|tx| {
             for (agent, provider, model) in [("claude-agent", "claude", "claude-test"), ("codex-agent", "codex", "gpt-test")] {
-                AgentRepository::put(tx, &AgentRecord::from_value(json!({
+                AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,
                     "id":agent,"rootId":"root","epoch":1,"status":"running","threadId":agent,
                     "accountKey":provider,"provider":provider,"model":model,"turnId":"turn",
                     "inFlight":true,"autoWake":false,"created":0,"activeTools":[],"events":0
                 })).unwrap())?;
             }
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"root","rootId":"root","epoch":1,"status":"idle","accountKey":"codex","provider":"codex"})).unwrap())
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"id":"root","rootId":"root","epoch":1,"status":"idle","accountKey":"codex","provider":"codex"})).unwrap())
         }).await.unwrap();
         let rates = crate::token_rate::TokenRateHub::new();
         // The scheduler has already started this turn; seed its committed rate observation.
@@ -2290,8 +2291,8 @@ mod tests {
                             provider_handle: format!("account:{provider}"),
                             ..identity(1)
                         },
-                        observed_at: 99.,
-                        provider_at: 99.,
+                        observed_at: super::ObservationTime::new(99.).unwrap(),
+                        provider_at: super::ObservationTime::new(99.).unwrap(),
                     },
                 ))
                 .expect("active rate turn");
@@ -2486,7 +2487,7 @@ mod tests {
             .transaction_with(|tx| {
                 AgentRepository::put(
                     tx,
-                    &AgentRecord::from_value(json!({
+                    &AgentRecord::from_value(json!({"compactions":0,
                         "id":"agent","rootId":"agent","epoch":1,"status":"running",
                         "threadId":"thread","accountKey":"default","provider":"claude",
                         "turnId":"turn","inFlight":true,"autoWake":false,"created":0,
@@ -2596,7 +2597,7 @@ mod tests {
                  CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT NOT NULL,record TEXT NOT NULL);
                  CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT);
                  CREATE VIRTUAL TABLE runtime_search_next USING fts5(body,content='',contentless_delete=1,tokenize='unicode61');
@@ -2613,7 +2614,7 @@ mod tests {
                 "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
                 [
                     json!({"id":"agent","provider":studio_runtime_schema::ProviderKind::Codex,
-                    "rootId":"agent","epoch":1,"status":"running","threadId":"thread",
+                    "rootId":"agent","epoch":1,"status":"running","threadId":"thread","compactions":0,
                     "accountKey":"default","turnId":"turn","inFlight":true,"events":0,
                     "activeTools":[],"autoWake":false,"activeExecution":{"attemptId":"attempt"}})
                     .to_string(),
@@ -2793,7 +2794,7 @@ mod tests {
             .transaction_with(|tx| {
                 AgentRepository::put(
                     tx,
-                    &AgentRecord::from_value(json!({
+                    &AgentRecord::from_value(json!({"compactions":0,
                         "id":"agent","rootId":"agent","epoch":1,"status":"running",
                         "threadId":"thread","accountKey":"default","provider":"codex",
                         "turnId":"turn","inFlight":true,"autoWake":false,
@@ -2865,7 +2866,7 @@ mod tests {
                 .transaction_with(move |tx| {
                     AgentRepository::put(
                         tx,
-                        &AgentRecord::from_value(json!({
+                        &AgentRecord::from_value(json!({"compactions":0,
                             "id":"agent","rootId":"agent","epoch":1,"status":"running",
                             "threadId":"thread","accountKey":"default","provider":provider,
                             "turnId":"turn","inFlight":true,"autoWake":false,
@@ -2950,7 +2951,7 @@ mod tests {
             .await
             .unwrap();
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",[json!({
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",[json!({"compactions":0,
                 "id":"agent","rootId":"agent","epoch":1,"status":"running","threadId":"thread",
                 "accountKey":"default","provider":"codex","turnId":"turn","inFlight":true,"autoWake":true,
                 "activeTools":[],"events":0
@@ -2993,7 +2994,7 @@ mod tests {
                     .to_string_lossy()
                     .into_owned();
                 store.transaction_with(move |tx| {
-                    tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({
+                    tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"compactions":0,
                         "id":"agent","rootId":"agent","epoch":1,"status":"running","threadId":"thread",
                         "accountKey":"default","provider":"claude","turnId":"turn","inFlight":true,
                         "autoWake":true,"activeTools":[],"events":0
@@ -3063,7 +3064,7 @@ mod tests {
             .transaction_with(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
-                    [json!({
+                    [json!({"compactions":0,
                         "id":"agent","rootId":"agent","epoch":1,"status":"running","threadId":"thread",
                         "accountKey":"default","provider":"claude","turnId":"turn","inFlight":true,
                         "autoWake":true,"activeTools":[],"events":0,"isLead":true
@@ -3161,7 +3162,7 @@ mod tests {
         .to_string();
         store
             .transaction(move |tx| {
-                let agent = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                let agent = AgentRecord::from_value(json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                     "id":"agent",
                     "rootId":"agent",
                     "epoch":1,
@@ -4187,7 +4188,7 @@ mod tests {
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                 [
                     "foreign",
-                    &json!({"id":"foreign","provider":studio_runtime_schema::ProviderKind::Codex,"rootId":"other-team","epoch":1,"status":"running","threadId":"other","accountKey":"default","events":0}).to_string(),
+                    &json!({"compactions":0,"id":"foreign","provider":studio_runtime_schema::ProviderKind::Codex,"rootId":"other-team","epoch":1,"status":"running","threadId":"other","accountKey":"default","events":0}).to_string(),
                 ],
             )
             .expect("foreign agent creates");
@@ -4240,7 +4241,7 @@ mod tests {
                 "UPDATE runtime_agents SET record=?2 WHERE id='agent'",
                 params![
                     "agent",
-                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                    json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"agent","rootId":"agent","epoch":1,"status":"running",
                         "threadId":"thread","accountKey":"default","turnId":"turn",
                         "inFlight":true,"events":0,"activeTools":[],"autoWake":false,
@@ -4282,11 +4283,11 @@ mod tests {
         let agent = TranscriptRepository::agent(&connection, "agent")
             .expect("agent reads")
             .expect("agent exists");
-        assert_eq!(agent["tail"], "previous tail");
-        assert_eq!(agent["nativeResponseTurn"], "turn");
-        assert!(agent.get("nativeStatus").is_none());
+        assert_eq!(agent.tail.as_deref(), Some("previous tail"));
+        assert_eq!(agent.native_response_turn.as_deref(), Some("turn"));
+        assert!(agent.native_status.is_none());
 
-        let mut no_turn_agent = agent;
+        let mut no_turn_agent = agent.into_value();
         no_turn_agent["turnId"] = Value::Null;
         no_turn_agent["nativeStatus"] = json!({"phase":"retrying","turnId":null});
         connection
@@ -4309,8 +4310,8 @@ mod tests {
         let agent = TranscriptRepository::agent(&connection, "agent")
             .expect("updated agent reads")
             .expect("updated agent exists");
-        assert!(agent.get("nativeResponseTurn").is_none());
-        assert!(agent.get("nativeStatus").is_none());
+        assert!(agent.native_response_turn.is_none());
+        assert!(agent.native_status.is_none());
     }
 
     #[test]
@@ -4408,8 +4409,8 @@ mod tests {
                 .expect("flush")
                 .expect("flush changes the buffer");
         let agent = stored(&transaction);
-        assert_eq!(agent["events"], 5);
-        assert!(agent["lastEvent"].is_string());
+        assert_eq!(agent.events, Some(5));
+        assert!(agent.last_event.is_some());
         assert_eq!(streams.pending_bytes(), 0);
     }
 

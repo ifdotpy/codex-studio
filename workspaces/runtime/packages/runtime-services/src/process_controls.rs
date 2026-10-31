@@ -338,7 +338,7 @@ pub fn owners(connection: &Connection, scope: &str) -> Result<Vec<Value>, Error>
 /// A process source retains its owning record type through selection.
 pub enum ProcessSource {
     Monitor(Box<studio_runtime_store::MonitorRecord>),
-    Task(Value),
+    Task(Box<studio_runtime_store::TaskRecord>),
 }
 
 /// Scoped active commands paired with their already-loaded owners.
@@ -354,7 +354,7 @@ pub fn process_rows<'a>(
             ("runtime_task_agent_created_id", "= ?2")
         };
         let sql = format!(
-            "SELECT record FROM {table} INDEXED BY {index} WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') {status}"
+            "SELECT id,record FROM {table} INDEXED BY {index} WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') {status}"
         );
         let mut statement = connection.prepare_cached(&sql).map_err(StoreError::from)?;
         for owner in owners {
@@ -368,17 +368,26 @@ pub fn process_rows<'a>(
             };
             let rows = statement
                 .query_map(rusqlite::params_from_iter(args), |row| {
-                    row.get::<_, String>(0)
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })
                 .map_err(StoreError::from)?;
             for row in rows {
-                let raw = row.map_err(StoreError::from)?;
+                let (row_id, raw) = row.map_err(StoreError::from)?;
                 let source = if table == "runtime_monitors" {
                     ProcessSource::Monitor(Box::new(
                         serde_json::from_str(&raw).map_err(StoreError::from)?,
                     ))
                 } else {
-                    ProcessSource::Task(serde_json::from_str(&raw).map_err(StoreError::from)?)
+                    let record: studio_runtime_store::TaskRecord =
+                        serde_json::from_str(&raw).map_err(StoreError::from)?;
+                    if record.id().as_ref() != row_id {
+                        return Err(StoreError::InvalidStoredObject {
+                            table: "runtime_tasks",
+                            id: row_id,
+                        }
+                        .into());
+                    }
+                    ProcessSource::Task(Box::new(record))
                 };
                 result.push((owner, source));
             }
@@ -639,20 +648,18 @@ pub fn processes(
                 )?);
             }
             ProcessSource::Task(raw) => {
-                let mut raw = raw.clone();
-                let provider = text(
-                    &raw,
-                    "sourceProvider",
-                    text(owner, "provider", ProviderKind::Codex.key()),
-                )
-                .to_owned();
-                let source = if raw["kind"] == "command"
-                    && studio_runtime_store::truthy(raw.get("processId"))
+                let provider = raw
+                    .source_provider
+                    .map(|provider| provider.key())
+                    .unwrap_or_else(|| text(owner, "provider", ProviderKind::Codex.key()));
+                let source = if raw.kind() == studio_runtime_schema::task_record::TaskKind::Command
+                    && raw.process_id().is_some_and(|id| id.truthy())
                 {
                     "codex_task"
                 } else if provider == ProviderKind::Claude.key()
-                    && raw["kind"] == "tool"
-                    && text(&raw, "itemId", "")
+                    && raw.kind() == studio_runtime_schema::task_record::TaskKind::Tool
+                    && raw
+                        .item_id()
                         .strip_prefix("task:")
                         .is_some_and(|v| !v.is_empty())
                 {
@@ -660,6 +667,7 @@ pub fn processes(
                 } else {
                     continue;
                 };
+                let mut raw = studio_runtime_store::projection_value(raw);
                 raw["sourceProvider"] = json!(provider);
                 output.push(project(source, &raw, owner, owner_connection));
             }
@@ -1094,7 +1102,7 @@ mod claim_identity_tests {
     fn process_claim_reuses_its_admitted_token_after_expiry_without_another_effect() {
         let mut db = Connection::open_in_memory().expect("database");
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT,parent_id TEXT,deleted_at REAL);
-            CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT);
+            CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
             CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(id);
             CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT);
             CREATE INDEX runtime_task_agent_created_id ON runtime_tasks(id);
@@ -1166,4 +1174,21 @@ mod claim_identity_tests {
             1
         );
     }
+}
+#[test]
+fn typed_task_keeps_numeric_process_identity_projection() {
+    let raw = r#"{"id":"a:i","agent":"a","created":1,"itemId":"i","turnId":"turn","kind":"command","status":"running","type":"commandExecution","name":"commandExecution","processId":42}"#;
+    let typed: studio_runtime_store::TaskRecord = serde_json::from_str(raw).expect("task fixture");
+    let old = serde_json::json!({"id":"a:i","agent":"a","created":1,"itemId":"i","turnId":"turn","kind":"command","status":"running","type":"commandExecution","name":"commandExecution","processId":42});
+    let owner = serde_json::json!({"id":"a","epoch":1,"accountKey":"default","threadId":"thread","autoWake":true});
+    let before = project("codex_task", &old, &owner, Some("connection"));
+    let after = project(
+        "codex_task",
+        &studio_runtime_store::projection_value(&typed),
+        &owner,
+        Some("connection"),
+    );
+    assert_eq!(before["key"], after["key"]);
+    assert_eq!(before["generation"], after["generation"]);
+    assert_eq!(before["canInput"], after["canInput"]);
 }

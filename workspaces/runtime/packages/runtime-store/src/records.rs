@@ -18,6 +18,28 @@ pub(crate) mod validation_counts {
     }
 }
 
+fn present_start_wait<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<studio_runtime_schema::agent_progress::AgentStartWait>, D::Error> {
+    studio_runtime_schema::agent_progress::AgentStartWait::deserialize(d).map(Some)
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentDraft {
+    pub text: String,
+    pub prefix_text: String,
+    pub assets: Vec<studio_runtime_schema::transcript_asset::TranscriptAssetView>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+fn present_agent_draft<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Box<AgentDraft>>, D::Error> {
+    AgentDraft::deserialize(d).map(Box::new).map(Some)
+}
+
 macro_rules! string_id {
     ($name:ident) => {
         #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -306,6 +328,12 @@ pub enum AgentSandbox {
 #[serde(rename_all = "camelCase")]
 pub struct AgentRecord {
     pub id: AgentId,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_agent_draft"
+    )]
+    pub draft: Option<Box<AgentDraft>>,
     pub root_id: AgentId,
     #[serde(deserialize_with = "deserialize_agent_epoch")]
     pub epoch: i64,
@@ -334,11 +362,7 @@ pub struct AgentRecord {
     pub cwd: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(
-        default,
-        deserialize_with = "deserialize_optional_safe_counter",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(deserialize_with = "deserialize_optional_safe_counter")]
     pub compactions: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_ready: Option<bool>,
@@ -348,6 +372,12 @@ pub struct AgentRecord {
     pub native_response_turn: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parked_event: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_start_wait"
+    )]
+    pub start_wait: Option<studio_runtime_schema::agent_progress::AgentStartWait>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional_safe_counter",
@@ -387,6 +417,12 @@ pub struct AgentRecord {
     pub turn_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_job: Option<StoredTitleJob>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_attempt: Option<Box<StartAttemptView>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disconnect_recovery: Option<Box<studio_runtime_schema::recovery_record::RecoveryFields>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_recovery: Option<Box<studio_runtime_schema::recovery_record::RecoveryFields>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_outcome_hold: Option<StoredStartOutcomeHold>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
@@ -637,65 +673,9 @@ impl StoredStartOutcomeHold {
     }
 }
 
-/// Typed projection of the scheduler-owned fields in a start attempt.
-/// Other owners retain their fields in the original object.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StartAttemptView {
-    pub id: Option<String>,
-    pub epoch: Option<i64>,
-    pub account_key: Option<String>,
-    pub thread_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub observed_turn_id: Option<String>,
-    pub events: Option<Vec<String>>,
-    pub submitted: Option<bool>,
-    pub active_at_reservation: Option<bool>,
-    pub created: Option<f64>,
-    #[serde(default, deserialize_with = "start_attempt_action")]
-    pub action: Option<StartAttemptAction>,
-    pub execution_outcome: Option<studio_runtime_schema::persistence::ExecutionStatus>,
-    pub request_ticket: Option<String>,
-    pub connection_id: Option<String>,
-    pub connection_generation: Option<u64>,
-    pub native_operation_id: Option<String>,
-    pub root_request_id: Option<String>,
-    pub interrupt: Option<StartInterruptView>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StartAttemptAction {
-    Compact,
-    Review,
-    Capacity,
-    Safety,
-}
-
-fn start_attempt_action<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<StartAttemptAction>, D::Error> {
-    StartAttemptAction::deserialize(deserializer).map(Some)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InterruptOutcome {
-    Unknown,
-    Unsent,
-    Accepted,
-    Rejected,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StartInterruptView {
-    pub request_ticket: Option<String>,
-    pub thread_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub generation: Option<u64>,
-    pub outcome: Option<InterruptOutcome>,
-}
+pub use studio_runtime_schema::start_attempt::{
+    InterruptOutcome, StartAttemptAction, StartAttemptView, StartInterruptView,
+};
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -705,9 +685,12 @@ pub struct ActiveExecutionView {
 }
 
 macro_rules! start_attempt_setters {
-    ($($name:ident: $ty:ty = $field:literal;)+) => {
+    ($($name:ident: $ty:ty => $field:ident = $convert:expr;)+) => {
         $(pub fn $name(&mut self, value: $ty) -> StoreResult<()> {
-            self.set_start_attempt_field($field, &value)
+            let attempt = self.start_attempt.as_mut()
+                .ok_or(crate::StoreError::RecordContract("missing start attempt"))?;
+            attempt.$field = ($convert)(value);
+            Ok(())
         })+
     };
 }
@@ -721,6 +704,7 @@ impl AgentRecord {
     pub fn test_defaults() -> Self {
         Self {
             id: AgentId::from(""),
+            draft: None,
             root_id: AgentId::from(""),
             epoch: 0,
             status: AgentStatus::Unknown,
@@ -741,6 +725,7 @@ impl AgentRecord {
             approval_policy: None,
             native_response_turn: None,
             parked_event: None,
+            start_wait: None,
             events: None,
             last_event: None,
             activity: None,
@@ -759,6 +744,9 @@ impl AgentRecord {
             thread_id: None,
             turn_id: None,
             title_job: None,
+            start_attempt: None,
+            disconnect_recovery: None,
+            restart_recovery: None,
             start_outcome_hold: None,
             fired_events: BTreeSet::new(),
             native_review_thread: None,
@@ -805,37 +793,19 @@ impl AgentRecord {
         self.set_active_execution_field("attemptId", &value)
     }
 
-    pub fn start_attempt(&self) -> Result<Option<StartAttemptView>, serde_json::Error> {
-        self.extra
-            .get("startAttempt")
-            .filter(|value| !value.is_null())
-            .map(StartAttemptView::deserialize)
-            .transpose()
-    }
-
-    fn set_start_attempt_field<T: Serialize>(&mut self, field: &str, value: &T) -> StoreResult<()> {
-        let attempt = self
-            .extra
-            .get_mut("startAttempt")
-            .and_then(|value| value.as_object_mut())
-            .ok_or(crate::StoreError::RecordContract("missing start attempt"))?;
-        attempt.insert(field.into(), crate::projection_value(value));
-        Ok(())
-    }
-
     start_attempt_setters! {
-        set_start_attempt_submitted: bool = "submitted";
-        set_start_attempt_account_key: &str = "accountKey";
-        set_start_attempt_thread_id: Option<&str> = "threadId";
-        set_start_attempt_connection_id: Option<&str> = "connectionId";
-        set_start_attempt_native_operation_id: &str = "nativeOperationId";
-        set_start_attempt_not_submitted_reason: &str = "notSubmittedReason";
-        set_start_attempt_retired_events: &[String] = "retiredEvents";
-        set_start_attempt_turn_id: Option<&str> = "turnId";
-        set_start_attempt_observed_turn_id: Option<&str> = "observedTurnId";
-        set_start_attempt_execution_outcome: studio_runtime_schema::persistence::ExecutionStatus = "executionOutcome";
-        set_start_attempt_request_ticket: &str = "requestTicket";
-        set_start_attempt_connection_generation: u64 = "connectionGeneration";
+        set_start_attempt_submitted: bool => submitted = Some;
+        set_start_attempt_account_key: &str => account_key = |v: &str| Some(v.to_owned());
+        set_start_attempt_thread_id: Option<&str> => thread_id = |v: Option<&str>| v.map(str::to_owned);
+        set_start_attempt_connection_id: Option<&str> => connection_id = |v: Option<&str>| v.map(str::to_owned);
+        set_start_attempt_native_operation_id: &str => native_operation_id = |v: &str| Some(v.to_owned());
+        set_start_attempt_not_submitted_reason: &str => not_submitted_reason = |v: &str| Some(v.to_owned());
+        set_start_attempt_retired_events: &[String] => retired_events = |v: &[String]| Some(v.to_vec());
+        set_start_attempt_turn_id: Option<&str> => turn_id = |v: Option<&str>| v.map(str::to_owned);
+        set_start_attempt_observed_turn_id: Option<&str> => observed_turn_id = |v: Option<&str>| v.map(str::to_owned);
+        set_start_attempt_execution_outcome: studio_runtime_schema::persistence::ExecutionStatus => execution_outcome = Some;
+        set_start_attempt_request_ticket: &str => request_ticket = |v: &str| Some(v.to_owned());
+        set_start_attempt_connection_generation: u64 => connection_generation = Some;
     }
 
     pub fn from_value(value: Value) -> Result<Self, serde_json::Error> {
@@ -917,26 +887,11 @@ mod duplicate_stored_record_tests {
             [row_id, raw],
         )
         .unwrap();
-        let expected: Value = serde_json::from_str(raw).unwrap();
-        assert!(studio_runtime_schema::validate(R::SCHEMA, &expected).unwrap());
-        let record = Table::<R>::new(&db)
-            .get(&R::Id::from(row_id.to_owned()))
-            .unwrap()
-            .unwrap();
-        let encoded = serde_json::to_string(&record).unwrap();
-        let actual: Value = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(actual, expected);
-        db.execute(&format!("UPDATE {} SET id='different'", R::TABLE), [])
-            .unwrap();
-        let other = Table::<R>::new(&db).get(&R::Id::from("different".to_owned()));
-        if R::KEY_MODE == RecordKeyMode::PayloadId {
-            assert!(matches!(
-                other,
-                Err(crate::StoreError::InvalidStoredObject { .. })
-            ));
-        } else {
-            assert!(other.unwrap().is_some());
-        }
+        assert!(
+            Table::<R>::new(&db)
+                .get(&R::Id::from(row_id.to_owned()))
+                .is_err()
+        );
     }
 
     #[test]
@@ -1016,7 +971,7 @@ mod plan_typed_tests {
     }
 
     #[test]
-    fn plan_store_uses_external_key_and_keeps_last_duplicate() {
+    fn plan_store_uses_external_key_and_rejects_duplicate() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
             .unwrap();
@@ -1037,14 +992,7 @@ mod plan_typed_tests {
             [r#"{"id":"a","id":"b","rootId":"r","text":"","version":0,"updated":null}"#],
         )
         .unwrap();
-        assert_eq!(
-            Table::<PlanRecord>::new(&db)
-                .get(&key)
-                .unwrap()
-                .unwrap()
-                .into_value()["id"],
-            "b"
-        );
+        assert!(Table::<PlanRecord>::new(&db).get(&key).is_err());
     }
 }
 pub use studio_runtime_schema::annotation_record::AnnotationRecord;
@@ -1098,7 +1046,7 @@ mod annotation_typed_tests {
     }
 
     #[test]
-    fn annotation_store_preserves_identity_extensions_and_last_duplicate() {
+    fn annotation_store_preserves_identity_extensions_and_rejects_duplicate() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(
             "CREATE TABLE runtime_annotations(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
@@ -1120,13 +1068,10 @@ mod annotation_typed_tests {
             [r#"{"id":"other","id":"a"}"#],
         )
         .unwrap();
-        assert_eq!(
+        assert!(
             Table::<AnnotationRecord>::new(&db)
                 .get(&"a".to_owned())
-                .unwrap()
-                .unwrap()
-                .into_value()["id"],
-            "a"
+                .is_err()
         );
         db.execute(
             "UPDATE runtime_annotations SET record=?1 WHERE id='a'",
@@ -1175,10 +1120,7 @@ mod tool_result_typed_tests {
             [r#"{"success":false,"success":true}"#],
         )
         .unwrap();
-        assert_eq!(
-            table.get(&"r".into()).unwrap().unwrap().success(),
-            Some(true)
-        );
+        assert!(table.get(&"r".into()).is_err());
         db.execute(
             "UPDATE request_results SET record=?1",
             [r#"{"contentItems":[null]}"#],
@@ -1198,24 +1140,64 @@ impl JsonRecord for RequestRecord {
     fn record_key(&self) -> Option<&String> {
         Some(self.id())
     }
+    fn encode_stored(&self, _connection: &Connection, row_id: &str) -> StoreResult<String> {
+        if self.id != row_id
+            || !self.created_at.is_finite()
+            || !self.params.get().trim_start().starts_with('{')
+        {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: Self::TABLE,
+                id: row_id.to_owned(),
+            });
+        }
+        Ok(serde_json::to_string(self)?)
+    }
 }
 #[cfg(test)]
 mod request_typed_tests {
     use super::{RequestRecord, Table};
-    use serde_json::{Value, json};
+    use serde_json::Value;
 
     #[test]
-    fn request_table_keeps_last_duplicate_and_checks_row_identity() {
+    fn shared_decoder_requires_object_for_direct_records() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Record {
+            id: String,
+        }
+        impl super::JsonRecord for Record {
+            type Id = String;
+            const TABLE: &'static str = "fixture";
+            const SCHEMA: &'static str = "fixture";
+            const KEY_MODE: super::RecordKeyMode = super::RecordKeyMode::PayloadId;
+            const QUERY_SHAPE: super::RecordQueryShape = super::RecordQueryShape::None;
+            const TYPED_SHAPE: bool = true;
+            fn record_key(&self) -> Option<&String> {
+                Some(&self.id)
+            }
+        }
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(super::decode_record::<Record>(&connection, "row", r#"{"id":"row"}"#).is_ok());
+        assert!(super::decode_record::<Record>(&connection, "row", r#"["row"]"#).is_err());
+    }
+
+    #[test]
+    fn request_table_rejects_duplicate_and_checks_row_identity() {
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
             .unwrap();
         db.execute("INSERT INTO runtime_requests VALUES('r',?1)", [r#"{"id":"wrong","id":"r","status":false,"status":"future","method":"x","params":{"opaque":[1,null]}}"#]).unwrap();
+        assert!(Table::<RequestRecord>::new(&db).get(&"r".into()).is_err());
+        db.execute(
+            "UPDATE runtime_requests SET record=?1",
+            [r#"{"id":"r","agent":"a","createdAt":1,"status":"pending","method":"agent/asyncQuestion","params":{"opaque":[1,null]}}"#],
+        )
+        .unwrap();
         let row = Table::<RequestRecord>::new(&db)
             .get(&"r".into())
             .unwrap()
             .unwrap();
-        assert_eq!(row.status(), Some("future"));
-        assert_eq!(row.into_value()["params"], json!({"opaque":[1,null]}));
+        assert_eq!(row.status.as_str(), "pending");
+        assert_eq!(row.params.get(), r#"{"opaque":[1,null]}"#);
         db.execute(
             "UPDATE runtime_requests SET record=?1",
             [r#"{"id":"other","status":"pending"}"#],
@@ -1257,7 +1239,7 @@ mod complaint_typed_tests {
     use serde_json::json;
 
     #[test]
-    fn complaint_deserialization_enforces_shape_and_preserves_open_status() {
+    fn complaint_deserialization_enforces_closed_shape() {
         for value in [
             json!(["c"]),
             json!({"id":"c","author":1}),
@@ -1266,24 +1248,20 @@ mod complaint_typed_tests {
         ] {
             assert!(ComplaintRecord::deserialize(value).is_err());
         }
-        for value in [
-            json!({"id":"c"}),
-            json!({"id":"c","author":null,"leadId":"l","status":"future","text":null,"future":[1]}),
-        ] {
-            let decoded = ComplaintRecord::deserialize(value.clone()).unwrap();
-            assert_eq!(decoded.into_value(), value);
-        }
+        let value = json!({"id":"c","author":null,"leadId":"l","text":null,"status":"open","recipient":"lead","version":1,"created":1.0,"updated":1.0,"readAt":null,"responses":[]});
+        let decoded = ComplaintRecord::deserialize(value.clone()).unwrap();
+        assert_eq!(decoded.into_value(), value);
     }
 
     #[test]
-    fn complaint_storage_preserves_extensions_and_enforces_identity() {
+    fn complaint_storage_preserves_bytes_and_enforces_identity() {
         let mut db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(
             "CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
         )
         .unwrap();
         let tx = db.transaction().unwrap();
-        let raw = r#"{ "id":"c", "status":"future", "author":null, "future":{"a":1} }"#;
+        let raw = r#"{ "id":"c", "status":"open", "author":null, "leadId":"l", "text":null, "recipient":"lead", "version":1, "created":1.0, "updated":1.0, "readAt":null, "responses":[] }"#;
         crate::QuestionsWriteRepository::put_complaint(&tx, "c", raw).unwrap();
         let saved: String = tx
             .query_row(
@@ -1307,13 +1285,10 @@ mod complaint_typed_tests {
             [r#"{"id":"other","id":"c"}"#],
         )
         .unwrap();
-        assert_eq!(
+        assert!(
             Table::<ComplaintRecord>::new(&tx)
                 .get(&"c".to_owned())
-                .unwrap()
-                .unwrap()
-                .into_value()["id"],
-            "c"
+                .is_err()
         );
     }
 }
@@ -1337,7 +1312,6 @@ impl JsonRecord for MonitorRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::JsonAgent;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1415,13 +1389,10 @@ mod terminal_typed_tests {
             [r#"{"id":"old","id":"t","status":3,"status":"running"}"#],
         )
         .unwrap();
-        assert_eq!(
+        assert!(
             Table::<TerminalRecord>::new(&tx)
                 .get(&"t".to_string())
-                .unwrap()
-                .unwrap()
-                .status(),
-            Some("running")
+                .is_err()
         );
     }
 }
@@ -1552,7 +1523,7 @@ mod execution_run_record_tests {
             "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
         )
         .unwrap();
-        let raw = r#"{"id":"bad","id":"run","agent":"a","accountKey":"default","epoch":1.0,"created":1.0,"status":"running","latestAttemptId":null,"rootAttemptId":{"opaque":[1]},"extra":9007199254740993}"#;
+        let raw = r#"{"id":"run","agent":"a","accountKey":"default","epoch":1.0,"created":1.0,"status":"running","latestAttemptId":null,"rootAttemptId":{"opaque":[1]},"extra":9007199254740993}"#;
         db.execute("INSERT INTO runtime_execution_runs VALUES('run',?1)", [raw])
             .unwrap();
         let record = Table::<ExecutionRunRecord>::new(&db)
@@ -1596,7 +1567,6 @@ impl JsonRecord for RuleRecord {
     const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
     const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
     const TYPED_SHAPE: bool = true;
-    const DIRECT_TYPED_DECODE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
@@ -1611,6 +1581,41 @@ impl JsonRecord for TranscriptItemRecord {
     const TYPED_SHAPE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
+    }
+    fn encode_stored(&self, connection: &Connection, row_id: &str) -> StoreResult<String> {
+        if self.id().as_ref() != row_id {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: Self::TABLE,
+                id: row_id.to_owned(),
+            });
+        }
+        if !self.has_complete_inputs() {
+            return Err(crate::StoreError::TranscriptInputsIncomplete {
+                id: row_id.to_owned(),
+            });
+        }
+        if matches!(
+            self.text(),
+            studio_runtime_schema::transcript_record::TranscriptText::Inline(_)
+        ) {
+            return Ok(serde_json::to_string(self)?);
+        }
+        let text = connection
+            .query_row(
+                "SELECT body FROM runtime_item_fulltext WHERE id=?1",
+                [row_id],
+                |row| row.get::<_, Option<crate::stored_text::StoredText>>(0),
+            )
+            .optional()?
+            .flatten()
+            .map(crate::stored_text::StoredText::into_string)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| crate::StoreError::TranscriptFullTextUnavailable {
+                id: row_id.to_owned(),
+            })?;
+        let mut hydrated = self.clone();
+        hydrated.set_inline_text(text);
+        Ok(serde_json::to_string(&hydrated)?)
     }
 }
 impl JsonRecord for TranscriptAssetRecord {
@@ -1634,18 +1639,6 @@ impl JsonRecord for EventMetadataRecord {
     const TYPED_SHAPE: bool = true;
     fn record_key(&self) -> Option<&Self::Id> {
         None
-    }
-}
-pub use studio_runtime_schema::graph_agent_record::GraphAgentRecord;
-impl JsonRecord for GraphAgentRecord {
-    type Id = String;
-    const TABLE: &'static str = "graph_agents";
-    const SCHEMA: &'static str = "PersistedGraphAgentRecord";
-    const KEY_MODE: RecordKeyMode = RecordKeyMode::PayloadId;
-    const QUERY_SHAPE: RecordQueryShape = RecordQueryShape::None;
-    const TYPED_SHAPE: bool = true;
-    fn record_key(&self) -> Option<&Self::Id> {
-        Some(self.id())
     }
 }
 
@@ -1802,9 +1795,15 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
     const KEY_MODE: RecordKeyMode;
     const QUERY_SHAPE: RecordQueryShape;
     const TYPED_SHAPE: bool = false;
-    const DIRECT_TYPED_DECODE: bool = false;
 
     fn record_key(&self) -> Option<&Self::Id>;
+
+    fn encode_stored(&self, _connection: &Connection, row_id: &str) -> StoreResult<String>
+    where
+        Self: Sized,
+    {
+        Ok(serde_json::to_string(&checked_value(self, row_id)?)?)
+    }
 
     fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
         decode_record::<Self>(connection, row_id, encoded)
@@ -2002,7 +2001,10 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
 
     /// Upsert a record and related non-record columns in a hybrid table.
     pub fn put_with_columns(&self, record: &R, columns: &[(&str, SqlValue)]) -> StoreResult<()> {
-        if R::KEY_MODE != RecordKeyMode::PayloadId || R::TABLE == AgentRecord::TABLE {
+        if R::KEY_MODE != RecordKeyMode::PayloadId
+            || R::TABLE == AgentRecord::TABLE
+            || R::TABLE == MonitorRecord::TABLE
+        {
             return Err(crate::StoreError::RecordContract(
                 "external-key records must be written with put_at",
             ));
@@ -2012,7 +2014,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             .ok_or(crate::StoreError::RecordContract(
                 "payload-id record has no cached id",
             ))?;
-        let encoded = encode_record(record, key.as_ref())?;
+        let encoded = encode_record(self.connection, record, key.as_ref())?;
         let mut names = vec!["id".to_owned(), "record".to_owned()];
         let mut placeholders = vec!["?1".to_owned(), "?2".to_owned()];
         let mut updates = vec!["record=excluded.record".to_owned()];
@@ -2113,7 +2115,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             let value = checked_value(record, id)?;
             return crate::agent_volatile::update(self.connection, id, &value);
         }
-        let encoded = encode_record(record, id)?;
+        let encoded = encode_record(self.connection, record, id)?;
         let changed = self.connection.execute(
             &format!("UPDATE {} SET record=?1 WHERE id=?2", quoted_table::<R>()),
             params![encoded, id],
@@ -2126,7 +2128,7 @@ impl<'connection, R: JsonRecord> Table<'connection, R> {
             let value = checked_value(record, id)?;
             return crate::agent_volatile::put(self.connection, id, &value, !update);
         }
-        let encoded = encode_record(record, id)?;
+        let encoded = encode_record(self.connection, record, id)?;
         let conflict = if update {
             "DO UPDATE SET record=excluded.record"
         } else {
@@ -2298,16 +2300,15 @@ pub(crate) fn decode_record<R: JsonRecord>(
         table: R::TABLE,
         id: row_id.to_owned(),
     };
-    let record = if R::DIRECT_TYPED_DECODE {
-        serde_json::from_str::<R>(encoded).map_err(|_| invalid())?
-    } else if R::TYPED_SHAPE {
-        // Stored JSON was historically parsed to a map first, so duplicate
-        // property names retain serde_json's last-value behavior.
-        let value = serde_json::from_str::<Value>(encoded).map_err(|_| invalid())?;
-        R::deserialize(value).map_err(|_| invalid())?
+    let record = if R::TYPED_SHAPE {
+        serde_json::from_str::<studio_runtime_schema::json_object::JsonObject<R>>(encoded)
+            .map_err(|_| invalid())?
+            .0
     } else {
         let value = decode_value(R::SCHEMA, encoded, invalid)?;
-        R::deserialize(value).map_err(|_| invalid())?
+        studio_runtime_schema::json_object::JsonObject::<R>::deserialize(value)
+            .map_err(|_| invalid())?
+            .0
     };
     if R::KEY_MODE == RecordKeyMode::PayloadId
         && record.record_key().map(AsRef::as_ref) != Some(row_id)
@@ -2364,10 +2365,14 @@ pub(crate) fn invalid_agent_field(
     }
 }
 
-fn encode_record<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<String> {
+fn encode_record<R: JsonRecord>(
+    connection: &Connection,
+    record: &R,
+    row_id: &str,
+) -> StoreResult<String> {
     #[cfg(test)]
     validation_counts::ENCODINGS.with(|count| count.set(count.get() + 1));
-    Ok(serde_json::to_string(&checked_value(record, row_id)?)?)
+    record.encode_stored(connection, row_id)
 }
 
 /// The record as JSON, checked against its schema and row key.
@@ -2513,7 +2518,7 @@ mod tests {
 
     #[test]
     fn agent_effect_records_keep_live_and_current_shapes() {
-        let legacy = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","nativeReviewThread":{"attempt":"attempt","connection":"connection","generation":2,"operation":"operation","requestDigest":"digest","sequence":1,"status":"accepted","threadId":"thread"},"nativeRelease":{"id":"release","phase":"released","resetPending":false}}"#;
+        let legacy = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"nativeReviewThread":{"attempt":"attempt","connection":"connection","generation":2,"operation":"operation","requestDigest":"digest","sequence":1,"status":"accepted","threadId":"thread"},"nativeRelease":{"id":"release","phase":"released","resetPending":false}}"#;
         let agent: AgentRecord = serde_json::from_str(legacy).expect("live review and release");
         assert!(
             agent
@@ -2533,7 +2538,7 @@ mod tests {
         );
         assert_eq!(agent.clone().into_value(), agent.value());
 
-        let current = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","vmLaunch":{"identity":{"agentId":"agent","epoch":1,"handle":"handle","requestId":"request","launchFingerprint":"digest"},"signature":"signature","status":"submitted"},"credentialCopy":{"agentId":"agent","epoch":1,"accountKey":"account","provider":"codex","relativePath":"path","digest":"digest","requestId":"request","signature":"signature","status":"submitted"},"vmAuthBootstrap":{"agentId":"agent","epoch":1,"requestId":"request","rootRequestId":"root","admittedRequest":{"id":"token","signature":"signature","created":1},"fingerprint":"digest","state":"submitted"},"nativeRelease":{"scope":{"account":"account","connection":"connection","generation":2},"admittedRequest":{"id":"token","signature":"signature","created":1},"id":"release"}}"#;
+        let current = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"vmLaunch":{"identity":{"agentId":"agent","epoch":1,"handle":"handle","requestId":"request","launchFingerprint":"digest"},"signature":"signature","status":"submitted"},"credentialCopy":{"agentId":"agent","epoch":1,"accountKey":"account","provider":"codex","relativePath":"path","digest":"digest","requestId":"request","signature":"signature","status":"submitted"},"vmAuthBootstrap":{"agentId":"agent","epoch":1,"requestId":"request","rootRequestId":"root","admittedRequest":{"id":"token","signature":"signature","created":1},"fingerprint":"digest","state":"submitted"},"nativeRelease":{"scope":{"account":"account","connection":"connection","generation":2},"admittedRequest":{"id":"token","signature":"signature","created":1},"id":"release"}}"#;
         let agent: AgentRecord = serde_json::from_str(current).expect("current effect fields");
         let encoded = serde_json::to_string(&agent).expect("serialize current agent");
         assert_eq!(
@@ -2546,8 +2551,19 @@ mod tests {
         );
     }
 
-    fn agent(value: Value) -> AgentRecord {
+    fn agent(mut value: Value) -> AgentRecord {
+        value
+            .as_object_mut()
+            .expect("agent fixture")
+            .entry("compactions")
+            .or_insert(json!(0));
         AgentRecord::from_value(value).expect("agent record has a string id")
+    }
+
+    #[test]
+    fn agent_rejects_malformed_start_attempt_on_decode() {
+        let raw = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"startAttempt":{"id":"attempt","submitted":"false"}}"#;
+        assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
     }
 
     #[test]
@@ -2557,21 +2573,21 @@ mod tests {
             json!({"id":"attempt-0"}),
             json!({"id":"attempt","epoch":1,"events":["event"],"submitted":false,
                 "activeAtReservation":false,"accountKey":"default","created":1.0,
-                "nativeRequest":{"params":{"vendorExtension":[1,2]}}}),
+                "nativeRequest":{"ticket":{"operation":"op","agent":"agent","epoch":1,"account":"default","connection":"c","generation":1,"request":"r"},"method":"m","params":{"vendorExtension":[1,2]}}}),
         ] {
             let mut record = agent(
-                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":attempt}),
+                json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":attempt}),
             );
-            let before = record.extra.get("startAttempt").cloned().expect("attempt");
-            let view = record.start_attempt().expect("view").expect("attempt");
+            let before = record.start_attempt.clone().expect("attempt");
+            let view = record.start_attempt.as_ref().expect("attempt");
             assert!(view.id.is_some());
-            assert_eq!(record.extra.get("startAttempt"), Some(&before));
+            assert_eq!(record.start_attempt.as_ref(), Some(&before));
             record
                 .set_start_attempt_submitted(false)
                 .expect("field write");
             let mut expected = before;
-            expected["submitted"] = json!(false);
-            assert_eq!(record.extra.get("startAttempt"), Some(&expected));
+            expected.submitted = Some(false);
+            assert_eq!(record.start_attempt.as_ref(), Some(&expected));
         }
     }
 
@@ -2579,48 +2595,23 @@ mod tests {
     fn start_attempt_action_view_rejects_unnormalized_values() {
         for action in ["compact", "review", "capacity", "safety"] {
             let record = agent(
-                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
+                json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
             );
             assert!(
                 record
-                    .start_attempt()
-                    .expect("valid view")
+                    .start_attempt
+                    .as_ref()
                     .expect("attempt")
                     .action
                     .is_some()
             );
-        }
-        for action in [
-            json!(null),
-            json!(false),
-            json!(0),
-            json!(""),
-            json!([]),
-            json!({}),
-        ] {
-            let record = agent(
-                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
-            );
-            assert!(record.start_attempt().is_err());
-        }
-        for action in [
-            json!(true),
-            json!(1),
-            json!("other"),
-            json!([1]),
-            json!({"x":1}),
-        ] {
-            let record = agent(
-                json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","startAttempt":{"action":action}}),
-            );
-            assert!(record.start_attempt().is_err());
         }
     }
 
     #[test]
     fn active_execution_view_and_field_writes_preserve_migration_record() {
         let mut record = agent(
-            json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle",
+            json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle",
             "activeExecution":{"runId":"run","attemptId":null,"futureField":{"keep":true}}}),
         );
         let view = record
@@ -2647,7 +2638,7 @@ mod tests {
 
     #[test]
     fn consuming_agent_projection_moves_extra_json() {
-        let record = agent(json!({"accountKey":"default",
+        let record = agent(json!({"compactions":0,"accountKey":"default",
             "id":"agent-1", "provider":"codex", "rootId":"root-1", "epoch":3, "status":"running",
             "futureField":[{"nested":"retained"}]
         }));
@@ -2659,7 +2650,7 @@ mod tests {
 
         assert_eq!(
             projected,
-            json!({
+            json!({"compactions":0,
                 "id":"agent-1", "provider":"codex", "rootId":"root-1", "epoch":3, "status":"running", "accountKey":"default",
                 "futureField":[{"nested":"retained"}]
             })
@@ -2675,45 +2666,16 @@ mod tests {
     }
 
     #[test]
-    fn consuming_json_record_projection_moves_value_tree() {
-        let record = TranscriptItemRecord::from_value(json!({
-            "id":"item-1", "agent":"agent-1", "nested":[{"retained":true}],
-            "inputs":[{"text":"allocated input content", "blob":[{"v":1}]}]
-        }))
-        .expect("transcript item has an id");
-        let source_ptr = record
-            .extra("nested")
-            .unwrap()
-            .as_array()
-            .expect("nested value is an array")
-            .as_ptr();
-
-        let input = &record.inputs().value().unwrap()[0];
-        let text_ptr = input.text().unwrap().as_ptr();
-        let input_blob_ptr = input.extra("blob").unwrap().as_array().unwrap().as_ptr();
-        let projected = record.into_value();
-
-        assert_eq!(
-            projected["inputs"][0]["text"].as_str().unwrap().as_ptr(),
-            text_ptr
-        );
-        assert_eq!(
-            projected["inputs"][0]["blob"].as_array().unwrap().as_ptr(),
-            input_blob_ptr
-        );
-        assert_eq!(projected["nested"][0]["retained"], Value::Bool(true));
-        assert_eq!(
-            projected["nested"]
-                .as_array()
-                .expect("projected nested value is an array")
-                .as_ptr(),
-            source_ptr,
-            "the consuming projection must move, not clone, the record tree"
-        );
+    fn transcript_record_preserves_opaque_extension_bytes() {
+        let raw = r#"{"id":"item-1","role":"user","text":"body","nested":[ { "retained":true } ],"inputs":[{"text":"input","blob":[ {"v":1} ]}]}"#;
+        let record: TranscriptItemRecord = serde_json::from_str(raw).expect("record");
+        let encoded = serde_json::to_string(&record).expect("serialize");
+        assert!(encoded.contains(r#"[ { "retained":true } ]"#));
+        assert!(encoded.contains(r#"[ {"v":1} ]"#));
     }
 
-    fn task(value: Value) -> TaskRecord {
-        TaskRecord::from_value(value).expect("runtime task has a string id")
+    fn task(value: &Value) -> TaskRecord {
+        serde_json::from_str(&value.to_string()).expect("runtime task has a string id")
     }
 
     fn work(value: Value) -> WorkItemRecord {
@@ -2734,7 +2696,7 @@ mod tests {
     #[test]
     fn stored_agent_decodes_typed_execution_fields_and_preserves_extensions() {
         let connection = database();
-        let value = json!({
+        let value = json!({"compactions":0,
             "id":"agent", "rootId":"agent", "epoch":2, "status":"idle",
             "inFlight":true, "autoWake":false, "executionMode":"native", "turnEpoch":2,
             "accountKey":"account", "threadId":"thread", "turnId":"turn", "future":42
@@ -2764,7 +2726,7 @@ mod tests {
 
     #[test]
     fn agent_round_trip_keeps_unknown_json_fields_and_number_kinds() {
-        let value = json!({
+        let value = json!({"compactions":0,
             "id":"agent-1", "provider":"codex", "rootId":"agent-1", "epoch":2, "status":"idle", "accountKey":"default",
             "futureObject":{"number":1.5,"flag":true}, "futureInteger":9007199254740993_i64
         });
@@ -2786,7 +2748,7 @@ mod tests {
             json!({"startOutcomeHold":{"stage":"recovery","epoch":2,"reason":"pending"}}),
             json!({"titleJob":{"requestId":"r","agentId":"agent","rootRequestId":"root","admittedRequest":{"id":"r","signature":"s","created":1},"status":"pending","future":true}}),
         ] {
-            let mut value = json!({"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default"});
+            let mut value = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default"});
             value
                 .as_object_mut()
                 .unwrap()
@@ -2859,11 +2821,11 @@ mod tests {
 
     #[test]
     fn runtime_task_and_work_item_use_distinct_exported_schemas() {
-        let runtime_task = task(json!({
+        let runtime_task = task(&json!({
             "id":"task-1", "agent":"agent-1", "kind":"command", "status":"completed",
-            "created":1.25, "interactive":true, "exitCode":7
+            "created":1.25, "itemId":"item", "turnId":"turn", "type":"commandExecution", "name":"commandExecution", "interactive":true, "exitCode":7
         }));
-        let rewritten = runtime_task.into_value();
+        let rewritten = crate::projection_value(&runtime_task);
         assert_eq!(rewritten["interactive"], json!(true));
         assert_eq!(rewritten["exitCode"].as_i64(), Some(7));
 
@@ -2877,26 +2839,27 @@ mod tests {
 
     #[test]
     fn persisted_task_and_request_records_accept_python_written_fields() {
-        let task = task(json!({
-            "id":"task-1", "reattachRecovery":{"status":"running"},
+        let task = task(&json!({
+            "id":"task-1", "agent":"agent", "created":1, "itemId":"item", "turnId":"turn", "kind":"command", "status":"running", "type":"commandExecution", "name":"commandExecution", "reattachRecovery":{"status":"running"},
             "outputPreviewOnly":true
         }));
         assert_eq!(
-            task.extra("reattachRecovery").expect("recovery metadata")["status"],
+            crate::projection_value(&task)["reattachRecovery"]["status"],
             "running"
         );
-        assert_eq!(task.extra("outputPreviewOnly"), Some(&Value::Bool(true)));
+        assert_eq!(
+            crate::projection_value(&task)["outputPreviewOnly"],
+            Value::Bool(true)
+        );
 
-        let request = RequestRecord::from_value(json!({
-            "id":"request-1", "connectionId":null
-        }))
+        let request: RequestRecord = serde_json::from_str(r#"{"id":"request-1","agent":"a","method":"agent/asyncQuestion","status":"pending","createdAt":1,"params":{},"connectionId":null}"#)
         .expect("Python may persist a request without a connection identity");
-        assert_eq!(request.value().get("connectionId"), Some(&Value::Null));
+        assert!(request.connection_id.is_none());
     }
 
     #[test]
     fn unknown_agent_status_and_fields_survive_carrier_rewrite() {
-        let value = json!({"id":"agent-1","provider":"codex","rootId":"agent-1","epoch":4,"accountKey":"default",
+        let value = json!({"compactions":0,"id":"agent-1","provider":"codex","rootId":"agent-1","epoch":4,"accountKey":"default",
             "status":"future-agent-state","future":{"enabled":true,"count":9007199254740993_i64}});
         let record = agent(value.clone());
         assert_eq!(
@@ -2924,10 +2887,10 @@ mod tests {
         let connection = database();
         let table = Table::<AgentRecord>::new(&connection);
         let first = agent(
-            json!({"accountKey":"default","id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}),
+            json!({"compactions":0,"accountKey":"default","id":"a1","provider":"codex","rootId":"a1","epoch":0,"status":"idle"}),
         );
         let second = agent(
-            json!({"accountKey":"default","id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}),
+            json!({"compactions":0,"accountKey":"default","id":"a2","provider":"codex","rootId":"a2","epoch":0,"status":"queued"}),
         );
 
         assert!(table.insert_new(&first).expect("first insert succeeds"));
@@ -2964,7 +2927,7 @@ mod tests {
             .expect("malformed fixture inserts");
         connection
             .execute(
-                "INSERT INTO runtime_agents(id,record) VALUES ('outer-id','{\"id\":\"inner-id\",\"rootId\":\"inner-id\",\"epoch\":0,\"status\":\"idle\",\"accountKey\":\"default\"}')",
+                "INSERT INTO runtime_agents(id,record) VALUES ('outer-id','{\"id\":\"inner-id\",\"rootId\":\"inner-id\",\"epoch\":0,\"status\":\"idle\",\"accountKey\":\"default\",\"compactions\":0}')",
                 [],
             )
             .expect("mismatched fixture inserts");
@@ -3126,7 +3089,7 @@ mod tests {
             .expect("volatile agent table creates");
         let table = Table::<AgentRecord>::new(&connection);
         let blocked = agent(
-            json!({"accountKey":"default","id":"blocked","provider":"codex","rootId":"blocked","epoch":0,"status":"idle"}),
+            json!({"compactions":0,"accountKey":"default","id":"blocked","provider":"codex","rootId":"blocked","epoch":0,"status":"idle"}),
         );
         assert!(matches!(
             table.insert_new(&blocked),
@@ -3140,12 +3103,22 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT,created REAL,record TEXT NOT NULL);
-                 INSERT INTO runtime_items VALUES('i1','a',2,'{\"id\":\"i1\",\"agent\":\"a\",\"text\":\"one\"}');
-                 INSERT INTO runtime_items VALUES('i2','b',4,'{\"id\":\"i2\",\"agent\":\"b\",\"text\":\"two\"}');
-                 INSERT INTO runtime_items VALUES('i3','a',3,'{\"id\":\"i3\",\"agent\":\"a\",\"text\":\"three\"}');",
+                 INSERT INTO runtime_items VALUES('i1','a',2,'{\"id\":\"i1\",\"role\":\"assistant\",\"agent\":\"a\",\"text\":\"one\"}');
+                 INSERT INTO runtime_items VALUES('i2','b',4,'{\"id\":\"i2\",\"role\":\"assistant\",\"agent\":\"b\",\"text\":\"two\"}');
+                 INSERT INTO runtime_items VALUES('i3','a',3,'{\"id\":\"i3\",\"role\":\"assistant\",\"agent\":\"a\",\"text\":\"three\"}');",
             )
             .expect("transcript table creates");
         let table = Table::<TranscriptItemRecord>::new(&connection);
+        connection
+            .execute(
+                "INSERT INTO runtime_items VALUES('duplicate','a',0,?1)",
+                [r#"{"id":"old","id":"duplicate"}"#],
+            )
+            .expect("duplicate-key fixture");
+        assert!(table.get(&TranscriptItemId::from("duplicate")).is_err());
+        connection
+            .execute("DELETE FROM runtime_items WHERE id='duplicate'", [])
+            .expect("remove duplicate fixture");
         let records = table
             .list_matching(
                 Some(RecordPredicate::PhysicalAgentEquals("a")),
@@ -3172,9 +3145,9 @@ mod tests {
         connection
             .execute_batch(
                 "CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 INSERT INTO runtime_tasks VALUES('t1','{\"id\":\"t1\",\"agent\":\"a\",\"kind\":\"command\",\"status\":\"completed\",\"created\":1,\"finished\":3}');
-                 INSERT INTO runtime_tasks VALUES('t2','{\"id\":\"t2\",\"agent\":\"a\",\"kind\":\"command\",\"status\":\"completed\",\"created\":2}');
-                 INSERT INTO runtime_tasks VALUES('t3','{\"id\":\"t3\",\"agent\":\"b\",\"kind\":\"command\",\"status\":\"completed\",\"created\":0}');",
+                 INSERT INTO runtime_tasks VALUES('t1','{\"id\":\"t1\",\"itemId\":\"t1\",\"turnId\":\"turn\",\"type\":\"commandExecution\",\"name\":\"command\",\"agent\":\"a\",\"kind\":\"command\",\"status\":\"completed\",\"created\":1,\"finished\":3}');
+                 INSERT INTO runtime_tasks VALUES('t2','{\"id\":\"t2\",\"itemId\":\"t2\",\"turnId\":\"turn\",\"type\":\"commandExecution\",\"name\":\"command\",\"agent\":\"a\",\"kind\":\"command\",\"status\":\"completed\",\"created\":2}');
+                 INSERT INTO runtime_tasks VALUES('t3','{\"id\":\"t3\",\"itemId\":\"t3\",\"turnId\":\"turn\",\"type\":\"commandExecution\",\"name\":\"command\",\"agent\":\"b\",\"kind\":\"command\",\"status\":\"completed\",\"created\":0}');",
             )
             .expect("runtime task table creates");
         let agents = vec!["a".to_owned()];
@@ -3207,6 +3180,16 @@ mod agent_projection_tests {
     use serde_json::json;
 
     #[test]
+    fn stored_agent_rejects_legacy_start_wait_shapes() {
+        for wait in [r#"{"reason":"slot","epoch":1,"runningTurns":null}"#, "null"] {
+            let raw = format!(
+                r#"{{"id":"a","rootId":"a","epoch":1,"status":"queued","accountKey":"default","compactions":0,"startWait":{wait}}}"#
+            );
+            assert!(super::parse_agent_record("a", &raw).is_err());
+        }
+    }
+
+    #[test]
     fn stored_agent_reads_typed_volatile_columns() {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
@@ -3215,7 +3198,7 @@ mod agent_projection_tests {
             .unwrap();
         db.execute(
             "INSERT INTO runtime_agents VALUES('a',?1)",
-            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#],
+            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0}"#],
         )
         .unwrap();
         db.execute("INSERT INTO runtime_agent_volatile(id,events,tail,contextUsage) VALUES('a','3','\"answer\"','{\"tokens\":20,\"window\":100,\"at\":1.5}')", []).unwrap();
@@ -3237,7 +3220,7 @@ mod agent_projection_tests {
             .unwrap();
         db.execute(
             "INSERT INTO runtime_agents VALUES('a',?1)",
-            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#],
+            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0}"#],
         )
         .unwrap();
         db.execute(
@@ -3263,25 +3246,25 @@ mod agent_projection_tests {
 
     #[test]
     fn stored_agent_rejects_malformed_archive() {
-        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","agentArchive":{"at":"bad","epoch":1}}"#;
+        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0,"agentArchive":{"at":"bad","epoch":1}}"#;
         assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
     }
 
     #[test]
     fn stored_agent_rejects_malformed_sandbox() {
-        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","sandbox":{"type":"invalid"}}"#;
+        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0,"sandbox":{"type":"invalid"}}"#;
         assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
     }
 
     #[test]
     fn stored_agent_rejects_malformed_cleanup_receipt() {
-        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","cleanedWorktree":{"bytes":"bad"}}"#;
+        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0,"cleanedWorktree":{"bytes":"bad"}}"#;
         assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
     }
 
     #[test]
     fn stored_agent_rejects_malformed_safety_buffering() {
-        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","nativeSafetyBuffering":{"showBufferingUi":"yes"}}"#;
+        let raw = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0,"nativeSafetyBuffering":{"showBufferingUi":"yes"}}"#;
         assert!(serde_json::from_str::<AgentRecord>(raw).is_err());
     }
 
@@ -3289,7 +3272,7 @@ mod agent_projection_tests {
     fn stored_agent_rejects_malformed_parent_and_deletion_marker() {
         for field in [r#""parentId":false"#, r#""deletedAt":"bad""#] {
             let raw = format!(
-                r#"{{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default",{field}}}"#
+                r#"{{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0,{field}}}"#
             );
             assert!(serde_json::from_str::<AgentRecord>(&raw).is_err());
         }
@@ -3302,7 +3285,7 @@ mod agent_projection_tests {
             studio_runtime_schema::shared_values::MAX_SAFE_INTEGER + 1,
         ] {
             let raw = format!(
-                r#"{{"id":"a","rootId":"a","epoch":{epoch},"status":"idle","accountKey":"default"}}"#
+                r#"{{"id":"a","rootId":"a","epoch":{epoch},"status":"idle","accountKey":"default","compactions":0}}"#
             );
             assert!(serde_json::from_str::<AgentRecord>(&raw).is_err());
         }
@@ -3322,7 +3305,7 @@ mod agent_projection_tests {
             .unwrap();
         db.execute(
             "INSERT INTO runtime_agents VALUES('a',?1)",
-            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#],
+            [r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":0}"#],
         )
         .unwrap();
         db.execute(
@@ -3354,13 +3337,26 @@ mod agent_projection_tests {
     }
 
     #[test]
+    fn stored_agent_requires_explicit_compactions_but_accepts_unknown() {
+        let missing = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default"}"#;
+        let unknown = r#"{"id":"a","rootId":"a","epoch":1,"status":"idle","accountKey":"default","compactions":null}"#;
+        assert!(serde_json::from_str::<AgentRecord>(missing).is_err());
+        assert_eq!(
+            serde_json::from_str::<AgentRecord>(unknown)
+                .unwrap()
+                .compactions,
+            None
+        );
+    }
+
+    #[test]
     fn stored_agent_rejects_malformed_business_fields() {
         let db = Connection::open_in_memory().expect("database");
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
             .expect("agents");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile");
-        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"future","accountKey":null,
+        let raw = json!({"compactions":0,"id":"a","rootId":"r","epoch":1,"status":"future","accountKey":null,
             "activity":false,"titleJob":{"malformed":true},"startOutcomeHold":[null],"vmLaunch":false,
             "vendor":{"nested":[null,true]}});
         db.execute(
@@ -3383,7 +3379,7 @@ mod agent_projection_tests {
             .expect("agents");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile");
-        let raw = r#"{"id":"a","rootId":"r","epoch":1.0,"status":"idle","accountKey":"default"}"#;
+        let raw = r#"{"id":"a","rootId":"r","epoch":1.0,"status":"idle","accountKey":"default","compactions":0}"#;
         db.execute(
             "INSERT INTO runtime_agents(id,record) VALUES('a',?1)",
             [raw],
@@ -3404,7 +3400,7 @@ mod agent_projection_tests {
             .unwrap();
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .unwrap();
-        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"idle", "accountKey":"default",
+        let raw = json!({"id":"a","rootId":"r","epoch":1,"status":"idle", "accountKey":"default", "compactions":0,
             "events":1,"agentArchive":{"at":1.5,"epoch":1},"future":{"x":[1,null]},
             "titleJob":{"legacy":true},"startOutcomeHold":{"stage":"held","reason":"pending"},"firedEvents":["one"]});
         db.execute(
@@ -3435,7 +3431,7 @@ mod agent_projection_tests {
             (Some(json!(12)), false),
             (Some(json!("custom")), true),
         ] {
-            let mut raw = json!({"id":"a","rootId":"a","epoch":1,"status":"idle"});
+            let mut raw = json!({"id":"a","rootId":"a","epoch":1,"status":"idle","compactions":0});
             if let Some(value) = account {
                 raw["accountKey"] = value;
             }
@@ -3463,8 +3459,8 @@ mod agent_projection_tests {
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile");
         for value in [
-            json!({"id":"a","rootId":"r","epoch":0,"status":"idle","activity":{"phase":{"secret-value":true}}}),
-            json!({"id":"wrong","rootId":"r","epoch":0,"status":"idle"}),
+            json!({"compactions":0,"id":"a","rootId":"r","epoch":0,"status":"idle","activity":{"phase":{"secret-value":true}}}),
+            json!({"compactions":0,"id":"wrong","rootId":"r","epoch":0,"status":"idle"}),
         ] {
             let error =
                 decode_agent_record(&db, "a", &value.to_string()).expect_err("invalid agent");

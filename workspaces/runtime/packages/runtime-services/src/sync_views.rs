@@ -379,17 +379,6 @@ pub(crate) fn agent_start_wait(
             }
         }
     }
-    #[derive(serde::Deserialize)]
-    struct WaitEpoch {
-        epoch: i64,
-    }
-    #[derive(serde::Deserialize)]
-    #[serde(untagged)]
-    enum StoredWait {
-        Known(studio_runtime_schema::agent_progress::LegacyStartWait),
-        Unusable(WaitEpoch),
-        Invalid(serde::de::IgnoredAny),
-    }
     // Agent records are open documents; this typed projection reads only wait ownership.
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -402,7 +391,13 @@ pub(crate) fn agent_start_wait(
         #[serde(default)]
         native_failure_hold: Option<NativeHold>,
         account_transfer_id: Option<String>,
-        start_wait: Option<StoredWait>,
+        #[serde(default, deserialize_with = "present_wait")]
+        start_wait: Option<AgentStartWait>,
+    }
+    fn present_wait<'de, D: serde::Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<AgentStartWait>, D::Error> {
+        <AgentStartWait as serde::Deserialize>::deserialize(d).map(Some)
     }
     let source: Source = serde_json::from_value(record.clone())?;
     if !matches!(
@@ -433,15 +428,9 @@ pub(crate) fn agent_start_wait(
             return Ok(hold);
         }
     }
-    let persisted = match source.start_wait {
-        Some(StoredWait::Known(wait)) if wait.epoch == source.epoch => match wait.into_fresh() {
-            Some(wait) => Some(wait),
-            None => return Ok(None),
-        },
-        Some(StoredWait::Unusable(wait)) if wait.epoch != source.epoch => None,
-        Some(StoredWait::Unusable(_)) | Some(StoredWait::Invalid(_)) => return Ok(None),
-        Some(StoredWait::Known(_)) | None => None,
-    };
+    let persisted = source
+        .start_wait
+        .filter(|wait| wait.epoch() == source.epoch);
     if source.status == Some(studio_runtime_store::AgentStatus::Starting) {
         return Ok(persisted);
     }

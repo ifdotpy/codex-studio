@@ -116,7 +116,8 @@ fn oracle() -> Vec<Case> {
 }
 macro_rules! owner {
     ($case:expr) => {
-        serde_json::from_str($case.owner.get()).expect("owner")
+        serde_json::from_str(&format!("{{\"compactions\":0,{}", &$case.owner.get()[1..]))
+            .expect("owner")
     };
 }
 fn monitor_record(value: &Monitor) -> studio_runtime_store::MonitorRecord {
@@ -142,7 +143,10 @@ fn python_written_records_and_real_rules_functions_match() {
                 let mut agents: Vec<_> = case
                     .workers
                     .iter()
-                    .map(|worker| serde_json::from_str(worker.get()).expect("worker"))
+                    .map(|worker| {
+                        serde_json::from_str(&format!("{{\"compactions\":0,{}", &worker.get()[1..]))
+                            .expect("worker")
+                    })
                     .collect();
                 agents.push(owner!(case));
                 let activity = active_workers(

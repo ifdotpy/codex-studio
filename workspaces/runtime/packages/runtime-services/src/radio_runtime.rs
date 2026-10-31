@@ -39,8 +39,10 @@ pub use lifecycle::{
     shared_turn_active, tick,
 };
 
-#[derive(Serialize, Deserialize)]
-pub struct RadioReply {
+pub type RadioReply = Box<serde_json::value::RawValue>;
+
+#[derive(Serialize)]
+struct FreshRadioReply {
     room: Room,
 }
 
@@ -116,7 +118,7 @@ pub async fn manage(store: Arc<RuntimeStore>, body: &Value) -> Result<RadioReply
             let all_agents = project_agents(db)?;
             let teams = live_teams(project["peerTeams"].as_array().map(Vec::as_slice).unwrap_or_default(),&all_agents,&path,&prepared)?;
             let team_row = teams.iter().find(|t| t["id"] == team && t["members"].as_array().is_some_and(|m|m.len()==2)).ok_or(ProjectsError::Invalid("Select a team with exactly two chats in this project"))?;
-            Room { id, radio: Radio::new(team, Map::new()), fields: json!({"kind":"private","members":team_row["members"],"projectPath":path,"customName":format!("{} · Shared chat",team_row["name"].as_str().unwrap_or_default()),"created":now,"userHidden":false}).as_object().cloned().unwrap_or_default() }
+            Room { id, radio: Radio::new(team, false), fields: json!({"kind":"private","members":team_row["members"],"projectPath":path,"customName":format!("{} · Shared chat",team_row["name"].as_str().unwrap_or_default()),"created":now,"userHidden":false}).as_object().cloned().unwrap_or_default() }
         };
         if room.fields.get("projectPath").and_then(Value::as_str) != Some(path.as_str()) { return Err(ProjectsError::Invalid("The shared chat belongs to another project")); }
         if let Some(denial) = validate(db,&room,&prepared,matches!(action.as_str(),"send"|"pass"))? && action != "stop" { return Err(ProjectsError::Invalid(denial)); }
@@ -144,7 +146,7 @@ pub async fn manage(store: Arc<RuntimeStore>, body: &Value) -> Result<RadioReply
             }
         }
         save(db,&mut room,&prepared,now)?;
-        let result = RadioReply { room };
+        let result = serde_json::value::to_raw_value(&FreshRadioReply { room }).map_err(studio_runtime_store::StoreError::from)?;
         event_write::settle_request(db,&admitted,Some("owner-api"),&result).map_err(studio_runtime_store::StoreError::from)?;
         Ok(result)
     }).await
@@ -338,9 +340,9 @@ pub async fn create_with(
         }
         let now=crate::projects::now_seconds();
         let members = Value::Array(ids.iter().map(|id| Value::String(id.0.clone())).collect());
-        let mut room=Room { id: room_id, radio: Radio::new(namespace.to_string(), Map::from_iter([("direct".to_owned(), Value::Bool(true))])), fields: json!({"kind":"private","members":members,"projectPath":path,"customName":name,"created":now,"userHidden":false}).as_object().cloned().unwrap_or_default() };
+        let mut room=Room { id: room_id, radio: Radio::new(namespace.to_string(), true), fields: json!({"kind":"private","members":members,"projectPath":path,"customName":name,"created":now,"userHidden":false}).as_object().cloned().unwrap_or_default() };
         save(db,&mut room,&prepared,now)?;
-        let result=RadioReply { room };event_write::settle_request(db,&admitted,Some("owner-api"),&result).map_err(studio_runtime_store::StoreError::from)?;Ok(result)
+        let result=serde_json::value::to_raw_value(&FreshRadioReply { room }).map_err(studio_runtime_store::StoreError::from)?;event_write::settle_request(db,&admitted,Some("owner-api"),&result).map_err(studio_runtime_store::StoreError::from)?;Ok(result)
     }).await
 }
 fn prepared_agent_exists(db: &Connection, id: &str) -> Result<bool, ProjectsError> {
@@ -351,20 +353,61 @@ fn prepared_agent_exists(db: &Connection, id: &str) -> Result<bool, ProjectsErro
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn legacy_radio_receipt_replays_exact_bytes() {
+        let dir = tempfile::tempdir().expect("legacy replay fixture");
+        let store = Arc::new(
+            RuntimeStore::open(Some(dir.path()))
+                .await
+                .expect("legacy replay fixture"),
+        );
+        let root = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let body = json!({"radio_action":"open","request_id":root});
+        let signature = event_write::request_signature(&json!({"operation":"radio","body":body}));
+        let raw = r#"{"room":{"id":"radio:old","radio":{"active":null}}}"#;
+        let saved: RadioReply = serde_json::from_str(raw).expect("legacy replay fixture");
+        let root_for_write = root.clone();
+        store
+            .transaction(move |db| {
+                let key = format!("radio:{root_for_write}");
+                let event_write::CallerAdmission::Fresh(admitted) =
+                    event_write::begin_request::<RadioReply>(
+                        db,
+                        event_write::RequestKey::new("radio", &["owner-api"], &root_for_write)
+                            .raw(&key),
+                        &signature,
+                        chrono::Utc::now().timestamp_millis(),
+                    )
+                    .expect("legacy replay fixture")
+                else {
+                    panic!("fresh receipt")
+                };
+                event_write::settle_request(db, &admitted, Some("owner-api"), &saved)
+                    .expect("legacy replay fixture");
+                Ok(())
+            })
+            .await
+            .expect("legacy replay fixture");
+        let reply = manage(store, &body).await.expect("legacy replay fixture");
+        assert_eq!(reply.get(), raw);
+    }
+
     #[test]
     fn radio_reply_preserves_extra_fields_and_nulls() {
         let raw = r#"{"room":{"id":"radio:test","kind":"private","extra":null,"radio":{"teamId":"test","revision":0,"status":"idle","speaker":null,"next":[],"active":null,"error":null,"seen":{},"future":{"x":null}}}}"#;
         let reply: RadioReply = serde_json::from_str(raw).expect("legacy reply");
         let encoded = serde_json::to_string(&reply).expect("encode reply");
+        assert_eq!(encoded, raw);
         let original: Value = serde_json::from_str(raw).expect("original JSON");
         let actual: Value = serde_json::from_str(&encoded).expect("encoded JSON");
         assert_eq!(actual, original);
         assert!(actual["room"].get("missing").is_none());
-        let stored = original["room"].to_string();
-        let checked = Room::checked("radio:test", &stored).expect("stored legacy room");
+        let mut stored = original["room"].clone();
+        stored["radio"]["direct"] = json!(false);
+        let checked = Room::checked("radio:test", &stored.to_string()).expect("canonical room");
         let round_trip: Value =
             serde_json::from_str(&serde_json::to_string(&checked).expect("encode room"))
                 .expect("decode room");
-        assert_eq!(round_trip, original["room"]);
+        assert_eq!(round_trip, stored);
     }
 }

@@ -179,6 +179,13 @@ impl VoiceRepository {
         )?)
     }
 
+    /// Stored voice cursor and session columns for subscription change detection.
+    pub fn fingerprint(connection: &Connection, agent: &str) -> StoreResult<Vec<u8>> {
+        let sequence = Self::record_sequence(connection, agent)?;
+        let session = connection.query_row("SELECT id,state,answer,error,ended FROM voice_sessions WHERE agent=?1 AND state IS NOT NULL ORDER BY created DESC LIMIT 1", [agent], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, Option<f64>>(4)?))).optional()?;
+        serde_json::to_vec(&(sequence, session)).map_err(StoreError::from)
+    }
+
     pub fn latest_session(connection: &Connection, agent: &str) -> StoreResult<Option<Value>> {
         connection
             .query_row(

@@ -42,8 +42,8 @@ async fn authorized_task_output_read_and_projection() {
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
     let cwd = workspace.path().to_string_lossy().into_owned();
     store.transaction_with(move |tx| {
-        let owner = json!({"accountKey":"default","id":"owner","rootId":"owner","epoch":1,"status":"idle","provider":"claude","cwd":cwd});
-        let task = json!({"id":"task","agent":"owner","itemId":"task:native","kind":"tool","status":"running","created":1,"outputFile":"out.txt"});
+        let owner = json!({"compactions":0,"accountKey":"default","id":"owner","rootId":"owner","epoch":1,"status":"idle","provider":"claude","cwd":cwd});
+        let task = json!({"id":"task","agent":"owner","itemId":"task:native","kind":"tool","type":"mcpToolCall","name":"tool","turnId":"turn","status":"running","created":1,"outputFile":"out.txt"});
         tx.execute("INSERT INTO runtime_agents(id,record) VALUES('owner',?)",[owner.to_string()])?;
         tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('task',?)",[task.to_string()])?;
         Ok::<_, StoreError>(())
@@ -64,6 +64,15 @@ async fn authorized_task_output_read_and_projection() {
     let (status, detail) = get(&app, "/api/task?id=task", LOCAL_ORIGIN).await;
     assert_eq!(status, 200, "{detail}");
     assert_eq!(detail["outputFile"], "out.txt");
+    store.transaction(|tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',0) WHERE id='owner'", [])?;
+        Ok(())
+    }).await.unwrap();
+    assert!(get(&app, "/api/task?id=task", LOCAL_ORIGIN).await.0 >= 400);
+    store.transaction(|tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_remove(record,'$.deletedAt') WHERE id='owner'", [])?;
+        Ok(())
+    }).await.unwrap();
     assert!(
         get(&app, "/api/task/output?id=task&agent=another", LOCAL_ORIGIN)
             .await

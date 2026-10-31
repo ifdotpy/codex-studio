@@ -28,10 +28,10 @@ pub(crate) fn terminal(
             true,
         )?;
     }
-    let attempt = agent.extra.get("startAttempt").unwrap_or(&Value::Null);
-    let since = if attempt["turnId"] == turn {
-        attempt["created"]
-            .as_f64()
+    let attempt = agent.start_attempt.as_ref();
+    let since = if attempt.and_then(|a| a.turn_id.as_deref()) == Some(turn) {
+        attempt
+            .and_then(|a| a.created)
             .filter(|v| *v != 0.0)
             .map_or(0.0, |v| v - 60.0)
     } else {
@@ -65,7 +65,7 @@ mod tests {
         .enumerate()
         {
             let mut agent = AgentRecord::from_value(
-                json!({"accountKey":"default","id":"a","rootId":"a","epoch":0,"status":"failed"}),
+                json!({"compactions":0,"accountKey":"default","id":"a","rootId":"a","epoch":0,"status":"failed"}),
             )
             .expect("agent");
             if let Some(provider) = provider {
