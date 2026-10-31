@@ -5220,7 +5220,7 @@ dependencies = [
 
 [[package]]
 name = "studio-client-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -5264,7 +5264,7 @@ dependencies = [
 
 [[package]]
 name = "studio-client-domain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "html5ever 0.40.1",
  "pulldown-cmark",
@@ -5276,7 +5276,7 @@ dependencies = [
 
 [[package]]
 name = "studio-client-wasm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "sha2 0.11.1",
@@ -5286,14 +5286,14 @@ dependencies = [
 
 [[package]]
 name = "studio-diagnostics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "studio-native-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "block2",
  "libc",
@@ -5313,7 +5313,7 @@ dependencies = [
 
 [[package]]
 name = "studio-operations"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5322,7 +5322,7 @@ dependencies = [
 
 [[package]]
 name = "studio-operator-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "studio-client-core",
@@ -5332,7 +5332,7 @@ dependencies = [
 
 [[package]]
 name = "studio-peer-link"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "getrandom 0.4.3",
  "quinn",
@@ -5345,7 +5345,7 @@ dependencies = [
 
 [[package]]
 name = "studio-process-supervisor"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "notify",
  "rusqlite",
@@ -5361,7 +5361,7 @@ dependencies = [
 
 [[package]]
 name = "studio-runtime-http"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -5396,21 +5396,21 @@ dependencies = [
 
 [[package]]
 name = "studio-runtime-priority-sys"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "studio-runtime-proc-sys"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "studio-runtime-process"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "command-fds",
@@ -5434,7 +5434,7 @@ dependencies = [
 
 [[package]]
 name = "studio-runtime-providers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5445,7 +5445,7 @@ dependencies = [
 
 [[package]]
 name = "studio-runtime-schema"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "data-encoding",
  "jsonschema 0.60.0",
@@ -5462,7 +5462,7 @@ dependencies = [
 
 [[package]]
 name = "studio-runtime-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -5494,7 +5494,7 @@ dependencies = [
 
 [[package]]
 name = "studio-runtime-services"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -5552,7 +5552,7 @@ dependencies = [
 
 [[package]]
 name = "studio-runtime-store"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "data-encoding",
  "inventory",
