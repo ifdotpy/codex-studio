@@ -825,7 +825,7 @@ fn new_question(id: &str) -> studio_runtime_store::approvals::NewApproval {
     studio_runtime_store::approvals::NewApproval {
         id: ApprovalId(id.to_owned()),
         agent: AgentId(CHAT.to_owned()),
-        turn: None,
+        turn: Some(studio_runtime_schema::approvals::TurnId("turn".into())),
         epoch: None,
         request: Request::AgentQuestion {
             questions: vec![Question {

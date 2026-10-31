@@ -326,6 +326,15 @@ fn drop_card_writes(changes: &mut Value) {
 pub fn assert_writes(before: &Value, store: &RuntimeStore, expected: &Value) {
     let mut actual = logical_changes(before, &logical_snapshot(store));
     let mut expected = expected.clone();
+    if let Some(change) = expected.get_mut("runtime_agents") {
+        for kind in ["removed", "added"] {
+            for row in change[kind].as_array_mut().unwrap() {
+                row[1] = normalized_actor(&row[1]);
+            }
+        }
+    }
+    normalize_agent_nulls(&mut expected);
+    normalize_agent_nulls(&mut actual);
     drop_card_writes(&mut actual);
     drop_card_writes(&mut expected);
     crate::removed_budget_fields::strip(&mut actual);

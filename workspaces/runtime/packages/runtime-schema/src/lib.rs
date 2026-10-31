@@ -843,8 +843,6 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         "PullRequest",
         "PullResult",
         "RenameServer",
-        "QuestionEntry",
-        "QuestionHistory",
         "QueueItem",
         "RequestRecordResponse",
         "RuleRecordResponse",

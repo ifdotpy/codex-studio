@@ -579,7 +579,7 @@ mod tests {
                 "params":{"turnId":"t"},"decision":"accept","answeredBy":"user","answeredAt":3.0}),
             json!({"id":"q1","method":"agent/asyncQuestion","agent":"a","status":"answered","createdAt":1.0,
                 "params":{"questions":[{"id":"0","question":"?","options":[{"label":"x"}],"isSecret":false}]},
-                "decision":"answer","answeredBy":"user","answeredAt":2.0,"answerHistory":[{"id":"0","answer":["x"]}]}),
+                "decision":"answer","answeredBy":"user","answeredAt":2.0,"answerHistory":[{"id":"0","question":"?","isSecret":false,"answer":["x"]}]}),
             json!({"id":"q2","method":"item/tool/requestUserInput","agent":"a","status":"deleted","createdAt":1.0,"deletedAt":9.0,"deletedBy":"user",
                 "params":{"turnId":"t","questions":[]}}),
             json!({"id":"x1","method":"item/commandExecution/requestApproval","agent":"a","status":"expired","createdAt":1.0,"params":{"turnId":"t"}}),
@@ -787,7 +787,7 @@ mod tests {
     #[test]
     fn agent_level_rows_keep_no_turn_and_a_turnless_exec_is_not_converted() {
         let mut db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL); INSERT INTO runtime_requests VALUES('m','{\"id\":\"m\",\"method\":\"monitor/approve\",\"agent\":\"a\",\"status\":\"pending\",\"params\":{}}')").unwrap();
+        db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL); INSERT INTO runtime_requests VALUES('m','{\"id\":\"m\",\"method\":\"monitor/approve\",\"agent\":\"a\",\"status\":\"pending\",\"createdAt\":1,\"params\":{}}')").unwrap();
         let tx = db.transaction().unwrap();
         apply(&tx).unwrap();
         assert_eq!(
@@ -811,7 +811,7 @@ mod tests {
     #[test]
     fn a_field_the_converter_cannot_place_leaves_the_row_in_the_legacy_table() {
         let mut db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL); INSERT INTO runtime_requests VALUES('m','{\"id\":\"m\",\"method\":\"monitor/approve\",\"agent\":\"a\",\"status\":\"pending\",\"params\":{},\"surprise\":1}')").unwrap();
+        db.execute_batch("CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL); INSERT INTO runtime_requests VALUES('m','{\"id\":\"m\",\"method\":\"monitor/approve\",\"agent\":\"a\",\"status\":\"pending\",\"createdAt\":1,\"params\":{},\"surprise\":1}')").unwrap();
         let tx = db.transaction().unwrap();
         apply(&tx).unwrap();
         assert_eq!(

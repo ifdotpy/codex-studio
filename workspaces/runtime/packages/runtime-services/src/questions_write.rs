@@ -221,12 +221,12 @@ pub fn answer_async_question(
     let agent_id = row.agent.as_str();
     let agent = stored_agent(transaction, agent_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
-    if !event_write::truthy(agent.extra.get("isLead")) {
+    if !agent.is_lead == Some(true) {
         return Err(QuestionsWriteError::InvalidRequest(
             "Only the orchestrator can ask the user. The subagent must contact its orchestrator.",
         ));
     }
-    if event_write::truthy(agent.extra.get("deletedAt"))
+    if agent.is_deleted()
         || row.epoch.map(|epoch| epoch as i64) != Some(agent.epoch)
         || agent.auto_wake != Some(true)
     {
@@ -353,7 +353,7 @@ pub fn defer_question(
     }
     let agent = stored_agent(transaction, row.agent.as_str())?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
-    if event_write::truthy(agent.extra.get("deletedAt")) {
+    if agent.is_deleted() {
         return Err(QuestionsWriteError::InvalidRequest(
             "This conversation was deleted",
         ));
@@ -380,7 +380,7 @@ pub fn delete_question(
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
     if !delete_allowed(
         &row,
-        event_write::truthy(agent.extra.get("deletedAt")),
+        agent.is_deleted(),
         true,
     )? {
         return Ok(json!({"id":id,"status":"deleted"}));

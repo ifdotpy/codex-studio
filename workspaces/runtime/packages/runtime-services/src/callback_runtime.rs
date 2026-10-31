@@ -507,7 +507,7 @@ mod tests {
     ) -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
-        let actor = json!({"provider":provider, "yoloMode":true,
+        let actor = json!({"compactions":0,"provider":provider, "yoloMode":true,
             "id":"full-agent", "rootId":"full-agent", "epoch":0,
             "status":"running", "autoWake":true, "isLead":true, "inFlight":true,
             "accountKey":"default", "threadId":"thread", "turnId":"turn",
