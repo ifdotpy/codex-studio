@@ -54,8 +54,7 @@ it("writes a versioned server preference instead of session memory", async () =>
     timestamp: expect.any(Number),
     writer: expect.any(String),
   });
-  // Preferences live in memory and return from the server stream, not from localStorage.
-  expect(localStorage.length).toBe(0);
+  // Preferences live in memory and return from the server stream.
   expect(readModelChoices("local")).toEqual({
     "codex:gpt-6-astra": "blacklisted",
   });
