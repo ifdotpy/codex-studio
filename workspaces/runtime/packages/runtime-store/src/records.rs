@@ -861,6 +861,11 @@ impl JsonRecord for AgentRecord {
         Some(&self.id)
     }
 
+    // Remove this override once the record is closed and typed.
+    fn encode_stored(&self, _: &Connection, row_id: &str) -> StoreResult<String> {
+        encode_open_record(self, row_id)
+    }
+
     fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
         let mut agent = parse_agent_record(row_id, encoded)?;
         crate::agent_volatile::merge_agent(connection, row_id, &mut agent)?;
@@ -1191,6 +1196,18 @@ mod request_typed_tests {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
         assert!(super::decode_record::<Record>(&connection, "row", r#"{"id":"row"}"#).is_ok());
         assert!(super::decode_record::<Record>(&connection, "row", r#"["row"]"#).is_err());
+        connection
+            .execute_batch("CREATE TABLE fixture(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .unwrap();
+        super::validation_counts::CHECKS.with(|count| count.set(0));
+        Table::new(&connection)
+            .put(&Record { id: "row".into() })
+            .unwrap();
+        assert_eq!(
+            super::validation_counts::CHECKS.with(|count| count.get()),
+            0,
+            "typed default must not build a generic JSON value"
+        );
     }
 
     #[test]
@@ -1328,15 +1345,6 @@ impl JsonRecord for MonitorRecord {
     fn record_key(&self) -> Option<&Self::Id> {
         Some(self.id())
     }
-    fn encode_stored(&self, _connection: &Connection, row_id: &str) -> StoreResult<String> {
-        if self.id != row_id {
-            return Err(crate::StoreError::InvalidStoredObject {
-                table: Self::TABLE,
-                id: row_id.to_owned(),
-            });
-        }
-        Ok(serde_json::to_string(self)?)
-    }
 }
 
 #[cfg(test)]
@@ -1351,7 +1359,7 @@ mod monitor_direct_write_tests {
             "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
         )
         .unwrap();
-        let record: MonitorRecord = serde_json::from_str(r#"{"id":"m","agent":"a","epoch":0,"status":"running","command":"test","created":5,"tail":"first","requestId":"r","activityAt":5,"activityGeneration":0,"bytes":0,"cwd":"/tmp","interactive":false,"livenessCommand":"","log":"/tmp/m.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"timeout_ms":3600000,"wakeOn":"exit"}"#).unwrap();
+        let record: MonitorRecord = serde_json::from_str(r#"{"id":"m","agent":"a","epoch":0,"status":"running","command":"test","created":5,"tail":"first","requestId":"r","activityAt":5,"activityGeneration":0,"bytes":0,"cwd":"/work","interactive":false,"livenessCommand":"","log":"/work/m.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"timeout_ms":3600000,"wakeOn":"exit"}"#).unwrap();
         validation_counts::CHECKS.with(|count| count.set(0));
         Table::new(&db).put(&record).unwrap();
         assert_eq!(validation_counts::CHECKS.with(|count| count.get()), 0);
@@ -1856,7 +1864,15 @@ pub trait JsonRecord: Serialize + DeserializeOwned {
     where
         Self: Sized,
     {
-        Ok(serde_json::to_string(&checked_value(self, row_id)?)?)
+        if Self::KEY_MODE == RecordKeyMode::PayloadId
+            && self.record_key().map(AsRef::as_ref) != Some(row_id)
+        {
+            return Err(crate::StoreError::InvalidStoredObject {
+                table: Self::TABLE,
+                id: row_id.to_owned(),
+            });
+        }
+        Ok(serde_json::to_string(self)?)
     }
 
     fn decode_stored(connection: &Connection, row_id: &str, encoded: &str) -> StoreResult<Self> {
@@ -2448,6 +2464,11 @@ fn checked_value<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<Value> 
         return Err(invalid());
     }
     Ok(value)
+}
+
+/// Validate the JSON schema of an open record before encoding it for storage.
+pub fn encode_open_record<R: JsonRecord>(record: &R, row_id: &str) -> StoreResult<String> {
+    Ok(serde_json::to_string(&checked_value(record, row_id)?)?)
 }
 
 fn stored_text(value: ValueRef<'_>, table: &'static str, id: &str) -> StoreResult<String> {

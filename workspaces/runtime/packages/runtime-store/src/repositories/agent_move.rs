@@ -36,6 +36,10 @@ impl JsonRecord for MoveRecord {
     fn record_key(&self) -> Option<&String> {
         Some(&self.id)
     }
+    // Remove this override once the record is closed and typed.
+    fn encode_stored(&self, _: &rusqlite::Connection, row_id: &str) -> crate::StoreResult<String> {
+        crate::records::encode_open_record(self, row_id)
+    }
 }
 pub struct AgentMoveRepository;
 impl AgentMoveRepository {

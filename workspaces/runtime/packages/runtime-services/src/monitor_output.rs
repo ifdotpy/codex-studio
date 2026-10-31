@@ -277,7 +277,7 @@ mod tests {
         let operation = store.transaction_with(move |tx| {
             let actor = AgentRecord::from_value(serde_json::json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"worker","epoch":0,"status":"running","autoWake":true})).unwrap();
             AgentRepository::put(tx, &actor)?;
-            let mut record: MonitorRecord = serde_json::from_str(r#"{"id":"m","agent":"worker","epoch":0,"status":"running","command":"test","created":5,"tail":"","requestId":"request","activityAt":5,"activityGeneration":0,"bytes":0,"cwd":"/tmp","interactive":false,"livenessCommand":"","log":"/tmp/m.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"timeout_ms":3600000,"wakeOn":"exit","outputPatterns":["READY"],"operation":{"agent":"worker","epoch":0,"accountKey":"default","connectionId":"connection"}}"#).unwrap();
+            let mut record: MonitorRecord = serde_json::from_str(r#"{"id":"m","agent":"worker","epoch":0,"status":"running","command":"test","created":5,"tail":"","requestId":"request","activityAt":5,"activityGeneration":0,"bytes":0,"cwd":"/work","interactive":false,"livenessCommand":"","log":"/work/m.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"timeout_ms":3600000,"wakeOn":"exit","outputPatterns":["READY"],"operation":{"agent":"worker","epoch":0,"accountKey":"default","connectionId":"connection"}}"#).unwrap();
             record.log = log;
             let operation = record.operation.clone().unwrap();
             Table::new(tx).put(&record)?;

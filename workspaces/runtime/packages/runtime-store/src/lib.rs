@@ -117,7 +117,7 @@ pub use records::{
     TaskRecord, TaskRepository, TerminalRecord, TitleJob, ToolResultRecord, TranscriptAssetId,
     TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord, UnknownAgentStatus,
     UsageResumeRecord, VmAuthBootstrap, VmLaunch, WorkItemRecord, WorkStatus,
-    WorkspaceOperationRecord, decode_agent_record,
+    WorkspaceOperationRecord, decode_agent_record, encode_open_record,
 };
 pub use repositories::agent_indexed_reads::{AgentIndexedReads, RESERVED_TURN_INPUT};
 pub use repositories::agent_move::{AgentMoveRepository, MoveRecord};
