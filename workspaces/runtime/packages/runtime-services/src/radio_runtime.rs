@@ -27,7 +27,7 @@ const MAX_INPUT: usize = 200_000;
 const MAX_TEXT: usize = 32_000;
 
 #[path = "projects/radio_state.rs"]
-mod state;
+pub(crate) mod state;
 use state::*;
 
 #[path = "projects/radio_lifecycle.rs"]
