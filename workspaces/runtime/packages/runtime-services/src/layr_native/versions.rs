@@ -227,33 +227,7 @@ esac
             version: "0.6.0".into(),
             build: "new".into(),
         };
-<<<<<<< head
-        let error = compare(
-            &bundled,
-            &developer,
-            Path::new("/store"),
-            Path::new("/developer/layr"),
-        )
-        .expect_err("different package")
-        .to_string();
-        assert!(error.contains("0.2.3") && error.contains("0.4.0") && error.contains("/store"));
-        developer.version = bundled.version.clone();
-        assert!(
-||||||| base
-        let error = compare(
-            &bundled,
-            &developer,
-            Path::new("/store"),
-            Path::new("/developer/layr"),
-        )
-        .expect_err("different package")
-        .to_string();
-        assert!(error.contains("0.2.3") && error.contains("0.5.1") && error.contains("/store"));
-        developer.version = bundled.version.clone();
-        assert!(
-=======
         let compare_now = |developer: &Identity| {
->>>>>>> 96b3372
             compare(
                 &bundled,
                 developer,
@@ -272,7 +246,7 @@ esac
         let note = compare_now(&developer)
             .expect("same store format")
             .expect("visible difference");
-        assert!(note.contains("0.5.2") && note.contains("0.5.1"));
+        assert!(note.contains("0.5.2") && note.contains("0.4.0"));
         developer.version = bundled.version.clone();
         assert!(
             compare_now(&developer)
