@@ -194,7 +194,14 @@ pub fn tables_sql() -> String {
          CREATE INDEX IF NOT EXISTS sessions_chat ON {SESSION_TABLE}(chat);
          CREATE TABLE IF NOT EXISTS {TURN_TABLE}(
             id TEXT PRIMARY KEY, chat TEXT NOT NULL, state TEXT NOT NULL, session TEXT,
-            provider_turn TEXT, attempt TEXT, interrupt_ticket TEXT) STRICT;
+            provider_turn TEXT, attempt TEXT, interrupt_ticket TEXT,
+            attempt_submitted INTEGER GENERATED ALWAYS AS (attempt->>'$.submitted') STORED,
+            attempt_connection_generation INTEGER GENERATED ALWAYS AS (attempt->>'$.connectionGeneration') STORED,
+            attempt_action TEXT GENERATED ALWAYS AS (attempt->>'$.action') STORED,
+            attempt_active_at_reservation INTEGER GENERATED ALWAYS AS (attempt->>'$.activeAtReservation') STORED) STRICT;
+         CREATE UNIQUE INDEX IF NOT EXISTS turns_one_attempt ON {TURN_TABLE}(chat) WHERE attempt IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS turns_callback_context
+            ON {TURN_TABLE}(attempt_connection_generation,chat) WHERE attempt IS NOT NULL;
          CREATE UNIQUE INDEX IF NOT EXISTS {ONE_UNFINISHED_TURN_INDEX}
             ON {TURN_TABLE}(chat) WHERE state IN ({unfinished});
          CREATE INDEX IF NOT EXISTS turns_provider_turn ON {TURN_TABLE}(chat,provider_turn);",
@@ -224,9 +231,8 @@ pub fn check_triggers_sql() -> String {
     );
     let turn = format!(
         "NEW.state IN ({}) AND (NEW.state='running')=(NEW.session IS NOT NULL) \
-         AND (NEW.state IN ({}) OR (NEW.attempt IS NULL AND NEW.interrupt_ticket IS NULL))",
+         AND (NEW.interrupt_ticket IS NULL OR NEW.attempt IS NOT NULL)",
         in_list(TurnState::VARIANTS),
-        in_list(&TurnState::UNFINISHED),
     );
     let session = format!("NEW.state IN ({})", in_list(SessionState::VARIANTS));
     let mut sql = String::new();
@@ -379,6 +385,69 @@ fn truthy(value: Option<&Value>) -> bool {
 pub(crate) fn project(connection: &Connection, id: &str, record: &Value) -> StoreResult<()> {
     let fields = Fields::deserialize(record)
         .map_err(|_| StoreError::RecordContract("agent record fields do not decode"))?;
+    project_state(connection, id, &fields)?;
+    place_attempt(connection, id, &fields)
+}
+
+/// The start attempt object of a chat lives on one of its turn rows: the
+/// unfinished turn, else the turn that has the attempt's provider turn, else the
+/// latest turn. The generated `attempt_*` columns of that row are the typed form
+/// that the scheduler queries read.
+fn place_attempt(connection: &Connection, chat: &str, fields: &Fields) -> StoreResult<()> {
+    let Some(attempt) = fields
+        .start_attempt
+        .as_ref()
+        .filter(|value| value.is_object())
+    else {
+        connection
+            .prepare_cached(
+                "UPDATE turns SET attempt=NULL,interrupt_ticket=NULL WHERE chat=?1 AND attempt IS NOT NULL",
+            )?
+            .execute([chat])?;
+        return Ok(());
+    };
+    let text = serde_json::to_string(attempt)?;
+    let ticket = attempt
+        .pointer("/interrupt/requestTicket")
+        .and_then(Value::as_str);
+    let provider = attempt
+        .get("turnId")
+        .and_then(Value::as_str)
+        .or_else(|| attempt.get("observedTurnId").and_then(Value::as_str));
+    let target: Option<String> = connection
+        .prepare_cached(
+            "SELECT id FROM turns WHERE chat=?1
+             ORDER BY (state IN ('starting','running')) DESC,(provider_turn IS ?2) DESC,rowid DESC LIMIT 1",
+        )?
+        .query_row(params![chat, provider], |row| row.get(0))
+        .optional()?;
+    let target = match target {
+        Some(target) => target,
+        None => {
+            let turn = uuid::Uuid::new_v4().to_string();
+            connection
+                .prepare_cached(
+                    "INSERT INTO turns(id,chat,state,provider_turn) VALUES(?1,?2,'interrupted',?3)",
+                )?
+                .execute(params![turn, chat, provider])?;
+            turn
+        }
+    };
+    connection
+        .prepare_cached(
+            "UPDATE turns SET attempt=NULL,interrupt_ticket=NULL WHERE chat=?1 AND id<>?2 AND attempt IS NOT NULL",
+        )?
+        .execute(params![chat, target])?;
+    connection
+        .prepare_cached(
+            "UPDATE turns SET attempt=?3,interrupt_ticket=?4
+             WHERE id=?2 AND (attempt IS NOT ?3 OR interrupt_ticket IS NOT ?4)",
+        )?
+        .execute(params![chat, target, text, ticket])?;
+    Ok(())
+}
+
+fn project_state(connection: &Connection, id: &str, fields: &Fields) -> StoreResult<()> {
     if !AgentStatus::VALUES.contains(&fields.status.as_str()) {
         return Err(StoreError::RecordContract("unknown agent status"));
     }
@@ -467,32 +536,19 @@ pub(crate) fn project(connection: &Connection, id: &str, record: &Value) -> Stor
         (Some(_), Some(session)) => TurnState::Running { session },
         _ => TurnState::Starting,
     };
-    let attempt = fields
-        .start_attempt
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
-    let ticket = fields
-        .start_attempt
-        .as_ref()
-        .and_then(|attempt| attempt.pointer("/interrupt/requestTicket"))
-        .and_then(Value::as_str);
     if let Some(turn) = current {
         let same = turn.provider_turn.is_none() || turn.provider_turn == fields.turn_id;
         if same {
             connection
                 .prepare_cached(
-                    "UPDATE turns SET state=?2,session=?3,provider_turn=?4,attempt=?5,interrupt_ticket=?6
-                     WHERE id=?1 AND (state IS NOT ?2 OR session IS NOT ?3 OR provider_turn IS NOT ?4
-                       OR attempt IS NOT ?5 OR interrupt_ticket IS NOT ?6)",
+                    "UPDATE turns SET state=?2,session=?3,provider_turn=?4
+                     WHERE id=?1 AND (state IS NOT ?2 OR session IS NOT ?3 OR provider_turn IS NOT ?4)",
                 )?
                 .execute(params![
                     turn.id.0,
                     state.kind(),
                     state.session().map(|s| s.0.as_str()),
                     fields.turn_id,
-                    attempt,
-                    ticket,
                 ])?;
             return Ok(());
         }
@@ -500,8 +556,7 @@ pub(crate) fn project(connection: &Connection, id: &str, record: &Value) -> Stor
     }
     connection
         .prepare_cached(
-            "INSERT INTO turns(id,chat,state,session,provider_turn,attempt,interrupt_ticket)
-             VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            "INSERT INTO turns(id,chat,state,session,provider_turn) VALUES(?1,?2,?3,?4,?5)",
         )?
         .execute(params![
             uuid::Uuid::new_v4().to_string(),
@@ -509,8 +564,6 @@ pub(crate) fn project(connection: &Connection, id: &str, record: &Value) -> Stor
             state.kind(),
             state.session().map(|s| s.0.as_str()),
             fields.turn_id,
-            attempt,
-            ticket,
         ])?;
     Ok(())
 }
@@ -518,9 +571,7 @@ pub(crate) fn project(connection: &Connection, id: &str, record: &Value) -> Stor
 /// End an unfinished turn in `outcome` (`completed`, `failed` or `interrupted`).
 fn finish_turn(connection: &Connection, turn: &TurnId, outcome: &str) -> StoreResult<()> {
     connection
-        .prepare_cached(
-            "UPDATE turns SET state=?2,session=NULL,attempt=NULL,interrupt_ticket=NULL WHERE id=?1",
-        )?
+        .prepare_cached("UPDATE turns SET state=?2,session=NULL WHERE id=?1")?
         .execute(params![turn.0, outcome])?;
     Ok(())
 }
@@ -668,8 +719,7 @@ pub fn complete_turn(connection: &Connection, chat: &str, provider_turn: &str) -
     let id = format!("{chat}:{provider_turn}");
     connection
         .prepare_cached(
-            "UPDATE turns SET state='completed',session=NULL,attempt=NULL,interrupt_ticket=NULL
-             WHERE chat=?1 AND provider_turn=?2",
+            "UPDATE turns SET state='completed',session=NULL WHERE chat=?1 AND provider_turn=?2",
         )?
         .execute([chat, provider_turn])?;
     connection
@@ -803,7 +853,7 @@ mod tests {
             "INSERT INTO turns(id,chat,state) VALUES('t','c','bogus')",
             "INSERT INTO turns(id,chat,state) VALUES('t','c','running')",
             "INSERT INTO turns(id,chat,state,session) VALUES('t','c','starting','s')",
-            "INSERT INTO turns(id,chat,state,attempt) VALUES('t','c','completed','{}')",
+            "INSERT INTO turns(id,chat,state,interrupt_ticket) VALUES('t','c','completed','ticket')",
             "INSERT INTO sessions(id,chat,thread_id,account_key,state) VALUES('s','c','t','a','dead')",
         ] {
             let error = fail(&db, sql);
@@ -1156,5 +1206,91 @@ mod tests {
             read_sessions(&db, "c").unwrap()[0].state,
             SessionState::Ready
         );
+    }
+
+    fn attempt_columns(
+        db: &Connection,
+        chat: &str,
+    ) -> Vec<(Option<i64>, Option<i64>, Option<String>, Option<i64>)> {
+        db.prepare(
+            "SELECT attempt_submitted,attempt_connection_generation,attempt_action,attempt_active_at_reservation
+             FROM turns WHERE chat=?1 AND attempt IS NOT NULL",
+        )
+        .unwrap()
+        .query_map([chat], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+    }
+
+    #[test]
+    fn the_start_attempt_is_typed_columns_of_one_turn_row_also_after_it_settles() {
+        let db = crate::fresh_state::test_canvas();
+        let attempt = json!({"id":"a1","submitted":true,"connectionGeneration":4,"action":"capacity","activeAtReservation":false});
+        put(
+            &db,
+            &agent(
+                "c",
+                json!({"status":"running","inFlight":true,"turnId":"p1","threadId":"th","startAttempt":attempt}),
+            ),
+        );
+        assert_eq!(
+            attempt_columns(&db, "c"),
+            [(Some(1), Some(4), Some("capacity".into()), Some(0))]
+        );
+        // The turn ends; the settled attempt stays on that turn row.
+        put(
+            &db,
+            &agent(
+                "c",
+                json!({"status":"completed","inFlight":false,"threadId":"th","lastCompletedTurn":"p1","lastCompletedTurnStatus":"completed","startAttempt":attempt}),
+            ),
+        );
+        let turns = read_turns(&db, "c").unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].state, TurnState::Completed);
+        assert!(turns[0].attempt.is_some());
+        // A new turn takes the attempt: a chat has one attempt.
+        let next = json!({"id":"a2","submitted":false,"connectionGeneration":5});
+        put(
+            &db,
+            &agent(
+                "c",
+                json!({"status":"running","inFlight":true,"turnId":"p2","threadId":"th","startAttempt":next}),
+            ),
+        );
+        assert_eq!(attempt_columns(&db, "c"), [(Some(0), Some(5), None, None)]);
+        assert_eq!(read_turns(&db, "c").unwrap().len(), 2);
+        // Removing the attempt from the record clears it.
+        put(
+            &db,
+            &agent(
+                "c",
+                json!({"status":"idle","inFlight":false,"threadId":"th"}),
+            ),
+        );
+        assert!(attempt_columns(&db, "c").is_empty());
+        let error = fail(
+            &db,
+            "UPDATE turns SET attempt='{}' WHERE provider_turn IN ('p1','p2')",
+        );
+        assert!(error.contains("UNIQUE"), "{error}");
+    }
+
+    #[test]
+    fn an_attempt_without_any_turn_gets_an_interrupted_turn_row() {
+        let db = crate::fresh_state::test_canvas();
+        put(
+            &db,
+            &agent(
+                "c",
+                json!({"status":"queued","startAttempt":{"id":"a","turnId":"p9","activeAtReservation":true}}),
+            ),
+        );
+        let turns = read_turns(&db, "c").unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].state, TurnState::Interrupted);
+        assert_eq!(turns[0].provider_turn.as_deref(), Some("p9"));
+        assert_eq!(attempt_columns(&db, "c"), [(None, None, None, Some(1))]);
     }
 }

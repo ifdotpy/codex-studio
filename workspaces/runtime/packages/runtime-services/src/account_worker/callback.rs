@@ -317,7 +317,8 @@ pub(super) async fn wait_for_managed_catalog(
 /// Without a turn id (an MCP elicitation may have none) the thread's active
 /// turn answers.
 const CALLBACK_CONTEXT_QUERY: &str = "SELECT id,record FROM runtime_agents
-WHERE thread_id=?3 AND account_key=?1 AND start_attempt_connection_generation=?2
+WHERE thread_id=?3 AND account_key=?1
+  AND EXISTS(SELECT 1 FROM turns t WHERE t.chat=runtime_agents.id AND t.attempt_connection_generation=?2)
   AND (?4 IS NULL OR turn_id=?4) AND status IN ('running','approval') AND auto_wake=1
   AND (?5 IS NULL OR id=?5)
 LIMIT 2";
