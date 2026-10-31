@@ -533,7 +533,7 @@ mod tests {
         );
         // A completed import receipt survives later credential changes.
         let mut newer = vault.read().unwrap().into_value();
-        newer["servers"]["server"] = new_pair(&invitation, "later").unwrap().into_value();
+        newer["servers"]["server"] = new_pair(&invitation, "later", &generate_device().unwrap()).unwrap().into_value();
         vault.write(&VaultState::from_value(newer.clone())).unwrap();
         import(&vault, &source).unwrap();
         assert_eq!(vault.read().unwrap().into_value(), newer);

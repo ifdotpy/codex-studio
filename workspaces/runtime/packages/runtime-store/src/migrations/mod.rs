@@ -49,9 +49,6 @@ mod m2026_10_30_monitor_generated;
 pub(crate) mod m2026_10_30_monitor_queue;
 pub(crate) mod m2026_10_30_monitor_status;
 mod m2026_10_30_one_nonce_table;
-    },
-    &SqlMigration {
-        definition: MigrationDefinition {
 mod m2026_10_30_one_outbox;
 mod m2026_10_30_project_teams;
 mod m2026_10_30_radio_room;
