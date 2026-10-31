@@ -369,6 +369,7 @@ fn answer(id: &str, legacy: &Legacy) -> StoreResult<Option<Answer>> {
                                     return Err(bad(id, "answer text is not a list"));
                                 }
                             },
+                            digest: None,
                         })
                     })
                     .collect::<StoreResult<Vec<_>>>()?,

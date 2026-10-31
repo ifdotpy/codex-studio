@@ -39854,6 +39854,13 @@
             },
             "type": "array"
           },
+          "digest": {
+            "description": "SHA-256 (hex) of the typed values of a secret question, which are stored as the redaction mark.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "id": {
             "type": "string"
           }

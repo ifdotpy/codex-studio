@@ -404,7 +404,10 @@ pub async fn approvals(store: &RuntimeStore, agent_id: &str) -> Result<Value, Vo
         ) && row.hidden.is_none()
             && is_approval_request(&row.request)
         {
-            requests.push(serde_json::to_value(&row)?);
+            requests.push(serde::Serialize::serialize(
+                &row,
+                serde_json::value::Serializer,
+            )?);
         }
     }
     Ok(json!({"requests": requests}))

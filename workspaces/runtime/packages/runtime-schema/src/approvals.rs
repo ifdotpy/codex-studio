@@ -249,6 +249,9 @@ pub enum ElicitationAction {
 pub struct QuestionAnswer {
     pub id: String,
     pub answer: Vec<String>,
+    /// SHA-256 (hex) of the typed values of a secret question, which are stored as the redaction mark.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
 }
 
 impl QuestionAnswer {

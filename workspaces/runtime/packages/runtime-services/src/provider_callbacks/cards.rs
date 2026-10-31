@@ -74,7 +74,7 @@ fn request_id(rpc: &RpcId) -> Result<RequestId, CallbackError> {
 }
 
 fn rpc_id(id: &RequestId) -> Result<RpcId, CallbackError> {
-    match serde_json::to_value(id)? {
+    match serde::Serialize::serialize(id, serde_json::value::Serializer)? {
         Value::Number(number) => Ok(RpcId::Number {
             value: number
                 .as_i64()
@@ -655,19 +655,29 @@ pub fn provider_answer(
             }
             let answers = questions
                 .iter()
-                .map(|question| QuestionAnswer {
-                    id: question.id.clone(),
-                    answer: if question.is_secret {
-                        vec![REDACTED.to_owned()]
+                .map(|question| {
+                    let typed: Vec<String> = data["answers"][question.id.as_str()]
+                        .get("answers")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|text| text.as_str().map(str::to_owned))
+                        .collect();
+                    if question.is_secret {
+                        QuestionAnswer {
+                            id: question.id.clone(),
+                            answer: vec![REDACTED.to_owned()],
+                            digest: Some(studio_runtime_store::sha256_hex(
+                                typed.join("\u{0}").as_bytes(),
+                            )),
+                        }
                     } else {
-                        data["answers"][question.id.as_str()]
-                            .get("answers")
-                            .and_then(Value::as_array)
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|text| text.as_str().map(str::to_owned))
-                            .collect()
-                    },
+                        QuestionAnswer {
+                            id: question.id.clone(),
+                            answer: typed,
+                            digest: None,
+                        }
+                    }
                 })
                 .collect();
             Ok((
@@ -748,7 +758,6 @@ fn answer_in(
     let signature = owner
         .payload
         .signature
-        .clone()
         .ok_or_else(|| CallbackError::Stored(format!("approvals/{id}/signature")))?;
     if let Some(given) = held_answer(&card.state) {
         if *given != answer {
@@ -881,7 +890,7 @@ fn decline_reply(
     let context = provider_context(tx, card)?;
     let identity = ReplyIdentity::new(&context, &request_id(&delivery(card)?.rpc_id)?);
     let owner = storage::owner(tx, &identity)?.ok_or(CallbackError::Stale)?;
-    let signature = owner.payload.signature.clone().ok_or_else(|| {
+    let signature = owner.payload.signature.ok_or_else(|| {
         CallbackError::Stored(format!("approvals/{}/signature", card.id.as_str()))
     })?;
     let reply = Reply::new(identity, ResponseBody::Result(result))?;

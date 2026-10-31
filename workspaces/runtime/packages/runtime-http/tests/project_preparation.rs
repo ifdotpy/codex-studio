@@ -138,6 +138,7 @@ async fn async_question_answer_wakes_idle_lead_once() {
             answers: vec![QuestionAnswer {
                 id: "scope".to_owned(),
                 answer: vec!["One file".to_owned()],
+                digest: None,
             }]
         }
     );

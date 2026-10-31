@@ -379,6 +379,8 @@ export interface components {
     };
     QuestionAnswer: {
       answer: string[];
+      /** @description SHA-256 (hex) of the typed values of a secret question, which are stored as the redaction mark. */
+      digest?: string | null | undefined;
       id: string;
     };
     QuestionOption: {

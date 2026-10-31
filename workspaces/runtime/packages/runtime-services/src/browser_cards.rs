@@ -562,7 +562,7 @@ fn new_card(source: &CardSource, item: &Value, bridge_id: &str) -> Option<(Agent
         .and_then(|checked| checked.user_code);
     let redirect = match item.get("redirect") {
         None | Some(Value::Null) => None,
-        Some(value) => Some(serde_json::from_value::<BrowserRedirect>(value.clone()).ok()?),
+        Some(value) => Some(<BrowserRedirect as serde::Deserialize>::deserialize(value).ok()?),
     };
     Some((
         AgentId(text("agentId")?),

@@ -1138,7 +1138,8 @@ async fn reserve_approval(
         .map_err(studio_runtime_store::StoreError::from)?
         .ok_or(VoiceProviderError::ContextUnavailable)?;
         let fingerprint = super::approval_fingerprint(
-            &serde_json::to_value(&current).map_err(|_| VoiceProviderError::Operation)?,
+            &serde::Serialize::serialize(&current, serde_json::value::Serializer)
+                .map_err(|_| VoiceProviderError::Operation)?,
         );
         let is_monitor = matches!(current.request, typed::Request::MonitorStart { .. });
         if current.agent.as_str() != agent_id.as_str()

@@ -848,6 +848,7 @@ for (key, value) in [
                         .map(|(id, answer)| studio_runtime_schema::approvals::QuestionAnswer {
                             id: id.to_owned(),
                             answer: answer.into_iter().map(str::to_owned).collect(),
+                            digest: None,
                         })
                         .collect(),
                 }

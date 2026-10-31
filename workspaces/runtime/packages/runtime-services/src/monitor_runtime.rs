@@ -378,7 +378,7 @@ pub async fn answer_approval(
             let typed::Request::MonitorStart { monitor, .. } = &request.request else {
                 return Ok(None);
             };
-            let body: DecisionBody = serde_json::from_value(data)
+            let body = <DecisionBody as serde::Deserialize>::deserialize(data)
                 .map_err(|_| MonitorError::Refused("Invalid monitor approval decision"))?;
             let accepted = match body.decision {
                 typed::Decision::Accept => true,

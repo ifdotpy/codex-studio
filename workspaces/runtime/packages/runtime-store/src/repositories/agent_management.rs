@@ -141,7 +141,7 @@ pub fn read_for_agents(
         tables.insert(
             "approvals".to_owned(),
             rows.iter()
-                .map(serde_json::to_value)
+                .map(|row| serde::Serialize::serialize(row, serde_json::value::Serializer))
                 .collect::<Result<Vec<_>, _>>()?,
         );
     }
@@ -255,7 +255,7 @@ pub fn write(transaction: &Transaction<'_>, table: &str, record: &Value) -> Stor
         ),
         "approvals" => {
             let approval: studio_runtime_schema::approvals::Approval =
-                serde_json::from_value(record.clone()).map_err(|_| {
+                serde::Deserialize::deserialize(record).map_err(|_| {
                     StoreError::InvalidStoredObject {
                         table: "approvals",
                         id: record

@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
+use serde::Deserialize;
 use strum::VariantNames;
 use studio_runtime_schema::approvals::{
     AgentId, Answer, AnswerMismatch, Approval, ApprovalId, ApprovalState, ApprovalStateKind,
@@ -193,7 +194,7 @@ pub fn questions_from_provider(
             }
         }
     }
-    let list: Vec<ProviderQuestion> = serde_json::from_value(list)?;
+    let list = Vec::<ProviderQuestion>::deserialize(list)?;
     Ok(list
         .into_iter()
         .enumerate()
@@ -273,7 +274,10 @@ fn decode(row: &Row<'_>) -> ApprovalResult<Approval> {
             ),
         },
         "closed" => ApprovalState::Closed {
-            reason: serde_json::from_value(serde_json::Value::String(need(json(11)?, "reason")?))?,
+            reason: CloseReason::deserialize(serde_json::Value::String(need(
+                json(11)?,
+                "reason",
+            )?))?,
             at: at()?,
         },
         other => return Err(stored(&id, format!("unknown state {other}"))),
@@ -674,11 +678,11 @@ pub fn reopen(
 /// Pending becomes Closed. Answering becomes Unknown. Other states stay.
 fn settle_open(
     tx: &Connection,
-    open: Vec<Approval>,
+    open: &[Approval],
     reason: CloseReason,
     now: Timestamp,
 ) -> ApprovalResult<usize> {
-    for row in &open {
+    for row in open {
         let state = match &row.state {
             ApprovalState::Pending => ApprovalState::Closed { reason, at: now },
             ApprovalState::Answering { answer, .. } => ApprovalState::Unknown {
@@ -701,7 +705,7 @@ pub fn turn_ended(tx: &Connection, turn: &TurnId, now: Timestamp) -> ApprovalRes
         "turn=?1 AND state IN ('pending','answering')",
         [turn.as_str()],
     )?;
-    settle_open(tx, open, CloseReason::TurnEnded, now)
+    settle_open(tx, &open, CloseReason::TurnEnded, now)
 }
 
 /// The provider session of an agent is gone.
@@ -711,7 +715,7 @@ pub fn session_lost(tx: &Connection, agent: &AgentId, now: Timestamp) -> Approva
         "agent=?1 AND state IN ('pending','answering')",
         [agent.as_str()],
     )?;
-    settle_open(tx, open, CloseReason::SessionLost, now)
+    settle_open(tx, &open, CloseReason::SessionLost, now)
 }
 
 /// After a server restart. An agent whose provider process still runs under
@@ -726,7 +730,7 @@ pub fn reconcile_after_restart(
         .into_iter()
         .filter(|row| !live.contains(&row.agent))
         .collect::<Vec<_>>();
-    settle_open(tx, open, CloseReason::SessionLost, now)
+    settle_open(tx, &open, CloseReason::SessionLost, now)
 }
 
 /// Close one pending approval, for example when the monitor it asks about stops.
@@ -798,16 +802,13 @@ pub fn expire_due(tx: &Connection, now: Timestamp) -> ApprovalResult<Vec<Expiry>
 }
 
 /// History stays. A hidden row is not shown in the default list.
-pub fn set_hidden(tx: &Connection, id: &ApprovalId, hidden: Option<Hidden>) -> ApprovalResult<()> {
+pub fn set_hidden(tx: &Connection, id: &ApprovalId, hidden: Option<&Hidden>) -> ApprovalResult<()> {
     let changed = tx.execute(
         "UPDATE approvals SET hidden_at=?2,hidden_by=?3 WHERE id=?1",
         params![
             id.as_str(),
-            hidden.as_ref().map(|h| h.at.0),
-            hidden
-                .as_ref()
-                .map(|h| serde_json::to_string(&h.by))
-                .transpose()?
+            hidden.map(|h| h.at.0),
+            hidden.map(|h| serde_json::to_string(&h.by)).transpose()?
         ],
     )?;
     if changed == 0 {
@@ -890,6 +891,7 @@ mod tests {
             answers: vec![QuestionAnswer {
                 id: "0".into(),
                 answer: vec!["x".into()],
+                digest: None,
             }],
         };
         assert!(matches!(
@@ -909,6 +911,7 @@ mod tests {
             answers: vec![QuestionAnswer {
                 id: "9".into(),
                 answer: vec![],
+                digest: None,
             }],
         };
         assert!(matches!(
@@ -1222,7 +1225,7 @@ mod tests {
         set_hidden(
             &tx,
             &ApprovalId("a".into()),
-            Some(Hidden {
+            Some(&Hidden {
                 at: Timestamp(2.0),
                 by: Principal::Owner,
             }),

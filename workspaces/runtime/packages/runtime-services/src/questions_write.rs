@@ -188,6 +188,9 @@ pub fn answer_async_question(
                 } else {
                     question.answers.clone()
                 },
+                digest: question.secret.then(|| {
+                    studio_runtime_store::sha256_hex(question.answers.join("\u{0}").as_bytes())
+                }),
             })
             .collect(),
     };
@@ -314,7 +317,7 @@ fn answered_questions(
     questions: &[studio_runtime_schema::approvals::Question],
     data: &Value,
 ) -> Result<Vec<AnsweredQuestion>, QuestionsWriteError> {
-    let body: AnswerBody = serde_json::from_value(data.clone())
+    let body = <AnswerBody as serde::Deserialize>::deserialize(data)
         .map_err(|_| QuestionsWriteError::InvalidRequest("Supply question answers"))?;
     Ok(questions
         .iter()

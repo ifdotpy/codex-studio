@@ -880,6 +880,7 @@ async fn answer_question(store: &studio_runtime_store::RuntimeStore, id: &'stati
                     answers: vec![QuestionAnswer {
                         id: "choice".into(),
                         answer: vec!["Yes".into()],
+                        digest: None,
                     }],
                 },
                 CommandId("command".into()),
@@ -1179,7 +1180,7 @@ async fn question_history_entities_retain_answers_after_the_request_is_closed() 
             studio_runtime_store::approvals::set_hidden(
                 tx,
                 &id,
-                Some(Hidden {
+                Some(&Hidden {
                     at: Timestamp(3.0),
                     by: Principal::Owner,
                 }),

@@ -24,7 +24,7 @@ pub(crate) fn publish(tx: &Transaction<'_>, row: &Approval) -> Result<(), StoreE
             row.request,
             Request::Question { .. } | Request::AgentQuestion { .. }
         );
-    let mut value = serde_json::to_value(row)?;
+    let mut value = serde::Serialize::serialize(row, serde_json::value::Serializer)?;
     // The transcript item that an asynchronous question belongs to is part of its id.
     if matches!(row.request, Request::AgentQuestion { .. })
         && let Some(item) =
