@@ -2185,7 +2185,7 @@ pub(crate) mod tests {
         store
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES('old-client','stale',?1)",
+                    "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES('old-client','stale-pairing',?1)",
                     [now - 1_000],
                 )?;
                 for index in 0..1_280 {
@@ -2213,7 +2213,7 @@ pub(crate) mod tests {
         let connection = store.test_reader().expect("multi-server stale row reads");
         let stale: i64 = connection
             .query_row(
-                "SELECT count(*) FROM runtime_access_nonces WHERE nonce='stale'",
+                "SELECT count(*) FROM runtime_access_nonces WHERE nonce='stale-pairing'",
                 [],
                 |row| row.get(0),
             )

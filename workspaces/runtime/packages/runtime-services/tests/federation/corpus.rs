@@ -600,7 +600,16 @@ async fn unified_signature_verifies_and_its_nonce_replay_is_refused_from_the_one
     .await
     .expect("a request signed with the unified scheme verifies");
     let consumed = counts(&store);
-    assert_eq!(consumed[2], 1, "the nonce is stored in the one nonce table");
+    let stored: i64 = store
+        .test_reader()
+        .expect("fixture operation")
+        .query_row(
+            "SELECT count(*) FROM runtime_access_nonces WHERE client=?1 AND nonce=?2",
+            [format!("federation:{}", corpus.peer()), nonce.to_owned()],
+            |row| row.get(0),
+        )
+        .expect("fixture operation");
+    assert_eq!(stored, 1, "the nonce is stored in the one nonce table");
 
     assert!(
         effects::handle(

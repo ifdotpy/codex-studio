@@ -46,6 +46,7 @@ pub(crate) mod m2026_10_30_monitor_errors;
 mod m2026_10_30_monitor_generated;
 pub(crate) mod m2026_10_30_monitor_queue;
 pub(crate) mod m2026_10_30_monitor_status;
+mod m2026_10_30_one_nonce_table;
 mod m2026_10_30_project_teams;
 mod m2026_10_30_radio_room;
 mod m2026_10_30_request_record;
@@ -56,7 +57,6 @@ mod m2026_10_30_task_records;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
-mod m2026_10_30_one_nonce_table;
 mod m2026_10_31_native_status_error;
 
 #[cfg(any(test, feature = "test-support"))]

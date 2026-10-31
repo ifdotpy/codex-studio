@@ -1,6 +1,6 @@
 //! Move federation nonces into the one nonce table of the unified signature scheme.
 //! Each `(peer_id, nonce, created)` row becomes `('federation:' || peer_id, nonce, created)`
-//! in `runtime_access_nonces`, so a nonce seen before the update stays a replay after it.
+//! in `runtime_access_nonces` (created by the earlier canvas feature migration), so a nonce seen before the update stays a replay after it.
 use rusqlite::Transaction;
 
 use crate::{StoreResult, repositories::remote_transport::FEDERATION_NONCE_CLIENT_PREFIX};
@@ -9,7 +9,6 @@ pub(super) fn apply(transaction: &Transaction<'_>) -> StoreResult<()> {
     if !crate::schema::table_exists(transaction, "runtime_federation_nonces")? {
         return Ok(());
     }
-    crate::feature_schema::prepare(transaction)?;
     transaction.execute(
         "INSERT OR IGNORE INTO runtime_access_nonces(client,nonce,created) \
          SELECT ?1||peer_id,nonce,created FROM runtime_federation_nonces",
@@ -28,6 +27,7 @@ mod tests {
         let mut db = Connection::open_in_memory().expect("database opens");
         db.execute_batch(
             "CREATE TABLE runtime_federation_nonces(peer_id TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(peer_id,nonce));
+             CREATE TABLE runtime_access_nonces(client TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(client,nonce));
              INSERT INTO runtime_federation_nonces VALUES('peer-a','n1',100),('peer-a','n2',200),('peer-b','n1',300);",
         )
         .expect("old table fixture");
