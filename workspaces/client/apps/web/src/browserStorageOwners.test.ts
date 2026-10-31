@@ -19,7 +19,6 @@ const allowed: Record<string, string> = {
     "request body of a pending monitor restart, kept for a lost reply",
   "servers/automaticAccessStore.ts":
     "servers removed from the automatic UI list",
-  "servers/projectLocations.ts": "paired server list, for project locations",
   "servers/serverServices.ts": "server-scoped storage for each server view",
   "servers/storage.ts":
     "server-scoped storage that drafts, queues, uploads, and caches use",

@@ -1,8 +1,17 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   readPairedServerReferences,
   writePairedServerReferences,
 } from "./browserPersistence";
+
+it("has no paired servers when browser storage is unavailable", () => {
+  vi.stubGlobal("localStorage", undefined);
+  try {
+    expect(readPairedServerReferences()).toEqual([]);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
 
 it("keeps only connection identities when rewriting legacy paired servers", () => {
   const rows = [

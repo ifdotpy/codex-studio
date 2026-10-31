@@ -336,10 +336,6 @@
     "callee": "globalThis.fetch"
   },
   {
-    "file": "servers/projectLocations.ts",
-    "callee": "globalThis.localStorage"
-  },
-  {
     "file": "servers/routes.ts",
     "callee": "fetch"
   },

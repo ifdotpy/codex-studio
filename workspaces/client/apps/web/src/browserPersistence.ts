@@ -121,7 +121,9 @@ export type PairedServerReference = {
 export function readPairedServerReferences(
   storage: Storage = globalThis.localStorage,
 ): PairedServerReference[] {
-  const rows: unknown = JSON.parse(storage.getItem(PAIRED_SERVERS_KEY) || "[]");
+  const rows: unknown = JSON.parse(
+    storage?.getItem(PAIRED_SERVERS_KEY) || "[]",
+  );
   if (!Array.isArray(rows))
     throw new Error("The saved server list is invalid.");
   return rows.map((row) => {
