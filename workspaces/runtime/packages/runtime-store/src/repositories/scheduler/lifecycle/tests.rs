@@ -77,13 +77,7 @@ fn database() -> Connection {
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER);
-<<<<<<< head
-             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER);",
-||||||| base
-             CREATE TABLE sync_versions(seq INTEGER);",
-=======
-             CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);",
->>>>>>> origin/main
+             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);",
         )
         .expect("scheduler tables create");
     connection

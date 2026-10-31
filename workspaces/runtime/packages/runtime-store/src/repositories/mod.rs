@@ -263,6 +263,9 @@ mod tests {
         db.execute_batch(
             "CREATE TABLE sync_identity (id TEXT PRIMARY KEY);
              CREATE TABLE sync_generation (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);
+             CREATE TABLE durable_rows (
+                 tbl TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
+                 deleted INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(tbl,id));
              CREATE TABLE sync_documents (
                  seq INTEGER PRIMARY KEY, scope TEXT NOT NULL, id TEXT NOT NULL,
                  payload TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
@@ -272,19 +275,6 @@ mod tests {
                  hash TEXT NOT NULL, payload TEXT, deleted INTEGER NOT NULL DEFAULT 0,
                  PRIMARY KEY(collection,id));
              CREATE TABLE sync_entity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-<<<<<<< head
-             CREATE TABLE sync_versions (
-                 seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
-                 hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL);
-             CREATE TABLE durable_rows (
-                 tbl TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
-                 deleted INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(tbl,id));
-||||||| base
-             CREATE TABLE sync_versions (
-                 seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
-                 hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL);
-=======
->>>>>>> origin/main
              INSERT INTO sync_identity(id) VALUES ('workspace-a');
              INSERT INTO sync_entity_meta(key,value) VALUES ('entity_tombstone_floor','0');",
         )

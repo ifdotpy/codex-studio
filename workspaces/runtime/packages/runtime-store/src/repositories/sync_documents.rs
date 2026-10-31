@@ -57,22 +57,10 @@ const BOOTSTRAP_TABLES: &[TableRequirement] = &[
         name: "sync_entity_meta",
         columns: &["key", "value"],
     },
-<<<<<<< head
-    TableRequirement {
-        name: "sync_versions",
-        columns: &["seq", "scope", "hash", "deleted", "updated"],
-    },
     TableRequirement {
         name: "durable_rows",
         columns: &["tbl", "id", "seq", "deleted", "at"],
     },
-||||||| base
-    TableRequirement {
-        name: "sync_versions",
-        columns: &["seq", "scope", "hash", "deleted", "updated"],
-    },
-=======
->>>>>>> origin/main
 ];
 const BOOTSTRAP_TRIGGERS: &[TriggerRequirement] = &[
     TriggerRequirement {
@@ -849,22 +837,10 @@ fn read_entity_page(
     } else {
         "seq"
     };
-    // View collections (agents, requests, work) are found through `durable_view_log`,
-    // which lists the changed view ids by the shared sequence; their payloads still come
-    // from `sync_entities`. Other collections are read by sequence as before.
-    let views = crate::durable_seq::view_collection_list();
     let mut statement = transaction.prepare_cached(&format!(
-        "SELECT collection,id,seq,payload,deleted FROM ( \
-           SELECT collection,id,seq,payload,deleted FROM sync_entities \
-            WHERE collection NOT LIKE 'transcript:%' AND collection NOT IN ({views}) \
-              AND (?7 IS NULL OR collection IN (SELECT value FROM json_each(?7))) AND seq>?1 \
-              AND (deleted=0 OR seq>?2) AND (?3=0 OR deleted=0 OR seq>?4) \
-           UNION ALL \
-           SELECT e.collection,e.id,e.seq,e.payload,e.deleted FROM durable_view_log v \
-            JOIN sync_entities e ON e.collection=v.collection AND e.id=v.id \
-            WHERE v.seq>?1 AND e.seq>?1 \
-              AND (?7 IS NULL OR v.collection IN (SELECT value FROM json_each(?7))) \
-              AND (e.deleted=0 OR e.seq>?2) AND (?3=0 OR e.deleted=0 OR e.seq>?4)) \
+        "SELECT collection,id,seq,payload,deleted FROM sync_entities \
+         WHERE collection NOT LIKE 'transcript:%' AND (?7 IS NULL OR collection IN (SELECT value FROM json_each(?7))) AND seq>?1 \
+           AND (deleted=0 OR seq>?2) AND (?3=0 OR deleted=0 OR seq>?4) \
          ORDER BY {order} LIMIT ?6",
     ))?;
     statement
@@ -901,23 +877,11 @@ pub(crate) fn hash_payload(payload: &str) -> String {
 pub(crate) fn next_sequence(connection: &Connection) -> StoreResult<i64> {
     connection
         .query_row_cached(
-<<<<<<< head
-            "SELECT MAX(entity_seq,document_seq,version_seq,durable_seq)+1 FROM ( \
-||||||| base
-            "SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM ( \
-=======
-            "SELECT MAX(entity_seq,document_seq,generation)+1 FROM ( \
->>>>>>> origin/main
+            "SELECT MAX(entity_seq,document_seq,generation,durable_seq)+1 FROM ( \
              SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities), \
              (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents), \
-<<<<<<< head
-             (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions), \
+             (SELECT COALESCE(MAX(value),0) AS generation FROM sync_generation WHERE id=1), \
              (SELECT COALESCE(MAX(seq),0) AS durable_seq FROM durable_rows)",
-||||||| base
-             (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions)",
-=======
-             (SELECT COALESCE(MAX(value),0) AS generation FROM sync_generation WHERE id=1)",
->>>>>>> origin/main
             [],
             |row| row.get(0),
         )
@@ -989,8 +953,6 @@ mod tests {
             WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<2000)
             INSERT INTO sync_entities SELECT 'other',printf('other-%d',x),x,'{}',0 FROM n;
             INSERT INTO sync_entities VALUES('task','selected',2001,'{}',0);").expect("page fixture");
-        db.execute_batch(&crate::durable_seq::view_log_sql())
-            .expect("view log");
         db
     }
 
@@ -1433,9 +1395,6 @@ mod tests {
              INSERT INTO sync_entities VALUES('agent','a',2,'a','{}',0),('agent','b',4,'b','{}',0),('agent','gone',5,'g','{}',1),('transcript:a','item:x',6,'x',NULL,0);
              INSERT INTO sync_entity_meta VALUES('entity_tombstone_floor','1');",
         ).expect("fixture");
-        connection
-            .execute_batch(&crate::durable_seq::view_log_sql())
-            .expect("view log");
         let transaction = connection.transaction().expect("snapshot");
         let current =
             SyncDocumentsRepository::resume_entities(&transaction, Some(5), None, None, 100)
@@ -1488,13 +1447,7 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-<<<<<<< head
-             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
-||||||| base
-             CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
-=======
-             CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);",
->>>>>>> origin/main
+             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);",
         ).expect("sync fixture creates");
         let transaction = connection.transaction().expect("transaction begins");
         let value = serde_json::json!({"b":2,"a":1});
@@ -1584,13 +1537,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-<<<<<<< head
-                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
-||||||| base
-                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
-=======
-                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
->>>>>>> origin/main
+                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  INSERT INTO sync_documents VALUES(9,'drafts','d','{}',0);",
             )
             .expect("sync fixture creates");

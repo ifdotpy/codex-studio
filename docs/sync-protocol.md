@@ -159,7 +159,7 @@ so writers, fixtures and migrations do not change. `DURABLE_TABLES` lists the op
 tables (`runtime_agents`, `runtime_requests`, `runtime_work`); a new table opts in with
 one line there.
 
-The numbers are the counter of `sync_entities`, `sync_documents` and `sync_versions`:
+The numbers are the counter of `sync_entities`, `sync_documents` and `sync_generation`:
 the next number is one above the highest of those three and `durable_rows`. Every
 allocator uses that rule, so there is one cursor space and a cursor from any of these
 sources is valid for all of them.
@@ -175,10 +175,8 @@ questionHistory, request, work, workDetail, workResult, workDecision, workReleas
 `view_changes_since(cursor)` lists the view ids that changed after a cursor. A parity
 test compares it with the published views.
 
-Status: the source, the shared cursor space and the view log exist. The global entity
-page reader (`read_entity_page`) finds view-collection rows through the view log; their
-payloads still come from `sync_entities`, and entity publication still writes it. The
-scoped selector reader still scans `sync_entities`. Before the transcript copy
+Status: the source, the shared cursor space and the view log exist. The stream still
+reads `sync_entities`, and entity publication still writes it. Before the transcript copy
 in `sync_entities` is removed, `transcript_copy_missing_from_owner` must return nothing
 for the live store. Old `sync_entities` rows are deleted by a later migration.
 

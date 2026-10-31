@@ -6,7 +6,7 @@
 //! a delete turns the entry into a tombstone. The main tables keep their own columns, so
 //! no writer, fixture or migration changes.
 //!
-//! The numbers are the counter of `sync_entities`, `sync_documents` and `sync_versions`:
+//! The numbers are the counter of `sync_entities`, `sync_documents` and `sync_generation`:
 //! a new number is [`NEXT`], one above the highest of those tables and `durable_rows`.
 //! Every allocator uses that rule, so there is one cursor space. A reader keeps the
 //! highest `seq` it applied and asks [`changes_since`] for what is newer. This replaces
@@ -53,10 +53,10 @@ pub const DURABLE_TABLES: &[DurableTable] = &[
 
 /// The next number of the shared counter. Owner of the allocation rule. The same text
 /// is in `sync_schema.sql`, `feature_schema.rs` and `sync_documents::next_sequence`.
-const NEXT: &str = "(SELECT MAX(entity_seq,document_seq,version_seq,durable_seq)+1 FROM (
+const NEXT: &str = "(SELECT MAX(entity_seq,document_seq,generation,durable_seq)+1 FROM (
     SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities),
     (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents),
-    (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions),
+    (SELECT COALESCE(MAX(value),0) AS generation FROM sync_generation WHERE id=1),
     (SELECT COALESCE(MAX(seq),0) AS durable_seq FROM durable_rows))";
 
 /// Derived view collections that the publisher builds from `runtime_agents`,
@@ -465,10 +465,10 @@ mod tests {
         let entity = |collection: &str, id: &str, deleted: i64| {
             db.execute(
                 "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
-                 VALUES(?1,?2,(SELECT MAX(entity_seq,document_seq,version_seq)+1 FROM (
+                 VALUES(?1,?2,(SELECT MAX(entity_seq,document_seq,generation)+1 FROM (
                     SELECT COALESCE(MAX(seq),0) AS entity_seq FROM sync_entities),
                     (SELECT COALESCE(MAX(seq),0) AS document_seq FROM sync_documents),
-                    (SELECT COALESCE(MAX(seq),0) AS version_seq FROM sync_versions)),
+                    (SELECT COALESCE(MAX(value),0) AS generation FROM sync_generation WHERE id=1)),
                     'h','{}',?3)
                  ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,deleted=excluded.deleted",
                 rusqlite::params![collection, id, deleted],
