@@ -9187,28 +9187,10 @@ export interface components {
        */
       yoloMode?: boolean | null | undefined;
     };
-    /**
-     * BrowserForward
-     * @description The redirect port of a sign-in that a paired server approved for a window on this Mac.
-     */
+    /** @description A forward of the callback to another server. Only the hash of the token is stored. */
     BrowserForward: {
-      /** Bridgeid */
-      bridgeId: string;
-      /** Expiresat */
-      expiresAt: number;
-      /**
-       * Host
-       * @enum {string}
-       */
-      host: "127.0.0.1" | "localhost" | "::1";
-      /** Path */
-      path: string;
-      /** Port */
-      port: number;
-      /** Server */
-      server: string;
-      /** Token */
-      token: string;
+      expires_at: components["schemas"]["Timestamp"];
+      token_hash: string;
     };
     /** BrowserForwardResult */
     BrowserForwardResult: {
@@ -9223,6 +9205,40 @@ export interface components {
        */
       status: "forwarding";
     };
+    /** @description How a sign-in ended after the person opened it. */
+    BrowserOutcome:
+      | ("signed_in" | "refused" | "provider_error" | "unknown" | "expired")
+      | "cancelled";
+    /**
+     * @description The step of a sign-in card. The approval state says who answered; the phase
+     *     says what happens in the paste mode, where the card waits after the answer.
+     */
+    BrowserPhase:
+      | {
+          /** @constant */
+          kind: "link";
+        }
+      | {
+          expires_at: components["schemas"]["Timestamp"];
+          /** @constant */
+          kind: "waiting";
+        }
+      | {
+          at: components["schemas"]["Timestamp"];
+          expires_at: components["schemas"]["Timestamp"];
+          /** @constant */
+          kind: "pasted";
+        }
+      | {
+          /**
+           * Format: uint16
+           * @description HTTP status the command answered, when it answered.
+           */
+          http: number | null;
+          /** @constant */
+          kind: "finished";
+          outcome: components["schemas"]["BrowserOutcome"];
+        };
     /** BrowserRecoveryRecordResponse */
     BrowserRecoveryRecordResponse: {
       /**
@@ -9350,6 +9366,15 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    /** @description The loopback address the sign-in command listens on. */
+    BrowserRedirect: {
+      host: string;
+      path: string;
+      /** Format: uint16 */
+      port: number;
+    };
+    /** @description Where a sign-in link came from. */
+    BrowserSource: "vm" | "host";
     /** BrowserStatus */
     BrowserStatus: {
       /** Enabled */
@@ -19143,9 +19168,24 @@ export interface components {
           monitor: string;
         }
       | {
+          /** @description Identity of the guest request. 32 lowercase hex characters. */
+          bridge_id: string;
+          client_id: string | null;
+          /** @description Deadline of the guest request. */
+          expires_at: components["schemas"]["Timestamp"] | null;
+          forward: components["schemas"]["BrowserForward"] | null;
+          host: string;
+          /** @description Other chats that wait on this card. */
+          joined: components["schemas"]["AgentId"][];
           /** @constant */
           kind: "browser_open";
+          linux_user: string | null;
+          phase: components["schemas"]["BrowserPhase"];
+          redirect: components["schemas"]["BrowserRedirect"] | null;
+          scope: string | null;
+          source: components["schemas"]["BrowserSource"];
           url: string;
+          user_code: string | null;
         };
     /** RequestAnswerRecordResponse */
     RequestAnswerRecordResponse: {

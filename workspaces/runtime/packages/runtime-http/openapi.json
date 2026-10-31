@@ -17777,70 +17777,19 @@
       },
       "BrowserForward": {
         "additionalProperties": false,
-        "description": "The redirect port of a sign-in that a paired server approved for a window on this Mac.",
+        "description": "A forward of the callback to another server. Only the hash of the token is stored.",
         "properties": {
-          "bridgeId": {
-            "pattern": "^[0-9a-f]{32}$",
-            "title": "Bridgeid",
-            "type": "string"
+          "expires_at": {
+            "$ref": "#/components/schemas/Timestamp"
           },
-          "expiresAt": {
-            "anyOf": [
-              {
-                "maximum": 9007199254740991,
-                "minimum": 0,
-                "type": "integer"
-              },
-              {
-                "type": "number"
-              }
-            ],
-            "title": "Expiresat"
-          },
-          "host": {
-            "enum": [
-              "127.0.0.1",
-              "localhost",
-              "::1"
-            ],
-            "title": "Host",
-            "type": "string"
-          },
-          "path": {
-            "maxLength": 2048,
-            "minLength": 1,
-            "title": "Path",
-            "type": "string"
-          },
-          "port": {
-            "maximum": 65535,
-            "minimum": 1024,
-            "title": "Port",
-            "type": "integer"
-          },
-          "server": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Server",
-            "type": "string"
-          },
-          "token": {
-            "maxLength": 200,
-            "minLength": 16,
-            "title": "Token",
+          "token_hash": {
             "type": "string"
           }
         },
         "required": [
-          "server",
-          "bridgeId",
-          "host",
-          "port",
-          "path",
-          "expiresAt",
-          "token"
+          "token_hash",
+          "expires_at"
         ],
-        "title": "BrowserForward",
         "type": "object"
       },
       "BrowserForwardResult": {
@@ -17869,6 +17818,113 @@
         ],
         "title": "BrowserForwardResult",
         "type": "object"
+      },
+      "BrowserOutcome": {
+        "description": "How a sign-in ended after the person opened it.",
+        "oneOf": [
+          {
+            "enum": [
+              "signed_in",
+              "refused",
+              "provider_error",
+              "unknown",
+              "expired"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "The person declined in the waiting phase. No address was pasted.",
+            "type": "string"
+          }
+        ]
+      },
+      "BrowserPhase": {
+        "description": "The step of a sign-in card. The approval state says who answered; the phase\nsays what happens in the paste mode, where the card waits after the answer.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "The link is shown. Nobody opened it.",
+            "properties": {
+              "kind": {
+                "const": "link",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Paste mode: the person opened the link and the card waits for the address of the\npage that did not load. `expires_at` is the end of the guest lease.",
+            "properties": {
+              "expires_at": {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              "kind": {
+                "const": "waiting",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "expires_at"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A pasted address is on its way to the command. A second paste is refused.",
+            "properties": {
+              "at": {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              "expires_at": {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              "kind": {
+                "const": "pasted",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "expires_at",
+              "at"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "http": {
+                "description": "HTTP status the command answered, when it answered.",
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "kind": {
+                "const": "finished",
+                "type": "string"
+              },
+              "outcome": {
+                "$ref": "#/components/schemas/BrowserOutcome"
+              }
+            },
+            "required": [
+              "kind",
+              "outcome",
+              "http"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "BrowserRecoveryRecordResponse": {
         "additionalProperties": {
@@ -18024,6 +18080,45 @@
         },
         "title": "BrowserRecoveryRequestRecordResponse",
         "type": "object"
+      },
+      "BrowserRedirect": {
+        "additionalProperties": false,
+        "description": "The loopback address the sign-in command listens on.",
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "port": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "host",
+          "port",
+          "path"
+        ],
+        "type": "object"
+      },
+      "BrowserSource": {
+        "description": "Where a sign-in link came from.",
+        "oneOf": [
+          {
+            "const": "vm",
+            "description": "The guest service of the Linux VM on this Mac.",
+            "type": "string"
+          },
+          {
+            "const": "host",
+            "description": "The browser host of commands that run on this server.",
+            "type": "string"
+          }
+        ]
       },
       "BrowserStatus": {
         "additionalProperties": false,
@@ -41552,19 +41647,107 @@
             "type": "object"
           },
           {
+            "additionalProperties": false,
             "description": "Today `browser/open`.",
             "properties": {
+              "bridge_id": {
+                "description": "Identity of the guest request. 32 lowercase hex characters.",
+                "type": "string"
+              },
+              "client_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expires_at": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/Timestamp"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "Deadline of the guest request."
+              },
+              "forward": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BrowserForward"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "host": {
+                "type": "string"
+              },
+              "joined": {
+                "description": "Other chats that wait on this card.",
+                "items": {
+                  "$ref": "#/components/schemas/AgentId"
+                },
+                "type": "array"
+              },
               "kind": {
                 "const": "browser_open",
                 "type": "string"
               },
+              "linux_user": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "phase": {
+                "$ref": "#/components/schemas/BrowserPhase"
+              },
+              "redirect": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/BrowserRedirect"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "scope": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "$ref": "#/components/schemas/BrowserSource"
+              },
               "url": {
                 "type": "string"
+              },
+              "user_code": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
               "kind",
-              "url"
+              "url",
+              "bridge_id",
+              "host",
+              "source",
+              "redirect",
+              "client_id",
+              "scope",
+              "linux_user",
+              "user_code",
+              "expires_at",
+              "joined",
+              "forward",
+              "phase"
             ],
             "type": "object"
           }
