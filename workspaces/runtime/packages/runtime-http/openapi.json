@@ -25112,6 +25112,27 @@
         "title": "DraftPushRow",
         "type": "object"
       },
+      "DraftSnapshot": {
+        "additionalProperties": false,
+        "description": "Bounded draft baseline at the current draft sequence.",
+        "properties": {
+          "complete": {
+            "type": "boolean"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/SyncDocument"
+            },
+            "maxItems": 512,
+            "type": "array"
+          }
+        },
+        "required": [
+          "complete",
+          "documents"
+        ],
+        "type": "object"
+      },
       "DraftsResource": {
         "additionalProperties": false,
         "properties": {
@@ -42720,6 +42741,9 @@
                 "type": "null"
               }
             ]
+          },
+          "draftSnapshot": {
+            "$ref": "#/components/schemas/DraftSnapshot"
           },
           "entityChanges": {
             "anyOf": [

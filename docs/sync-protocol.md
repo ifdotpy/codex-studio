@@ -69,6 +69,12 @@ diagnostic key. A parity witness requires exactly one handler and data contract
 for every generated resource kind. Business services publish domain changes
 without tracking sessions or subscribers.
 
+Draft subscriptions include a typed snapshot on open and reopen. Its revision
+is the draft sequence read with its rows, so later stream batches continue from
+that point. The snapshot is bounded by the shared [draft row and stream byte
+limits](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs); its
+`complete` flag is false when either limit truncates it.
+
 Large entity baselines and deltas use typed `entity-transfer` frames on the same
 connection. Each page is a canonical `EntityChangeBatch` within the shared
 [document and complete-event byte limits](../workspaces/runtime/packages/runtime-schema/src/shared_values.rs).

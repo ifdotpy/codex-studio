@@ -115,6 +115,14 @@ async fn passive_initial(
     empty_entry()
 }
 
+async fn draft_initial(
+    state: HttpState,
+    resource: ResourceRef,
+    _since: Option<SubscriptionCursor>,
+) -> Result<ResourceRevisionEntry, ApiError> {
+    super::sync_stream::draft_initial_snapshot(state, resource).await
+}
+
 async fn transcript_initial(
     state: HttpState,
     resource: ResourceRef,
@@ -398,7 +406,7 @@ resource_handlers! {
     AuthProgressResourceHandler => AuthProgressResource, passive_initial;
     CostsResourceHandler => CostsResource, entity_initial;
     DesktopResourceHandler => DesktopResource, entity_initial;
-    DraftsResourceHandler => DraftsResource, passive_initial;
+    DraftsResourceHandler => DraftsResource, draft_initial;
     LimitsResourceHandler => LimitsResource, passive_initial;
     ModelsResourceHandler => ModelsResource, passive_initial;
     MultiServerResourceHandler => MultiServerResource, passive_initial;

@@ -655,6 +655,11 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     )?;
     expect_number(
         openapi,
+        "/components/schemas/DraftSnapshot/properties/documents/maxItems",
+        values::SYNC_DRAFT_STREAM_MAX_DOCUMENTS,
+    )?;
+    expect_number(
+        openapi,
         "/components/schemas/ResourceEntityTransferEvent/properties/transferId/maxLength",
         values::SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS as i64,
     )?;
