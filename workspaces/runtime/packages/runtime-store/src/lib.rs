@@ -5,6 +5,7 @@ pub mod blocking_pool;
 mod bootstrap;
 mod cached_sql;
 pub mod durable_seq;
+pub mod domain;
 pub mod entity_publication;
 pub mod error_incidents;
 pub mod item_seq_backfill;

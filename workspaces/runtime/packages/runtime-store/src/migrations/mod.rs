@@ -39,6 +39,7 @@ mod m2026_10_29_model_choices;
 mod m2026_10_29_request_results_v2;
 mod m2026_10_30_agent_compactions;
 mod m2026_10_30_agent_volatile;
+mod m2026_10_30_domain_model;
 mod m2026_10_30_branch_phase;
 mod m2026_10_30_capture_errors;
 mod m2026_10_30_command_path;
@@ -947,6 +948,16 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| crate::StartupRecoveryRepository::prepare_monitor_index(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-30-domain-model",
+            introduced: OCTOBER_30,
+            target: MigrationTarget::Canvas,
+            supported_source: "Agent records that hold chat, run and scheduling state, and the completed-turn table",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_30_domain_model::apply(c.transaction),
+    },
 ];
 
 /// Operator-facing catalog; implementation and metadata have one owner.
@@ -1428,6 +1439,11 @@ pub(crate) fn supervisor(db: &mut Connection) -> StoreResult<()> {
         &Accounts::new(),
         SourceDatabase::Independent,
     )
+}
+
+#[cfg(test)]
+pub(crate) fn m2026_10_30_domain_model_for_tests(tx: &Transaction<'_>) -> StoreResult<()> {
+    crate::domain::backfill(tx)
 }
 
 #[cfg(any(test, feature = "test-support"))]
