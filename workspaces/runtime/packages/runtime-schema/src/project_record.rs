@@ -23,7 +23,62 @@ pub struct ProjectRecord {
     pub preference: ProjectAccountPreference,
     pub name: Option<String>,
     pub locations: Vec<ProjectLocation>,
+    pub project_aliases: Vec<ProjectAlias>,
+    pub locations_revision: u64,
     pub extensions: BTreeMap<String, Box<RawValue>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAlias {
+    pub server_id: String,
+    pub project_id: String,
+    pub name: String,
+    #[serde(flatten)]
+    pub extensions: BTreeMap<String, Box<RawValue>>,
+}
+
+#[derive(Default)]
+struct AliasFields {
+    server_id: Option<String>,
+    project_id: Option<String>,
+    name: Option<String>,
+}
+
+impl<'de> RawObjectFields<'de> for AliasFields {
+    type Output = ProjectAlias;
+    fn field<M: MapAccess<'de>>(&mut self, name: &str, map: &mut M) -> Result<bool, M::Error> {
+        let field = match name {
+            "serverId" => &mut self.server_id,
+            "projectId" => &mut self.project_id,
+            "name" => &mut self.name,
+            _ => return Ok(false),
+        };
+        if field.is_some() {
+            return Err(M::Error::custom(format!("duplicate field {name}")));
+        }
+        *field = Some(map.next_value()?);
+        Ok(true)
+    }
+    fn finish<E: Error>(
+        self,
+        extensions: BTreeMap<String, Box<RawValue>>,
+    ) -> Result<ProjectAlias, E> {
+        Ok(ProjectAlias {
+            server_id: self.server_id.ok_or_else(|| E::missing_field("serverId"))?,
+            project_id: self
+                .project_id
+                .ok_or_else(|| E::missing_field("projectId"))?,
+            name: self.name.ok_or_else(|| E::missing_field("name"))?,
+            extensions,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ProjectAlias {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        raw_object::deserialize::<D, AliasFields>(deserializer)
+    }
 }
 
 /// A stored project location; unrecognized fields remain opaque.
@@ -110,6 +165,8 @@ struct Fields {
     peer_teams: Option<Vec<ProjectPeerTeam>>,
     name: Option<String>,
     locations: Vec<ProjectLocation>,
+    project_aliases: Vec<ProjectAlias>,
+    locations_revision: u64,
     preference: ProjectAccountPreference,
     seen: BTreeSet<String>,
 }
@@ -126,6 +183,8 @@ impl<'de> RawObjectFields<'de> for Fields {
                 | "accountKeys"
                 | "name"
                 | "locations"
+                | "projectAliases"
+                | "locationsRevision"
         ) {
             return Ok(false);
         }
@@ -138,6 +197,8 @@ impl<'de> RawObjectFields<'de> for Fields {
             "peerTeams" => self.peer_teams = Some(map.next_value()?),
             "name" => self.name = map.next_value()?,
             "locations" => self.locations = map.next_value()?,
+            "projectAliases" => self.project_aliases = map.next_value()?,
+            "locationsRevision" => self.locations_revision = map.next_value()?,
             "accountKey" => self.preference.account_key = map.next_value()?,
             "accountGroups" => {
                 self.preference.account_groups =
@@ -164,6 +225,8 @@ impl<'de> RawObjectFields<'de> for Fields {
             preference: self.preference,
             name: self.name,
             locations: self.locations,
+            project_aliases: self.project_aliases,
+            locations_revision: self.locations_revision,
             extensions,
         })
     }

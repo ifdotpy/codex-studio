@@ -283,6 +283,23 @@ impl ProjectsRepository {
         Ok(())
     }
 
+    /// Update selected fields while preserving the rest of the stored project.
+    pub fn patch_project<T: Serialize>(
+        transaction: &Transaction<'_>,
+        id: &str,
+        patch: &T,
+    ) -> StoreResult<()> {
+        let patch = serde_json::to_string(patch)?;
+        let (record, hidden): (String, bool) = transaction.query_row(
+            "UPDATE runtime_projects SET record=json_patch(record,json(?2)) WHERE id=?1 AND json_extract(record,'$.removal') IS NULL RETURNING record,json_type(record,'$.sidebarHidden')='true'",
+            params![id, patch],
+            |row| Ok((row.get(0)?, row.get::<_, Option<bool>>(1)?.unwrap_or(false))),
+        )?;
+        let record = serde_json::value::RawValue::from_string(record)?;
+        SyncDocumentsRepository::put_entity(transaction, "project", id, record, hidden)?;
+        Ok(())
+    }
+
     pub fn remove(transaction: &Transaction<'_>, id: &str) -> StoreResult<bool> {
         let Some((_, mut existing)) = Self::get(transaction, id)? else {
             return Ok(false);
