@@ -252,6 +252,13 @@ export function useChatReadState(
   };
   const writeCurrent = useRef(write);
   writeCurrent.current = write;
+  useEffect(() => {
+    if (!opened || selected.current !== opened) return;
+    selected.current = null;
+    const agent = latest.current.data?.threads.find((row) => row.id === opened);
+    const proof = agent && completed(agent);
+    if (proof) void writeCurrent.current(proof, true);
+  }, [opened]);
   const markUnread = useCallback(async (agent: Agent) => {
     const proof = completed(agent);
     if (!proof || agent.readStateSupported !== true) return;
