@@ -23,7 +23,8 @@ async fn submission_snapshot_preserves_only_unmatched_complaint_events() {
     store.transaction_with_error(move |tx| -> Result<(), WorkerError> {
         let record = json!({"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"running","name":"lead","autoWake":true,"cwd":"/work","provider":"codex","accountKey":"default","threadId":"thread","turnId":"turn","inFlight":true,"events":0,"compactions":0});
         AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(record.clone()).unwrap())?;
-        tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('own',?1),('other',?2)", rusqlite::params![json!({"leadId":"lead","recipient":"user"}).to_string(), json!({"leadId":"other"}).to_string()])?;
+        let complaint = |id, lead| json!({"id":id,"author":"author","leadId":lead,"status":"open","text":"text","created":1,"readAt":null,"recipient":"user","responses":[],"updated":null,"version":null}).to_string();
+        tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('own',?1),('other',?2)", rusqlite::params![complaint("own", "lead"), complaint("other", "other")])?;
         let events = [("owned", r#"{"complaints":[{"complaint_id":"own"}]}"#), ("foreign", r#"{"complaints":[{"complaint_id":"other"}]}"#), ("malformed", "{}")].into_iter().map(|(id,text)| crate::scheduler::TurnEvent { id:id.into(), kind:"complaint".into(), text:text.into(), created:1.0, epoch:1, error:None, metadata:json!({}) }).collect();
         let intent = TurnIntent { agent_id:"lead".into(), epoch:1, attempt_id:"prepare".into(), account_key:"default".into(), provider:studio_runtime_providers::ProviderKind::Codex, thread_id:Some("thread".into()), cwd:Some("/work".into()), model:None, events, radio_authorized:false };
         let (_, events) = submission_snapshot(tx, &resources, &record, &intent)?;

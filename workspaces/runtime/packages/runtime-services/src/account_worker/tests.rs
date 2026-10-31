@@ -6510,7 +6510,7 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
                 let mutation_agent = agent.clone();
                 store.transaction_with(move |tx| {
                     tx.execute("UPDATE runtime_events SET kind='complaint',text=?1 WHERE id='annotation:input'", [json!({"complaints":[{"complaint_id":"resolved"}]}).to_string()])?;
-                    tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('resolved',?1)", [json!({"id":"resolved","leadId":mutation_agent,"recipient":"lead","status":"open","responses":[],"author":mutation_agent,"text":"A response is needed","created":1.0,"version":1}).to_string()])?;
+                    tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('resolved',?1)", [json!({"id":"resolved","leadId":mutation_agent,"recipient":"lead","status":"open","responses":[],"author":mutation_agent,"text":"A response is needed","created":1.0,"readAt":null,"updated":null,"version":1}).to_string()])?;
                     Ok::<(), StoreError>(())
                 }).await?;
             }

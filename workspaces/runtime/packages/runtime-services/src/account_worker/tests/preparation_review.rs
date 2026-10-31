@@ -180,7 +180,7 @@ async fn context_repair_holds_and_complaint_ownership_preserve_input() {
             store.transaction_with(move |tx| {
                 let body=if write_payload=="malformed" {"important evidence".into()} else {json!({"complaints":[{"complaint_id":write_payload,"text":"important evidence"}]}).to_string()};
                 tx.execute("UPDATE runtime_events SET kind='complaint',text=?1 WHERE id='annotation:input'",[body])?;
-                if write_payload=="owned" {tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('owned',?1)",[json!({"id":"owned","leadId":if foreign {"other"}else {&write_id},"recipient":"lead","status":"open","responses":[],"author":write_id,"text":"owned body","created":1,"version":1}).to_string()])?;}
+                if write_payload=="owned" {tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('owned',?1)",[json!({"id":"owned","leadId":if foreign {"other"}else {&write_id},"recipient":"lead","status":"open","responses":[],"author":write_id,"text":"owned body","created":1,"readAt":null,"updated":null,"version":1}).to_string()])?;}
                 Ok::<(), WorkerError>(())
             }).await?;
             let intent=store::claim(Arc::clone(&store),"default",&id,epoch).await?.unwrap();
