@@ -76,26 +76,6 @@
     "callee": "localStorage.setItem"
   },
   {
-    "file": "components/MessageQueue.tsx",
-    "callee": "localStorage.length"
-  },
-  {
-    "file": "components/MessageQueue.tsx",
-    "callee": "localStorage.key"
-  },
-  {
-    "file": "components/MessageQueue.tsx",
-    "callee": "localStorage"
-  },
-  {
-    "file": "components/MessageQueue.tsx",
-    "callee": "localStorage"
-  },
-  {
-    "file": "components/MessageQueue.tsx",
-    "callee": "localStorage"
-  },
-  {
     "file": "components/PromptNavigator.tsx",
     "callee": "syncGet"
   },

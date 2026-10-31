@@ -73,6 +73,7 @@ export async function cleanupLegacyPersistence(
 ) {
   const retiredKeys = [
     "codex-chat-draft:",
+    "codex-queue-edit:",
     "codex-drafts:",
     "studio-session-cost:",
     "studio-upload-cancelled:",

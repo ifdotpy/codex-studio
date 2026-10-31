@@ -1,11 +1,4 @@
-import { randomUUID } from "../uuid";
-import {
-  useServerApi,
-  useServerStorage,
-  useServerStorageEventKey,
-  useServerLocalDrafts,
-} from "../servers/ServerServicesContext";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronUp,
@@ -32,23 +25,6 @@ export type QueueItem =
 
 function isServerQueueItem(item: QueueItem): item is QueueItemDto {
   return item.localDelivery !== true;
-}
-
-function isQueueItemDto(value: unknown): value is QueueItemDto {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "id" in value &&
-    typeof value.id === "string" &&
-    "text" in value &&
-    typeof value.text === "string" &&
-    "created" in value &&
-    typeof value.created === "number" &&
-    "status" in value &&
-    value.status === "pending" &&
-    "kind" in value &&
-    (value.kind === "user" || value.kind === "followup")
-  );
 }
 
 type QueueAsset = Pick<
@@ -83,48 +59,8 @@ type Props = {
   error?: string;
 };
 
-type EditDraft = {
-  item: QueueItemDto;
-  text: string;
-  revision: string;
-  key: string;
-  updated: number;
-  ancestors?: Array<{ key: string; revision: string }> | undefined;
-};
-type Drafts = { active: string | null; entries: Record<string, EditDraft> };
+type EditDraft = { item: QueueItemDto; text: string };
 const dragType = "application/x-studio-queued-message";
-
-function readDrafts(
-  prefix: string,
-  localStorage: Storage,
-  saved: typeof import("../api").saved,
-): { drafts: Drafts; error: string } {
-  const entries: Record<string, EditDraft> = {};
-  try {
-    for (let index = 0; index < localStorage.length; index++) {
-      const key = localStorage.key(index);
-      if (!key?.startsWith(prefix)) continue;
-      const draft = saved<EditDraft | null>(key, null);
-      if (
-        draft?.key === key &&
-        isQueueItemDto(draft.item) &&
-        typeof draft.text === "string" &&
-        typeof draft.revision === "string" &&
-        typeof draft.updated === "number"
-      )
-        entries[key] = draft;
-    }
-    const latest = Object.values(entries).sort(
-      (a, b) => b.updated - a.updated,
-    )[0];
-    return { drafts: { active: latest?.key || null, entries }, error: "" };
-  } catch {
-    return {
-      drafts: { active: null, entries },
-      error: "Saved queue edits could not be read. Keep this page open.",
-    };
-  }
-}
 
 function QueuePreview({
   text,
@@ -185,19 +121,7 @@ export default function MessageQueue(props: Props) {
 }
 
 function ScopedMessageQueue(p: Props) {
-  const { saved } = useServerApi();
-  const localStorage = useServerStorage();
-  const storageEventKey = useServerStorageEventKey();
-  const { writeLocalDraft } = useServerLocalDrafts();
-
-  const storageKey = `codex-queue-edit:${encodeURIComponent(p.scope)}:`;
-  const [writer] = useState(() => randomUUID());
-  const [recovery] = useState(() =>
-    readDrafts(storageKey, localStorage, saved),
-  );
-  const [drafts, setDrafts] = useState(recovery.drafts);
-  const [storageError, setStorageError] = useState(recovery.error);
-  const draftsRef = useRef(drafts);
+  const [current, setCurrent] = useState<EditDraft | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [busy, setBusy] = useState(false);
   const lock = useRef(false);
@@ -208,7 +132,6 @@ function ScopedMessageQueue(p: Props) {
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const listId = useId();
   const textarea = useRef<HTMLTextAreaElement>(null);
-  const current = drafts.active ? drafts.entries[drafts.active] : undefined;
   const absent =
     current && !p.items.some((item) => item.id === current.item.id)
       ? current
@@ -216,102 +139,19 @@ function ScopedMessageQueue(p: Props) {
   const orphan = p.loading ? undefined : absent;
   const disabled = busy || !!p.refreshing || !!p.loading;
 
-  const retain = (next: Drafts) => {
-    draftsRef.current = next;
-    setDrafts(next);
-  };
-  useEffect(() => {
-    const refresh = (event: StorageEvent) => {
-      if (event.key !== null && !storageEventKey(event)?.startsWith(storageKey))
-        return;
-      const loaded = readDrafts(storageKey, localStorage, saved);
-      const previous = draftsRef.current;
-      const local = previous.active
-        ? previous.entries[previous.active]
-        : undefined;
-      // External writes never replace text in the open editor.
-      retain({
-        active: previous.active,
-        entries: {
-          ...loaded.drafts.entries,
-          ...Object.fromEntries(
-            Object.entries(previous.entries).filter(([key]) =>
-              key.startsWith(`${storageKey}${writer}:`),
-            ),
-          ),
-          ...(local ? { [local.key]: local } : {}),
-        },
-      });
-      if (loaded.error) setStorageError(loaded.error);
-    };
-    window.addEventListener("storage", refresh);
-    return () => window.removeEventListener("storage", refresh);
-  }, [storageKey, writer, localStorage, saved, storageEventKey]);
-  const persist = (draft: EditDraft, previous?: EditDraft) => {
-    let problem = writeLocalDraft(draft.key, draft);
-    const entries = { ...draftsRef.current.entries, [draft.key]: draft };
-    // Every key is immutable. Retire an owned version only after its replacement exists.
-    if (!problem && previous?.key.startsWith(`${storageKey}${writer}:`)) {
-      problem = writeLocalDraft(previous.key, null);
-      if (!problem) delete entries[previous.key];
-    }
-    setStorageError(problem || "");
-    retain({ active: draft.key, entries });
-  };
-  const dismiss = (draft: EditDraft) => {
-    const previous = draftsRef.current;
-    if (previous.entries[draft.key]?.revision !== draft.revision) return;
-    const entries = { ...previous.entries };
-    let problem: string | null = null;
-    for (const target of [draft, ...(draft.ancestors || [])]) {
-      if (!target.key.startsWith(storageKey)) continue;
-      const stored = saved<EditDraft | null>(target.key, null);
-      if (stored && stored.revision !== target.revision) {
-        entries[target.key] = stored;
-        continue;
-      }
-      problem = writeLocalDraft(target.key, null) || problem;
-      if (entries[target.key]?.revision === target.revision)
-        delete entries[target.key];
-    }
-    setStorageError(problem || "");
-    retain({
-      active: previous.active === draft.key ? null : previous.active,
-      entries,
-    });
+  const dismiss = () => {
+    setCurrent(null);
     setError("");
   };
   const beginEdit = (item: QueueItem) => {
     if (!isServerQueueItem(item)) return;
-    persist({
-      item,
-      text: item.text,
-      revision: randomUUID(),
-      key: `${storageKey}${writer}:${randomUUID()}`,
-      updated: Date.now(),
-    });
+    setCurrent({ item, text: item.text });
     setCollapsed(false);
     setError("");
     setCopied(false);
   };
   const updateDraft = (draft: EditDraft, text: string) => {
-    const own = draft.key.startsWith(`${storageKey}${writer}:`);
-    persist(
-      {
-        ...draft,
-        text,
-        revision: randomUUID(),
-        key: `${storageKey}${writer}:${randomUUID()}`,
-        updated: Date.now(),
-        ancestors: own
-          ? draft.ancestors
-          : [
-              ...(draft.ancestors || []),
-              { key: draft.key, revision: draft.revision },
-            ],
-      },
-      own ? draft : undefined,
-    );
+    setCurrent({ ...draft, text });
     setCopied(false);
   };
   const mutate = async (operation: () => Promise<void>) => {
@@ -337,7 +177,7 @@ function ScopedMessageQueue(p: Props) {
       return;
     void mutate(async () => {
       await p.onEdit(draft.item, draft.text);
-      dismiss(draft);
+      dismiss();
     });
   };
   const move = (id: string, targetIndex: number) => {
@@ -389,7 +229,7 @@ function ScopedMessageQueue(p: Props) {
           if (event.key === "Escape") {
             event.preventDefault();
             event.stopPropagation();
-            if (!busy) dismiss(draft);
+            if (!busy) dismiss();
           } else if (
             event.key === "Enter" &&
             (event.metaKey || event.ctrlKey)
@@ -424,7 +264,7 @@ function ScopedMessageQueue(p: Props) {
           type="button"
           aria-label={missing ? "Discard saved queue edit" : "Cancel edit"}
           disabled={busy}
-          onClick={() => dismiss(draft)}
+          onClick={() => dismiss()}
         >
           {missing ? "Discard edit" : "Cancel"}
         </button>
@@ -433,36 +273,12 @@ function ScopedMessageQueue(p: Props) {
     </div>
   );
 
-  const alternatives = Object.values(drafts.entries).filter((draft) => {
-    if (draft.key === current?.key) return false;
-    if (
-      current?.ancestors?.some(
-        (ancestor) =>
-          ancestor.key === draft.key && ancestor.revision === draft.revision,
-      )
-    )
-      return false;
-    return !(
-      current &&
-      draft.item.id === current.item.id &&
-      draft.text === current.text &&
-      draft.item.text === current.item.text
-    );
-  });
-  if (
-    !p.items.length &&
-    !current &&
-    !alternatives.length &&
-    !p.error &&
-    !error &&
-    !storageError
-  )
-    return null;
+  if (!p.items.length && !current && !p.error && !error) return null;
   return (
     <section
       className="message-queue"
       data-testid="message-queue"
-      data-studio-state={error || p.error || storageError ? "error" : "paused"}
+      data-studio-state={error || p.error ? "error" : "paused"}
       aria-label="Message queue"
       aria-busy={disabled}
     >
@@ -479,11 +295,7 @@ function ScopedMessageQueue(p: Props) {
             {p.items.length} queued{" "}
             {p.items.length === 1 ? "message" : "messages"}
           </span>
-          {current && (
-            <span className="message-queue-draft-tag">
-              {storageError ? "Edit not saved" : "Edit saved"}
-            </span>
-          )}
+          {current && <span className="message-queue-draft-tag">Editing</span>}
           {collapsed ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </button>
         {disabled && (
@@ -497,44 +309,7 @@ function ScopedMessageQueue(p: Props) {
           {error || p.error}
         </p>
       )}
-      {storageError && (
-        <p className="message-queue-error" role="alert">
-          {storageError}
-        </p>
-      )}
       <div id={listId} hidden={collapsed} className="message-queue-body">
-        {!!alternatives.length && (
-          <details className="message-queue-orphan">
-            <summary>Other saved edits ({alternatives.length})</summary>
-            {alternatives.map((draft, index) => (
-              <div key={draft.key} className="message-queue-editor">
-                <p>{draft.text || "Attachments"}</p>
-                <div className="message-queue-editor-actions">
-                  <button
-                    type="button"
-                    disabled={disabled}
-                    aria-label={`Open saved queue edit ${index + 1}`}
-                    onClick={() => {
-                      retain({ ...draftsRef.current, active: draft.key });
-                      setCopied(false);
-                      setError("");
-                    }}
-                  >
-                    Open edit
-                  </button>
-                  <button
-                    type="button"
-                    disabled={disabled}
-                    aria-label={`Discard saved queue edit ${index + 1}`}
-                    onClick={() => dismiss(draft)}
-                  >
-                    Discard edit
-                  </button>
-                </div>
-              </div>
-            ))}
-          </details>
-        )}
         <ol aria-label="Queued messages">
           {p.items.map((item, index) => {
             const draft = current?.item.id === item.id ? current : undefined;

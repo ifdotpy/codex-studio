@@ -38,6 +38,7 @@ it("removes retired draft and upload data without touching identities", async ()
     ["studio-upload-cancelled:one", "true"],
     ["studio-sidebar-width:scope", "20"],
     ["studio-removed-messages:chat", "old"],
+    ["codex-queue-edit:scope:writer", "old"],
     ["studio-queue-change:scope:chat", "request"],
     ["studio-paired-servers-v1", "servers"],
     ["unrelated-app-key", "other"],
