@@ -29,14 +29,23 @@ test("rejects other subjects", () => {
 });
 
 test("release-please sections list the same types", () => {
-  const config = JSON.parse(
+  const config: unknown = JSON.parse(
     readFileSync(
       new URL("../../../../../release-please-config.json", import.meta.url),
       "utf8",
     ),
-  ) as { "changelog-sections": { type: string }[] };
+  );
+  assert.ok(
+    typeof config === "object" &&
+      config !== null &&
+      "changelog-sections" in config,
+  );
+  const sections = config["changelog-sections"];
+  assert.ok(Array.isArray(sections));
   assert.deepEqual(
-    config["changelog-sections"].map((section) => section.type).sort(),
+    sections
+      .map((section: unknown) => (section as { type: string }).type)
+      .sort(),
     commitTypes.filter((type) => type !== "style").sort(),
   );
 });
