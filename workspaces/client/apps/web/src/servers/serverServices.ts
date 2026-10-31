@@ -110,10 +110,10 @@ export function createServerServices(server: StudioServer) {
   const drafts = () => {
     return (browserDrafts ??= createBrowserDrafts({
       api,
-      sync: {
-        syncDatabase: () => synchronization().sync.syncDatabase(),
-        startDraftReplication: (...args) =>
-          synchronization().sync.startDraftReplication(...args),
+      resources: {
+        watchResourceChanges: (...args) =>
+          synchronization().resources.watchResourceChanges(...args),
+        replaceStream: () => synchronization().resources.replaceStream(),
       },
     }));
   };

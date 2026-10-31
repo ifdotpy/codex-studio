@@ -2,120 +2,152 @@ import { afterEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   effects: [] as (() => void | (() => void))[],
+  setters: [] as ReturnType<typeof vi.fn>[],
 }));
 vi.mock("react", () => ({
   useEffect: (effect: () => void | (() => void)) => mocks.effects.push(effect),
   useRef: (current: unknown) => ({ current }),
   useCallback: (callback: unknown) => callback,
-  useState: (value: unknown) => [
-    typeof value === "function" ? value() : value,
-    vi.fn(),
-  ],
+  useState: (value: unknown) => {
+    const setter = vi.fn();
+    mocks.setters.push(setter);
+    return [typeof value === "function" ? value() : value, setter];
+  },
 }));
-vi.mock("../api", () => ({
-  saved: (_key: string, value: unknown) => value,
-  save: vi.fn(),
-  isApiSchemaMismatch: () => false,
-  onApiSchemaMismatch: () => () => {},
-}));
-vi.mock("./client", () => ({
-  startDraftReplication: vi.fn(),
-  syncDatabase: vi.fn(),
-}));
-vi.mock("./resume", () => ({ onResume: () => () => {} }));
-import { createBrowserDrafts } from "./drafts";
+vi.mock("../api.ts", () => ({ syncPost: vi.fn() }));
+vi.mock("./subscriptions/events.ts", () => ({ watchResourceChanges: vi.fn() }));
+vi.mock("./resourceEvents.ts", () => ({ replaceStream: vi.fn() }));
+import { createBrowserDrafts } from "./drafts.ts";
+import type { ResourceVersion } from "./subscriptions/contracts.ts";
 
-let cleanup: (() => void) | undefined;
 afterEach(() => {
-  cleanup?.();
-  cleanup = undefined;
   mocks.effects.length = 0;
+  mocks.setters.length = 0;
   vi.useRealTimers();
-  vi.unstubAllGlobals();
 });
 
-it("publishes one complete draft query batch and cancels a pending publication on close", async () => {
+it("reports an incomplete snapshot visibly", () => {
   vi.useFakeTimers();
-  const interval = vi.spyOn(globalThis, "setInterval");
-  vi.stubGlobal("document", { hidden: true });
-  const write = vi.fn();
-  vi.stubGlobal("localStorage", { setItem: write });
-  vi.stubGlobal("window", {
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-  });
-  let receive!: (documents: { getLatest: () => { payload: string } }[]) => void;
-  const unsubscribe = vi.fn();
+  let receive: ((version?: ResourceVersion) => void) | undefined;
   const useDrafts = createBrowserDrafts({
-    api: {
-      saved: (_key, fallback) => fallback,
-      isApiSchemaMismatch: () => false,
-      onApiSchemaMismatch: () => () => {},
+    api: { syncPost: vi.fn(async () => []) },
+    resources: {
+      watchResourceChanges: (_ref, listener) => {
+        receive = listener;
+        return () => {};
+      },
+      replaceStream: vi.fn(),
     },
-    sync: {
-      startDraftReplication: async () => async () => {},
-      syncDatabase: async () =>
-        ({
-          workspaceId: "unassigned",
-          db: {
-            drafts: {
-              find: () => ({
-                exec: async () => [],
-                $: {
-                  subscribe: (callback: typeof receive) => {
-                    receive = callback;
-                    return { unsubscribe };
-                  },
-                },
-              }),
-            },
-          },
-        }) as unknown as Awaited<
-          ReturnType<
-            ReturnType<
-              typeof import("./client").createSyncClient
-            >["syncDatabase"]
-          >
-        >,
+  });
+  useDrafts();
+  const cleanup = mocks.effects
+    .map((effect) => effect())
+    .filter((value) => typeof value === "function");
+  receive?.({
+    epoch: "e",
+    revision: 3,
+    reason: "initial",
+    draftSnapshot: { complete: false, documents: [] },
+  });
+  expect(
+    mocks.setters.some((setter) =>
+      setter.mock.calls.some(
+        ([value]) => value === "Some saved drafts could not be loaded.",
+      ),
+    ),
+  ).toBe(true);
+  cleanup.forEach((dispose) => dispose());
+});
+
+it("publishes an entire baseline before notifying either chat", () => {
+  vi.useFakeTimers();
+  let receive: ((version?: ResourceVersion) => void) | undefined;
+  const stop = vi.fn();
+  const useDrafts = createBrowserDrafts({
+    api: { syncPost: vi.fn(async () => []) },
+    resources: {
+      watchResourceChanges: (_ref, listener) => {
+        receive = listener;
+        return stop;
+      },
+      replaceStream: vi.fn(),
     },
   });
   const drafts = useDrafts();
-  const first = vi.fn(() => expect(drafts.getDraft("b")).toBe("complete"));
-  const second = vi.fn(() => expect(drafts.getDraft("a")).toBe("complete"));
-  drafts.subscribeDraft("a", first);
-  drafts.subscribeDraft("b", second);
-  for (const effect of mocks.effects) {
-    const stop = effect();
-    if (stop) cleanup = stop;
-  }
-  expect(interval).not.toHaveBeenCalled();
-  for (let turn = 0; turn < 20 && !receive; turn++) await Promise.resolve();
-  expect(receive).toBeTypeOf("function");
-  const row = (session: string, text: string) => ({
-    getLatest: () => ({
-      payload: JSON.stringify({
-        id: `remote:${session}`,
-        device: "remote",
-        session,
-        text,
-        updated: 1,
-      }),
+  const a = vi.fn(() => expect(drafts.getDraft("b")).toBe("complete"));
+  const b = vi.fn(() => expect(drafts.getDraft("a")).toBe("complete"));
+  drafts.subscribeDraft("a", a);
+  drafts.subscribeDraft("b", b);
+  const cleanup = mocks.effects
+    .map((effect) => effect())
+    .filter((value) => typeof value === "function");
+  const row = (session: string) => ({
+    id: `remote:${session}`,
+    seq: 1,
+    _deleted: false,
+    payload: JSON.stringify({
+      id: `remote:${session}`,
+      device: "remote",
+      session,
+      text: "complete",
+      updated: 1,
     }),
   });
-  // The store emits intermediate query results as the same SSE batch is written.
-  receive([row("a", "partial")]);
-  receive([row("a", "complete"), row("b", "complete")]);
-  expect(first).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(50);
-  expect(first).toHaveBeenCalledOnce();
-  expect(second).toHaveBeenCalledOnce();
-  drafts.setDrafts({ a: "complete", b: "complete", c: "edited" });
-  expect(drafts.getDraft("c")).toBe("edited");
-  expect(write).not.toHaveBeenCalled();
-  receive([row("a", "closed")]);
-  cleanup?.();
-  cleanup = undefined;
-  await vi.advanceTimersByTimeAsync(50);
-  expect(first).toHaveBeenCalledOnce();
-  expect(unsubscribe).toHaveBeenCalledOnce();
+  receive?.({
+    epoch: "e",
+    revision: 1,
+    reason: "initial",
+    draftSnapshot: { complete: true, documents: [row("a"), row("b")] },
+  });
+  expect(a).toHaveBeenCalledOnce();
+  expect(b).toHaveBeenCalledOnce();
+  cleanup.forEach((dispose) => dispose());
+  expect(stop).toHaveBeenCalledOnce();
+});
+
+it("reopens on a missing interval and keeps edits until the next baseline", async () => {
+  vi.useFakeTimers();
+  let receive: ((version?: ResourceVersion) => void) | undefined;
+  const replaceStream = vi.fn();
+  const post = vi.fn(async () => []);
+  const useDrafts = createBrowserDrafts({
+    api: { syncPost: post },
+    resources: {
+      watchResourceChanges: (_ref, listener) => {
+        receive = listener;
+        return () => {};
+      },
+      replaceStream,
+    },
+  });
+  const drafts = useDrafts();
+  const cleanup = mocks.effects
+    .map((effect) => effect())
+    .filter((value) => typeof value === "function");
+  receive?.({
+    epoch: "e",
+    revision: 1,
+    reason: "initial",
+    draftSnapshot: { complete: true, documents: [] },
+  });
+  drafts.setDrafts({ chat: "typed" });
+  receive?.({
+    epoch: "e",
+    revision: 3,
+    reason: "change",
+    draftChanges: { after: 2, through: 3, documents: [] },
+  });
+  expect(replaceStream).toHaveBeenCalledOnce();
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(post).not.toHaveBeenCalled();
+  expect(drafts.getDraft("chat")).toBe("typed");
+  receive?.({
+    epoch: "e",
+    revision: 3,
+    reason: "reconnect",
+    draftSnapshot: { complete: true, documents: [] },
+  });
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(post).toHaveBeenCalledOnce();
+  cleanup.forEach((dispose) => dispose());
 });

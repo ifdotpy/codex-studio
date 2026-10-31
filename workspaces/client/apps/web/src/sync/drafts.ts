@@ -1,5 +1,3 @@
-import { randomUUID } from "../uuid";
-import type { Doc } from "./localCollection";
 import {
   useCallback,
   useEffect,
@@ -7,521 +5,256 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import { isApiSchemaMismatch, onApiSchemaMismatch, saved } from "../api";
-import { startDraftReplication, syncDatabase } from "./client";
-import {
-  draftSyncNoticeText,
-  hasDraftSyncFailure,
-  scheduleDraftSyncNotice,
-} from "./draftSyncNotice";
+import { syncPost } from "../api.ts";
+import { randomUUID } from "../uuid.ts";
+import type { DraftVersion } from "../generated/rustOwned.ts";
+import type { components } from "../generated/api.ts";
+import { watchResourceChanges } from "./subscriptions/events.ts";
+import { replaceStream } from "./resourceEvents.ts";
+import { createDirectDrafts } from "./directDrafts.ts";
+import { decodeDraftVersion } from "./draftDecoder.ts";
+import { encodeDraftPayload } from "./draftPayload.ts";
+import { draftVersionId } from "./draftIdentity.ts";
+import { activeDraftVersions } from "./draftVersions.ts";
+import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 
-import { encodeDraftPayload } from "./draftPayload";
-import { decodeDraftVersion } from "./draftDecoder";
-type PendingDraft = { key: string; version: DraftVersion };
-const journalPrefix = (scope: string) => `${scope}:pending:`;
-import { onResume } from "./resume";
-import { createFrameBatch } from "./frameBatch";
-import { draftVersionId } from "./draftIdentity";
-import { activeDraftVersions } from "./draftVersions";
-
+export type { DraftVersion } from "../generated/rustOwned.ts";
 type Drafts = Record<string, string>;
-import type { DraftVersion } from "../generated/rustOwned";
-export type { DraftVersion } from "../generated/rustOwned";
+const incompleteDrafts = "Some saved drafts could not be loaded.";
 
 export function createBrowserDrafts(options: {
-  api: Pick<
-    import("../api").ServerApi,
-    "isApiSchemaMismatch" | "onApiSchemaMismatch" | "saved"
-  >;
-  sync: Pick<
-    ReturnType<typeof import("./client").createSyncClient>,
-    "startDraftReplication" | "syncDatabase"
+  api: {
+    syncPost: (
+      path: "/api/sync/drafts",
+      body: components["schemas"]["DraftPushRequest"],
+    ) => Promise<components["schemas"]["SyncDocument"][]>;
+  };
+  resources: Pick<
+    typeof import("./resourceEvents.ts"),
+    "watchResourceChanges" | "replaceStream"
   >;
 }) {
-  const { isApiSchemaMismatch, onApiSchemaMismatch, saved } = options.api;
-  const { startDraftReplication, syncDatabase } = options.sync;
   const device = randomUUID();
-  function useBrowserDrafts() {
-    const storageKey = useRef(
-      `codex-drafts:${saved("codex-sync-workspace", "unassigned")}`,
-    );
+  return function useBrowserDrafts() {
     const [writer] = useState(() => randomUUID());
-    const journal = useRef(new Map<string, PendingDraft>());
-    const [drafts, update] = useState<Drafts>({});
-    const importUnassigned = useRef(storageKey.current.endsWith(":unassigned"));
-    const current = useRef(drafts);
-    const draftListeners = useRef(new Map<string, Set<() => void>>());
-    const getDraft = useCallback(
-      (session: string) => current.current[session] || "",
-      [],
-    );
-    const subscribeDraft = useCallback(
-      (session: string, listener: () => void) => {
-        let listeners = draftListeners.current.get(session);
-        if (!listeners)
-          draftListeners.current.set(session, (listeners = new Set()));
-        listeners.add(listener);
-        return () => {
-          listeners?.delete(listener);
-          if (!listeners?.size) draftListeners.current.delete(session);
-        };
-      },
-      [],
-    );
-    const publishDraftChanges = (previous: Drafts, next: Drafts) => {
-      for (const [session, listeners] of draftListeners.current)
-        if (previous[session] !== next[session])
-          listeners.forEach((listener) => listener());
-    };
-    const [conflicts, setConflicts] = useState<DraftVersion[]>([]);
-    const conflictValues = useRef<DraftVersion[]>([]);
-    const initialLocalError = "";
-    const [localError, setLocalError] = useState(initialLocalError);
-    const [syncFailureDirection, setSyncFailureDirection] = useState<
-      "pull" | "push" | "replication" | null
-    >(null);
-    const localErrorValue = useRef(initialLocalError);
-    const syncFailureValue = useRef<typeof syncFailureDirection>(null);
-    const retryDraftBootstrap = useRef<() => void>(() => {});
-    const reportLocalError = useCallback((message: string) => {
-      if (localErrorValue.current === message) return;
-      localErrorValue.current = message;
-      setLocalError(message);
-    }, []);
-    const reportSyncFailure = useCallback(
-      (direction: typeof syncFailureDirection) => {
-        if (syncFailureValue.current === direction) return;
-        syncFailureValue.current = direction;
-        setSyncFailureDirection(direction);
-      },
-      [],
-    );
-    const [syncNoticeVisible, setSyncNoticeVisible] = useState(false);
-    const [bootstrapPaused, setBootstrapPaused] = useState(false);
-    const syncFailureActive = hasDraftSyncFailure(syncFailureDirection);
-    useEffect(() => {
-      return scheduleDraftSyncNotice(
-        syncFailureActive,
-        bootstrapPaused,
-        setSyncNoticeVisible,
-      );
-    }, [syncFailureActive, bootstrapPaused]);
-    const syncNotice =
-      syncFailureDirection && syncNoticeVisible
-        ? draftSyncNoticeText(syncFailureDirection, bootstrapPaused)
-        : "";
+    const current = useRef<Drafts>({});
+    const listeners = useRef(new Map<string, Set<() => void>>());
     const versions = useRef<DraftVersion[]>([]);
-    const decoded = useRef(new WeakMap<object, DraftVersion>());
-    const decodeDrafts = useCallback(
-      (docs: Doc[]): DraftVersion[] =>
-        docs.map((doc) => {
-          const latest = doc.getLatest();
-          let version = decoded.current.get(latest);
-          if (!version) {
-            version = decodeDraftVersion(JSON.parse(latest.payload));
-            decoded.current.set(latest, version);
-          }
-          return version;
-        }),
-      [],
+    const dismissed = useRef(new Set<string>());
+    const [conflicts, setConflicts] = useState<DraftVersion[]>([]);
+    const [error, setError] = useState("");
+    const quiet = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+    const maximum = useRef<ReturnType<typeof setTimeout> | undefined>(
+      undefined,
     );
-    const dismissed = useRef<string[]>([]);
-    const versionKey = (version: DraftVersion) =>
+    const store = useRef<ReturnType<typeof createDirectDrafts> | undefined>(
+      undefined,
+    );
+    const key = (version: DraftVersion) =>
       JSON.stringify([version.id, version.text]);
-    const reconcile = useCallback(
-      (records: DraftVersion[]) => {
-        versions.current = records;
-        let next = current.current;
-        const alternatives: DraftVersion[] = [];
-        const sessions = new Map<string, DraftVersion[]>();
-        for (const version of records) {
-          const branches = sessions.get(version.session);
-          if (branches) branches.push(version);
-          else sessions.set(version.session, [version]);
+    const publish = (previous: Drafts, next: Drafts) => {
+      for (const [session, callbacks] of listeners.current)
+        if (previous[session] !== next[session])
+          callbacks.forEach((callback) => callback());
+    };
+    const reconcile = () => {
+      if (!store.current) return;
+      const records = store.current
+        .records()
+        .map((row) => decodeDraftVersion(JSON.parse(row.payload)));
+      versions.current = records;
+      const groups = new Map<string, DraftVersion[]>();
+      for (const record of records) {
+        const group = groups.get(record.session) ?? [];
+        group.push(record);
+        groups.set(record.session, group);
+      }
+      const next: Drafts = {};
+      const alternatives: DraftVersion[] = [];
+      for (const [session, group] of groups) {
+        const active = activeDraftVersions(group);
+        const own = draftVersionId(device, writer, session);
+        const chosen =
+          active.find((record) => record.id === own) ??
+          active.find((record) => !dismissed.current.has(key(record)));
+        if (chosen && next[session] !== chosen.text) {
+          next[session] = chosen.text;
         }
-        const dismissedKeys = new Set(dismissed.current);
-        for (const [session, branches] of sessions) {
-          const active = activeDraftVersions(branches);
-          const chosen = active.find(
-            (version) =>
-              !dismissedKeys.size || !dismissedKeys.has(versionKey(version)),
-          );
-          if (
-            chosen &&
-            !pendingEdits.current.has(session) &&
-            !localHeads.current.has(session) &&
-            next[session] !== chosen.text
-          ) {
-            if (next === current.current) next = { ...next };
-            next[session] = chosen.text;
-          }
-          if (pendingEdits.current.has(session)) continue;
-          for (const branch of active) {
-            if (
-              branch.id === draftVersionId(device, writer, session) &&
-              branch.updated < (localHeads.current.get(session) || 0)
-            )
-              continue;
-            if (branch.text && branch.text !== next[session])
-              alternatives.push(branch);
-            for (const text of branch.alternatives || [])
-              if (text && text !== next[session])
-                alternatives.push({
-                  ...branch,
-                  id: `${branch.id}:conflict`,
-                  text,
-                });
-          }
+        for (const record of active) {
+          if (record.text && record.text !== next[session])
+            alternatives.push(record);
+          for (const text of record.alternatives ?? [])
+            if (text && text !== next[session])
+              alternatives.push({
+                ...record,
+                id: `${record.id}:conflict`,
+                text,
+              });
         }
-        if (next !== current.current) {
-          const previous = current.current;
-          current.current = next;
-          update(next);
-          publishDraftChanges(previous, next);
-        }
-        const unique = new Set<string>();
-        const nextConflicts = alternatives.filter((version) => {
-          const key = versionKey(version);
-          if (dismissedKeys.has(key) || unique.has(key)) return false;
-          unique.add(key);
-          return true;
-        });
-        const previousConflicts = conflictValues.current;
-        if (
-          previousConflicts.length !== nextConflicts.length ||
-          previousConflicts.some(
-            (version, index) => version !== nextConflicts[index],
-          )
-        ) {
-          conflictValues.current = nextConflicts;
-          setConflicts(nextConflicts);
-        }
-      },
-      [writer],
-    );
-    const dismissDraft = useCallback(
-      (version: DraftVersion) => {
-        dismissed.current = [
-          ...new Set([...dismissed.current, versionKey(version)]),
-        ];
-        reconcile(versions.current);
-      },
-      [reconcile],
-    );
-    const flushing = useRef<Promise<void> | null>(null);
-    const pendingEdits = useRef(new Map<string, number>());
-    const editSequence = useRef(0);
-    const localHeads = useRef(new Map<string, number>());
-    const entries = () =>
-      [...journal.current.values()]
-        .filter((entry) =>
-          entry.key.startsWith(journalPrefix(storageKey.current)),
+      }
+      const previous = current.current;
+      current.current = next;
+      publish(previous, next);
+      const unique = new Set<string>();
+      const nextConflicts = alternatives.filter((version) => {
+        const id = key(version);
+        if (dismissed.current.has(id) || unique.has(id)) return false;
+        unique.add(id);
+        return true;
+      });
+      setConflicts((previous) =>
+        previous.length === nextConflicts.length &&
+        previous.every(
+          (item, index) => key(item) === key(nextConflicts[index]!),
         )
-        .sort(
-          (a, b) =>
-            a.version.updated - b.version.updated || a.key.localeCompare(b.key),
-        );
-    const markPending = () => {
-      pendingEdits.current = new Map(
-        entries().map(({ version }) => [version.session, version.updated]),
+          ? previous
+          : nextConflicts,
       );
     };
-    const adoptScope = useCallback((workspaceId: string) => {
-      const targetKey = `codex-drafts:${workspaceId}`;
-      if (storageKey.current === targetKey) return;
-      const previousKey = storageKey.current;
-      const unassigned = previousKey.endsWith(":unassigned");
-      const next: Drafts = unassigned ? current.current : {};
-      if (unassigned) {
-        for (const entry of entries()) {
-          const moved = {
-            ...entry,
-            key: targetKey + entry.key.slice(previousKey.length),
-          };
-          journal.current.delete(entry.key);
-          journal.current.set(moved.key, moved);
-        }
-      } else journal.current.clear();
-      const previous = current.current;
-      storageKey.current = targetKey;
-      markPending();
-      dismissed.current = [];
-      current.current = next;
-      update(next);
-      publishDraftChanges(previous, next);
-    }, []);
-    const flushDrafts = useCallback(() => {
-      if (isApiSchemaMismatch()) return Promise.resolve();
-      if (flushing.current) return flushing.current;
-      flushing.current = (async () => {
-        let connecting = false;
-        try {
-          markPending();
-          if (!entries().length) return;
-          connecting = true;
-          const { db, workspaceId } = await syncDatabase();
-          connecting = false;
-          adoptScope(workspaceId);
-          do {
-            for (;;) {
-              const batch = entries();
-              if (!batch.length) break;
-              for (const entry of batch) {
-                const item = entry.version;
-                const old = await db.drafts.findOne(item.id).exec();
-                const previous: DraftVersion | undefined = old
-                  ? decodeDraftVersion(JSON.parse(old.payload))
-                  : undefined;
-                // A recovered older edit must not replace a newer branch from another tab.
-                const newer = previous && previous.updated > item.updated;
-                const chosen = newer ? previous : item;
-                const other = newer ? item : previous;
-                const alternatives = [
-                  ...new Set([
-                    ...(previous?.alternatives || []),
-                    ...(item.alternatives || []),
-                    ...(other &&
-                    other.text !== chosen.text &&
-                    other.text &&
-                    (chosen.seen?.[other.id] ?? -1) < other.updated
-                      ? [other.text]
-                      : []),
-                  ]),
-                ].filter((text) => text !== chosen.text);
-                const payload = encodeDraftPayload({ ...chosen, alternatives });
-                if (!old || old.payload !== payload)
-                  await db.drafts.incrementalUpsert({
-                    id: item.id,
-                    payload,
-                    seq: 0,
-                  });
-                if (
-                  journal.current.get(entry.key)?.version.updated ===
-                  item.updated
-                )
-                  journal.current.delete(entry.key);
-                markPending();
-              }
-            }
-            reportLocalError("");
-            reconcile(decodeDrafts(await db.drafts.find().exec()));
-          } while (entries().length);
-        } catch {
-          if (connecting) reportSyncFailure("replication");
-          else
-            reportLocalError(
-              "Draft changes could not be saved for synchronization. Keep this chat open.",
-            );
-        }
-      })().finally(() => {
-        flushing.current = null;
+    if (!store.current)
+      store.current = createDirectDrafts({
+        post: (rows) => options.api.syncPost("/api/sync/drafts", { rows }),
+        changed: reconcile,
       });
-      return flushing.current;
-    }, [
-      adoptScope,
-      reconcile,
-      decodeDrafts,
-      reportLocalError,
-      reportSyncFailure,
-    ]);
+    const flush = () => {
+      clearTimeout(quiet.current);
+      clearTimeout(maximum.current);
+      quiet.current = maximum.current = undefined;
+      void store.current
+        ?.flush()
+        .then(() =>
+          setError((previous) =>
+            previous === incompleteDrafts ? previous : "",
+          ),
+        )
+        .catch(() =>
+          setError("Draft changes could not be saved. Keep this chat open."),
+        );
+    };
+    const schedule = () => {
+      clearTimeout(quiet.current);
+      quiet.current = setTimeout(flush, DRAFT_SYNC_TIMING_MS.pushQuietWait);
+      maximum.current ??= setTimeout(flush, DRAFT_SYNC_TIMING_MS.pushMaxWait);
+    };
     const setDrafts = useCallback(
       (value: SetStateAction<Drafts>) => {
         const previous = current.current;
         const next = typeof value === "function" ? value(previous) : value;
         current.current = next;
-        publishDraftChanges(previous, next);
-        retryDraftBootstrap.current();
+        publish(previous, next);
         const updated = Math.max(
           Date.now(),
           ...versions.current.map((version) => version.updated + 1),
-          ...entries().map((entry) => entry.version.updated + 1),
-          editSequence.current + 1,
         );
-        editSequence.current = updated;
         for (const session of new Set([
           ...Object.keys(previous),
           ...Object.keys(next),
         ])) {
           if (previous[session] === next[session]) continue;
           const id = draftVersionId(device, writer, session);
+          const seen = Object.fromEntries(
+            versions.current
+              .filter((version) => version.session === session)
+              .flatMap((version) => [
+                [version.id, version.updated],
+                ...Object.entries(version.seen ?? {}),
+              ])
+              .sort((a, b) => Number(a[1]) - Number(b[1])),
+          );
           const version: DraftVersion = {
             id,
             session,
             device,
             text: next[session] || "",
             updated,
-            seen: Object.fromEntries(
-              [
-                ...versions.current
-                  .filter((version) => version.session === session)
-                  .flatMap((version) => [
-                    [version.id, version.updated] as const,
-                    ...Object.entries(version.seen || {}),
-                  ]),
-                ...entries()
-                  .filter((entry) => entry.version.session === session)
-                  .map(
-                    (entry) =>
-                      [entry.version.id, entry.version.updated] as const,
-                  ),
-                [id, localHeads.current.get(session) || 0] as const,
-              ].sort((a, b) => a[1] - b[1]),
-            ),
+            seen,
           };
-          localHeads.current.set(session, updated);
-          const entry = {
-            key: `${journalPrefix(storageKey.current)}${writer}:${encodeURIComponent(session)}`,
+          store.current?.edit({
+            id,
+            payload: encodeDraftPayload(version),
+            seq: 0,
+            _deleted: false,
+          });
+          versions.current = [
+            ...versions.current.filter((item) => item.id !== id),
             version,
-          };
-          journal.current.set(entry.key, entry);
-          pendingEdits.current.set(session, updated);
+          ];
         }
-        void flushDrafts();
+        schedule();
       },
-      [flushDrafts, writer, reportLocalError],
+      [writer],
+    );
+    const getDraft = useCallback(
+      (session: string) => current.current[session] || "",
+      [],
+    );
+    const subscribeDraft = useCallback(
+      (session: string, listener: () => void) => {
+        const callbacks =
+          listeners.current.get(session) ?? new Set<() => void>();
+        callbacks.add(listener);
+        listeners.current.set(session, callbacks);
+        return () => {
+          callbacks.delete(listener);
+          if (!callbacks.size) listeners.current.delete(session);
+        };
+      },
+      [],
+    );
+    const dismissDraft = useCallback(
+      (version: DraftVersion) => {
+        dismissed.current.add(key(version));
+        reconcile();
+      },
+      [writer],
     );
     useEffect(() => {
-      let stopped = false,
-        unsubscribe = () => {},
-        cancel = () => {};
-      let pendingDocuments: Doc[] | undefined;
-      const publication = createFrameBatch(() => {
-        const docs = pendingDocuments;
-        pendingDocuments = undefined;
-        if (!stopped && docs) {
+      const stop = options.resources.watchResourceChanges(
+        { kind: "drafts" },
+        (version) => {
+          if (!version || !store.current) return;
           try {
-            reconcile(decodeDrafts(docs));
+            if (version.draftSnapshot) {
+              store.current.snapshot(
+                version.draftSnapshot.documents,
+                version.draftSnapshot.complete,
+                version.revision,
+              );
+              setError(version.draftSnapshot.complete ? "" : incompleteDrafts);
+              schedule();
+            } else if (
+              version.reason === "change" &&
+              version.revision > store.current.sequence()
+            ) {
+              const batch = version.draftChanges;
+              if (
+                !batch ||
+                store.current.sequence() < 0 ||
+                batch.after > store.current.sequence() ||
+                batch.through !== version.revision ||
+                batch.through <= batch.after ||
+                batch.documents.at(-1)?.seq !== batch.through
+              ) {
+                store.current.waitForBaseline();
+                options.resources.replaceStream();
+                return;
+              }
+              store.current.changes(batch.documents, batch.through);
+            }
           } catch {
-            reportLocalError(
+            setError(
               "Some saved drafts could not be read. Keep this chat open.",
             );
           }
-        }
-      });
-      let retry: ReturnType<typeof setTimeout> | undefined;
-      const bootstrapRetryDelays = [1_000, 3_000, 10_000];
-      let bootstrapRetryCount = 0;
-      let starting = false,
-        started = false;
-      const recoverBootstrap = () => {
-        if (stopped || started) return;
-        bootstrapRetryCount = 0;
-        setBootstrapPaused(false);
-        start();
-      };
-      const start = () => {
-        if (stopped || isApiSchemaMismatch() || starting || started) return;
-        clearTimeout(retry);
-        starting = true;
-        void syncDatabase()
-          .then(async ({ db, workspaceId }) => {
-            if (stopped) return;
-            adoptScope(workspaceId);
-            await flushDrafts();
-            const testOnly =
-              typeof window !== "undefined"
-                ? (
-                    window as Window & {
-                      __codexDraftReplicationTestOnly?: NonNullable<
-                        Parameters<typeof startDraftReplication>[1]
-                      >["testOnly"];
-                    }
-                  ).__codexDraftReplicationTestOnly
-                : undefined;
-            cancel = await startDraftReplication(
-              (e, direction) => {
-                if (!stopped)
-                  reportSyncFailure(
-                    e === null ? null : (direction ?? "replication"),
-                  );
-              },
-              testOnly ? { testOnly } : undefined,
-            );
-            if (stopped) {
-              cancel();
-              return;
-            }
-            // Adopt drafts made before this device learns its workspace identity.
-            for (const [session, text] of Object.entries(
-              importUnassigned.current ? current.current : {},
-            )) {
-              const id = `${device}:${session}`;
-              if (!(await db.drafts.findOne(id).exec()))
-                await db.drafts.insert({
-                  id,
-                  seq: 0,
-                  payload: encodeDraftPayload({
-                    id,
-                    session,
-                    device,
-                    text,
-                    updated: Date.now(),
-                  }),
-                });
-            }
-            if (stopped) return;
-            const sub = db.drafts.find().$.subscribe((docs) => {
-              pendingDocuments = docs;
-              publication.schedule();
-            });
-            unsubscribe = () => {
-              sub.unsubscribe();
-              publication.cancel();
-              pendingDocuments = undefined;
-            };
-            started = true;
-            bootstrapRetryCount = 0;
-            setBootstrapPaused(false);
-            reportSyncFailure(null);
-            importUnassigned.current = false;
-          })
-          .catch(() => {
-            if (!stopped) {
-              reportSyncFailure("replication");
-              unsubscribe();
-              cancel();
-              const delay = bootstrapRetryDelays[bootstrapRetryCount++];
-              if (delay === undefined) setBootstrapPaused(true);
-              else retry = setTimeout(start, delay);
-            }
-          })
-          .finally(() => {
-            starting = false;
-          });
-      };
-      retryDraftBootstrap.current = recoverBootstrap;
-      start();
-      const stopResume = onResume(() => {
-        recoverBootstrap();
-      });
-      const onOnline = () => {
-        recoverBootstrap();
-      };
-      window.addEventListener("online", onOnline);
-      const stopForSchemaMismatch = onApiSchemaMismatch(() => {
-        stopped = true;
-        clearTimeout(retry);
-        unsubscribe();
-        cancel();
-      });
+        },
+        { waitForBaseline: true },
+      );
       return () => {
-        stopped = true;
-        clearTimeout(retry);
-        stopResume();
-        stopForSchemaMismatch();
-        window.removeEventListener("online", onOnline);
-        retryDraftBootstrap.current = () => {};
-        unsubscribe();
-        cancel();
+        stop();
+        clearTimeout(quiet.current);
+        clearTimeout(maximum.current);
       };
-    }, [
-      reconcile,
-      adoptScope,
-      flushDrafts,
-      decodeDrafts,
-      reportSyncFailure,
-      setDrafts,
-    ]);
+    }, [writer]);
     return {
       get drafts() {
         return current.current;
@@ -531,14 +264,12 @@ export function createBrowserDrafts(options: {
       subscribeDraft,
       conflicts,
       dismissDraft,
-      error: localError || syncNotice,
-      localPersistenceFailed: !!localError,
+      error,
+      localPersistenceFailed: !!error && error !== incompleteDrafts,
     };
-  }
-
-  return useBrowserDrafts;
+  };
 }
 export const useSyncedDrafts = createBrowserDrafts({
-  api: { isApiSchemaMismatch, onApiSchemaMismatch, saved },
-  sync: { startDraftReplication, syncDatabase },
+  api: { syncPost },
+  resources: { watchResourceChanges, replaceStream },
 });

@@ -3364,10 +3364,6 @@
       "fingerprint": "fd67da7ce2ad142446f48cf59739fe37769dd9933dedb49c477b060e25a92e6c:1"
     },
     {
-      "file": "workspaces/client/apps/web/src/sync/drafts.publication.test.ts",
-      "fingerprint": "dd1d8d394612269617aceac79f1f00410d3ce10200c6ef7cd57c309815151a73:0"
-    },
-    {
       "file": "workspaces/client/apps/web/src/sync/entityProjectionObserver.test.ts",
       "fingerprint": "550ac06d3398d0d7cac3adb12ba747a74c5214b0b13e2b289340e2d025c23806:0"
     },

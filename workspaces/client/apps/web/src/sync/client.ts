@@ -10,15 +10,7 @@ import {
   SYNC_TRANSCRIPT_STREAM_MAX_ITEMS,
 } from "../generated/sharedValues";
 
-import { createDraftConflictHandler } from "./conflicts";
-
 import { LocalCollection, type Row } from "./localCollection";
-
-import {
-  createDraftReplication,
-  createDraftStore,
-  type DraftReplication,
-} from "./draftReplication";
 
 import {
   applyEntityRows,
@@ -77,20 +69,13 @@ import {
   subscribeTranscript,
 } from "./transcriptCache";
 
-import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
-
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 
 import { SYNC_ENTITY_SCOPE, type components } from "../generated/api";
 
 import { withEntityProjectionWrite } from "./entityProjectionWrites";
 
-import {
-  entityProjectionDatabaseName,
-  workspaceDatabaseName,
-} from "./entityCacheStorage";
-
-export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
+import { entityProjectionDatabaseName } from "./entityCacheStorage";
 
 export type SyncDocument = EntityRow;
 
@@ -170,7 +155,7 @@ export type SyncClientOptions = {
   databaseSuffix: string;
 };
 export function createSyncClient(options: SyncClientOptions) {
-  const { syncGet, syncPost, saved, save, setWorkspace, isApiSchemaMismatch } =
+  const { syncGet, saved, save, setWorkspace, isApiSchemaMismatch } =
     options.api;
   const { watchResourceChanges, watchResourceConnection } = options.resources;
   const { getEntitySequenceCheckpoint, setEntitySequenceProjection } =
@@ -184,16 +169,6 @@ export function createSyncClient(options: SyncClientOptions) {
   } = options.transcripts;
   const serverDatabaseSuffix = options.databaseSuffix;
 
-  const DRAFT_PUSH_QUIET_WAIT_MS = DRAFT_SYNC_TIMING_MS.pushQuietWait;
-
-  const DRAFT_PUSH_MAX_WAIT_MS = DRAFT_SYNC_TIMING_MS.pushMaxWait;
-
-  const DRAFT_PUSH_RETRY_TIME_MS = DRAFT_SYNC_TIMING_MS.pushRetry;
-
-  // Failed pushes already retry this often; restart triggers must not accelerate them.
-  const DRAFT_PUSH_RESTART_MIN_INTERVAL_MS =
-    DRAFT_SYNC_TIMING_MS.restartMinInterval;
-
   class WorkspaceMismatchError extends Error {
     constructor() {
       super("The server workspace changed. Reload to synchronize.");
@@ -201,21 +176,6 @@ export function createSyncClient(options: SyncClientOptions) {
   }
 
   let pending: ReturnType<typeof open> | undefined;
-
-  /** Open the in-memory workspace collections. */
-  async function openWorkspaceDatabase(workspaceId: string) {
-    const name = workspaceDatabaseName(workspaceId, serverDatabaseSuffix);
-    const draftConflicts = createDraftConflictHandler();
-    const drafts = createDraftStore(
-      `${name}:drafts`,
-      draftConflicts.conflictHandler,
-    );
-    return {
-      db: { drafts: drafts.collection },
-      draftStore: drafts,
-      draftConflicts,
-    };
-  }
 
   async function open() {
     const cached = saved<string>("codex-sync-workspace", "");
@@ -272,13 +232,7 @@ export function createSyncClient(options: SyncClientOptions) {
       return checking;
     };
     setWorkspace(workspaceId);
-    const {
-      db: workspaceDb,
-      draftStore,
-      draftConflicts,
-    } = await openWorkspaceDatabase(workspaceId);
     const db = {
-      ...workspaceDb,
       projections: new LocalCollection(
         entityProjectionDatabaseName(
           workspaceId,
@@ -297,7 +251,7 @@ export function createSyncClient(options: SyncClientOptions) {
           doc,
         );
     });
-    return { db, workspaceId, verifyWorkspace, draftConflicts, draftStore };
+    return { db, workspaceId, verifyWorkspace };
   }
 
   function syncDatabase() {
@@ -2460,453 +2414,6 @@ export function createSyncClient(options: SyncClientOptions) {
     return task;
   }
 
-  async function startDraftReplication(
-    report: (
-      e: unknown | null,
-      direction: "pull" | "push" | "replication" | null,
-    ) => void,
-    /** @internal Test-only instrumentation; production callers omit this field. */
-    options: {
-      testOnly?: {
-        cancel?: (cancel: () => Promise<void>) => Promise<void>;
-        onCreate?: () => void;
-      };
-    } = {},
-  ) {
-    const { draftStore, workspaceId, verifyWorkspace, draftConflicts } =
-      await syncDatabase();
-    // State machine: each invalidation sets `pullTriggered`. The first admitted
-    // page consumes that bit; a successful full page permits continuation via
-    // `pullContinues`, without consuming any trigger that arrived meanwhile.
-    // `pullInFlight` covers the complete downstream sequence, including the
-    // short gap between its page handlers, and clears only when active.down ends.
-    // A failed sequence has no automatic retry; pending work remains queued, or
-    // the next event sets it. With a healthy push, pending work calls reSync. With
-    // a failed push, it waits until no page sequence is active, then restarts at
-    // the monotonic minimum-interval deadline. Stop wakes capped startup and
-    // downstream waits before cancelling the one active replication.
-    // Invariants: no pull sequence without a trigger; no outage trigger is lost;
-    // at most one restart per minimum interval.
-    // Ordinary complete draft batches enter the draft store as server rows. Their accepted
-    // watermark proves continuity; the draft store owns conflicts.
-    const failures = new Map<"pull" | "push" | "replication", unknown>();
-    let stopped = false;
-    let pushFailed = false;
-    let pullTriggered = false;
-    let pullInFlight = false;
-    let pullContinues = false;
-    let replication: DraftReplication;
-    let replicationErrors: { unsubscribe: () => void }[] = [];
-    let pullActivitySubscription: { unsubscribe: () => void } | undefined;
-    let restarting: Promise<void> | undefined;
-    let restartTimer: ReturnType<typeof setTimeout> | undefined;
-    let lastRestartAt = Number.NEGATIVE_INFINITY;
-    let replicationGeneration = 0;
-    let draftEpoch: string | undefined;
-    let acceptedDraftSequence: number | undefined;
-    const stopWaiters = new Set<() => void>();
-    const advanceReplicationGeneration = () => ++replicationGeneration;
-    const waitForStop = () => {
-      let cancel!: () => void;
-      const promise = new Promise<void>((resolve) => {
-        const finish = () => {
-          stopWaiters.delete(finish);
-          resolve();
-        };
-        cancel = finish;
-        if (stopped) finish();
-        else stopWaiters.add(finish);
-      });
-      return { promise, cancel };
-    };
-    const raceStopWithCap = async <T>(
-      promise: Promise<T>,
-      afterWait: () => void = () => {},
-    ) => {
-      const stop = waitForStop();
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      const cap = new Promise<"timeout">((resolve) => {
-        timeout = setTimeout(
-          () => resolve("timeout"),
-          DRAFT_SYNC_TIMING_MS.restartPullWaitCap,
-        );
-      });
-      try {
-        return await Promise.race([promise, cap, stop.promise]);
-      } finally {
-        clearTimeout(timeout);
-        stop.cancel();
-        afterWait();
-      }
-    };
-    const cancelReplication = (current: typeof replication) =>
-      options.testOnly?.cancel
-        ? options.testOnly.cancel(() => current.cancel())
-        : current.cancel();
-    const state = (
-      direction: "pull" | "push" | "replication",
-      error: unknown | null,
-    ) => {
-      if (stopped) return;
-      if (error === null) failures.delete(direction);
-      else failures.set(direction, error);
-      if (direction === "push") {
-        pushFailed = error !== null;
-        if (!pushFailed) {
-          clearTimeout(restartTimer);
-          restartTimer = undefined;
-        }
-        servePendingPull();
-      }
-      const failedDirection = failures.has("push")
-        ? "push"
-        : failures.has("pull")
-          ? "pull"
-          : failures.has("replication")
-            ? "replication"
-            : null;
-      report(
-        failedDirection === null ? null : failures.get(failedDirection)!,
-        failedDirection,
-      );
-    };
-    const beginTriggeredPull = () => {
-      if (
-        stopped ||
-        (pullInFlight && !pullContinues) ||
-        !(pullTriggered || pullContinues)
-      )
-        return false;
-      const continuation = pullContinues;
-      pullContinues = false;
-      // There is no await between admission and marking the pull active. Events
-      // received after this point remain pending for a later sequence. A full
-      // page continuation belongs to the admitted sequence and consumes no bit.
-      if (!continuation) {
-        pullTriggered = false;
-        pullInFlight = true;
-      }
-      return true;
-    };
-    let pendingPushWait:
-      | {
-          promise: Promise<void>;
-          resolve: () => void;
-          quietTimer?: ReturnType<typeof setTimeout>;
-          maxTimer?: ReturnType<typeof setTimeout>;
-        }
-      | undefined;
-    const settlePushWait = (wait = pendingPushWait) => {
-      if (!wait || pendingPushWait !== wait) return;
-      pendingPushWait = undefined;
-      clearTimeout(wait.quietTimer);
-      clearTimeout(wait.maxTimer);
-      wait.resolve();
-    };
-    const waitBeforePersist = () => {
-      let wait = pendingPushWait;
-      if (!wait) {
-        let resolve!: () => void;
-        const promise = new Promise<void>((done) => {
-          resolve = done;
-        });
-        wait = { promise, resolve };
-        pendingPushWait = wait;
-        wait.maxTimer = setTimeout(
-          () => settlePushWait(wait),
-          DRAFT_PUSH_MAX_WAIT_MS,
-        );
-      } else {
-        clearTimeout(wait.quietTimer);
-      }
-      wait.quietTimer = setTimeout(
-        () => settlePushWait(wait),
-        DRAFT_PUSH_QUIET_WAIT_MS,
-      );
-      return wait.promise;
-    };
-    const attempt = async <T>(
-      generation: number,
-      direction: "pull" | "push",
-      request: () => Promise<T>,
-    ) => {
-      try {
-        const result = await request();
-        // Empty pulls also prove recovery. One direction cannot clear the other.
-        if (generation === replicationGeneration) {
-          state(direction, null);
-          state("replication", null);
-        }
-        return result;
-      } catch (error) {
-        if (generation === replicationGeneration) {
-          state(direction, error);
-        }
-        throw error;
-      }
-    };
-    const finishPullSequenceWhenIdle = () => {
-      const activeDown =
-        replication.internalReplicationState?.events.active.down;
-      const finish = () => {
-        pullActivitySubscription?.unsubscribe();
-        pullActivitySubscription = undefined;
-        pullInFlight = false;
-        servePendingPull();
-      };
-      if (!activeDown || !activeDown.getValue()) {
-        finish();
-        return;
-      }
-      pullActivitySubscription?.unsubscribe();
-      pullActivitySubscription = activeDown.subscribe((active) => {
-        if (!active) finish();
-      });
-    };
-    const createReplication = () => {
-      const generation = advanceReplicationGeneration();
-      const current = createDraftReplication(draftStore, {
-        retryTime: DRAFT_PUSH_RETRY_TIME_MS,
-        pull: {
-          handler: async (checkpoint, batchSize) => {
-            if (!beginTriggeredPull())
-              return { documents: [], checkpoint: checkpoint || { seq: 0 } };
-            try {
-              return await attempt(generation, "pull", async () => {
-                const result = await pull(
-                  "drafts",
-                  checkpoint?.seq || 0,
-                  batchSize,
-                  workspaceId,
-                  verifyWorkspace,
-                );
-                if (result.reset === true)
-                  throw new Error("The server reset draft sync unexpectedly.");
-                acceptedDraftSequence = Math.max(
-                  acceptedDraftSequence ?? 0,
-                  result.checkpoint.seq,
-                );
-                pullContinues = result.documents.length >= batchSize;
-                const documents = result.documents;
-                if (
-                  !documents.every(
-                    (
-                      document,
-                    ): document is components["schemas"]["SyncDocument"] =>
-                      "payload" in document,
-                  )
-                )
-                  throw new TypeError("Expected a draft document");
-                return { documents, checkpoint: result.checkpoint };
-              });
-            } finally {
-              if (failures.has("pull")) pullContinues = false;
-              if (!pullContinues) finishPullSequenceWhenIdle();
-            }
-          },
-          batchSize: 100,
-        },
-        push: {
-          waitBeforePersist,
-          handler: (rows) =>
-            attempt(generation, "push", async () => {
-              await verifyWorkspace();
-              const requestRows = rows.map((row) => {
-                const { _deleted, ...newDocumentState } = row.newDocumentState;
-                const assumedMasterState = row.assumedMasterState;
-                if (!assumedMasterState) {
-                  return {
-                    ...row,
-                    newDocumentState: {
-                      ...newDocumentState,
-                      deleted: _deleted,
-                    },
-                  };
-                }
-                const { _deleted: assumedDeleted, ...assumedState } =
-                  assumedMasterState;
-                return {
-                  ...row,
-                  newDocumentState: { ...newDocumentState, deleted: _deleted },
-                  assumedMasterState: {
-                    ...assumedState,
-                    deleted: assumedDeleted,
-                  },
-                };
-              });
-              const conflicts = await syncPost(
-                "/api/sync/drafts",
-                { rows: requestRows },
-                { workspaceId },
-              );
-              draftConflicts.acknowledge(rows, conflicts);
-              return conflicts;
-            }),
-          batchSize: 100,
-        },
-      });
-      if (options.testOnly?.onCreate) {
-        try {
-          options.testOnly.onCreate();
-        } catch {
-          // Explicit test instrumentation must not affect the lifecycle.
-        }
-      }
-      replicationErrors = [
-        current.error$.subscribe((error) => {
-          if (generation !== replicationGeneration) return;
-          const direction =
-            error.code === "RC_PULL"
-              ? "pull"
-              : error.code === "RC_PUSH"
-                ? "push"
-                : "replication";
-          state(direction, error);
-          if (direction !== "push" && acceptedDraftSequence !== undefined)
-            triggerPull();
-        }),
-      ];
-      replication = current;
-      return current;
-    };
-    createReplication();
-    const waitForDownstreamInitialSync = async (
-      current: typeof replication,
-    ) => {
-      await raceStopWithCap(current.startPromise);
-      if (stopped) return;
-      const downSync = current.internalReplicationState?.firstSyncDone.down;
-      if (!downSync || downSync.getValue()) return;
-      let subscription: { unsubscribe: () => void } | undefined;
-      const downstream = new Promise<void>((resolve) => {
-        subscription = downSync.subscribe((done) => {
-          if (done) resolve();
-        });
-      });
-      await raceStopWithCap(downstream, () => subscription?.unsubscribe());
-    };
-    const scheduleRestart = () => {
-      if (
-        stopped ||
-        !pushFailed ||
-        !pullTriggered ||
-        pullInFlight ||
-        pullContinues ||
-        restarting ||
-        restartTimer
-      )
-        return;
-      const dueAt = lastRestartAt + DRAFT_PUSH_RESTART_MIN_INTERVAL_MS;
-      const delay = Math.max(0, dueAt - performance.now());
-      restartTimer = setTimeout(() => {
-        restartTimer = undefined;
-        if (stopped || !pullTriggered || pullInFlight || pullContinues) return;
-        if (!pushFailed) {
-          replication.reSync();
-          return;
-        }
-        const previous = replication;
-        advanceReplicationGeneration();
-        replicationErrors.forEach((subscription) => subscription.unsubscribe());
-        replicationErrors = [];
-        settlePushWait();
-        restarting = (async () => {
-          try {
-            await cancelReplication(previous);
-          } catch (error) {
-            state("replication", error);
-          }
-          if (stopped) return;
-          lastRestartAt = performance.now();
-          // Replication starts both directions in parallel. This fresh state's initial
-          // pull can start while its upstream retries a failed push.
-          const current = createReplication();
-          await waitForDownstreamInitialSync(current);
-        })()
-          .catch((error) => {
-            state("replication", error);
-          })
-          .finally(() => {
-            restarting = undefined;
-            servePendingPull();
-          });
-      }, delay);
-    };
-    const servePendingPull = () => {
-      if (
-        stopped ||
-        !pullTriggered ||
-        pullInFlight ||
-        pullContinues ||
-        restarting
-      )
-        return;
-      if (pushFailed) scheduleRestart();
-      else replication.reSync();
-    };
-    const triggerPull = () => {
-      acceptedDraftSequence = undefined;
-      pullTriggered = true;
-      servePendingPull();
-    };
-    const stopInvalidation = watchSyncInvalidations((version) => {
-      const batch = version?.draftChanges;
-      if (version?.reason !== "change" || version.epoch !== draftEpoch) {
-        draftEpoch = version?.epoch;
-        triggerPull();
-        return;
-      }
-      if (
-        acceptedDraftSequence !== undefined &&
-        version.revision <= acceptedDraftSequence
-      )
-        return;
-      if (
-        !batch ||
-        acceptedDraftSequence === undefined ||
-        batch.after > acceptedDraftSequence ||
-        batch.through !== version.revision ||
-        batch.through <= batch.after ||
-        batch.documents.at(-1)?.seq !== batch.through
-      ) {
-        triggerPull();
-        return;
-      }
-      const after = acceptedDraftSequence;
-      replication.emitEvent({
-        documents: batch.documents.filter((row) => row.seq > after),
-        checkpoint: { seq: batch.through },
-      });
-      acceptedDraftSequence = batch.through;
-    }, "drafts");
-    const stopResume = onResume(() => {
-      triggerPull();
-    });
-    return async () => {
-      stopped = true;
-      clearTimeout(restartTimer);
-      restartTimer = undefined;
-      for (const wake of stopWaiters) wake();
-      pullActivitySubscription?.unsubscribe();
-      pullActivitySubscription = undefined;
-      stopInvalidation();
-      stopResume();
-      replicationErrors.forEach((subscription) => subscription.unsubscribe());
-      replicationErrors = [];
-      // Settle the gate first: cancellation waits for replication work that may
-      // currently be paused in waitBeforePersist().
-      settlePushWait();
-      try {
-        await restarting;
-        await cancelReplication(replication);
-      } catch (error) {
-        report(error, "replication");
-      } finally {
-        settlePushWait();
-      }
-    };
-  }
-
   // Reopen a subscription after an initial connection failure, without a page reload.
   function subscribeProjection<T>(
     watch: (
@@ -3045,7 +2552,6 @@ export function createSyncClient(options: SyncClientOptions) {
     refreshProjection,
     TRANSCRIPT_PREFETCH_LIMIT,
     prefetchTranscript,
-    startDraftReplication,
     subscribeStateProjection,
     subscribeTranscriptProjection,
   };
@@ -3087,7 +2593,6 @@ export const {
   refreshProjection,
   TRANSCRIPT_PREFETCH_LIMIT,
   prefetchTranscript,
-  startDraftReplication,
   subscribeStateProjection,
   subscribeTranscriptProjection,
 } = defaultSyncClient;

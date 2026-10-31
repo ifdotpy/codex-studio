@@ -14,6 +14,11 @@ the transcript subtree so token deltas do not render the composer. Attachments,
 dictation, recall, skill completion, caret placement, Enter, Tab, Shift+Enter,
 and IME composition retain their input paths.
 
+Draft edits update memory immediately and are sent by POST after the typing
+wait in [`draftSyncTiming.ts`](../../sync/draftSyncTiming.ts). Stream snapshots
+and changes restore saved drafts. Unconfirmed edits remain in memory until they
+are saved or the page closes.
+
 From `workspaces/client/apps/web/`, run:
 
 ```sh
