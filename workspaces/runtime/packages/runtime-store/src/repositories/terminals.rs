@@ -86,7 +86,6 @@ pub struct ArchiveAppend {
 pub struct TerminalsRepository;
 
 impl TerminalsRepository {
-<<<<<<< head
     /// Raw stored state for transient subscription change detection.
     pub fn fingerprint(connection: &Connection, id: &str) -> StoreResult<Option<Vec<u8>>> {
         let row = connection
@@ -111,12 +110,9 @@ impl TerminalsRepository {
         .transpose()
     }
 
-||||||| base
-=======
     /// Retain the newest `limit` characters in the terminal row. Returns the
     /// retained output, its offset, and the chunk the caller must append to the
     /// output archive after the row commits (`RuntimeStore::terminal_output_append`).
->>>>>>> 1b30f9a
     pub fn append_and_retain(
         row: &TerminalRow,
         text: &str,
