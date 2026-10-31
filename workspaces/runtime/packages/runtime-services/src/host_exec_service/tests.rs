@@ -139,7 +139,7 @@ impl Fixture {
 
     fn manifest_digest(slot_path: &Value) -> String {
         let manifest = protocol::scan(Path::new(slot_path.as_str().unwrap()), &[], None).unwrap();
-        protocol::manifest_digest(&manifest)
+        protocol::manifest_digest(&manifest).unwrap()
     }
 
     async fn start(&self, operation: &str, argv: &[&str], timeout: f64) -> Value {
@@ -298,6 +298,34 @@ fn the_protocol_limits_match_the_guest_owner() {
 /// The guest computes `manifestSha256` with Python `json.dumps(sort_keys=True)`;
 /// the values below are what `host_exec_protocol.scan` gives for the same tree.
 #[test]
+fn typed_manifest_hash_matches_legacy_json() {
+    let manifest = protocol::Manifest::from([
+        (
+            "café".into(),
+            protocol::ManifestEntry::File {
+                bytes: 3,
+                mode: 0o644,
+                sha256: "abc".into(),
+            },
+        ),
+        (
+            "link".into(),
+            protocol::ManifestEntry::Link {
+                target: "😀".into(),
+            },
+        ),
+        ("empty".into(), protocol::ManifestEntry::Directory),
+    ]);
+    let legacy = json!({"café": {"kind":"file", "bytes":3, "mode":420, "sha256":"abc"}, "link":{"kind":"link", "target":"😀"}, "empty":{"kind":"directory"}});
+    let typed = studio_runtime_schema::json_compat::python_json_serialized(&manifest).unwrap();
+    assert_eq!(typed, protocol::sorted_json(&legacy));
+    assert_eq!(
+        protocol::manifest_digest(&manifest).unwrap(),
+        protocol::key(&protocol::sorted_json(&legacy))
+    );
+}
+
+#[test]
 fn the_manifest_hashes_as_the_guest_hashes_it() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
@@ -321,11 +349,11 @@ fn the_manifest_hashes_as_the_guest_hashes_it() {
     fs::create_dir(root.join("empty")).unwrap();
     let manifest = protocol::scan(root, &[], None).unwrap();
     assert_eq!(
-        protocol::sorted_json(&protocol::manifest_value(&manifest)),
+        studio_runtime_schema::json_compat::python_json_serialized(&manifest).unwrap(),
         r#"{"caf\u00e9 \"q\"": {"bytes": 1, "kind": "file", "mode": 384, "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"}, "empty": {"kind": "directory"}, "link": {"kind": "link", "target": "src/\u00fcber\ud83d\ude00"}, "src": {"kind": "directory"}, "src/main.swift": {"bytes": 15, "kind": "file", "mode": 420, "sha256": "18a6066e8dd25f6d99b3274b3232ebae6750fc8d1637729125863d7919df784f"}, "tool.sh": {"bytes": 17, "kind": "file", "mode": 493, "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb"}}"#
     );
     assert_eq!(
-        protocol::manifest_digest(&manifest),
+        protocol::manifest_digest(&manifest).unwrap(),
         "646deef4182c19349905920ea0cb4f07893b09d9b3d5487c0c62a60ea2fdb607"
     );
     // A skipped path stays out with everything inside it.
@@ -347,8 +375,13 @@ fn name_alias_and_page_rules() {
         ),
         "/line/file /line/file /private/var/slot/sourcex"
     );
-    let items: Vec<(String, Value)> = (0..protocol::PAGE_ENTRIES + 10)
-        .map(|index| (format!("f{index:05}"), json!({"kind": "directory"})))
+    let items: protocol::ManifestPageItems = (0..protocol::PAGE_ENTRIES + 10)
+        .map(|index| {
+            (
+                format!("f{index:05}"),
+                Some(protocol::ManifestEntry::Directory),
+            )
+        })
         .collect();
     let first = protocol::page(&items, Some(&json!(""))).unwrap();
     assert_eq!(

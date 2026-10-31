@@ -332,7 +332,7 @@ impl HostService {
             return self.listing(&name, &path, params.get("after"), None);
         }
         let held = self.scan_slot_blocking(slot, mac_only).await?;
-        protocol::atomic(&path, &protocol::manifest_value(&held))?;
+        protocol::atomic(&path, &held)?;
         self.listing(&name, &path, Some(&protocol::text_value("")), Some(&held))
     }
 

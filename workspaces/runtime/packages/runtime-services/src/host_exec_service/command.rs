@@ -13,7 +13,7 @@ use tokio::io::AsyncReadExt;
 use super::protocol::{self, Failure, HostExecError, INVALID, Manifest, Outcome, require};
 use super::{
     ChildHandle, ENV_ARTIFACTS, ENV_DERIVED_DATA, ENV_PACKAGE_CACHE, ENV_STATE, ENV_TREE,
-    HostService, Op, integer, now, number, string_list, text,
+    HostService, Op, now, number, string_list, text,
 };
 
 /// Command output that the service keeps, in bytes; more stops the command.
@@ -320,7 +320,7 @@ impl HostService {
         )?;
         require(
             params.get("manifestSha256").and_then(Value::as_str)
-                == Some(protocol::manifest_digest(&source).as_str()),
+                == Some(protocol::manifest_digest(&source)?.as_str()),
             "The host sources differ from the layr slot",
             "sync_conflict",
         )?;
@@ -570,51 +570,43 @@ impl HostService {
         skip.extend(caches.iter().cloned());
         let after = self.scan_slot_blocking(&slot, skip).await?;
         before.retain(|path, _| !protocol::under(path, &caches));
-        let mut changed = Map::new();
+        let mut changed = std::collections::BTreeMap::new();
         for path in before.keys().chain(after.keys()) {
             if before.get(path) != after.get(path) {
-                changed.insert(
-                    path.clone(),
-                    after.get(path).cloned().unwrap_or(Value::Null),
-                );
+                changed.insert(path.clone(), after.get(path).cloned());
             }
         }
         let result_dir = self.opdir(identity).join("changes");
         fs::create_dir(&result_dir)?;
         for (path, entry) in &changed {
-            let kind = entry
-                .get("kind")
-                .and_then(Value::as_str)
-                .unwrap_or("directory");
-            if kind == "directory" {
+            let Some(
+                entry @ (protocol::ManifestEntry::Link { .. }
+                | protocol::ManifestEntry::File { .. }),
+            ) = entry
+            else {
                 continue;
-            }
+            };
             let name = protocol::text_value(path);
             let source = protocol::inside(&slot.join("source"), Some(&name), false)?;
             let target = protocol::inside(&result_dir, Some(&name), false)?;
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
-            if kind == "link" {
-                std::os::unix::fs::symlink(text_of(entry, "target"), &target)?;
-            } else {
-                fs::copy(&source, &target)?;
-                let mode = integer(entry.get("mode"))
-                    .and_then(|mode| u32::try_from(mode).ok())
-                    .unwrap_or(0o600);
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&target, fs::Permissions::from_mode(mode))?;
+            match entry {
+                protocol::ManifestEntry::Link { target: link } => {
+                    std::os::unix::fs::symlink(link, &target)?
+                }
+                protocol::ManifestEntry::File { mode, .. } => {
+                    fs::copy(&source, &target)?;
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&target, fs::Permissions::from_mode(*mode))?;
+                }
+                protocol::ManifestEntry::Directory => continue,
             }
         }
         let artifacts = protocol::scan(&self.opdir(identity).join("artifacts"), &[], None)?;
-        protocol::atomic(
-            &self.opdir(identity).join("changes.json"),
-            &Value::Object(changed.clone()),
-        )?;
-        protocol::atomic(
-            &self.opdir(identity).join("artifacts.json"),
-            &protocol::manifest_value(&artifacts),
-        )?;
+        protocol::atomic(&self.opdir(identity).join("changes.json"), &changed)?;
+        protocol::atomic(&self.opdir(identity).join("artifacts.json"), &artifacts)?;
         // A cancel or a guest recovery saved its flag during the command.
         let latest = self.load(identity)?;
         for field in ["cancelRequested", "orphaned"] {
@@ -669,10 +661,6 @@ impl HostService {
         }
         self.load(identity)
     }
-}
-
-fn text_of<'a>(entry: &'a Value, field: &str) -> &'a str {
-    entry.get(field).and_then(Value::as_str).unwrap_or_default()
 }
 
 enum Pipe {

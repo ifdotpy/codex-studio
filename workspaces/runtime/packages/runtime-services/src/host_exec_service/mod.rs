@@ -121,7 +121,7 @@ pub(crate) struct Inner {
     /// Per project folder: the bytes of the last walk plus the files written since then.
     pub(crate) usage: HashMap<PathBuf, u64>,
     /// Sorted manifests during paging, by operation and area.
-    pages: HashMap<String, Vec<(String, Value)>>,
+    pages: HashMap<String, protocol::ManifestPageItems>,
     /// Hashes of files cloned into a slot, for its next scan, by slot folder.
     pub(crate) cloned: HashMap<PathBuf, protocol::HashCache>,
     clients: usize,
@@ -527,18 +527,13 @@ impl HostService {
         let items = match (entries, saved) {
             (Some(entries), _) => entries
                 .iter()
-                .map(|(path, entry)| (path.clone(), entry.clone()))
+                .map(|(path, entry)| (path.clone(), Some(entry.clone())))
                 .collect(),
             (None, Some(items)) => items,
             (None, None) => {
-                let Value::Object(map) = protocol::read_json(path)? else {
-                    return Err(Failure::Unexpected(
-                        "The saved manifest is not an object".into(),
-                    ));
-                };
-                let mut items: Vec<(String, Value)> = map.into_iter().collect();
-                items.sort_by(|left, right| left.0.cmp(&right.0));
-                items
+                let map: std::collections::BTreeMap<String, Option<protocol::ManifestEntry>> =
+                    serde_json::from_str(&fs::read_to_string(path)?)?;
+                map.into_iter().collect()
             }
         };
         let result = protocol::page(&items, after)?;
@@ -738,6 +733,8 @@ impl HostService {
             return Err(HostExecError::new(INVALID, "Invalid request").into());
         };
         let method = method.to_owned();
+        // Request-identity debt: params remain Value until every dispatch method
+        // decodes a closed request type while preserving legacy signature bytes.
         let digest = protocol::key(&protocol::sorted_json(&json!([method, params])));
         if method == "health" {
             let (commands, active) = {

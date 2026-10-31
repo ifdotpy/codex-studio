@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 /// Largest request or response frame, in bytes.
@@ -104,8 +104,6 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 }
 
 /// The text of Python `json.dumps(value, sort_keys=True)`, which the guest hashes.
-// Identity-hash debt: keep Value until the Python-compatible serializer accepts
-// strict types without changing the bytes used for request and manifest hashes.
 pub(crate) fn sorted_json(value: &Value) -> String {
     studio_runtime_store::python_json(value)
 }
@@ -292,7 +290,22 @@ pub(crate) fn file_hash(
 }
 
 /// The entries of one slot or result folder, by relative path.
-pub(crate) type Manifest = BTreeMap<String, Value>;
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub(crate) enum ManifestEntry {
+    Directory,
+    Link {
+        target: String,
+    },
+    File {
+        bytes: u64,
+        mode: u32,
+        sha256: String,
+    },
+}
+
+pub(crate) type Manifest = BTreeMap<String, ManifestEntry>;
+pub(crate) type ManifestPageItems = Vec<(String, Option<ManifestEntry>)>;
 
 /// The entries below `root` with content hashes (guest `scan`). The relative
 /// paths in `skip` stay out with everything inside them. `hashes` is a cache:
@@ -349,18 +362,21 @@ pub(crate) fn scan(
                             "The slot contains a link target that is not UTF-8",
                         )
                     })?;
-                result.insert(rel, json!({"kind": "link", "target": target}));
+                result.insert(rel, ManifestEntry::Link { target });
             } else if kind.is_file() {
                 let (checksum, _) = file_hash(&path, &meta, &rel, hashes.as_deref_mut(), started)?;
                 seen.insert(rel.clone());
                 result.insert(
                     rel,
-                    json!({"kind": "file", "bytes": meta.size(),
-                           "mode": meta.mode() & 0o777, "sha256": checksum}),
+                    ManifestEntry::File {
+                        bytes: meta.size(),
+                        mode: meta.mode() & 0o777,
+                        sha256: checksum,
+                    },
                 );
             } else if kind.is_dir() {
                 stack.push(PathBuf::from(&rel));
-                result.insert(rel, json!({"kind": "directory"}));
+                result.insert(rel, ManifestEntry::Directory);
             } else {
                 return Err(HostExecError::new(
                     "unsupported_file",
@@ -381,25 +397,17 @@ pub(crate) fn scan(
     Ok(result)
 }
 
-/// The manifest as a JSON object.
-pub(crate) fn manifest_value(manifest: &Manifest) -> Value {
-    Value::Object(
-        manifest
-            .iter()
-            .map(|(path, entry)| (path.clone(), entry.clone()))
-            .collect(),
-    )
-}
-
 /// The digest that the guest sends as `manifestSha256` for the same tree.
-pub(crate) fn manifest_digest(manifest: &Manifest) -> String {
-    key(&sorted_json(&manifest_value(manifest)))
+pub(crate) fn manifest_digest(manifest: &Manifest) -> Result<String, serde_json::Error> {
+    Ok(key(
+        &studio_runtime_schema::json_compat::python_json_serialized(manifest)?,
+    ))
 }
 
 /// The entries of a sorted manifest after the path `after` (guest `page`) and
 /// the cursor of the next page (`null` after the last page).
 pub(crate) fn page(
-    items: &[(String, Value)],
+    items: &[(String, Option<ManifestEntry>)],
     after: Option<&Value>,
 ) -> Result<Value, HostExecError> {
     let after = match after {
@@ -407,10 +415,12 @@ pub(crate) fn page(
         _ => return Err(HostExecError::new(INVALID, "Invalid manifest cursor")),
     };
     let start = items.partition_point(|(path, _)| path.as_str() <= after);
-    let mut entries = Map::new();
+    let mut entries = BTreeMap::new();
     let mut size = 0_usize;
     for (path, entry) in items.iter().skip(start).take(PAGE_ENTRIES) {
-        size += path.len() + sorted_json(entry).len() + 8;
+        let encoded = studio_runtime_schema::json_compat::python_json_serialized(entry)
+            .map_err(|_| HostExecError::new(INVALID, "Invalid manifest entry"))?;
+        size += path.len() + encoded.len() + 8;
         if !entries.is_empty() && size > PAGE_BYTES {
             break;
         }
