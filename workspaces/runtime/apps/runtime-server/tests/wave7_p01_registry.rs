@@ -2493,20 +2493,8 @@ async fn wire_send(peer: &mut tokio::io::BufReader<tokio::net::UnixStream>, valu
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn rust_supervisor_binary() -> PathBuf {
-    std::env::var_os("STUDIO_SUPERVISOR_BINARY")
-        .or_else(|| option_env!("CARGO_BIN_EXE_codex-process-supervisor").map(Into::into))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            panic!(
-                "Rust supervisor integration requires the built codex-process-supervisor; run the fast Rust test recipe so STUDIO_SUPERVISOR_BINARY is set"
-            )
-        })
-}
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn spawn_rust_supervisor(root: &std::path::Path, stderr: &std::path::Path) -> std::process::Child {
-    std::process::Command::new(rust_supervisor_binary())
+    supervisor_binary::command()
         .arg("--state")
         .arg(root)
         .env("XDG_CACHE_HOME", root.join("cache"))
@@ -3120,6 +3108,10 @@ fn claude_launch_uses_resolved_node_bridge_and_profile_cli_without_invoking_it()
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "../../../packages/runtime-process/tests/support/supervisor_binary.rs"]
+mod supervisor_binary;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "../../../packages/runtime-process/tests/support/supervisor_ready.rs"]
 mod supervisor_ready;
 
@@ -3137,8 +3129,7 @@ impl Drop for SupervisorFixture {
                 .args(["-KILL", &pid.to_string()])
                 .status();
         }
-        let _result = self.child.kill();
-        let _result = self.child.wait();
+        supervisor_binary::stop(&mut self.child);
     }
 }
 
