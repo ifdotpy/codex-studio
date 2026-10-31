@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { outboxRequestKeys, outboxRequests } from "../browserPersistence";
 import { serverLocalStorage } from "../servers/storage";
+import { serverMutationResponseIsUncertain } from "../servers/mutationIdentity";
 import { ApiError, command, errorText, getStreamSession } from "../api";
 import {
   messageReceipt,
@@ -223,9 +224,7 @@ export function createOutbox(options: {
       } catch (error) {
         const definitive =
           error instanceof ApiError &&
-          error.status < 500 &&
-          error.status !== 408 &&
-          error.status !== 429;
+          !serverMutationResponseIsUncertain(error.status, error.response);
         const failed = {
           ...value,
           attempted: true,

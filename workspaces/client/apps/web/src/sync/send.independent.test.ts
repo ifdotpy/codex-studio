@@ -346,3 +346,24 @@ it("does not replace an unreadable saved command when submitting its identity ag
   expect(storage.getItem(key)).toBe("broken");
   expect(post).not.toHaveBeenCalled();
 });
+
+it("keeps a remote outcome-unknown error uncertain instead of treating it as a refusal", async () => {
+  const { ApiError } = await import("../api");
+  const storage = new MemoryStorage();
+  const post = vi
+    .fn()
+    .mockRejectedValue(
+      new ApiError("Outcome unknown", 409, { code: "request_pending" }),
+    );
+  const outbox = createOutbox({
+    api: {
+      command: createCommandClient(storage, post),
+      getStreamSession: () => ({ workspaceId: "workspace" }),
+    } as never,
+    storage,
+    watchResourceConnection: () => () => {},
+  });
+  expect(
+    await outbox.durableSend({ id: "pending", room: "chat", text: "hello" }),
+  ).toMatchObject({ status: "uncertain" });
+});
