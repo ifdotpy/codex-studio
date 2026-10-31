@@ -851,12 +851,11 @@ async fn remote_project_write(
         let (record, admission) = project_store
             .read_async("runtime-http/routes/projects/project-read", move |db| {
                 let record =
-                    studio_runtime_store::ProjectsRepository::get(db, &project_id_for_read)
+                    studio_runtime_store::ProjectsRepository::get_record(db, &project_id_for_read)
                         .map_err(ApiError::stored)?
                         .ok_or_else(|| {
                             ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project")
-                        })?
-                        .1;
+                        })?;
                 let admission = studio_runtime_services::project_locations::location_admission(
                     db,
                     &project_id_for_read,
@@ -866,14 +865,8 @@ async fn remote_project_write(
                 Ok::<_, ApiError>((record, admission))
             })
             .await?;
-        let locations = record
-            .get("locations")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let existing = locations
-            .iter()
-            .find(|row| row.get("serverId").and_then(Value::as_str) == Some(server));
+        let locations = &record.locations;
+        let existing = locations.iter().find(|row| row.server_id == server);
         if action == "remove_location" && locations.len() <= 1 {
             return Err(ApiError::new(
                 StatusCode::BAD_REQUEST,
@@ -881,7 +874,7 @@ async fn remote_project_write(
             ));
         }
 
-        let mut payload = json!({"project":project,"name":record.get("name"),"path":path,
+        let mut payload = json!({"project":project,"name":record.name,"path":path,
             "request":signature_data,"signature":studio_runtime_store::sha256_hex(
                 canonical_json(&signature_data).as_bytes()),
             "location":existing});
@@ -1333,6 +1326,41 @@ inventory::submit! {
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod local_registration_tests {
+    #[test]
+    fn project_record_refuses_malformed_locations() {
+        let raw =
+            r#"{"id":"project","path":"/project","peerTeams":[],"locations":[{"serverId":42}]}"#;
+        assert!(
+            serde_json::from_str::<studio_runtime_schema::project_record::ProjectRecord>(raw)
+                .is_err()
+        );
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute(
+            "CREATE TABLE runtime_projects(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO runtime_projects VALUES('project', ?1)", [raw])
+            .unwrap();
+        assert!(studio_runtime_store::ProjectsRepository::get_record(&db, "project").is_err());
+        let valid = r#"{"id":"project","path":"/project","peerTeams":[],"locations":[{"serverId":"server","path":"/folder","projectId":"id","vendor":{"n":  1}}]}"#;
+        db.execute(
+            "UPDATE runtime_projects SET record=?1 WHERE id='project'",
+            [valid],
+        )
+        .unwrap();
+        let project = studio_runtime_store::ProjectsRepository::get_record(&db, "project")
+            .unwrap()
+            .unwrap();
+        let location = &project.locations[0];
+        assert_eq!(location.server_id, "server");
+        assert_eq!(location.extensions["vendor"].get(), r#"{"n":  1}"#);
+        assert!(
+            serde_json::to_string(location)
+                .unwrap()
+                .contains(r#""vendor":{"n":  1}"#)
+        );
+    }
     use serde_json::json;
     use std::sync::{
         Arc,

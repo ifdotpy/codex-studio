@@ -163,6 +163,26 @@ impl ProjectsRepository {
         .transpose()
     }
 
+    pub fn get_record(
+        connection: &Connection,
+        id: &str,
+    ) -> StoreResult<Option<studio_runtime_schema::project_record::ProjectRecord>> {
+        let raw: Option<String> = connection
+            .query_row(
+                "SELECT record FROM runtime_projects WHERE id=?1 AND json_extract(record,'$.removal') IS NULL",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| {
+            serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredRecord {
+                object: "runtime_projects",
+                id: id.to_owned(),
+            })
+        })
+        .transpose()
+    }
+
     pub fn location_request(
         connection: &Connection,
         project: &str,
