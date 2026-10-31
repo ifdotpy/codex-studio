@@ -41,7 +41,11 @@ pub(crate) fn command() -> Command {
 #[allow(clippy::disallowed_methods, clippy::unwrap_used)]
 pub(crate) fn stop(child: &mut Child) {
     if std::env::var_os("LLVM_PROFILE_FILE").is_some() {
-        drop(Command::new("kill").args(["-TERM", &child.id().to_string()]).status());
+        drop(
+            Command::new("kill")
+                .args(["-TERM", &child.id().to_string()])
+                .status(),
+        );
         let deadline = Instant::now() + TERM_WAIT;
         while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
