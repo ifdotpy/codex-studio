@@ -35,6 +35,8 @@ struct Config {
     backend_port: u16,
     forwarded_host: String,
     socket: PathBuf,
+    /// Secret shared with the backend. The link sends it with the connection identity.
+    link_token: String,
 }
 
 #[derive(Deserialize)]
@@ -191,6 +193,7 @@ async fn run() -> Result<(), String> {
     let inbound = Arc::new(inbound::Inbound {
         backend_port: config.backend_port,
         forwarded_host: config.forwarded_host,
+        link_token: config.link_token,
         loopback,
     });
     tokio::spawn(inbound::serve(endpoint.clone(), inbound, links.clone()));

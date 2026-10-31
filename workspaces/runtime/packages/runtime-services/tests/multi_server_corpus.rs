@@ -3338,3 +3338,66 @@ async fn a_row_that_cannot_be_delivered_does_not_hold_back_later_rows() {
     assert!(delivered.contains(&later), "{delivered:?}");
     assert!(!delivered.contains(&rewritten), "{delivered:?}");
 }
+
+/// A peer is checked once per QUIC connection: N requests on one connection run one owner
+/// lookup. Requests outside a link connection, and a second connection, are checked again.
+#[tokio::test]
+async fn owner_is_checked_once_per_link_connection() {
+    use std::sync::atomic::Ordering;
+    use studio_runtime_services::multi_server_pairing::{LINK_CONNECTION, MultiServerBoundary};
+    let data = &fixture().data;
+    let case = data["auth"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| c["name"] == "status-query")
+        .expect("case");
+    let (_root, store) = store().await;
+    let lookup = CountingOwner::new(case.clone());
+    let boundary =
+        MultiServerBoundary::new(data["identity"].clone(), lookup.clone()).expect("boundary");
+    let identity = |connection: Option<&'static str>| {
+        let boundary = &boundary;
+        let store = Arc::clone(&store);
+        async move {
+            let call = boundary.discovery_identity(store, "100.64.0.2", &[]);
+            match connection {
+                Some(id) => LINK_CONNECTION.scope(id.to_owned(), call).await,
+                None => call.await,
+            }
+            .expect("identity")
+        }
+    };
+    for _ in 0..5 {
+        identity(Some("connection-a")).await;
+    }
+    assert_eq!(
+        lookup.calls.load(Ordering::SeqCst),
+        1,
+        "one check per connection"
+    );
+    identity(Some("connection-b")).await;
+    assert_eq!(
+        lookup.calls.load(Ordering::SeqCst),
+        2,
+        "a new connection is checked"
+    );
+    identity(None).await;
+    identity(None).await;
+    assert_eq!(
+        lookup.calls.load(Ordering::SeqCst),
+        4,
+        "no connection: check each request"
+    );
+    // A request that names a login (a Serve header) is never answered from the cache.
+    let logins = [owner().login().to_owned()];
+    LINK_CONNECTION
+        .scope("connection-a".to_owned(), async {
+            boundary
+                .discovery_identity(Arc::clone(&store), "100.64.0.2", &logins)
+                .await
+                .expect("identity");
+        })
+        .await;
+    assert_eq!(lookup.calls.load(Ordering::SeqCst), 5);
+}

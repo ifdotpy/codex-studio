@@ -147,8 +147,10 @@ pub fn peer_link_config_line(
     backend_port: u16,
     forwarded_host: &str,
     socket: &Path,
+    link_token: &str,
 ) -> RemoteTransportResult<String> {
     if listen.parse::<std::net::SocketAddr>().is_err()
+        || link_token.is_empty()
         || peers.len() > 1024
         || forwarded_host.is_empty()
         || forwarded_host.len() > 255
@@ -168,6 +170,7 @@ pub fn peer_link_config_line(
         "backendPort": backend_port,
         "forwardedHost": forwarded_host,
         "socket": socket,
+        "linkToken": link_token,
     }))
     .map_err(|_| RemoteTransportError::InvalidIdentity)
 }

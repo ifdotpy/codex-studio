@@ -1324,3 +1324,70 @@ async fn a_paired_window_reaches_the_ordinary_api_with_signed_requests() {
         revoked.status()
     );
 }
+
+/// The peer link names the QUIC connection with a secret. Requests of one connection reuse
+/// one owner check; a request without the secret cannot name a connection.
+#[tokio::test]
+async fn owner_is_checked_once_per_link_connection_and_only_for_the_link() {
+    let (root, store) = common::store().await;
+    let data = &common::fixture().data;
+    let case = &data["auth"][0];
+    let lookup = common::CountingOwner::new(case.clone());
+    let boundary =
+        MultiServerBoundary::new(data["identity"].clone(), lookup.clone()).expect("boundary");
+    let state = HttpState::new(
+        "token".into(),
+        "workspace".into(),
+        root.path().to_string_lossy().into_owned(),
+        4000,
+        Some("https://local.fixture.ts.net".into()),
+        Some(store),
+        None,
+    )
+    .with_multi_server_boundary(Arc::new(boundary))
+    .with_peer_link_token("link-secret");
+    let app = router(state).expect("router");
+    let mut identity_case = case.clone();
+    identity_case["method"] = serde_json::json!("GET");
+    identity_case["target"] = serde_json::json!("/api/multi-server/v1/identity");
+    identity_case["raw"] = serde_json::json!("");
+    identity_case["headers"] = serde_json::json!([]);
+    let send = |token: Option<&str>, connection: &str| {
+        let app = app.clone();
+        let mut request = incoming(&identity_case);
+        if let Some(token) = token {
+            request
+                .headers_mut()
+                .insert("x-studio-link-token", token.parse().expect("header"));
+        }
+        request.headers_mut().insert(
+            "x-studio-link-connection",
+            connection.parse().expect("header"),
+        );
+        async move {
+            let status = app.oneshot(request).await.expect("response").status();
+            assert_eq!(status, StatusCode::OK);
+        }
+    };
+    for _ in 0..4 {
+        send(Some("link-secret"), "connectiona").await;
+    }
+    assert_eq!(
+        lookup.calls.load(Ordering::SeqCst),
+        1,
+        "one check for the connection"
+    );
+    send(Some("link-secret"), "connectionb").await;
+    assert_eq!(
+        lookup.calls.load(Ordering::SeqCst),
+        2,
+        "a new connection is checked"
+    );
+    send(Some("wrong"), "connectiona").await;
+    send(None, "connectiona").await;
+    assert_eq!(
+        lookup.calls.load(Ordering::SeqCst),
+        4,
+        "no secret: every request is checked"
+    );
+}
