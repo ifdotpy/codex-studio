@@ -1511,7 +1511,7 @@ mod tests {
         let item = super::TranscriptItem {
             id: "agent:long".to_owned(),
             agent: "agent".to_owned(),
-            record: crate::TranscriptItemRecord::from_value(long_record(false)).unwrap(),
+            record: serde_json::from_str(&long_record(false).to_string()).unwrap(),
         };
         assert_eq!(
             TranscriptRepository::full_text(&connection, &item)
