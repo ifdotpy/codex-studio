@@ -2514,8 +2514,9 @@ fn account_snapshot(
 fn project_for_cwd(
     connection: &Connection,
     cwd: &str,
-    filter: fn(&Value) -> bool,
-) -> Result<Option<Value>, OperationError> {
+    filter: fn(&studio_runtime_schema::project_record::ProjectAccountPreference) -> bool,
+) -> Result<Option<studio_runtime_schema::project_record::ProjectAccountPreference>, OperationError>
+{
     let mut statement = connection
         .prepare("SELECT id,record FROM runtime_projects")
         .map_err(|_| OperationError::Internal)?;
@@ -2524,35 +2525,29 @@ fn project_for_cwd(
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|_| OperationError::Internal)?;
-    let mut selected: Option<(usize, Value)> = None;
+    let mut selected: Option<(
+        usize,
+        studio_runtime_schema::project_record::ProjectAccountPreference,
+    )> = None;
     for row in rows {
         let (id, raw) = row.map_err(|_| OperationError::Internal)?;
         let invalid = || MutationError::InvalidStoredObject {
             table: "runtime_projects",
             id: id.clone(),
         };
-        let record: Value = serde_json::from_str(&raw).map_err(|_| invalid())?;
-        if !record.is_object() || record.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+        let record: studio_runtime_schema::project_record::ProjectRecord =
+            serde_json::from_str(&raw).map_err(|_| invalid())?;
+        if record.id != id {
             return Err(invalid().into());
         }
-        let project_path = record
-            .get("path")
-            .and_then(Value::as_str)
-            .ok_or_else(invalid)?;
-        if !matches!(
-            record.get("accountKey"),
-            None | Some(Value::Null | Value::String(_))
-        ) {
-            return Err(invalid().into());
-        }
-        let path = PathBuf::from(project_path);
-        if PathBuf::from(cwd).starts_with(&path) && filter(&record) {
+        let path = PathBuf::from(&record.path);
+        if PathBuf::from(cwd).starts_with(&path) && filter(&record.preference) {
             let depth = path.components().count();
             if selected
                 .as_ref()
                 .is_none_or(|(old_depth, _)| depth > *old_depth)
             {
-                selected = Some((depth, record));
+                selected = Some((depth, record.preference));
             }
         }
     }
@@ -2578,16 +2573,10 @@ async fn account_key(
         .read_async::<_, OperationError>(
             "runtime-services/agents_create/account_key",
             move |connection| {
-                let project = project_for_cwd(connection, &cwd, |record| {
-                    record.get("accountKey").and_then(Value::as_str).is_some()
-                })?;
+                let project =
+                    project_for_cwd(connection, &cwd, |record| record.account_key.is_some())?;
                 Ok(project
-                    .and_then(|record| {
-                        record
-                            .get("accountKey")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    })
+                    .and_then(|record| record.account_key)
                     .unwrap_or(default))
             },
         )
@@ -3208,6 +3197,32 @@ async fn mutate(
 mod tests {
     use super::*;
     use crate::host_worker_create::CreationCatalog as _;
+
+    #[test]
+    fn project_selection_rejects_ambiguous_and_malformed_records() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute(
+                "CREATE TABLE runtime_projects(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+        for raw in [
+            r#"{"id":"project","path":"/project","peerTeams":[],"accountKey":"one","accountKey":"two"}"#,
+            r#"{"id":"project","path":"/project","peerTeams":[],"accountGroups":["team",42]}"#,
+        ] {
+            connection
+                .execute("DELETE FROM runtime_projects", [])
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
+                    ("project", raw),
+                )
+                .unwrap();
+            assert!(project_for_cwd(&connection, "/project/child", |_| true).is_err());
+        }
+    }
 
     #[test]
     fn rename_signature_preserves_legacy_json_hash() {

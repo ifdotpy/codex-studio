@@ -239,19 +239,7 @@ struct PeerTeam {
     members: BTreeSet<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StoredProject {
-    path: String,
-    peer_teams: Vec<StoredPeerTeam>,
-}
-
-#[derive(Deserialize)]
-struct StoredPeerTeam {
-    id: String,
-    name: String,
-    members: Vec<String>,
-}
+use studio_runtime_schema::project_record::ProjectRecord;
 
 #[derive(Clone, Debug)]
 struct Project {
@@ -400,7 +388,7 @@ impl RadioAuthorizationSnapshot {
         for (key, raw) in &records.projects {
             let location = format!("projects/{key}");
             let mut decoder = serde_json::Deserializer::from_str(raw);
-            let row: StoredProject =
+            let row: ProjectRecord =
                 serde_path_to_error::deserialize(&mut decoder).map_err(|error| {
                     invalid(format!(
                         "{location}/{}",
@@ -635,7 +623,7 @@ mod project_contract_tests {
                     .expect("project schema"),
                 valid
             );
-            assert_eq!(serde_json::from_str::<StoredProject>(raw).is_ok(), valid);
+            assert_eq!(serde_json::from_str::<ProjectRecord>(raw).is_ok(), valid);
         }
     }
 }
