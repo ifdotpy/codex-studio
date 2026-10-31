@@ -1159,10 +1159,11 @@ async fn ensure_branch_source(
                 [operation_id.as_str()],
                 |row| row.get(0),
             )?;
-            let operation: Value = serde_json::from_str(&raw)?;
+            let operation = decode_branch_operation(&raw)?;
             let current = AgentRepository::get(tx, &AgentId::from(agent_id))?
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-            if CheckpointsRepository::workspace_source(&current.value()) != operation["source"]
+            if CheckpointsRepository::workspace_source(&current.value())
+                != *operation.other.get("source").unwrap_or(&Value::Null)
                 || current
                     .extra
                     .get("workspaceReservationId")
@@ -1635,6 +1636,20 @@ mod tests {
             Ok::<_, studio_runtime_store::StoreError>(())
         }).await.expect("seed");
         (root, store)
+    }
+
+    #[tokio::test]
+    async fn branch_source_rejects_unreconstructible_operation() {
+        let (_root, store) = status_fixture().await;
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_workspace_operations SET record=json_set(record,'$.signature',NULL) WHERE id='operation'", [])?;
+            Ok(())
+        }).await.unwrap();
+        assert!(
+            ensure_branch_source(&store, "operation", "source")
+                .await
+                .is_err()
+        );
     }
 
     fn assert_stored_status(store: &RuntimeStore, id: &str, expected: &str) {
