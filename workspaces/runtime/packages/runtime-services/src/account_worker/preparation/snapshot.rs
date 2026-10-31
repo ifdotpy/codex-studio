@@ -1477,10 +1477,7 @@ pub(super) fn submission_snapshot(
         .query_map([&intent.agent_id], |r| r.get::<_, String>(0))?
         .map(|r| {
             let r = r?;
-            decode(
-                serde_json::from_str(&r).map_err(|_| invalid("manifest"))?,
-                "manifest",
-            )
+            serde_json::from_str(&r).map_err(|_| invalid("manifest"))
         })
         .collect::<Result<Vec<_>, WorkerError>>()?;
     let epoch = turn::Epoch(

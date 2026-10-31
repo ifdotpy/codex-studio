@@ -133,6 +133,11 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
                 let (snapshot, events) = submission_snapshot(tx, &resources, &record, &intent)?;
                 assert!(snapshot.team_state.is_none());
                 assert!(!input_text(&turn::compile(&snapshot, &events).expect("turn after delivery compiles")).contains("[Studio team state after compaction]"));
+                if actor == "lead" {
+                    tx.execute("INSERT INTO runtime_context_manifests(agent,thread_id,compactions,sequence,event_id,record) VALUES('lead','duplicate',2,2,'duplicate',?1)", [r#"{"epoch":["thread",1],"versions":{},"sequence":1,"sequence":2}"#])?;
+                    assert!(submission_snapshot(tx, &resources, &record, &intent).is_err());
+                    tx.execute("DELETE FROM runtime_context_manifests WHERE agent='lead' AND thread_id='duplicate'", [])?;
+                }
             }
             Ok(())
         }).await.expect("compaction fixture transaction succeeds");
