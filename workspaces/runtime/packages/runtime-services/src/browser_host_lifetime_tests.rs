@@ -128,10 +128,10 @@ async fn the_person_can_approve_a_listening_request_after_the_request_time() {
     }
     let answer = fixture
         .bridge
-        .call(
-            "browser.answer",
-            &json!({"id": "card", "decision": "approve"}),
-        )
+        .answer(&AnswerParams {
+            id: "card".into(),
+            decision: AnswerDecision::Approve,
+        })
         .await
         .expect("the request is still open");
     assert!(matches!(

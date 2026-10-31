@@ -72,15 +72,13 @@ impl Fixture {
     }
 
     async fn submit(&self, agent: &str, url: &str) -> QueueItem {
-        let result = self
-            .bridge
-            .call("browser.submit", &json!({"agentId": agent, "url": url}))
+        self.bridge
+            .submit(&SubmitParams {
+                agent_id: agent.into(),
+                url: url.into(),
+            })
             .await
-            .expect("the link queues");
-        let HostResult::Item(item) = result else {
-            panic!("expected queued item")
-        };
-        *item
+            .expect("the link queues")
     }
 
     fn item(&self, id: &str) -> QueueItem {

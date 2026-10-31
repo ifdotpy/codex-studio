@@ -483,8 +483,8 @@ fn canonical_session(text: &str) -> Result<String, BridgeError> {
     )
 }
 
-fn clean_headers(headers: Option<&Value>) -> Vec<(String, String)> {
-    let Some(headers) = headers.and_then(Value::as_object) else {
+fn clean_headers(headers: Option<&BTreeMap<String, String>>) -> Vec<(String, String)> {
+    let Some(headers) = headers else {
         return Vec::new();
     };
     SENT_HEADERS
@@ -492,7 +492,6 @@ fn clean_headers(headers: Option<&Value>) -> Vec<(String, String)> {
         .filter_map(|name| {
             headers
                 .get(*name)
-                .and_then(Value::as_str)
                 .filter(|value| value.len() <= 1024 && !value.chars().any(|c| (c as u32) < 32))
                 .map(|value| ((*name).to_owned(), value.to_owned()))
         })
@@ -617,6 +616,82 @@ pub enum HostResult {
 enum ControlReply {
     Result { id: String, result: HostResult },
     Error { id: String, error: ControlError },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "method", deny_unknown_fields)]
+pub(crate) enum ControlRequest {
+    #[serde(rename = "browser.wait")]
+    Wait {
+        id: String,
+        #[serde(default)]
+        params: WaitParams,
+    },
+    #[serde(rename = "browser.submit")]
+    Submit { id: String, params: SubmitParams },
+    #[serde(rename = "browser.answer")]
+    Answer { id: String, params: AnswerParams },
+    #[serde(rename = "browser.close")]
+    Close { id: String, params: CloseParams },
+    #[serde(rename = "browser.callback")]
+    Callback { id: String, params: CallbackParams },
+}
+
+impl ControlRequest {
+    fn id(&self) -> &str {
+        match self {
+            Self::Wait { id, .. }
+            | Self::Submit { id, .. }
+            | Self::Answer { id, .. }
+            | Self::Close { id, .. }
+            | Self::Callback { id, .. } => id,
+        }
+    }
+}
+
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WaitParams {
+    #[serde(default)]
+    after: u64,
+    #[serde(default)]
+    wait_seconds: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SubmitParams {
+    pub(crate) agent_id: String,
+    pub(crate) url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AnswerParams {
+    pub(crate) id: String,
+    pub(crate) decision: AnswerDecision,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AnswerDecision {
+    Approve,
+    Decline,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CloseParams {
+    id: String,
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CallbackParams {
+    pub(crate) id: String,
+    pub(crate) target: String,
+    pub(crate) headers: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Serialize)]
@@ -795,24 +870,14 @@ impl HostBridge {
     /// `orchestration_sign_in` call or from a sign-in link in its message (section 7). The chat's
     /// own user owns the request, so the listener checks stay those of a link that its command
     /// opened itself (`BrowserBridge.submit`).
-    async fn submit(&self, params: &Value) -> Result<QueueItem, BridgeError> {
-        let agent = canonical_session(
-            params
-                .get("agentId")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-        )?;
+    async fn submit(&self, params: &SubmitParams) -> Result<QueueItem, BridgeError> {
+        let agent = canonical_session(&params.agent_id)?;
         let context = self.chats.chat(&agent).await.ok_or_else(|| BridgeError {
             code: "unknown_agent",
             message: "Studio does not know this chat".into(),
         })?;
-        self.queue_link(
-            context.uid,
-            params.get("url").and_then(Value::as_str),
-            agent,
-            context,
-        )
-        .await
+        self.queue_link(context.uid, Some(&params.url), agent, context)
+            .await
     }
 
     /// The request of this chat for the same link while it can still answer
@@ -1005,53 +1070,29 @@ impl HostBridge {
         Ok(queue.items[&id].clone())
     }
 
-    /// One JSON-RPC method of the server side.
-    pub async fn call(&self, method: &str, params: &Value) -> Result<HostResult, BridgeError> {
-        match method {
-            "browser.wait" => self.wait(params).await,
-            "browser.submit" => self
-                .submit(params)
-                .await
-                .map(|item| HostResult::Item(Box::new(item))),
-            "browser.answer" => self.answer(params).await,
-            "browser.close" => {
-                let mut queue = self.lock();
-                let (id, state) = item_state(&queue, params)?;
-                if matches!(
-                    state,
-                    QueueState::Pending | QueueState::Approved | QueueState::Joined
-                ) {
-                    let reason = params
-                        .get("reason")
-                        .and_then(Value::as_str)
-                        .unwrap_or("closed");
-                    self.update(&mut queue, &id, |item| {
-                        item.state = QueueState::Closed;
-                        item.close_reason = Some(reason.to_owned());
-                    });
-                    self.save(&mut queue);
-                }
-                Ok(HostResult::State {
-                    state: queue.items[&id].state,
-                })
-            }
-            "browser.callback" => self.callback(params).await,
-            _ => bridge_error("invalid_request", "The browser method is not supported"),
+    async fn close(&self, params: &CloseParams) -> Result<HostResult, BridgeError> {
+        let mut queue = self.lock();
+        let (id, state) = item_state(&queue, &params.id)?;
+        if matches!(
+            state,
+            QueueState::Pending | QueueState::Approved | QueueState::Joined
+        ) {
+            let reason = params.reason.as_deref().unwrap_or("closed");
+            self.update(&mut queue, &id, |item| {
+                item.state = QueueState::Closed;
+                item.close_reason = Some(reason.to_owned());
+            });
+            self.save(&mut queue);
         }
+        Ok(HostResult::State {
+            state: queue.items[&id].state,
+        })
     }
 
-    async fn wait(&self, params: &Value) -> Result<HostResult, BridgeError> {
-        let after = params.get("after").cloned().unwrap_or(json!(0));
-        let seconds = params.get("waitSeconds").cloned().unwrap_or(json!(0));
-        let (Some(mut after), Some(seconds)) = (after.as_u64(), seconds.as_f64()) else {
-            return bridge_error(
-                "invalid_params",
-                "after must be a cursor and waitSeconds at most 20",
-            );
-        };
-        if !(0.0..=MAX_WAIT_SECONDS).contains(&seconds)
-            || params.get("after").is_some_and(Value::is_f64)
-        {
+    async fn wait(&self, params: &WaitParams) -> Result<HostResult, BridgeError> {
+        let mut after = params.after;
+        let seconds = params.wait_seconds;
+        if !(0.0..=MAX_WAIT_SECONDS).contains(&seconds) {
             return bridge_error(
                 "invalid_params",
                 "after must be a cursor and waitSeconds at most 20",
@@ -1090,13 +1131,13 @@ impl HostBridge {
         })
     }
 
-    async fn answer(&self, params: &Value) -> Result<HostResult, BridgeError> {
+    async fn answer(&self, params: &AnswerParams) -> Result<HostResult, BridgeError> {
         let rows = self.probe_listeners().await;
         let mut queue = self.lock();
-        let (id, state) = item_state(&queue, params)?;
+        let (id, state) = item_state(&queue, &params.id)?;
         let item = queue.items[&id].clone();
-        match params.get("decision").and_then(Value::as_str) {
-            Some("decline") => {
+        match params.decision {
+            AnswerDecision::Decline => {
                 if state == QueueState::Pending {
                     self.update(&mut queue, &id, |item| item.state = QueueState::Declined);
                     self.save(&mut queue);
@@ -1107,8 +1148,7 @@ impl HostBridge {
                     lease: item.lease.clone(),
                 });
             }
-            Some("approve") => {}
-            _ => return bridge_error("invalid_params", "decision must be approve or decline"),
+            AnswerDecision::Approve => {}
         }
         if matches!(state, QueueState::Approved | QueueState::Opened) {
             return Ok(HostResult::StateWithLease {
@@ -1156,10 +1196,10 @@ impl HostBridge {
         })
     }
 
-    async fn callback(&self, params: &Value) -> Result<HostResult, BridgeError> {
+    async fn callback(&self, params: &CallbackParams) -> Result<HostResult, BridgeError> {
         let (id, lease, uid, target) = {
             let queue = self.lock();
-            let (id, state) = item_state(&queue, params)?;
+            let (id, state) = item_state(&queue, &params.id)?;
             let item = &queue.items[&id];
             let lease = item
                 .lease
@@ -1177,11 +1217,7 @@ impl HostBridge {
                     "The sign-in forward relayed its maximum number of requests",
                 );
             }
-            let target = params
-                .get("target")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
+            let target = params.target.clone();
             let path = target.split(['?', '#']).next().unwrap_or_default();
             let path = if path.is_empty() { "/" } else { path };
             if !target.starts_with('/')
@@ -1199,7 +1235,7 @@ impl HostBridge {
         let host = lease.host.as_str();
         let host = if host == "::1" { "[::1]" } else { host };
         let mut headers = vec![("Host".to_owned(), format!("{host}:{port}"))];
-        headers.extend(clean_headers(params.get("headers")));
+        headers.extend(clean_headers(params.headers.as_ref()));
         headers.push(("Connection".into(), "close".into()));
         {
             let mut queue = self.lock();
@@ -1489,29 +1525,26 @@ impl HostBridge {
             reader.read_until(b'\n', &mut line),
         )
         .await;
-        let request: Option<Value> = match read {
+        let request: Option<ControlRequest> = match read {
             Ok(Ok(_)) if line.len() <= CONTROL_LINE_LIMIT && line.ends_with(b"\n") => {
                 serde_json::from_slice(&line).ok()
             }
             _ => None,
         };
-        let identity = request
-            .as_ref()
-            .and_then(|request| request.get("id"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        let response = match request.as_ref().and_then(Value::as_object) {
-            Some(fields)
-                if !identity.is_empty()
-                    && fields.get("method").is_some_and(Value::is_string)
-                    && fields.get("params").is_none_or(Value::is_object) =>
-            {
-                let params = fields.get("params").cloned().unwrap_or_else(|| json!({}));
-                match self
-                    .call(fields["method"].as_str().unwrap_or_default(), &params)
-                    .await
-                {
+        let response = match request {
+            Some(request) if !request.id().is_empty() => {
+                let identity = request.id().to_owned();
+                let result = match request {
+                    ControlRequest::Wait { params, .. } => self.wait(&params).await,
+                    ControlRequest::Submit { params, .. } => self
+                        .submit(&params)
+                        .await
+                        .map(|item| HostResult::Item(Box::new(item))),
+                    ControlRequest::Answer { params, .. } => self.answer(&params).await,
+                    ControlRequest::Close { params, .. } => self.close(&params).await,
+                    ControlRequest::Callback { params, .. } => self.callback(&params).await,
+                };
+                match result {
                     Ok(result) => ControlReply::Result {
                         id: identity,
                         result,
@@ -1526,7 +1559,7 @@ impl HostBridge {
                 }
             }
             _ => ControlReply::Error {
-                id: identity,
+                id: String::new(),
                 error: ControlError {
                     code: "invalid_request",
                     message: "The browser request is invalid".into(),
@@ -1574,10 +1607,7 @@ fn listening_deadline(item: &QueueItem, now: f64) -> Option<f64> {
         .then_some(rolled)
 }
 
-fn item_state(queue: &Queue, params: &Value) -> Result<(String, QueueState), BridgeError> {
-    let Some(id) = params.get("id").and_then(Value::as_str) else {
-        return bridge_error("not_found", "The sign-in request does not exist");
-    };
+fn item_state(queue: &Queue, id: &str) -> Result<(String, QueueState), BridgeError> {
     let Some(item) = queue.items.get(id) else {
         return bridge_error("not_found", "The sign-in request does not exist");
     };
@@ -2132,7 +2162,10 @@ mod tests {
             "an unknown probe is not a stale card"
         );
         let answered = bridge
-            .answer(&json!({"id": "card", "decision": "approve"}))
+            .answer(&AnswerParams {
+                id: "card".into(),
+                decision: AnswerDecision::Approve,
+            })
             .await
             .expect_err("approval needs a known listener");
         assert_eq!(answered.code, NOT_SENT_CODE, "{}", answered.message);
@@ -2161,7 +2194,11 @@ mod tests {
         let now = Arc::new(std::sync::atomic::AtomicU64::new(200.0_f64.to_bits()));
         let bridge = bridge_with_failed_probe(folder.path(), card, now);
         let refused = bridge
-            .callback(&json!({"id": "card", "target": "/?code=fake-code&state=S1"}))
+            .callback(&CallbackParams {
+                id: "card".into(),
+                target: "/?code=fake-code&state=S1".into(),
+                headers: None,
+            })
             .await
             .expect_err("a relay needs a known listener");
         assert_eq!(refused.code, NOT_SENT_CODE, "{}", refused.message);

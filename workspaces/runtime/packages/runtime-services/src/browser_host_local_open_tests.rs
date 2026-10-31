@@ -274,6 +274,24 @@ async fn control_socket_sends_typed_queue_in_existing_wire_shape() {
     host.service.stop().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn control_socket_rejects_unknown_request_fields() {
+    let host = host(false);
+    let mut stream = UnixStream::connect(&host.service.control_socket)
+        .await
+        .expect("control socket");
+    stream.write_all(b"{\"id\":\"request\",\"method\":\"browser.wait\",\"params\":{\"after\":0,\"waitSeconds\":0,\"unexpected\":true}}\n").await.expect("request");
+    let mut line = Vec::new();
+    BufReader::new(stream)
+        .read_until(b'\n', &mut line)
+        .await
+        .expect("response");
+    let reply: Value = serde_json::from_slice(&line).expect("JSON response");
+    assert_eq!(reply["id"], "");
+    assert_eq!(reply["error"]["code"], "invalid_request");
+    host.service.stop().await;
+}
+
 #[test]
 fn launcher_rejects_unknown_reply_fields() {
     use std::io::{BufRead, Write};
