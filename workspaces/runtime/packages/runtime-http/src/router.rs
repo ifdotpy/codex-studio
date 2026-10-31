@@ -1189,9 +1189,9 @@ mod tests {
         for encoding in ["identity", "br"] {
             let (mut state, store, _directory) = state_with_store().await;
             state.validators =
-                crate::validation::Registry::compile(&[("POST".into(), "/api/messages".into())])
+                crate::validation::Registry::compile(&[("POST".into(), "/api/commands".into())])
                     .expect("validator");
-            let app = super::with_boundary(Router::new().route("/api/messages", post(move || async move {
+            let app = super::with_boundary(Router::new().route("/api/commands", post(move || async move {
                 store.transaction(|tx| {
                     SyncDocumentsRepository::put_entity(tx, "agent", "agent", serde_json::json!({"id": "agent", "name":"Agent", "status":"idle", "source":"managed", "tail": "entity content ".repeat(512)}), false)?;
                     Ok(())
@@ -1203,14 +1203,14 @@ mod tests {
             })), state);
             let request = Request::builder()
                 .method("POST")
-                .uri("/api/messages")
+                .uri("/api/commands")
                 .header("host", "127.0.0.1:4620")
                 .header("x-canvas-token", "token")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::ACCEPT_ENCODING, encoding)
                 .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
                 .body(Body::from(
-                    r#"{"id":"00000000-0000-4000-8000-000000000000","room":"fixture","text":"hello"}"#,
+                    r#"{"id":"00000000-0000-4000-8000-000000000000","client":"fixture","number":1,"kind":"send","target":"fixture","body":{"text":"hello"}}"#,
                 ))
                 .expect("request");
             let response = app.oneshot(request).await.expect("mutation response");

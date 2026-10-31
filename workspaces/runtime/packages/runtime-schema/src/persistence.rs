@@ -388,6 +388,25 @@ impl RequestIdentity {
         Ok(Self { id, issued_ms })
     }
 
+    /// An identity for a trusted in-process caller whose ids the server or a provider issues
+    /// (a tool call id), so they are not UUIDv7. The issue time is the admission time. Never
+    /// use this for an id that arrives over the network.
+    pub fn opaque(
+        namespace: &str,
+        authority: &[&str],
+        root_request_id: &str,
+        operation: &[&str],
+        admitted_ms: i64,
+    ) -> Self {
+        // All inputs are strings, so tuple serialization cannot fail.
+        let id = serde_json::to_string(&(namespace, authority, root_request_id, operation))
+            .expect("string tuple serializes");
+        Self {
+            id,
+            issued_ms: admitted_ms,
+        }
+    }
+
     pub fn issue_root() -> String {
         Uuid::now_v7().to_string()
     }

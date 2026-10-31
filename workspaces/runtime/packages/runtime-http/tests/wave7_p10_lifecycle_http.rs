@@ -166,8 +166,12 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
 
     let (status, response) = call(
         &app,
-        "/api/stop",
-        json!({"id":"agent", "descendants":false}),
+        "/api/commands",
+        json!({
+            "id": studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+            "client": "test", "number": 1, "kind": "stop", "target": "agent",
+            "body": {"descendants": false}
+        }),
     )
     .await;
 
@@ -187,7 +191,8 @@ async fn production_lifecycle_bundle_interrupts_active_turn_through_http_route()
         calls.len()
     );
     drop(state);
-    assert_eq!(response["stopped"], json!(["agent"]));
+    assert_eq!(response["ref_kind"], "agent");
+    assert_eq!(response["ref_id"], "agent");
     assert_eq!(
         calls.iter().map(|call| call.method).collect::<Vec<_>>(),
         [

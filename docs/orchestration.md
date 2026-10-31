@@ -1173,8 +1173,9 @@ described above; its active-agent estimate is separate from this turn-start gate
 No terminal command controls agents. The Python `codex-control` command was removed
 with the Python backend ([CLI usage](cli.md)). Use the Studio window. A script can use
 the same server's HTTP API, for example `POST /api/agents` to create a chat,
-`POST /api/messages` to send, `POST /api/configure` for team settings, and
-`POST /api/stop` to stop. A changed subagent concurrency carries the current setting
+`POST /api/configure` for team settings, and `POST /api/commands` to send
+(`send` command), stop (`stop` command), or withdraw a queued message (`withdraw`
+command). A changed subagent concurrency carries the current setting
 revision and a request ID; after an uncertain response, repeat the same target value
 with the same request ID and expected revision, and do not save a fresh value to find
 out whether the earlier one applied.

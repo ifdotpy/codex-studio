@@ -1,4 +1,6 @@
 import { cacheFixture } from "../cacheFixture.ts";
+import { sentMessage } from "../messages/send-command.ts";
+import type { SendMessageBody } from "../../src/commands.ts";
 import { queueUiFixture } from "./queue-ui.fixture.ts";
 import { requestBody } from "../messages/helpers.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
@@ -35,7 +37,7 @@ test("message-queue-ui", async ({ browser }) => {
     page = await context.newPage();
     page.setDefaultTimeout(10000);
     const errors: string[] = [];
-    const sent: PostBody<"/api/messages">[] = [];
+    const sent: SendMessageBody[] = [];
     const mutations: PostBody<"/api/queue">[] = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
@@ -57,10 +59,8 @@ test("message-queue-ui", async ({ browser }) => {
     page.on("request", (request) => {
       if (request.method() !== "POST") return;
       const path = new URL(request.url()).pathname;
-      if (path === "/api/messages")
-        sent.push(
-          requestBody<PostBody<"/api/messages">>({ request: () => request }),
-        );
+      const message = sentMessage(request);
+      if (message) sent.push(message);
       if (path === "/api/queue")
         mutations.push(
           requestBody<PostBody<"/api/queue">>({ request: () => request }),

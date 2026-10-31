@@ -6,7 +6,7 @@ import {
   isApiSchemaMismatch,
   onApiSchemaMismatch,
   syncGet,
-  syncPost,
+  command,
   ApiError,
   ApiSchemaMismatchError,
   errorText,
@@ -14,7 +14,8 @@ import {
 } from "../api";
 
 import type { RxDocument } from "rxdb";
-import type { PostBody, PostResult } from "../api";
+import { messageReceipt } from "../commands";
+import type { MessageDelivery, SendMessageBody } from "../commands";
 import { DeliveryStatusValues } from "../generated/persistence";
 
 import { syncDatabase, type SyncDocument } from "./client";
@@ -29,9 +30,7 @@ import {
 
 import type { Attachment } from "../components/ComposerAttachments";
 
-type MessageBody = PostBody<"/api/messages">;
-
-type MessageDelivery = PostResult<"/api/messages">;
+type MessageBody = SendMessageBody;
 
 type StoredMessageReceipt = Pick<MessageDelivery, "id" | "status"> &
   Partial<Pick<MessageDelivery, "deliveries" | "error" | "materialized">>;
@@ -293,7 +292,7 @@ export function createOutbox(options: {
     | "isApiSchemaMismatch"
     | "onApiSchemaMismatch"
     | "syncGet"
-    | "syncPost"
+    | "command"
     | "refreshSession"
   >;
   syncDatabase: () => Promise<OutboxDatabaseHandle>;
@@ -303,7 +302,7 @@ export function createOutbox(options: {
     isApiSchemaMismatch,
     onApiSchemaMismatch,
     syncGet,
-    syncPost,
+    command,
     refreshSession,
   } = options.api;
   const { syncDatabase } = options;
@@ -362,11 +361,13 @@ export function createOutbox(options: {
       });
       value = readIntention(claimed.payload, doc.id);
       if (value.status !== "queued") return intentionResult(value);
-      const result = await syncPost("/api/messages", value.body, {
-        workspaceId,
-        sessionToken: session.token,
-      });
-      if (!matchesMessageDelivery(result, value.body.id))
+      const result = messageReceipt(
+        await command.send(value.body, {
+          workspaceId,
+          sessionToken: session.token,
+        }),
+      );
+      if (!matchesMessageDelivery(result, value.body.id) || !result)
         throw new Error("The delivery response does not match this message.");
       if (result.status === "failed" || result.status === "cancelled")
         throw new ApiError(
@@ -1020,7 +1021,7 @@ export const {
     isApiSchemaMismatch,
     onApiSchemaMismatch,
     syncGet,
-    syncPost,
+    command,
     refreshSession,
   },
   syncDatabase,

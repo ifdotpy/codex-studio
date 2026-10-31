@@ -98,24 +98,25 @@ mod tests {
     #[test]
     fn queue_signature_is_stable_and_normalizes_null() {
         let id: QueueCommand =
-            serde_json::from_str(r#"{"action":"cancel","id":"a","request_id":"request"}"#)
+            serde_json::from_str(r#"{"action":"first","id":"a","request_id":"request"}"#)
                 .expect("command");
         let normalized: QueueCommand = serde_json::from_str(
-            r#"{"action":"cancel","id":"a","request_id":"request","agent":null}"#,
+            r#"{"action":"first","id":"a","request_id":"request","agent":null}"#,
         )
         .expect("normalized command");
         let signature = super::signature("workspace", &id).expect("signature");
         assert_eq!(
             signature,
-            "533edc62ba77d5740ec5e0c47107912e60cdd2b12e0f0d64621b79e00b53b0a6"
+            "b8eda4ce408a100862a1804cbff673d5540ca2b793adb39c4ead266d74b766b1"
         );
         assert_eq!(
             signature,
             super::signature("workspace", &normalized).expect("normalized signature")
         );
         let legacy = super::super::work_items::python_operation_signature(
-            &json!({"agent":"workspace","body":{"action":"cancel","id":"a","request_id":"request"}}),
-        ).expect("legacy signature");
+            &json!({"agent":"workspace","body":{"action":"first","id":"a","request_id":"request"}}),
+        )
+        .expect("legacy signature");
         assert_ne!(
             signature, legacy,
             "pre-upgrade receipts refuse replay safely"
@@ -150,15 +151,15 @@ mod tests {
         );
         let app = crate::router(state).expect("router");
         for body in [
-            json!({"action":"cancel"}),
+            json!({"action":"first"}),
             json!({"action":"edit","id":"a","text":"x".repeat(32001)}),
             json!({"action":"first","id":"a","request_id":"x".repeat(201)}),
-            json!({"action":"cancel","id":"a","unknown":true}),
+            json!({"action":"first","id":"a","unknown":true}),
         ] {
             assert_eq!(call(&app, body).await.0, 400);
         }
         assert_eq!(
-            call_raw(&app, r#"{"action":"cancel","id":"a","id":"b"}"#.into())
+            call_raw(&app, r#"{"action":"first","id":"a","id":"b"}"#.into())
                 .await
                 .0,
             400
@@ -260,7 +261,7 @@ mod tests {
             .revision;
         let expired = call(
             &app,
-            json!({"action":"cancel","id":"b","request_id":"f43c1885-f4fc-485b-bf99-8b4f31e7e7c4"}),
+            json!({"action":"first","id":"b","request_id":"f43c1885-f4fc-485b-bf99-8b4f31e7e7c4"}),
         )
         .await;
         assert_eq!(expired.0, 410, "{expired:?}");
@@ -299,7 +300,7 @@ mod tests {
             .0,
             200
         );
-        assert_eq!(call(&app, json!({"action":"cancel","id":"a","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()})).await.0, 200);
+        assert_eq!(call(&app, json!({"action":"first","id":"a","request_id":studio_runtime_schema::persistence::RequestIdentity::issue_root()})).await.0, 200);
         assert_eq!(
             call(&app, edit.clone()).await,
             edit_receipt,
@@ -310,7 +311,7 @@ mod tests {
         assert_eq!(call(&app, conflicting_edit).await.0, 409);
         for invalid in [
             json!({"action":"edit","id":"b"}),
-            json!({"action":"cancel","id":"b","extra":true}),
+            json!({"action":"first","id":"b","extra":true}),
             json!({"action":"first","id":42}),
             json!({"action":"send_now","id":"b"}),
             json!({"action":"reorder","expected_revision":receipt["revision"],"ordered_ids":["b","c"]}),

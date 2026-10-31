@@ -1,4 +1,6 @@
 import type { FixturePullResponse } from "./helpers.ts";
+import { commandOf, sendReply } from "../messages/send-command.ts";
+import type { MessageDelivery } from "../../src/commands.ts";
 import { fixtureResources } from "./helpers.ts";
 import type {} from "./sync-required-browser.fixture.tsx";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -59,9 +61,12 @@ test("sync required browser", async ({ page: runnerPage }) => {
             : { error: "Identity unavailable" },
       });
     });
-    await page.route("**/api/messages", (route) => {
+    await page.route("**/api/commands", (route) => {
+      if (!commandOf(route.request(), "send")) return route.fallback();
       sends++;
-      return route.fulfill({ json: { status: "queued" } });
+      return route.fulfill({
+        json: sendReply({ status: "queued" } as MessageDelivery),
+      });
     });
     const url = fixtureOrigin(server) + `/sync-check`;
     const mount = async () => (

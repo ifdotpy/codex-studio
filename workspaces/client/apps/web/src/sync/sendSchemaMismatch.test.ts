@@ -55,9 +55,23 @@ it("keeps a locally schema-blocked deliver queued with the same id, then sends o
           },
         },
       );
-    if (url.pathname === "/api/messages")
+    if (url.pathname === "/api/commands")
       return Response.json(
-        { id: "stable-id", status: "delivered" },
+        {
+          status: "applied",
+          ref_kind: "message",
+          ref_id: "stable-id",
+          rev: 1,
+          seq: 0,
+          rows: [
+            {
+              collection: "messageReceipt",
+              id: "stable-id",
+              seq: 0,
+              payload: { id: "stable-id", status: "delivered" },
+            },
+          ],
+        },
         {
           headers: { [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH },
         },
@@ -97,7 +111,7 @@ it("keeps a locally schema-blocked deliver queued with the same id, then sends o
     body: { id: "stable-id", text: "hello" },
   });
   expect(
-    requests.filter((item) => item.endsWith("/api/messages")),
+    requests.filter((item) => item.endsWith("/api/commands")),
   ).toHaveLength(0);
   expect(requests).toHaveLength(2);
 
@@ -109,7 +123,7 @@ it("keeps a locally schema-blocked deliver queued with the same id, then sends o
     status: "delivered",
   });
   expect(
-    requests.filter((item) => item.endsWith("/api/messages")),
+    requests.filter((item) => item.endsWith("/api/commands")),
   ).toHaveLength(1);
   expect(JSON.parse(record.payload)).toMatchObject({
     status: "accepted",

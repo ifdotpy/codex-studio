@@ -12,7 +12,6 @@ use axum::http::StatusCode;
 use axum::{Extension, Json, extract::State};
 use studio_runtime_schema::command::{Command, CommandRequest, CommandResponse, CommandRow};
 use studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts;
-use studio_runtime_services::agent_management::Action;
 use studio_runtime_services::commands::{self, CommandError, Start};
 use studio_runtime_services::principal::Principal;
 
@@ -41,6 +40,8 @@ pub(crate) fn command_error(error: CommandError) -> ApiError {
         CommandError::NotFound => ApiError::new(StatusCode::NOT_FOUND, error.to_string()),
         CommandError::RequestResult(error) => error.into(),
         CommandError::Store(error) => error.into(),
+        CommandError::Lifecycle(error) => super::agent_management::management_error(error),
+        CommandError::Coordination(error) => super::messages::coordination_error(error),
     }
 }
 
@@ -62,60 +63,34 @@ async fn command(
     let chat = request.command.target().to_owned();
     let mut extra_rows = Vec::new();
     let reference = match request.command.clone() {
-        Command::Withdraw { target, body } => {
-            let (principal, request) = (principal.clone(), request.clone());
-            let reference = store
+        Command::Withdraw { .. } | Command::Stop { .. } => {
+            let ports = ports.map(|Extension(ports)| ports);
+            let (for_transaction, request) = (ports.clone(), request.clone());
+            let now = now_ms as f64 / 1000.0;
+            let executed = store
                 .transaction_with_error(move |tx| {
-                    match commands::begin(tx, &principal, &request, now_ms)? {
-                        Start::Replay(reference) => Ok(reference),
-                        Start::Fresh(begun) => {
-                            // The text returns to the composer from the client's own row.
-                            // TODO(#630): return it as a server draft.
-                            let (reference, _text) =
-                                commands::withdraw(tx, &target, &body.message)?;
-                            commands::finish(tx, &begun, &reference)
-                        }
-                    }
+                    commands::execute_sync(
+                        tx,
+                        &principal,
+                        &request,
+                        now_ms,
+                        now,
+                        for_transaction.as_deref(),
+                    )
                 })
                 .await
                 .map_err(command_error)?;
-            state.event_wake.notify_one();
-            reference
-        }
-        Command::Stop { target, body } => {
-            match begin(&state, &principal, &request, now_ms).await? {
-                Start::Replay(reference) => reference,
-                Start::Fresh(begun) => {
-                    let (sender, sender_epoch) = match &principal {
-                        Principal::Agent { id, epoch } => {
-                            (Some(id.clone()), i64::try_from(*epoch).ok())
-                        }
-                        _ => (None, None),
-                    };
-                    // TODO(#630): today a stop pauses the chat and cancels its queue. The
-                    // rule "stop does not pause and does not clear the queue" needs the Turn
-                    // table of the domain model.
-                    let _ = super::agent_management::dispatch::<crate::generated::StopResponse>(
-                        state.clone(),
-                        Action::Stop {
-                            target: target.clone(),
-                            descendants: body.descendants,
-                            reason: None,
-                            sender,
-                            sender_epoch,
-                        },
-                        ports.map(|Extension(ports)| ports),
-                    )
-                    .await?;
-                    store
-                        .transaction_with_error(move |tx| {
-                            let reference = commands::agent_reference(tx, &target)?;
-                            commands::finish(tx, &begun, &reference)
-                        })
-                        .await
-                        .map_err(command_error)?
+            if !executed.replayed {
+                state.event_wake.notify_one();
+                if let Some(ports) = ports {
+                    // A failed wake cannot roll back the committed stop. The effect owner
+                    // retries the staged effects.
+                    if let Err(error) = ports.committed().await {
+                        eprintln!("Lifecycle committed; effect delivery remains pending: {error}");
+                    }
                 }
             }
+            executed.reference
         }
         Command::Send { target, body } => {
             match begin(&state, &principal, &request, now_ms).await? {
@@ -386,5 +361,145 @@ mod tests {
         .await;
         assert_eq!(status, 403);
         assert_eq!(status_of(&store, "a").await, "pending");
+    }
+
+    fn stop(id: &str, number: u64) -> Value {
+        json!({"id":id,"client":"web-1","number":number,"kind":"stop","target":"workspace","body":{"descendants":true}})
+    }
+
+    async fn agent_status(store: &RuntimeStore) -> String {
+        store
+            .transaction(|tx| {
+                let agent = AgentRepository::get(tx, &"workspace".into())?.expect("agent");
+                Ok(format!("{:?}", agent.status))
+            })
+            .await
+            .expect("status")
+    }
+
+    async fn request_result_count(store: &RuntimeStore) -> i64 {
+        store
+            .transaction(|tx| {
+                Ok(tx.query_row("SELECT count(*) FROM request_results", [], |row| row.get(0))?)
+            })
+            .await
+            .expect("count")
+    }
+
+    #[tokio::test]
+    async fn withdraw_returns_the_text_as_a_server_draft() {
+        let (app, store, _directory) = app_with_queue().await;
+        let (status, body) =
+            post(&app, None, withdraw(&RequestIdentity::issue_root(), 1, "a")).await;
+        assert_eq!(status, 200, "{body}");
+        let draft: String = store
+            .transaction(|tx| {
+                Ok(tx.query_row(
+                    "SELECT payload FROM sync_documents WHERE scope='drafts' AND id='server:withdraw:workspace'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .await
+            .expect("server draft");
+        let draft: Value = serde_json::from_str(&draft).expect("draft JSON");
+        assert_eq!(draft["text"], "A");
+        assert_eq!(draft["session"], "workspace");
+        assert_eq!(draft["device"], "server");
+    }
+
+    #[tokio::test]
+    async fn stop_and_its_reference_commit_together_and_a_replay_does_not_stop_again() {
+        let (app, store, _directory) = app_with_queue().await;
+        let before = agent_status(&store).await;
+        let id = RequestIdentity::issue_root();
+        let (status, first) = post(&app, None, stop(&id, 1)).await;
+        assert_eq!(status, 200, "{first}");
+        assert_eq!(first["ref_kind"], "agent");
+        assert_ne!(
+            agent_status(&store).await,
+            before,
+            "the stop paused the chat"
+        );
+        assert_eq!(request_result_count(&store).await, 1);
+        let (status, again) = post(&app, None, stop(&id, 1)).await;
+        assert_eq!(status, 200, "{again}");
+        assert_eq!(first["rev"], again["rev"]);
+        assert_eq!(request_result_count(&store).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_stop_that_cannot_record_its_reference_changes_nothing() {
+        let (_app, store, _directory) = app_with_queue().await;
+        let before = agent_status(&store).await;
+        let request: studio_runtime_schema::command::CommandRequest =
+            serde_json::from_value(stop(&RequestIdentity::issue_root(), 1)).expect("stop");
+        let now = now_ms();
+        let outcome = store
+            .transaction_with_error(move |tx| {
+                studio_runtime_services::commands::execute_sync(
+                    tx,
+                    &Principal::Owner,
+                    &request,
+                    now,
+                    now as f64 / 1000.0,
+                    None,
+                )?;
+                // The commit fails after the stop: both the stop and the reference go.
+                Err::<(), _>(studio_runtime_services::commands::CommandError::Invalid(
+                    "forced rollback",
+                ))
+            })
+            .await;
+        assert!(outcome.is_err());
+        assert_eq!(agent_status(&store).await, before);
+        assert_eq!(request_result_count(&store).await, 0);
+    }
+
+    #[tokio::test]
+    async fn an_agent_withdraws_from_its_descendant_with_its_tool_call_id() {
+        use studio_runtime_services::commands::{agent_request, execute_sync};
+        let (_app, store, _directory) = app_with_queue().await;
+        store
+            .transaction(|tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"kid","rootId":"workspace","parentId":"workspace","epoch":0,"status":"idle","provider":studio_runtime_schema::ProviderKind::Codex}))?)?;
+                tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('k','kid','user','K','pending',3,0)", [])?;
+                Ok(())
+            })
+            .await
+            .expect("seed child");
+        let parent = Principal::Agent {
+            id: "workspace".into(),
+            epoch: 0,
+        };
+        // A tool call id is not a UUIDv7. The server numbers the commands of an agent.
+        let request = agent_request(
+            "workspace",
+            "call_123",
+            studio_runtime_schema::command::Command::Withdraw {
+                target: "kid".into(),
+                body: studio_runtime_schema::command::WithdrawBody {
+                    message: "k".into(),
+                },
+            },
+        );
+        let now = now_ms();
+        let run = |request: studio_runtime_schema::command::CommandRequest| {
+            let parent = parent.clone();
+            let store = store.clone();
+            async move {
+                store
+                    .transaction_with_error(move |tx| {
+                        execute_sync(tx, &parent, &request, now, now as f64 / 1000.0, None)
+                    })
+                    .await
+            }
+        };
+        let first = run(request.clone()).await.expect("first call");
+        assert!(!first.replayed);
+        assert_eq!(first.reference.id, "k");
+        let again = run(request).await.expect("repeated call");
+        assert!(again.replayed);
+        assert_eq!(first.reference, again.reference);
     }
 }
