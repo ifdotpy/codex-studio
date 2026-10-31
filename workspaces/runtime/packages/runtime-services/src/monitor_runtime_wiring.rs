@@ -804,7 +804,7 @@ impl MonitorRuntime {
         let ids = self
             .store
             .read_async("runtime-services/monitor_reattach", move |connection| {
-                let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE id>?1 AND json_extract(record,'$.status') IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2")?;
+                let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE id>?1 AND monitor_status IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2")?;
                 let ids = query
                     .query_map((&after, BATCH as i64), |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?;
@@ -1256,7 +1256,10 @@ fn agent_commit_needs_tick_in(
     if rules {
         return Ok(true);
     }
-    let running = "json_extract(m.record,'$.status')='running'";
+    // The IN predicate matches the active-monitor partial index; the equality
+    // narrows it to running monitors without parsing historical records.
+    let running =
+        "m.monitor_status IN ('running','starting','approval') AND m.monitor_status='running'";
     let sql = if full {
         format!("SELECT EXISTS(SELECT 1 FROM runtime_monitors m WHERE {running})")
     } else {
@@ -1278,7 +1281,8 @@ fn agent_commit_needs_tick_in(
     Ok(needed)
 }
 
-/// The earliest persisted work deadline, in Unix seconds.
+/// The earliest persisted work deadline, in Unix seconds. Monitor reads use
+/// the active-monitor partial index before evaluating active records' JSON.
 fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, MonitorError> {
     let monitor_deadline: Option<f64> = connection
         .query_row(
@@ -1289,7 +1293,7 @@ fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, Mo
                     ELSE COALESCE(json_extract(m.record,'$.activityAt'),json_extract(m.record,'$.created'))+COALESCE(json_extract(m.record,'$.stallTimeoutSeconds'),?2)
                 END AS deadline
                 FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
-                WHERE json_extract(m.record,'$.status')='running'
+                WHERE m.monitor_status IN ('running','starting','approval') AND m.monitor_status='running'
                   AND COALESCE(json_extract(m.record,'$.reattachRecovery.status'),'')!='running'
                   AND COALESCE(json_extract(m.record,'$.cancelRequested'),0)=0
                   AND json_extract(a.record,'$.autoWake')=1
@@ -1303,7 +1307,7 @@ fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, Mo
                 UNION ALL
                 SELECT COALESCE(json_extract(m.record,'$.outputWakeAt'),0)+?3
                 FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
-                WHERE json_extract(m.record,'$.status')='running'
+                WHERE m.monitor_status IN ('running','starting','approval') AND m.monitor_status='running'
                   AND COALESCE(json_extract(m.record,'$.reattachRecovery.status'),'')!='running'
                   AND json_extract(a.record,'$.autoWake')=1
                   AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
@@ -1313,7 +1317,7 @@ fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, Mo
                 UNION ALL
                 SELECT COALESCE(json_extract(record,'$.cancelDispatch.nextAttemptAt'),0)
                 FROM runtime_monitors
-                WHERE json_extract(record,'$.status')='running'
+                WHERE monitor_status IN ('running','starting','approval') AND monitor_status='running'
                   AND json_extract(record,'$.cancelRequested')=1
                   AND COALESCE(json_extract(record,'$.cancelDispatch.status'),'pending')='pending'
             )",
@@ -1380,7 +1384,7 @@ fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, Mo
     // An unresolved reattach recovery settles once its window ends.
     let reattach_deadline = connection
         .query_row(
-            "SELECT MIN(json_extract(record,'$.reattachRecovery.startedAt')+?1) FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running'",
+            "SELECT MIN(json_extract(record,'$.reattachRecovery.startedAt')+?1) FROM runtime_monitors WHERE monitor_status IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running'",
             [crate::monitor_policy::MONITOR_REATTACH_WINDOW_SECONDS],
             |row| row.get::<_, Option<f64>>(0),
         )
@@ -2901,6 +2905,21 @@ mod tests {
             Some(7.0)
         );
         assert_eq!(super::earliest_deadline([None, Some(f64::NAN)]), None);
+    }
+
+    #[test]
+    fn monitor_deadlines_skip_historical_records_before_parsing() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL,monitor_status TEXT NOT NULL);
+             CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE INDEX runtime_monitor_startup_active ON runtime_monitors(id) WHERE monitor_status IN ('running','starting','approval');
+             INSERT INTO runtime_monitors VALUES('old','{','lost');
+             INSERT INTO runtime_monitors VALUES('active','{\"status\":\"running\",\"cancelRequested\":true,\"cancelDispatch\":{\"nextAttemptAt\":42}}','running');",
+        )
+        .expect("fixtures");
+        assert_eq!(super::next_deadline_in(&db).expect("deadline"), Some(42.0));
     }
 
     #[tokio::test]
