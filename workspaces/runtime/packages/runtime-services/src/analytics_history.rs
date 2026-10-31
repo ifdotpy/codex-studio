@@ -592,7 +592,7 @@ async fn quarantine_history_checkpoint(
     replacement: Value,
 ) -> Result<(), HistoryError> {
     store
-        .analytics_transaction(move |tx, _| {
+        .analytics_projection_transaction(move |tx| {
             let current: Option<String> = tx
                 .query_row(
                     "SELECT record FROM analytics_history WHERE id=?1",

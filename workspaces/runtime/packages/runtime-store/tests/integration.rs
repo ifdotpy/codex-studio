@@ -9,4 +9,5 @@ mod schema_compat;
 mod sql_callback_guard;
 mod stored_text_analytics;
 mod stored_text_owner;
+mod writer_lanes;
 // Register every integration test module here; the tooling witness checks coverage.
