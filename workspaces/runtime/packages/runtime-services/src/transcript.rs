@@ -429,10 +429,6 @@ fn pull_scope_cached_in(
     agent: &str,
     after: i64,
 ) -> Result<Option<Value>, TranscriptError> {
-    let actor = TranscriptRepository::agent(transaction, agent)?;
-    let deleted = actor
-        .as_ref()
-        .is_none_or(studio_runtime_store::AgentRecord::is_deleted);
     let revision = TranscriptRepository::revision(transaction, agent)?;
     let high = transaction.query_row(
         "SELECT coalesce(max(seq),0) FROM sync_entities WHERE collection=?1",
@@ -457,6 +453,10 @@ fn pull_scope_cached_in(
             "checkpoint": {"seq": high}
         })));
     }
+    let actor = TranscriptRepository::agent(transaction, agent)?;
+    let deleted = actor
+        .as_ref()
+        .is_none_or(studio_runtime_store::AgentRecord::is_deleted);
     let cache = transaction
         .query_row(
             "SELECT payload FROM sync_entities WHERE collection=?1 AND id='@revision' AND hash=?2 AND deleted=0",
@@ -1462,6 +1462,27 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("count")
+    }
+
+    #[test]
+    fn unchanged_cached_cursor_does_not_decode_the_agent() {
+        let mut db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT,record TEXT);\
+            CREATE TABLE runtime_transcript_revisions(agent TEXT,revision INTEGER);\
+            CREATE TABLE sync_entities(collection TEXT,id TEXT,hash TEXT,deleted INTEGER,seq INTEGER,payload TEXT);\
+            CREATE TABLE sync_identity(id TEXT);\
+            INSERT INTO sync_identity VALUES('workspace');\
+            INSERT INTO runtime_agents VALUES('agent','{}');\
+            INSERT INTO runtime_transcript_revisions VALUES('agent',10);").unwrap();
+        db.execute(
+            "INSERT INTO sync_entities VALUES('transcript:agent','@revision',?1,0,10,NULL)",
+            [studio_runtime_store::sha256_hex(b"10")],
+        )
+        .unwrap();
+        let tx = db.transaction().unwrap();
+        let unchanged = super::pull_scope_cached_in(&tx, "transcript:agent", "agent", 10);
+        assert_eq!(unchanged.unwrap().unwrap()["documents"], json!([]));
+        assert!(super::pull_scope_cached_in(&tx, "transcript:agent", "agent", 9).is_err());
     }
 
     #[tokio::test]
