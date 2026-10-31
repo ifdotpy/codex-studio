@@ -171,6 +171,7 @@ mod tests {
     fn real_work_records_migrate_without_refusal() {
         let path = std::env::var_os("WORK_MIGRATION_TEST_DB").unwrap();
         let mut db = rusqlite::Connection::open(path).unwrap();
+        crate::schema::register_python_trigger_functions(&db).unwrap();
         let tx = db.transaction().unwrap();
         apply(&tx).unwrap();
         if crate::schema::table_exists(&tx, "runtime_work").unwrap() {
