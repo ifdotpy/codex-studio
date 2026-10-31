@@ -506,8 +506,7 @@ impl NotificationStreamBuffer {
             .as_str()
             .unwrap_or_default()
             .to_owned();
-        let encoded_bytes =
-            studio_runtime_store::python_json_compact(&observation.params).len() as u64;
+        let encoded_bytes = observation.params.to_string().len() as u64;
         let hour = ((observation.observed_at.get() / 3600.0).floor() * 3600.0) as u64;
         observation.agent = None;
         if let Some(index) = self.indexes.analytics.get(&key).copied() {
@@ -990,6 +989,19 @@ impl NotificationStreamBuffer {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn analytics_counts_compact_json_bytes() {
+        let key = turn_key(0, 0);
+        let mut streams = NotificationStreamBuffer::default();
+        let mut observation = analytics_observation(&key.method, 1);
+        observation.params = super::super::SharedJson::new(json!({"delta":"a", "value":1e-6}));
+        streams.stage_analytics(key, observation).unwrap();
+        assert_eq!(
+            streams.analytics[0].metrics.hours[0].encoded_bytes,
+            r#"{"delta":"a","value":1e-6}"#.len() as u64
+        );
+    }
 
     #[test]
     fn analytics_delta_size_work_counts_only_the_new_fragment() {
