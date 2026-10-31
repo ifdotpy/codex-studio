@@ -856,6 +856,16 @@ static CATALOG: &[&dyn Migration] = &[
         },
         apply: |c| m2026_10_31_native_status_error::apply(c.transaction),
     },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-restore-monitor-active-index",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Monitor status migration without the active monitor index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| crate::StartupRecoveryRepository::prepare_monitor_index(c.transaction),
+    },
 ];
 
 /// Operator-facing catalog; implementation and metadata have one owner.
@@ -1973,5 +1983,31 @@ mod tests {
         if !db.is_autocommit() {
             db.execute_batch("ROLLBACK").expect("fixture cleanup");
         }
+    }
+}
+
+#[cfg(test)]
+mod monitor_active_index_regression {
+    use super::*;
+
+    #[test]
+    fn migration_restores_missing_active_monitor_index() {
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT,monitor_status TEXT); INSERT INTO runtime_monitors VALUES('m','{}','running');").expect("old schema");
+        let tx = db.transaction().expect("transaction");
+        let accounts = Accounts::new();
+        let step = CATALOG
+            .iter()
+            .find(|step| step.definition().id == "2026-10-31-restore-monitor-active-index")
+            .expect("migration");
+        let context = Context::Sql(SqlContext {
+            transaction: &tx,
+            accounts: &accounts,
+            source: SourceDatabase::Independent,
+        });
+        step.apply(&context).expect("restore index");
+        step.apply(&context).expect("repeat migration");
+        let plan: String = tx.query_row("EXPLAIN QUERY PLAN SELECT id FROM runtime_monitors WHERE monitor_status IN ('running','starting','approval')", [], |row| row.get(3)).expect("plan");
+        assert!(plan.contains("runtime_monitor_startup_active"), "{plan}");
     }
 }
