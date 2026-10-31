@@ -182,9 +182,6 @@
   "workspaces/runtime/packages/runtime-services/tests/provider_session_task.rs": [
     "launch: ProviderLaunchSpec::new(vec![\"fake\".into()], BTreeMap::new(), \"/tmp\".into()),"
   ],
-  "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs": [
-    "\"params\":{\"command\":\"printf safe\", \"cwd\":\"/tmp\"}"
-  ],
   "workspaces/runtime/packages/runtime-services/tests/workspace_ready/effects.rs": [
     "(\"cwd\", json!(\"/var/tmp/changed\")),"
   ],
