@@ -24,9 +24,7 @@ type ProjectionQuery = {
 /** Self-contained callbacks inspect the renderer's thin cache. The page is
  * remote from its server (see REMOTE_FIXTURE_HOST); a pagehide makes it write
  * its changed records at once. */
-export async function readProjectionStores(
-  _unused?: string,
-): Promise<ProjectionInspection> {
+export async function readProjectionStores(): Promise<ProjectionInspection> {
   window.dispatchEvent(new Event("pagehide"));
   await new Promise((resolve) => setTimeout(resolve, 100));
   const request = indexedDB.open("studio-thin-cache", 1);

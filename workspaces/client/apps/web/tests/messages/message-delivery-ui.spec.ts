@@ -372,7 +372,10 @@ test("message delivery ui", async ({ browser: _browser }) => {
       const posts: Array<{ route: Route; body: MessageRequest }> = [];
       await page.route("**/api/commands", (route) => {
         const body = sentMessage(route.request());
-        if (!body) return route.fallback();
+        if (!body) {
+          void route.fallback();
+          return;
+        }
         posts.push({ route, body });
       });
       const publish = async (id: string, items: Message[]) => {

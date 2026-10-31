@@ -275,7 +275,8 @@ export type ResourceEventsOptions = {
   independent?: boolean;
   /** Where large entity intervals wait for their last page; the default is IndexedDB. */
   transferStorage?: () =>
-    import("./entityTransfer").TransferStorage | undefined;
+    | import("./entityTransfer").TransferStorage
+    | undefined;
 };
 export function createResourceEvents(options: ResourceEventsOptions) {
   const {
@@ -358,7 +359,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   const blockedResources = new Map<string, ResourceRef>();
   let blockedSelectors: ResourceRef[] = [];
   let pendingSubscription:
-    { gen: number; resources: ResourceRef[]; tokenRates: boolean } | undefined;
+    | { gen: number; resources: ResourceRef[]; tokenRates: boolean }
+    | undefined;
   let subscriptionTimer: ReturnType<typeof setTimeout> | undefined;
   let subscriptionAckTimer: ReturnType<typeof setTimeout> | undefined;
   let subscriptionRequest: AbortController | undefined;

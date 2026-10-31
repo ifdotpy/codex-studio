@@ -35,7 +35,7 @@ const agents: Agent[] = Array.from({ length: 20 }, (_, i) => ({
   readStateSupported: true,
 }));
 const { db } = await syncDatabase();
-await db.projections.bulkInsert([
+await db.projections.hydrate([
   ...agents.map((a, i) => row("agent", a.id, a, i + 1)),
   row("rule", "r", { id: "r", checks: 0 }, 21),
   row(

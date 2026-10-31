@@ -289,6 +289,7 @@ pub(crate) fn legacy_pair(invitation: &Value, request_id: &str) -> Result<Creden
     Ok(credential)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn signature(
     vault: &dyn Vault,
     credential: &Credential,

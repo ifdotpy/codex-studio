@@ -3,6 +3,7 @@ import type { ServerResponse } from "node:http";
 import type { components } from "../../src/generated/api.ts";
 import type { GetResult } from "../../src/apiTypes.ts";
 import { fixtureResources, fixturePostBody } from "./helpers.ts";
+type ResourceRef = components["schemas"]["ResourceRef"];
 type ResourceRevisionEntry = components["schemas"]["ResourceRevisionEntry"];
 type EntityChangeBatch = components["schemas"]["EntityChangeBatch"];
 type ResourceCursor = components["schemas"]["SubscriptionCursor"];
@@ -903,3 +904,24 @@ test.describe("legacy schema mismatch", () => {
     }
   });
 });
+
+/** The renderer under test owns these serialized cursor records. */
+function fixtureCursors(
+  value: string | null,
+): components["schemas"]["SubscriptionAdd"][] {
+  return JSON.parse(
+    value || "[]",
+  ) as components["schemas"]["SubscriptionAdd"][];
+}
+
+/** Preserve the fixture's kind/agent matching for baseline records. */
+function fixtureResourceMatches(
+  left: ResourceRef | null | undefined,
+  right: ResourceRef,
+) {
+  return (
+    left?.kind === right.kind &&
+    (left && "agentId" in left ? left.agentId : undefined) ===
+      ("agentId" in right ? right.agentId : undefined)
+  );
+}
