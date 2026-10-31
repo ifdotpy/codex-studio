@@ -1112,14 +1112,6 @@
       "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
     },
     {
-      "file": "workspaces/client/packages/client-core/src/store.rs",
-      "fingerprint": "4bf8ba4d2d21bb908196f15eaefd3d0645dd3c0c1402a54fda399ebc3668eae8:0"
-    },
-    {
-      "file": "workspaces/client/packages/client-core/src/sync.rs",
-      "fingerprint": "05ed782712b957e83aaf934a7100767448f72978163367db2cfb46544d921dad:0"
-    },
-    {
       "file": "workspaces/client/packages/client-domain/src/protocol.rs",
       "fingerprint": "05ed782712b957e83aaf934a7100767448f72978163367db2cfb46544d921dad:0"
     },
@@ -2437,10 +2429,6 @@
   "rust-json-string-roundtrip": [],
   "rust-json-value-roundtrip": [
     {
-      "file": "workspaces/client/packages/client-core/src/draft_store.rs",
-      "fingerprint": "e996683448f1993a65a180a3509b3fcaf3f78a613df7fae36f573fc5feca9e06:0"
-    },
-    {
       "file": "workspaces/client/packages/client-domain/src/protocol.rs",
       "fingerprint": "632f99f99f5300ca136cf77c004d141e7214b2307bb4d5ddc836505ddb4c1923:0"
     },
@@ -3626,10 +3614,6 @@
     {
       "file": "workspaces/client/apps/web/src/components/conversation-results/conversationResultModel.ts",
       "fingerprint": "f01e944d16680ca56e4af149b78b271b61ed1b8c6e57b242a5f49da9fc73f7b8:0"
-    },
-    {
-      "file": "workspaces/client/apps/web/src/native/legacyDrafts.ts",
-      "fingerprint": "f4460a93e520362395430f70e9746a214762e88a945eb8538acd252eafbf2678:0"
     },
     {
       "file": "workspaces/client/apps/web/src/projectDelete.ts",

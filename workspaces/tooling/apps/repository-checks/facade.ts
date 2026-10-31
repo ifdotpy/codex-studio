@@ -189,7 +189,7 @@ const UNSAFE_RUST_ALLOWLIST: [string, string][] = [
   ],
   [
     "workspaces/client/packages/client-core/src/native.rs",
-    "Single-instance flock and SO_NOSIGPIPE on the UI socket.",
+    "SO_NOSIGPIPE on the UI socket.",
   ],
   [
     "workspaces/client/packages/client-core/src/notifications.rs",

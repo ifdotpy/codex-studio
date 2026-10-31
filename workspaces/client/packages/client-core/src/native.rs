@@ -2,76 +2,18 @@
 use crate::{
     backend::Backend,
     protocol::{self, Request, Response},
-    store::Store,
 };
-use std::{
-    env,
-    fs::{self, File, OpenOptions},
-    io,
-    os::{
-        fd::AsRawFd,
-        unix::{fs::PermissionsExt, net::UnixStream},
-    },
-    path::PathBuf,
-    sync::Arc,
-    thread,
-};
+use std::{io, os::unix::net::UnixStream, sync::Arc, thread};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Only the native host supplies this configuration. It never comes from IPC.
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ConnectionConfig {
-    pub state_directory: PathBuf,
     pub backend_origin: String,
 }
 
-// SAFETY: flock uses the descriptor of the live lock file retained by this owner.
-#[allow(unsafe_code)]
-fn open_store(state: &std::path::Path) -> Result<(Store, File), String> {
-    if !state.is_absolute() {
-        return Err("The client state directory must be absolute.".into());
-    }
-    if !state.exists() {
-        fs::create_dir_all(state).map_err(|e| e.to_string())?;
-        fs::set_permissions(state, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
-    }
-    // This lock belongs to the native client, not the Python server.
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(state.join("studio-native-client.lock"))
-        .map_err(|e| e.to_string())?;
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err("Another native client owns this local client state.".into());
-    }
-    Ok((
-        Store::open(&state.join("studio-client.sqlite3")).map_err(|e| e.to_string())?,
-        lock,
-    ))
-}
-
 fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
-    let (store_sender, mut store_receiver) =
-        tokio::sync::mpsc::channel::<crate::delivery::StoreCommand>(64);
-    let store_worker = thread::Builder::new()
-        .name("studio-state".into())
-        .spawn(move || {
-            let mut state = open_store(&config.state_directory);
-            while let Some(command) = store_receiver.blocking_recv() {
-                match &mut state {
-                    Ok((store, _lock)) => {
-                        command.execute(store);
-                    }
-                    Err(error) => {
-                        command.unavailable(error);
-                    }
-                }
-            }
-        })
-        .map_err(|error| error.to_string())?;
     // Electron verifies/starts the backend before opening the client. Rust must
     // never race that owner by launching a second backend.
     let backend = Arc::new(Backend::new(&config.backend_origin));
@@ -141,16 +83,11 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
             enum Work {
                 Network(Request),
                 Desktop(Request),
-                Sync(Request),
-                DraftSync(Request),
                 Speech(Request),
                 Media(Request),
                 Voice(Request),
-                Stored(String, tokio::sync::oneshot::Receiver<Response>),
                 Immediate(Response),
             }
-            // Queue state commands before spawning their response tasks. This
-            // preserves edit order even when network replies arrive out of order.
             let work = match serde_json::from_slice::<Request>(&bytes) {
                 Ok(request) if audio_request(&request) && !claim_audio(&mut audio_lease) => {
                     Work::Immediate(Response::failure(
@@ -167,23 +104,17 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 Ok(request) if request.method.starts_with("view.") => {
                     Work::Immediate(views.command(&request))
                 }
-                Ok(request) if request.method == "drafts.refresh" => Work::DraftSync(request),
-                Ok(request) if request.method == "sync.open" => Work::Sync(request),
                 Ok(request) if request.method == "api.request" => Work::Network(request),
-                Ok(request) => {
-                    let id = request.id.clone();
-                    let (reply, receive) = tokio::sync::oneshot::channel();
-                    store_sender
-                        .send(crate::delivery::StoreCommand::Request(request, reply))
-                        .await
-                        .map_err(|_| "The state worker stopped.")?;
-                    Work::Stored(id, receive)
-                }
+                Ok(request) => Work::Immediate(Response::failure(
+                    request.id,
+                    "unknown_method",
+                    "Unknown native method.",
+                )),
                 Err(error) => {
                     Work::Immediate(Response::failure(String::new(), "invalid_request", error))
                 }
             };
-            let (writer, backend, sender) = (writer.clone(), backend.clone(), store_sender.clone());
+            let (writer, backend) = (writer.clone(), backend.clone());
             // Completed tasks must leave the set; the permit bounds active work.
             while requests.try_join_next().is_some() {}
             requests.spawn(async move {
@@ -203,22 +134,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                         Ok(backend) => backend.dispatch(request).await,
                         Err(error) => Response::failure(request.id, "backend_config", error),
                     },
-                    Work::DraftSync(request) => match backend.as_ref() {
-                        Ok(backend) => {
-                            crate::draft_replication::dispatch(backend, &sender, request).await
-                        }
-                        Err(error) => Response::failure(request.id, "backend_config", error),
-                    },
-                    Work::Sync(request) => match backend.as_ref() {
-                        Ok(backend) => match crate::sync::open(backend, &sender).await {
-                            Ok(value) => Response::success(request.id, value),
-                            Err(error) => Response { id: request.id, result: None, error: Some(error) },
-                        },
-                        Err(error) => Response::failure(request.id, "backend_config", error),
-                    },
-                    Work::Stored(id, receive) => receive
-                        .await
-                        .unwrap_or_else(|error| Response::failure(id, "core_failed", error)),
                     Work::Immediate(response) => response,
                 };
                 write_packet(
@@ -249,9 +164,6 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
     runtime.shutdown_timeout(std::time::Duration::from_secs(2));
     #[cfg(target_os = "macos")]
     dispatch2::DispatchQueue::main().exec_async(crate::quick_look::close);
-    store_worker
-        .join()
-        .map_err(|_| "The state worker panicked.")?;
     result
 }
 
@@ -343,7 +255,7 @@ async fn write_packet(
             .as_object_mut()
             .expect("response object")
             .remove("result");
-        packet["error"] = serde_json::to_value(crate::sync::error(
+        packet["error"] = serde_json::to_value(crate::backend::error(
             "response_size",
             "The response exceeds the UI transport limit.",
         ))?;
@@ -370,7 +282,7 @@ pub fn connect(config: ConnectionConfig) -> io::Result<UnixStream> {
         let enabled: libc::c_int = 1;
         if unsafe {
             libc::setsockopt(
-                ui.as_raw_fd(),
+                std::os::fd::AsRawFd::as_raw_fd(&ui),
                 libc::SOL_SOCKET,
                 libc::SO_NOSIGPIPE,
                 (&enabled as *const libc::c_int).cast(),
@@ -422,13 +334,11 @@ mod audio_ownership_tests {
     fn unrelated_disconnect_keeps_capture_and_malformed_owner_disconnect_releases_it() {
         use std::io::{Read, Write};
         let _serial = crate::media::AUDIO_TEST_MUTEX.lock().unwrap();
-        let directory = tempfile::tempdir().unwrap();
-        let open = |name: &str| {
+        let open = || {
             let (host, core) = UnixStream::pair().unwrap();
             host.set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
             let config = ConnectionConfig {
-                state_directory: directory.path().join(name),
                 backend_origin: "http://127.0.0.1:9".into(),
             };
             let worker = thread::spawn(move || serve(core, config));
@@ -454,9 +364,9 @@ mod audio_ownership_tests {
                 }
             }
         };
-        let (mut first, first_worker) = open("first");
+        let (mut first, first_worker) = open();
         assert!(call(&mut first, "first").error.is_none());
-        let (mut other, other_worker) = open("other");
+        let (mut other, other_worker) = open();
         assert_eq!(call(&mut other, "other").error.unwrap().code, "audio_busy");
         drop(other);
         other_worker.join().unwrap().unwrap();
@@ -468,83 +378,10 @@ mod audio_ownership_tests {
         first.write_all(&0u32.to_le_bytes()).unwrap();
         assert!(first_worker.join().unwrap().is_err());
         drop(first);
-        let (mut next, next_worker) = open("next");
+        let (mut next, next_worker) = open();
         assert!(call(&mut next, "next").error.is_none());
         drop(next);
         next_worker.join().unwrap().unwrap();
-    }
-
-    #[test]
-    fn native_transport_preserves_replay_identity_and_missing_params() {
-        use std::io::{Read, Write};
-        let directory = tempfile::tempdir().unwrap();
-        let (mut host, core) = UnixStream::pair().unwrap();
-        host.set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .unwrap();
-        let config = ConnectionConfig {
-            state_directory: directory.path().to_owned(),
-            backend_origin: "http://127.0.0.1:9".into(),
-        };
-        let worker = thread::spawn(move || serve(core, config));
-        let call = |host: &mut UnixStream, input: &str| -> Response {
-            let bytes = input.as_bytes();
-            for (flag, part) in protocol::fragments(bytes).unwrap() {
-                host.write_all(&((part.len() + 1) as u32).to_le_bytes())
-                    .unwrap();
-                host.write_all(&[flag]).unwrap();
-                host.write_all(part).unwrap();
-            }
-            let mut assembler = protocol::Assembler::default();
-            loop {
-                let mut header = [0; 4];
-                host.read_exact(&mut header).unwrap();
-                let mut frame = vec![0; u32::from_le_bytes(header) as usize];
-                host.read_exact(&mut frame).unwrap();
-                if let Some(bytes) = assembler.push(&frame).unwrap() {
-                    return serde_json::from_slice(&bytes).unwrap();
-                }
-            }
-        };
-        let first = call(
-            &mut host,
-            r#"{"id":"same","method":"preferences.import","params":{"version":1,"entries":{"z":"Привет","a":"🦀"}}}"#,
-        );
-        assert!(first.error.is_none());
-        let retry = call(
-            &mut host,
-            r#"{"method":"preferences.import","id":"same","params":{"entries":{"a":"🦀","z":"Привет"},"version":1}}"#,
-        );
-        assert_eq!(first.result, retry.result);
-        let changed = call(
-            &mut host,
-            r#"{"id":"same","method":"preferences.import","params":{"version":1,"entries":{"z":"changed","a":"🦀"}}}"#,
-        );
-        assert_eq!(changed.error.unwrap().code, "identity_conflict");
-        let missing = call(
-            &mut host,
-            r#"{"id":"missing","method":"preferences.import"}"#,
-        );
-        let null = call(
-            &mut host,
-            r#"{"id":"null","method":"preferences.import","params":null}"#,
-        );
-        assert_eq!(missing.error.unwrap().message, null.error.unwrap().message);
-        drop(host);
-        worker.join().unwrap().unwrap();
-        let db =
-            rusqlite::Connection::open(directory.path().join("studio-client.sqlite3")).unwrap();
-        let (method, params): (String, String) = db
-            .query_row(
-                "SELECT method, params FROM client_receipts WHERE request_id='same'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(method, "preferences.import");
-        assert_eq!(
-            params.as_bytes(),
-            r#"{"entries":{"a":"🦀","z":"Привет"},"version":1}"#.as_bytes()
-        );
     }
 
     #[test]

@@ -178,8 +178,6 @@ export default {
       "src/servers/sidebarSnapshot.test.ts",
       "src/servers/mergedSidebar.test.ts",
       "src/sync/uiPreferenceBridge.test.ts",
-      // Prevent idle polling and lost draft notifications during a refresh.
-      "src/native/useNativeDrafts.test.ts",
       // Reserved preference keys survive profile import.
       // An authoritative delete readback must settle even when another refresh owns the current render generation.
       "src/hooks/snapshotDeleteReadback.test.ts",

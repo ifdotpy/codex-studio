@@ -1,5 +1,5 @@
 //! Server event parsing, reconnect state and HTTP lifetime belong to Rust.
-use crate::{backend::Backend, sync};
+use crate::backend::{Backend, error as command_error};
 use serde_json::{Value, json};
 use std::{
     sync::{Arc, Mutex},
@@ -275,7 +275,7 @@ pub async fn run_controlled(
         Err(error) => {
             drop(
                 output
-                    .send(json!({"event":id,"error":sync::error("backend_config",error)}))
+                    .send(json!({"event":id,"error":command_error("backend_config",error)}))
                     .await,
             );
             return;
@@ -302,11 +302,11 @@ pub async fn run_controlled(
             if let Some(flow) = &flow { open["credit"] = json!(flow.credit()); }
             output.send(open)
                 .await
-                .map_err(|_| sync::error("disconnected", "The UI disconnected."))?;
+                .map_err(|_| command_error("disconnected", "The UI disconnected."))?;
             opened = true;
             let mut parser = Parser::new(last_id.clone());
             let mut admitted = false;
-            let restart = |reason: String| sync::error("restart", format!("The UI restarted the stream: {reason}"));
+            let restart = |reason: String| command_error("restart", format!("The UI restarted the stream: {reason}"));
             loop {
                 if let Some(flow) = &flow
                     && !admitted
@@ -322,18 +322,18 @@ pub async fn run_controlled(
                     reason = restarted(flow.as_ref()) => return Err(restart(reason)),
                 }
                 .map_err(|_| {
-                    sync::error(
+                    command_error(
                         "event_timeout",
                         "The server event stream stopped responding.",
                     )
                 })?
-                .map_err(|e| sync::error("network", e))?;
+                .map_err(|e| command_error("network", e))?;
                 let Some(chunk) = chunk else {
                     return Ok(true);
                 };
                 let events = parser
                     .feed(&chunk)
-                    .map_err(|e| sync::error("invalid_event", e))?;
+                    .map_err(|e| command_error("invalid_event", e))?;
                 last_id = parser.id.clone();
                 if let Some(value) = parser.retry {
                     server_retry = value;
@@ -346,13 +346,13 @@ pub async fn run_controlled(
                                 reason = flow.restarted() => return Err(restart(reason)),
                             }
                         }
-                        let (consumed, next) = flow.finish().map_err(|e| sync::error("event_credit", e))?;
+                        let (consumed, next) = flow.finish().map_err(|e| command_error("event_credit", e))?;
                         output.send(json!({"event":id,"consumedCredit":consumed,"credit":next,"value":event}))
-                            .await.map_err(|_| sync::error("disconnected", "The UI disconnected."))?;
+                            .await.map_err(|_| command_error("disconnected", "The UI disconnected."))?;
                         admitted = false;
                         delivered += 1;
                     } else {
-                        emit(&output, &id, event).await.map_err(|_| sync::error("disconnected", "The UI disconnected."))?;
+                        emit(&output, &id, event).await.map_err(|_| command_error("disconnected", "The UI disconnected."))?;
                     }
                 }
             }

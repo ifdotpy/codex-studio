@@ -363,14 +363,10 @@ async function main() {
       fixture.acceptIdentity();
       await run(directory, "network", env);
       await run(path.join(directory, "shell-client"), "network-shell", env);
-      for (const mode of [
-        "network-stream",
-        "network-drafts-write",
-        "network-drafts-read",
-      ])
-        await run(directory, mode, env);
-      for (const mode of ["drafts-offline-write", "drafts-offline-read"])
-        await run(directory, mode);
+      // The draft and preference scenarios ("network-drafts-*", "drafts-offline-*")
+      // were removed with the native store. Drafts now follow the browser path,
+      // which the web tests cover. This check no longer runs them.
+      await run(directory, "network-stream", env);
       assert.equal(
         fixture.commands.length,
         2,

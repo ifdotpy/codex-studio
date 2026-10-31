@@ -21,8 +21,6 @@ const allowed: Record<string, string> = {
   "components/sidebar/SidebarFrame.tsx": "sidebar width of this device",
   "native/importBrowserProfile.ts":
     "one-time import of the old browser profile into the desktop app",
-  "native/preferences.ts":
-    "replaces window.localStorage with the native preference store",
   "push/signInPush.ts":
     "Web Push subscription id of this device for each server key",
   "servers/MultiServerApp.tsx": "selected server and Studio preferences",

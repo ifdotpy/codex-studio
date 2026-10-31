@@ -1,13 +1,9 @@
 import { importBrowserProfile } from "./importBrowserProfile.ts";
 import { combineBrowserProfiles } from "./combineBrowserProfiles.ts";
-import { setNativeJournalStorage } from "./draftJournal";
 import { hasNativeClient, nativeRequest } from "./client";
 import { isNativeFrame } from "./frame";
-import { serverViewId } from "../servers/environment";
-import { guardNativeClose } from "./closeState";
-import { NativePreferenceStorage, preferenceScope } from "./preferenceState";
 
-export async function initializeNativePreferences() {
+export async function importNativeProfile() {
   if (!hasNativeClient()) return;
   const frame = isNativeFrame();
   const archive = frame
@@ -37,46 +33,40 @@ export async function initializeNativePreferences() {
             : { owner: chunk.owner || "root", sha256: chunk.sha256 },
         ),
     );
-  setNativeJournalStorage(window.localStorage);
-  const invoke = isNativeFrame()
-    ? <T>(method: string, params: unknown, id?: string) =>
-        nativeRequest<T>("browser.preferences", { method, params }, id)
-    : preferenceScope(nativeRequest, "root");
-  const storage = await NativePreferenceStorage.open(
+  await moveLegacyPreferences(
+    (method, params) => nativeRequest(method, params),
     window.localStorage,
-    invoke,
-    (error) => {
-      window.dispatchEvent(
-        new CustomEvent("desktop-error", {
-          detail: `Settings are not saved yet. Keep Studio open. ${String(error)}`,
-        }),
-      );
-    },
-    isNativeFrame() ? `server:${serverViewId}` : "root",
+    isNativeFrame(),
   );
-  Object.defineProperty(window, "localStorage", {
-    value: storage,
-    configurable: true,
-  });
-  guardNativeClose(async () => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        storage.flush(),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                new Error(
-                  "Settings have not finished saving. Keep Studio open.",
-                ),
-              ),
-            8000,
-          );
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
+}
+
+/**
+ * Copies the preferences of the removed native store into the page storage, which
+ * the browser path already syncs to the server. A native row is cleared only after
+ * the page storage returns the same value. A key that already holds another value
+ * keeps its native row. A failure keeps every row and the next start tries again.
+ */
+export async function moveLegacyPreferences(
+  request: <T>(method: string, params: unknown) => Promise<T>,
+  storage: Storage,
+  frame: boolean,
+) {
+  try {
+    const rows = await request<Record<string, string>>(
+      frame ? "browser.legacyPreferences" : "preferences.legacy",
+      frame ? {} : { scope: "root" },
+    );
+    const moved: string[] = [];
+    for (const [key, raw] of Object.entries(rows)) {
+      if (storage.getItem(key) === null) storage.setItem(key, raw);
+      if (storage.getItem(key) === raw) moved.push(key);
     }
-  });
+    if (moved.length)
+      await request(
+        frame ? "browser.legacyPreferencesClear" : "preferences.legacy_clear",
+        frame ? { keys: moved } : { scope: "root", keys: moved },
+      );
+  } catch (error) {
+    console.error("Old desktop preferences were not moved.", error);
+  }
 }

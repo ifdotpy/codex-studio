@@ -1,7 +1,7 @@
-import { initializeNativePreferences } from "./native/preferences";
+import { importNativeProfile } from "./native/preferences";
 
 // Preferences must be ready before modules read their initial settings.
-void initializeNativePreferences()
+void importNativeProfile()
   .then(() => import("./mount"))
   .catch((error) => {
     const container = document.getElementById("root");
