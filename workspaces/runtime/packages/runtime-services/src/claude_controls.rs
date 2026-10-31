@@ -188,9 +188,7 @@ impl ControlSnapshot {
     /// Permission mode is the only setting with an SDK live control. Missing
     /// thinking means enabled; absent and null compact limits both mean default.
     pub(crate) fn live_permissions(&self, request: &ControlRequest) -> bool {
-        let ControlRequest::Settings { settings, .. } = request else {
-            return false;
-        };
+        let ControlRequest::Settings { settings, .. } = request;
         let previous = &self.raw["claudeOptions"];
         let next_window = settings
             .auto_compact_window
