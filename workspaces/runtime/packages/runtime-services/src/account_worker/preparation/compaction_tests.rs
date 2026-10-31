@@ -29,6 +29,8 @@ async fn submission_snapshot_preserves_only_unmatched_complaint_events() {
         let intent = TurnIntent { agent_id:"lead".into(), epoch:1, attempt_id:"prepare".into(), account_key:"default".into(), provider:studio_runtime_providers::ProviderKind::Codex, thread_id:Some("thread".into()), cwd:Some("/work".into()), model:None, events, radio_authorized:false };
         let (_, events) = submission_snapshot(tx, &resources, &record, &intent)?;
         assert_eq!(events.iter().map(|event| event.preserve_complaint).collect::<Vec<_>>(), [false, true, true]);
+        tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('legacy',?1)", [r#"{"id":"legacy","leadId":"lead","recipient":"lead","status":"open","responses":[],"author":"lead","text":"question","created":1,"version":1}"#])?;
+        assert!(submission_snapshot(tx, &resources, &record, &intent).is_err());
         Ok(())
     }).await.unwrap();
 }
