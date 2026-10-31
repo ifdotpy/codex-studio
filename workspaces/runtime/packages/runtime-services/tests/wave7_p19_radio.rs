@@ -375,6 +375,9 @@ fn pending_question(raw: &Value) -> studio_runtime_schema::approvals::Approval {
     if raw.get("status").is_none() {
         raw["status"] = json!("pending");
     }
+    if raw.get("params").is_none() {
+        raw["params"] = json!({});
+    }
     studio_runtime_store::approvals::from_legacy_record(
         raw["id"].as_str().unwrap_or("question"),
         &raw,

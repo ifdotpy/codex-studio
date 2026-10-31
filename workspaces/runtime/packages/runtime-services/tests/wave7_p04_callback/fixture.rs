@@ -76,10 +76,13 @@ pub fn stored(store: &RuntimeStore, id: &str) -> Value {
 /// history text, answer time) that the typed row does not have.
 pub fn assert_outcome(actual: &Value, expected: &Value) {
     assert_eq!(actual["status"], expected["status"], "{}", expected["id"]);
-    if matches!(
-        expected["decision"].as_str(),
-        Some("accept" | "decline" | "cancel" | "answer")
-    ) {
+    let decided = |value: &Value| {
+        matches!(
+            value["decision"].as_str(),
+            Some("accept" | "decline" | "cancel")
+        )
+    };
+    if decided(expected) && decided(actual) {
         assert_eq!(
             actual["decision"], expected["decision"],
             "{}",

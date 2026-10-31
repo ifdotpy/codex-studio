@@ -173,9 +173,6 @@ export type BrowserOpenDetails = {
   joined?: string[];
 };
 
-const numberValue = (value: unknown): number | undefined =>
-  typeof value === "number" && Number.isFinite(value) ? value : undefined;
-
 /** The sign-in link of an agent (docs/vm-browser-bridge.md), or undefined. */
 export function browserOpenDetails(
   approval: Approval,
