@@ -186,7 +186,14 @@ pub fn begin(
     let signature = sha256_hex(
         &serde_json::to_vec(&(&who, &request.command)).map_err(RequestResultError::from)?,
     );
-    if let Err(error) = identity.validate(now_ms, RequestResults::expired_before_ms(tx)?) {
+    // An in-process identity is issued at `now_ms`, so the retention floor of stored
+    // results does not apply to it.
+    let floor = if trusted {
+        0
+    } else {
+        RequestResults::expired_before_ms(tx)?
+    };
+    if let Err(error) = identity.validate(now_ms, floor) {
         let watermark = CommandWatermarks::applied(tx, &client)?;
         return Err(match error {
             RequestIdentityError::Expired { .. } if number <= watermark => CommandError::TooOld,

@@ -2798,7 +2798,9 @@ async fn orchestration_claims_survive_lost_receipts_and_reject_changed_content()
             let now = chrono::Utc::now().timestamp();
             let calls = Arc::new(AtomicUsize::new(0));
             let event = if stage == "claim" { "INSERT" } else { "DELETE" };
-            store.transaction(move |tx| { tx.execute_batch(&format!("CREATE TRIGGER failpoint BEFORE {event} ON runtime_server_{direction} BEGIN SELECT RAISE(ABORT,'fixture failpoint'); END"))?; Ok(()) }).await.expect("failpoint");
+            // The outbound claims live in the one outbox table.
+            let table = if direction == "inbox" { "runtime_server_inbox" } else { "runtime_outbox" };
+            store.transaction(move |tx| { tx.execute_batch(&format!("CREATE TRIGGER failpoint BEFORE {event} ON {table} BEGIN SELECT RAISE(ABORT,'fixture failpoint'); END"))?; Ok(()) }).await.expect("failpoint");
             let run = |store: Arc<RuntimeStore>| async {
                 let driver = OrchestrationDriver::new(
                     store,

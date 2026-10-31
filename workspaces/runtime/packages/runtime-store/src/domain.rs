@@ -1029,14 +1029,17 @@ mod tests {
             read_sessions(&db, "running").unwrap()[0].state,
             SessionState::Ready
         );
-        // A second run changes nothing.
+        // A second run changes nothing. The settled agent's attempt has no turn, so it
+        // gets an interrupted one: two completed, starting, running and that one.
+        let turns = |db: &Connection| -> i64 {
+            db.query_row("SELECT count(*) FROM turns", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(turns(&db), 5);
         let tx = Transaction::new_unchecked(&db, rusqlite::TransactionBehavior::Immediate).unwrap();
         crate::migrations::m2026_10_30_domain_model_for_tests(&tx).unwrap();
         tx.commit().unwrap();
-        let count: i64 = db
-            .query_row("SELECT count(*) FROM turns", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 4);
+        assert_eq!(turns(&db), 5);
     }
 
     /// A recorded command sequence: each step is the agent record that the command

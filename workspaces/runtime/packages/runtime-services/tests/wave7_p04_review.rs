@@ -263,10 +263,12 @@ async fn late_written_settles_card_without_reviving_completed_failed_or_replaced
             .await
             .unwrap();
         let mut value = actor(&store, &context);
-        value["status"] = json!(if status == "replaced" {
-            "running"
-        } else {
-            status
+        // The stored status is one of the typed agent statuses.
+        value["status"] = json!(match status {
+            "replaced" => "running",
+            "stopped" => "paused",
+            "deleted" => "idle",
+            status => status,
         });
         value["inFlight"] = json!(false);
         value["turnId"] = if status == "replaced" {

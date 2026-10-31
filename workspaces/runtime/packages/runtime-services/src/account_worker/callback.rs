@@ -691,9 +691,9 @@ mod tests {
         store
             .transaction(move |transaction| {
                 for id in ["agent-a", "agent-b"] {
-                    transaction.execute(
-                        "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
-                        params![id, agent(id).to_string()],
+                    studio_runtime_store::AgentRepository::put(
+                        transaction,
+                        &AgentRecord::from_value(agent(id))?,
                     )?;
                 }
                 Ok(())
@@ -835,11 +835,11 @@ mod catalog_wait_tests {
         });
         store
             .transaction(move |transaction| {
-                transaction.execute(
-                    "INSERT INTO runtime_agents(id,record) VALUES ('agent-a',?1)",
-                    params![agent.to_string()],
-                )?;
-                Ok(())
+                // The start attempt belongs to the turn row, which the repository writes.
+                studio_runtime_store::AgentRepository::put(
+                    transaction,
+                    &AgentRecord::from_value(agent)?,
+                )
             })
             .await
             .expect("callback agent write");

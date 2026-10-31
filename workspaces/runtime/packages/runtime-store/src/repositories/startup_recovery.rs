@@ -541,6 +541,13 @@ mod tests {
                 )
                 .expect("row");
         }
+        // The start attempt lives on a turn row, which the record write projects.
+        crate::domain::project(
+            &connection,
+            "e-reserved",
+            &serde_json::json!({"status":"idle","startAttempt":{"activeAtReservation":true}}),
+        )
+        .expect("project the reserved attempt");
         let ids =
             |rows: Vec<(String, String)>| rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
         assert_eq!(

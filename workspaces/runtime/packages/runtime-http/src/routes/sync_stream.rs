@@ -3817,7 +3817,7 @@ mod tests {
         store.transaction(|tx| {
             for index in 0..5 {
                 let agent = format!("chat{index}");
-                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", rusqlite::params![agent, json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":agent,"rootId":agent,"epoch":0,"status":"idle","threadId":agent,"accountKey":"default"}).to_string()])?;
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", rusqlite::params![agent, json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":agent,"rootId":agent,"epoch":0,"status":"idle","threadId":agent,"accountKey":"default"}).to_string()])?;
                 let id = format!("{agent}:answer");
                 tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,1)", rusqlite::params![id, agent, json!({"id":id,"role":"assistant","text":format!("tail of {agent}")}).to_string()])?;
             }
