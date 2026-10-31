@@ -29,6 +29,8 @@ pub(super) const DELETED_SETTINGS_REPORT: &str = "deleted-completed-c:settings";
 pub(super) const DELETED_USER_MESSAGE_REPORT: &str = "deleted-completed-c:user-message";
 const DELETED_MODE_REPORT: &str = "deleted-completed-c:agent-mode";
 const DELETED_WORK_REFUSAL_REPORT: &str = "deleted-completed-c:work-refusal";
+/// Inbound location effects of the retired Python backend; no Rust code reads them.
+const DELETED_LOCATION_EFFECT_REPORT: &str = "deleted-completed-c:location-effect";
 /// Closed W2e audit (89dabbd591): these synchronous owners saved only the reply,
 /// never the exact original body. Their old spaced hashes cannot be normalized.
 const CHANGED_SYNCHRONOUS_SIGNATURES: &[(&str, &str)] = &[
@@ -47,6 +49,25 @@ struct WorkspaceKindView {
     source: Option<WorkspaceSource>,
     provider_admission: Option<AdmittedRequest>,
     root_request_id: Option<String>,
+}
+
+/// The exact reply shapes of the retired Python `add_location` and `remove_location` receiver.
+fn retired_location_effect(reply: &Value) -> bool {
+    let Some(object) = reply.as_object() else {
+        return false;
+    };
+    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let added = [
+        "canonicalPath",
+        "gitOrigin",
+        "homeProjectId",
+        "path",
+        "projectId",
+        "requestId",
+        "serverId",
+    ];
+    keys == added || (keys == ["removed", "serverId"] && reply["removed"] == true)
 }
 
 #[derive(Deserialize)]
@@ -356,6 +377,15 @@ impl ReceiptFamilyMigration for Family {
             if reply["requestId"] == row.id && reply["outcome"] == "unknown" {
                 migrate_location(tx, &row, &reply, checkpoint.cutover_ms)?;
                 delete_source(tx, source, row.rowid)?;
+                continue;
+            }
+            if hash_signature && retired_location_effect(&reply) {
+                discard_completed_reply(
+                    tx,
+                    &row,
+                    DELETED_LOCATION_EFFECT_REPORT,
+                    checkpoint.cutover_ms,
+                )?;
                 continue;
             }
             if let Some((prefix, report)) = CHANGED_SYNCHRONOUS_SIGNATURES
@@ -1948,6 +1978,33 @@ mod tests {
         let tx = db.transaction().expect("transaction");
         Family.finish(&tx).expect("finish");
         tx.commit().expect("finish commit");
+    }
+
+    #[test]
+    fn receipts_requests_retired_location_effects_are_dropped_and_counted() {
+        let mut db = Connection::open_in_memory().expect("database");
+        fixture(&mut db);
+        let added = json!({"serverId":"local","path":"/p","canonicalPath":"/p","projectId":"/p","gitOrigin":null,"homeProjectId":"/home","requestId":"r"});
+        let removed = json!({"removed":true,"serverId":"local"});
+        for (id, reply) in [
+            ("3b1efb00-845b-5e6f-afad-dfd507aa33d2", added),
+            ("e3fedacf-2ef0-5323-97f6-4784f4a47bde", removed),
+        ] {
+            db.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+                params![id, "a".repeat(64), reply.to_string()],
+            )
+            .expect("retired effect");
+        }
+        migrate(&mut db);
+        let tx = db.transaction().expect("transaction");
+        assert_eq!(
+            MigrationCheckpoint::load(&tx, ID, DELETED_LOCATION_EFFECT_REPORT)
+                .expect("report")
+                .expect("count")
+                .cursor,
+            2
+        );
     }
 
     #[test]
