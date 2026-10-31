@@ -1144,7 +1144,7 @@ async fn reserve_approval(
         if current.agent.as_str() != agent_id.as_str()
             || !matches!(current.state, typed::ApprovalState::Pending)
             || !super::is_approval_request(&current.request)
-            || metadata.get("fingerprint").and_then(Value::as_str) != Some(fingerprint.as_str())
+            || metadata.fingerprint.as_deref() != Some(fingerprint.as_str())
             || current.epoch.and_then(|epoch| i64::try_from(epoch).ok()) != Some(actor.epoch)
             || actor.auto_wake != Some(true)
         {

@@ -114,8 +114,8 @@ pub fn view(row: &Approval) -> Value {
             params.insert("command".into(), json!(command));
             "monitor/approve"
         }
-        Request::BrowserOpen { url } => {
-            params.insert("url".into(), json!(url));
+        Request::BrowserOpen(card) => {
+            params.insert("url".into(), json!(card.url));
             "browser/open"
         }
         Request::ToolUse { .. } => "tool/use",

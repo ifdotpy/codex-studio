@@ -1091,6 +1091,10 @@ fn publish_direct(
         }
         return studio_runtime_store::RulesRepository::publish_entity(transaction, &record);
     }
+    let record = serde_json::from_str::<Value>(raw)?;
+    if collection == "work" {
+        publish_work_detail(transaction, id, &record, validate)?;
+    }
     match project_persisted_record(collection, &record) {
         Some(projected) => put_projection(transaction, collection, id, projected, false, validate),
         None => Ok(()),

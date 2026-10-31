@@ -377,16 +377,19 @@ pub async fn answer_approval(
             };
             let body: DecisionBody = serde_json::from_value(data)
                 .map_err(|_| MonitorError::Refused("Invalid monitor approval decision"))?;
-            let decision = match body.decision {
-                typed::Decision::Accept => "accept",
-                typed::Decision::Decline => "decline",
-                typed::Decision::Cancel => "cancel",
+            let accepted = match body.decision {
+                typed::Decision::Accept => true,
+                typed::Decision::Decline | typed::Decision::Cancel => false,
                 typed::Decision::AcceptForSession => {
                     return Err(MonitorError::Refused("Invalid monitor approval decision"));
                 }
             };
-            let accepted = decision == "accept";
-            let monitor_id = monitor.as_str();
+            let monitor_id = Some(monitor.as_str()).filter(|id| !id.is_empty()).ok_or(
+                MonitorError::InvalidStored {
+                    id: request_id.clone(),
+                    location: "request/monitor".into(),
+                },
+            )?;
             let (snapshot, actor) = snapshot(tx, monitor_id)?;
             event_write::refuse_remote(&actor)?;
             if request.agent.as_str() != snapshot.agent() {
@@ -395,33 +398,32 @@ pub async fn answer_approval(
             let answer = typed::Answer::Decision {
                 decision: body.decision,
             };
-            if !matches!(request.state, typed::ApprovalState::Pending) {
-                let given = match &request.state {
-                    typed::ApprovalState::Answering { answer, .. }
-                    | typed::ApprovalState::Answered { answer, .. }
-                    | typed::ApprovalState::Unknown { answer, .. } => Some(answer),
-                    typed::ApprovalState::Pending | typed::ApprovalState::Closed { .. } => None,
-                };
-                if let Some(given) = given {
-                    if *given != answer {
-                        return Err(MonitorError::Refused(
-                            "This monitor approval already has a different decision",
-                        ));
-                    }
-                    if accepted && !start_dispatch_available {
-                        return Err(MonitorError::Unavailable("monitor-driver/start-dispatch"));
-                    }
-                    return Ok(Some(MonitorApprovalAnswer {
-                        response: json!({"status":"answered","replayed":true}),
-                        accepted,
-                    }));
+            let held = match &request.state {
+                typed::ApprovalState::Answering { answer, .. }
+                | typed::ApprovalState::Answered { answer, .. }
+                | typed::ApprovalState::Unknown { answer, .. } => Some(answer),
+                typed::ApprovalState::Pending | typed::ApprovalState::Closed { .. } => None,
+            };
+            if let Some(held) = held {
+                if *held != answer {
+                    return Err(MonitorError::Refused(
+                        "This monitor approval already has a different decision",
+                    ));
                 }
+                if accepted && !start_dispatch_available {
+                    return Err(MonitorError::Unavailable("monitor-driver/start-dispatch"));
+                }
+                return Ok(Some(MonitorApprovalAnswer {
+                    response: json!({"status":"answered","replayed":true}),
+                    accepted,
+                }));
             }
             if !matches!(request.state, typed::ApprovalState::Pending)
-                || snapshot.record()["status"] != "approval"
-                || snapshot.record()["epoch"].as_i64() != Some(actor.epoch)
+                || snapshot.record().status
+                    != studio_runtime_schema::studio_errors::MonitorStatus::Approval
+                || snapshot.record().epoch.get() != actor.epoch
                 || actor.auto_wake != Some(true)
-                || event_write::truthy(actor.extra.get("deletedAt"))
+                || actor.is_deleted()
             {
                 return Err(MonitorError::Refused("Command watch was stopped"));
             }
@@ -431,12 +433,15 @@ pub async fn answer_approval(
 
             let mut monitor = snapshot.record().clone();
             if accepted {
-                monitor["status"] = json!("starting");
+                monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Starting;
             } else {
-                monitor["status"] = json!("cancelled");
-                monitor["finished"] = json!(now);
-                monitor["configurationPending"] = json!(false);
-                if let Some(rule_id) = monitor.get("ruleId").and_then(Value::as_str) {
+                monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Cancelled;
+                monitor.finished = Some(
+                    now.try_into()
+                        .map_err(|_| MonitorError::Refused("Invalid monitor clock"))?,
+                );
+                monitor.configuration_pending = Some(false);
+                if let Some(rule_id) = monitor.rule_id.as_deref() {
                     let rule = studio_runtime_store::RulesRepository::get(tx, rule_id)?
                         .ok_or(MonitorError::Refused("Unknown monitor rule"))?;
                     let rule_snapshot =
@@ -453,10 +458,7 @@ pub async fn answer_approval(
                             code: None,
                             error: Some("User declined the command"),
                             cancelled: false,
-                            output: monitor
-                                .get("tail")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default(),
+                            output: monitor.tail.as_str(),
                         },
                         now,
                     )?;
@@ -471,8 +473,8 @@ pub async fn answer_approval(
                     )?;
                 }
             }
-            let after = MonitorSnapshot::checked(monitor.clone(), actor.value())?;
-            repository::put(tx, monitor)?;
+            let after = MonitorSnapshot::checked_stored(&monitor, actor.value())?;
+            Table::new(tx).put(&monitor)?;
             crate::agent_progress::publish_owner(tx, &actor.id.0)?;
             crate::sync_policy::publish_monitor_change(tx, Some(&snapshot), &after)?;
             studio_runtime_store::approvals::answer(
