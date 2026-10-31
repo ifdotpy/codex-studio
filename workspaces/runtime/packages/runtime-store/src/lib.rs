@@ -46,6 +46,7 @@ pub mod stored_text;
 pub mod stored_text_compaction;
 pub mod stored_text_dictionary;
 pub mod supervisor_journal;
+pub mod terminal_output;
 pub mod vm_work_intent;
 pub mod writer_lanes;
 pub use schema::{
@@ -156,7 +157,7 @@ pub use repositories::sync_documents::{
     ENTITY_TOMBSTONE_LIMIT, ENTITY_TOMBSTONE_PRUNE_BATCH, EntityPage, EntityRow, SyncDocument,
     SyncDocumentsRepository,
 };
-pub use repositories::terminals::{TerminalRow, TerminalsRepository};
+pub use repositories::terminals::{ArchiveAppend, TerminalRow, TerminalsRepository};
 pub use repositories::transcript::{
     TranscriptItem, TranscriptRepository, TranscriptSearchKind, TranscriptStoreError,
     TranscriptStoreResult,
@@ -957,6 +958,8 @@ pub struct RuntimeStore {
     /// Commands that wait for or hold the writer; background parts yield to them.
     command_gate: Arc<writer_lanes::CommandGate>,
     analytics: Arc<Mutex<Connection>>,
+    /// Terminal output history; its own database and writer, never the Canvas writer.
+    terminal_output: terminal_output::SharedArchive,
     cost_reader: repositories::analytics::CostReader,
     analytics_commit_notifiers: Arc<Mutex<CommitNotifiers>>,
     version_reader: Mutex<Connection>,
@@ -1329,6 +1332,7 @@ impl RuntimeStore {
             }
         }
         migrations::run(&root, progress)?;
+        let terminal_output = terminal_output::open(&root, &canvas_path)?;
 
         let table_change_flags = Arc::new(AtomicU32::new(0));
         let resource_receipt_update_count = Arc::new(AtomicU64::new(0));
@@ -1394,6 +1398,7 @@ impl RuntimeStore {
             writer,
             command_gate: Arc::new(writer_lanes::CommandGate::default()),
             analytics: Arc::new(Mutex::new(analytics)),
+            terminal_output,
             cost_reader,
             analytics_commit_notifiers: Arc::new(Mutex::new(CommitNotifiers::default())),
             version_reader: Mutex::new(version_reader),
@@ -1667,6 +1672,7 @@ impl RuntimeStore {
             .await
             .map_err(StoreError::writer_actor_control)?;
         self.checkpoint_analytics(mode).await?;
+        self.checkpoint_terminal_output(mode).await?;
         Ok(())
     }
 

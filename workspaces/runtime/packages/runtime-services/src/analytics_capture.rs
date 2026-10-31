@@ -621,9 +621,9 @@ pub async fn capture(
     store: &RuntimeStore,
     mut prepared: PreparedCapture,
 ) -> Result<CaptureDecision, CaptureError> {
+    check_agent_identity(store, vec![prepared.agent().clone()]).await?;
     store
-        .analytics_transaction(move |tx, canvas| {
-            check_identity(canvas, prepared.agent())?;
+        .analytics_projection_transaction(move |tx| {
             let epoch = studio_runtime_schema::usage::ledger::LedgerEpoch::Current;
             prepared.bind_budget(tx, epoch)?;
             let decision = decide(
@@ -862,6 +862,22 @@ fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<V
     <Value as serde::Deserialize>::deserialize(deserializer).map(Some)
 }
 
+/// Check agent identities on a Canvas read snapshot before the analytics commit. The
+/// analytics write then needs no Canvas writer admission. An identity that changes
+/// between the check and the commit lets one capture of the old identity land, as if
+/// it had been captured just before the change.
+pub(crate) async fn check_agent_identity(
+    store: &RuntimeStore,
+    agents: Vec<Value>,
+) -> Result<(), CaptureError> {
+    store
+        .read_async("runtime-services/analytics_identity", move |canvas| {
+            agents
+                .iter()
+                .try_for_each(|agent| check_identity(canvas, agent))
+        })
+        .await
+}
 pub(crate) fn check_identity(canvas: &Connection, agent: &Value) -> Result<(), CaptureError> {
     let raw: Option<String> = canvas
         .query_row_cached(
@@ -1657,11 +1673,15 @@ pub async fn capture_batch(
     if prepared.len() > 128 {
         return Err(CaptureError::Invalid("/capture/batch"));
     }
+    check_agent_identity(
+        store,
+        prepared.iter().map(|item| item.agent().clone()).collect(),
+    )
+    .await?;
     store
-        .analytics_transaction(move |tx, canvas| {
+        .analytics_projection_transaction(move |tx| {
             let mut effects = Vec::new();
             for mut prepared in prepared {
-                check_identity(canvas, prepared.agent())?;
                 let epoch = studio_runtime_schema::usage::ledger::LedgerEpoch::Current;
                 prepared.bind_budget(tx, epoch)?;
                 let decision = decide(
@@ -1913,5 +1933,22 @@ mod usage_contract_tests {
             .1;
         assert_eq!(row["studioUsage"], observation);
         assert_eq!(row["responseId"], "response");
+    }
+}
+
+#[cfg(test)]
+mod identity_read_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn identity_check_reads_a_snapshot_and_takes_no_writer_admission() {
+        let directory = tempfile::tempdir().expect("temporary state");
+        let store = RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("store");
+        let before = store.writer_admissions();
+        let result = check_agent_identity(&store, vec![json!({"id":"missing"})]).await;
+        assert!(matches!(result, Err(CaptureError::StaleIdentity)));
+        assert_eq!(store.writer_admissions(), before);
     }
 }

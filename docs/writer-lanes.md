@@ -19,11 +19,22 @@ Latency rule 3 and Command execution rule 5.
 ## Analytics
 
 `analytics.sqlite3` is a separate database with its own connection.
-`analytics_projection_transaction` writes it without writer admission. Use it for
-any analytics write that does not read Canvas. `analytics_transaction` still
-occupies the Canvas writer, because its callback reads Canvas through the writer
-connection (capture and history batches). Moving those reads to a snapshot reader
-is open work.
+`analytics_projection_transaction` writes it without writer admission. Capture and
+history batches check agent identity first on a Canvas read snapshot
+(`check_agent_identity`), then write analytics only. An identity that changes between
+the check and the commit lets one capture of the old identity land, as if it had been
+captured just before the change. `analytics_transaction` (Canvas writer) remains for
+startup migrations and tests.
+
+## Terminal output
+
+`terminal-output.sqlite3` holds `user_terminal_output` (own connection, own WAL, flushed
+with the other databases). The terminal row (tail, offset, event cursor) commits in Canvas
+first; then the driver appends the same text with `terminal_output_append`. A crash
+between the two commits loses that one chunk of older history (the tail is safe). Deleting
+a terminal removes its archive rows after the Canvas commit. On open, rows left in the
+Canvas table move to the archive (copy, flush, delete); the empty Canvas table stays for
+schema checks.
 
 ## Raw provider frames
 
@@ -33,7 +44,7 @@ rows and items.
 
 ## Open
 
-- Terminal output (`user_terminal_output`) is still written through the Canvas
-  writer. It needs its own file or database and writer.
 - Online migrations (`online_migration.rs`, other branch) should call
   `background_batch` once both branches are on main.
+- `analytics_items` holds 11.4 GB of free space inside pages. Rebuilding it needs about
+  16 GB of free disk and is deferred until the disk has room.
