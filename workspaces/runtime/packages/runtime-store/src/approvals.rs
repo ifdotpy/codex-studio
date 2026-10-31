@@ -235,10 +235,10 @@ pub struct NewApproval {
 
 const COLUMNS: &str = "id,agent,turn,created,request,state,answer,command,answered_by,at,since,reason,fire_at,hidden_at,epoch,delivery,detail,deferral_active,deferral_at,deferral_by,hidden_by";
 
-fn stored(id: &str, reason: impl ToString) -> ApprovalError {
+fn stored(id: &str, reason: &str) -> ApprovalError {
     ApprovalError::Stored {
         id: id.to_owned(),
-        reason: reason.to_string(),
+        reason: reason.to_owned(),
     }
 }
 
@@ -280,7 +280,7 @@ fn decode(row: &Row<'_>) -> ApprovalResult<Approval> {
             )?))?,
             at: at()?,
         },
-        other => return Err(stored(&id, format!("unknown state {other}"))),
+        other => return Err(stored(&id, &format!("unknown state {other}"))),
     };
     let optional_json = |index: usize| -> rusqlite::Result<Option<String>> { row.get(index) };
     let who = |index: usize, name: &str| -> ApprovalResult<Principal> {
