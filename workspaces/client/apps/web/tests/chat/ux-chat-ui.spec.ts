@@ -5,10 +5,6 @@ import type { ViteDevServer } from "vite";
 import type { Route } from "@playwright/test";
 import type { TranscriptPageResponse } from "../playwright.ts";
 import type { JsonInputOf, PostBody, PostResult } from "../../src/apiTypes.ts";
-import type {
-  PendingUpload,
-  PendingUploadContent,
-} from "../../src/sync/uploads.ts";
 import type { UxChatFixtureSendBody } from "../fixtures/ux-chat.tsx";
 import { fixturePostBody, fixtureResourceRefs } from "./http.ts";
 // Isolated component fixture. All API requests use local test responses.
@@ -440,47 +436,13 @@ test("Ux Chat Ui", async ({
     await page
       .getByRole("button", { name: "Remove pending message.txt", exact: true })
       .waitFor();
-    const savedUpload = await page.evaluate(
-      () =>
-        new Promise<{ name: string; bytes: number[] } | null>(
-          (resolve, reject) => {
-            const request = indexedDB.open("codex-studio-uploads", 2);
-            request.onerror = () => reject(request.error);
-            request.onsuccess = () => {
-              const database = request.result;
-              const transaction = database.transaction(
-                ["uploads", "contents"],
-                "readonly",
-              );
-              const rows = transaction.objectStore("uploads").getAll();
-              rows.onerror = () => reject(rows.error);
-              rows.onsuccess = () => {
-                // This database is written by the uploads owner in this renderer.
-                const row = (rows.result as PendingUpload[]).find(
-                  (item) => item.name === "message.txt",
-                );
-                if (!row) return resolve(null);
-                const content = transaction.objectStore("contents").get(row.id);
-                content.onerror = () => reject(content.error);
-                content.onsuccess = () => {
-                  database.close();
-                  resolve({
-                    name: row.name,
-                    bytes: Array.from(
-                      new Uint8Array(
-                        (content.result as PendingUploadContent).bytes!,
-                      ),
-                    ),
-                  });
-                };
-              };
-            };
-          },
-        ),
+    // Pending files live in memory only; the page writes no upload database.
+    assert.deepEqual(
+      (await page.evaluate(() => indexedDB.databases())).filter(
+        (database) => database.name === "codex-studio-uploads",
+      ),
+      [],
     );
-    assert.ok(savedUpload);
-    assert.equal(savedUpload.name, "message.txt");
-    assert.equal(Buffer.from(savedUpload.bytes).toString(), longDraft);
     await page
       .getByRole("button", { name: "Remove pending message.txt", exact: true })
       .click();

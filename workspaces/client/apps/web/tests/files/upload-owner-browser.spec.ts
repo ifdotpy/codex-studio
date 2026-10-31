@@ -32,9 +32,6 @@ test("upload owners retain distinct bytes and reject a late cancelled attachment
     await page.goto(`${server.resolvedUrls!.local[0]!}owner-check`);
     const result = await page.evaluate(async () => {
       const { createUploads } = await import("/src/sync/uploads.ts");
-      const { scopedStorage } = await import("/src/servers/storage.ts");
-      const { createLocalDraftStorage } =
-        await import("/src/sync/localDraft.ts");
       const sent: {
         owner: string;
         path: string;
@@ -46,12 +43,8 @@ test("upload owners retain distinct bytes and reject a late cancelled attachment
         startedA = resolve;
       });
       const make = (owner: string) => {
-        const storage = scopedStorage(() => localStorage, `${owner}:`);
         return createUploads({
           databaseName: `uploads-${owner}`,
-          storage,
-          writeLocalDraft: createLocalDraftStorage(storage, `drafts-${owner}`)
-            .writeLocalDraft,
           syncDatabase: async () => ({ workspaceId: "same-workspace" }),
           syncGet: async () => ({ workspaceId: "same-workspace" }),
           refreshSession: async () => ({ token: owner }),

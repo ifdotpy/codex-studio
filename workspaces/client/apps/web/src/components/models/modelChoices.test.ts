@@ -1,5 +1,6 @@
 import { required } from "../componentTestFixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { preferenceMemory } from "../../servers/storage";
 import { INHERITED_MODEL, toModelOptions } from "./modelOption";
 import {
   isModelEnabled,
@@ -21,6 +22,7 @@ const models = toModelOptions([
   { model: "gpt-6-astra", provider: "codex" },
 ]);
 beforeEach(() => {
+  preferenceMemory.clear();
   const values = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     get length() {
@@ -52,9 +54,8 @@ it("writes a versioned server preference instead of session memory", async () =>
     timestamp: expect.any(Number),
     writer: expect.any(String),
   });
-  vi.resetModules();
-  const reloaded = await import("./modelChoices");
-  expect(reloaded.readModelChoices("local")).toEqual({
+  // Preferences live in memory and return from the server stream.
+  expect(readModelChoices("local")).toEqual({
     "codex:gpt-6-astra": "blacklisted",
   });
 });

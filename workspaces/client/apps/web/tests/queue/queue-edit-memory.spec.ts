@@ -24,9 +24,8 @@ test("queue edits stay in memory and save on user action", async ({
     const mount = async () => {
       await page.goto(origin + "/check");
       await page.evaluate(async () => {
-        const fixture =
-          await import("/tests/queue/queue-edit-memory.fixture.tsx");
-        fixture.mount();
+        const fixturePath = "/tests/queue/queue-edit-memory.fixture.tsx";
+        (await import(fixturePath)).mount();
       });
     };
     await mount();
