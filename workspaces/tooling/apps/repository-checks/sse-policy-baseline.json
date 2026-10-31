@@ -324,14 +324,6 @@
     "callee": "localStorage.getItem"
   },
   {
-    "file": "sync/client.draftServer.test.ts",
-    "callee": "fetch"
-  },
-  {
-    "file": "sync/client.draftServer.test.ts",
-    "callee": "fetch"
-  },
-  {
     "file": "sync/client.entityServer.test.ts",
     "callee": "fetch"
   },
@@ -372,8 +364,8 @@
     "callee": "syncGet"
   },
   {
-    "file": "sync/client.ts",
-    "callee": "syncPost"
+    "file": "sync/drafts.ts",
+    "callee": "options.api.syncPost"
   },
   {
     "file": "sync/localDraft.ts",
