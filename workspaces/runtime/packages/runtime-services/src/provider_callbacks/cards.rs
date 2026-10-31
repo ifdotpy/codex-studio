@@ -966,16 +966,6 @@ fn resume_agent(tx: &Transaction<'_>, agent: &str, epoch: u64) -> Result<(), Cal
     Ok(())
 }
 
-pub(crate) fn answer_signature(data: &Value) -> String {
-    let relevant: serde_json::Map<String, Value> = ["answers", "content", "decision"]
-        .into_iter()
-        .filter_map(|key| data.get(key).map(|v| (key.to_owned(), v.clone())))
-        .collect();
-    studio_runtime_store::sha256_hex(
-        studio_runtime_store::python_json_utf8(&Value::Object(relevant)).as_bytes(),
-    )
-}
-
 /// Context comes exclusively from the validated stored card and actor, never
 /// from HTTP fields. Recheck the actor and card inside the answer transaction.
 fn card_context(tx: &Transaction<'_>, card: &Approval) -> Result<CallbackContext, CallbackError> {

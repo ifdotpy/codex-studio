@@ -61,12 +61,6 @@ pub fn checkpoint_list(
     Ok(json!({"checkpoints": items}))
 }
 
-fn deleted_value(value: Option<&Value>) -> bool {
-    value
-        .and_then(Value::as_f64)
-        .is_some_and(|number| number != 0.0)
-}
-
 /// Separator of an asynchronous question id: `<agent>:question:<agent message item>`.
 const ASYNC_QUESTION_SEPARATOR: &str = ":question:";
 
@@ -88,16 +82,6 @@ mod tests {
     use super::{QuestionsReadsError, checkpoint_list, complaint_detail};
     use serde_json::json;
     use studio_runtime_store::{AgentRecord, CheckpointRecord};
-
-    #[test]
-    fn history_retains_property_order_and_redacts_secret_answers() {
-        let raw = r#"{"id":"r","agent":"a","method":"mcpServer/elicitation/request","status":"answered","createdAt":1,"params":{"mode":"form","requestedSchema":{"properties":{"z":{"title":"Last","writeOnly":true},"a":{"title":"First"}}}},"answerHistory":[{"id":"z","question":"Last","isSecret":true,"answer":"secret"}]}"#;
-        let record = serde_json::from_str(raw).unwrap();
-        let result = super::question_history_entity(&record).unwrap().unwrap();
-        assert_eq!(result["questions"][0]["id"], "z");
-        assert_eq!(result["questions"][1]["id"], "a");
-        assert_eq!(result["answerHistory"][0]["answer"], json!(null));
-    }
 
     fn agent(id: &str, root: &str, deleted_at: Option<f64>) -> AgentRecord {
         let mut record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"});

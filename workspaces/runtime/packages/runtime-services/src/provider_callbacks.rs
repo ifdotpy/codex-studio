@@ -15,7 +15,6 @@ pub(crate) mod tools;
 pub use crate::managed_child_create::{
     ManagedCreationEnvironment, ManagedCreationEnvironmentError,
 };
-pub(crate) use cards::answer_signature;
 pub use cards::{
     AnswerAuthority, CLAUDE_FULL_ACCESS_APPROVAL_SECONDS, NATIVE_REQUEST_METHODS, NativeAdmission,
     admit_native, answer, expire, expire_due, expire_ended_generations,

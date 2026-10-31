@@ -610,22 +610,8 @@ pub(crate) fn reconcile_effect(
     reconcile_effect_source(tx, kind, &source, actor)
 }
 
-pub(crate) fn reconcile_request_effect(
-    tx: &Transaction<'_>,
-    record: &studio_runtime_store::RequestRecord,
-    actor: &Value,
-) -> Result<(), StoreError> {
-    reconcile_effect_source(
-        tx,
-        ExecutionEffectKind::Requests,
-        &EffectSource::Request(record),
-        actor,
-    )
-}
-
 enum EffectSource<'a> {
     Legacy(&'a Value),
-    Request(&'a studio_runtime_store::RequestRecord),
 }
 
 fn reconcile_effect_source(
@@ -699,7 +685,6 @@ impl<'a> EffectSource<'a> {
     fn id(&self) -> &str {
         match self {
             Self::Legacy(record) => text(record, "id"),
-            Self::Request(record) => &record.id,
         }
     }
     fn status(&self) -> &str {
@@ -709,7 +694,6 @@ impl<'a> EffectSource<'a> {
                 .unwrap_or(&record["status"])
                 .as_str()
                 .unwrap_or_default(),
-            Self::Request(record) => record.status.as_str(),
         }
     }
     fn turn<'b>(&'b self, actor: &'b Value) -> (Option<&'b str>, bool) {
@@ -720,14 +704,6 @@ impl<'a> EffectSource<'a> {
                     .filter(|v| truthy(Some(v)))
                     .or_else(|| actor.get("turnId"));
                 (turn.and_then(Value::as_str), truthy(turn))
-            }
-            Self::Request(record) => {
-                let turn = record
-                    .turn_id
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| actor.get("turnId").and_then(Value::as_str));
-                (turn, turn.is_some_and(|s| !s.is_empty()))
             }
         }
     }
@@ -742,7 +718,6 @@ impl<'a> EffectSource<'a> {
                 record.get("outcome"),
                 truthy(record.get("finished")),
             ),
-            Self::Request(_) => (None, None, false),
         }
     }
 }

@@ -188,11 +188,6 @@ impl Selection {
     }
 }
 
-/// The predicate of the unsettled-request partial index, for queries that must use it.
-pub(crate) fn unsettled_request_predicate() -> String {
-    REQUESTS.predicate()
-}
-
 /// The predicate of the active-monitor partial index.
 pub(crate) fn active_monitor_predicate() -> String {
     MONITORS.predicate()

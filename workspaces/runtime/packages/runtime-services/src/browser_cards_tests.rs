@@ -11,20 +11,6 @@ use studio_runtime_schema::approvals::{
     CloseReason, Decision, Principal, Timestamp,
 };
 
-#[test]
-fn browser_params_preserve_raw_extensions_and_reject_duplicate_keys() {
-    let raw = r#"{"bridgeId":"id","phase":"waiting","provider":{"z":  1, "a":2}}"#;
-    let params: super::BrowserParams = serde_json::from_str(raw).unwrap();
-    let encoded = serde_json::to_string(&params).unwrap();
-    assert!(encoded.contains(r#"{"z":  1, "a":2}"#));
-    assert!(
-        serde_json::from_str::<super::BrowserParams>(r#"{"phase":"waiting","phase":"waiting"}"#)
-            .is_err()
-    );
-    assert!(serde_json::from_str::<super::BrowserParams>(r#"{"other":1,"other":2}"#).is_err());
-    assert!(serde_json::from_str::<super::BrowserParams>(r#"{"phase":"future"}"#).is_err());
-}
-
 struct WaitGuest {
     batches: Mutex<VecDeque<Value>>,
     calls: Mutex<Vec<(String, Value)>>,

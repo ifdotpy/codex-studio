@@ -550,7 +550,7 @@ async fn provider_callbacks_not_sent_and_expiry() {
     .await
     .unwrap();
     assert_eq!(body(&declined), &json!({"decision":"decline"}));
-    expire(&store, &context.account, &context.connection)
+    expire(&store, &context.account, &context.connection, 20.0)
         .await
         .unwrap();
     assert!(

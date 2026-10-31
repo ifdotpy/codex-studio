@@ -1038,13 +1038,6 @@ fn enqueue(
     Ok(())
 }
 
-fn invalid(id: &str, location: &str) -> MonitorError {
-    MonitorError::InvalidStored {
-        id: id.into(),
-        location: location.into(),
-    }
-}
-
 const MONITOR_START_ACTOR_INPUTS: &[&str] = &[
     "/threadId",
     "/cwd",

@@ -23,7 +23,6 @@
         "answering",
         "answered",
         "uncertain",
-        "blocked",
         "resolved",
         "expired",
         "deleted"

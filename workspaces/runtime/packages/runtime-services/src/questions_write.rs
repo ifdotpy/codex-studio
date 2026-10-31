@@ -145,7 +145,7 @@ pub async fn answer_async_question_in_store(
         .transaction_with_error(move |transaction| {
             answer_async_question(
                 transaction,
-                AsyncQuestionAnswerInput {
+                &AsyncQuestionAnswerInput {
                     id: &id,
                     data: &data,
                     admission: &admission,
@@ -163,9 +163,9 @@ pub async fn answer_async_question_in_store(
 /// is owned by the caller and happens before this writer transaction.
 pub fn answer_async_question(
     transaction: &Transaction<'_>,
-    input: AsyncQuestionAnswerInput<'_>,
+    input: &AsyncQuestionAnswerInput<'_>,
 ) -> Result<AsyncQuestionAnswerResult, QuestionsWriteError> {
-    let AsyncQuestionAnswerInput {
+    let &AsyncQuestionAnswerInput {
         id,
         data,
         admission,
@@ -470,48 +470,6 @@ fn is_approval_question(row: &Approval) -> bool {
     }
 }
 
-pub(crate) fn state_only_delete_allowed(
-    record: &RequestRecord,
-    agent_deleted: bool,
-    reject_pending_native: bool,
-) -> Result<bool, QuestionsWriteError> {
-    use studio_runtime_schema::{
-        persistence::RequestCardStatus as Status, request_record::RequestMethod,
-    };
-    if !is_question(record)? {
-        return Err(QuestionsWriteError::InvalidRequest(
-            "Only a question can be deleted",
-        ));
-    }
-    if agent_deleted {
-        return Err(QuestionsWriteError::InvalidRequest(
-            "This agent was deleted",
-        ));
-    }
-    if record.deleted_at.is_some_and(|at| at != 0.0) {
-        return Ok(false);
-    }
-    if reject_pending_native
-        && record.status == Status::Pending
-        && record.method != RequestMethod::AsyncQuestion
-    {
-        return Err(QuestionsWriteError::QuestionAnswerUnavailable);
-    }
-    if matches!(record.status, Status::Answering | Status::Uncertain) {
-        return Err(QuestionsWriteError::InvalidRequest(
-            "Question delivery is uncertain; wait for its receipt",
-        ));
-    }
-    Ok(true)
-}
-
-pub(crate) fn mark_state_only_deleted(record: &mut RequestRecord, deleted_at: f64) {
-    record.status = studio_runtime_schema::persistence::RequestCardStatus::Deleted;
-    record.deleted_at = Some(deleted_at);
-    record.deleted_by = Some(USER.into());
-    record.deferred = Some(false);
-}
-
 pub fn submit_complaint(
     transaction: &Transaction<'_>,
     lead_id: &str,
@@ -727,27 +685,6 @@ pub fn respond_to_complaint(
         record: ComplaintWriteReply::Current(complaint),
         event_inserted,
         wake_event_worker,
-    })
-}
-
-fn is_question(record: &RequestRecord) -> Result<bool, QuestionsWriteError> {
-    use studio_runtime_schema::request_record::RequestMethod;
-    Ok(match record.method {
-        RequestMethod::AsyncQuestion | RequestMethod::UserInput => true,
-        RequestMethod::Elicitation => {
-            #[derive(serde::Deserialize)]
-            struct Params {
-                mode: Option<String>,
-            }
-            let params: Params = serde_json::from_str(record.params.get())
-                .map_err(|_| invalid_stored("runtime_requests", &record.id))?;
-            params.mode.as_deref() == Some("form")
-        }
-        RequestMethod::BrowserOpen
-        | RequestMethod::MonitorApprove
-        | RequestMethod::CommandApproval
-        | RequestMethod::FileApproval
-        | RequestMethod::PermissionsApproval => false,
     })
 }
 
