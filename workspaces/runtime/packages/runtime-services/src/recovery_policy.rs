@@ -6,6 +6,7 @@ use std::sync::Arc;
 use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 use studio_runtime_schema::recovery_record::{RecoveryAgentRecord, RecoveryFields, RecoverySource};
 use studio_runtime_schema::shared_values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR;
+use studio_runtime_schema::start_attempt::StartAttemptView;
 use studio_runtime_store::{
     BACKEND_RESTARTED_TURN_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
     VM_PROVIDER_DISCONNECTED_TURN_ERROR,
@@ -239,11 +240,11 @@ fn clear(a: &Value, typed: &RecoveryAgentRecord) -> bool {
     .any(|k| has(a, k))
         && !thread_block(a, typed)
 }
-fn attempt_matches(a: &Value, t: &Value, typed: &RecoveryFields) -> bool {
+fn attempt_matches(a: &Value, t: &Value, typed: &StartAttemptView) -> bool {
     typed.id.as_deref().is_some_and(|s| !s.is_empty())
         && t["epoch"] == a["epoch"]
         && account_equal(t, a)
-        && !has(t, "action")
+        && typed.action.is_none()
         && !typed.active_at_reservation.unwrap_or(false)
         && !typed.turn_id.as_deref().is_some_and(|s| !s.is_empty())
         && !typed
@@ -251,7 +252,7 @@ fn attempt_matches(a: &Value, t: &Value, typed: &RecoveryFields) -> bool {
             .as_deref()
             .is_some_and(|s| !s.is_empty())
 }
-fn events_valid(t: &RecoveryFields) -> bool {
+fn events_valid(t: &StartAttemptView) -> bool {
     t.events.as_ref().is_some_and(|events| {
         !events.is_empty()
             && events.iter().all(|event| !event.is_empty())
@@ -350,14 +351,15 @@ fn unclean_start_candidate(raw: &str) -> bool {
 
 fn eligibility(a: &Value, typed: &RecoveryAgentRecord) -> Eligibility {
     let empty = RecoveryFields::default();
+    let empty_attempt = StartAttemptView::default();
     let rt = typed.restart_recovery.as_deref().unwrap_or(&empty);
     let tt = typed
         .start_attempt
         .as_deref()
         .or(rt.start_attempt.as_deref())
-        .unwrap_or(&empty);
+        .unwrap_or(&empty_attempt);
     let d_typed = typed.disconnect_recovery.as_deref().unwrap_or(&empty);
-    let dt_typed = d_typed.start_attempt.as_deref().unwrap_or(&empty);
+    let dt_typed = d_typed.start_attempt.as_deref().unwrap_or(&empty_attempt);
     let repair_typed = typed.context_repair.as_deref().unwrap_or(&empty);
 
     let r = &a["restartRecovery"];
@@ -397,10 +399,10 @@ fn eligibility(a: &Value, typed: &RecoveryAgentRecord) -> Eligibility {
             ]
             .iter()
             .any(|k| has(a, k))
-            && !has(t, "action")
+            && tt.action.is_none()
             && tt.id.as_deref().is_some_and(|s| !s.is_empty())
             && tt.submitted == Some(true)
-            && (tt.execution_outcome.as_deref() == Some("unknown")
+            && (tt.execution_outcome == Some(studio_runtime_schema::persistence::ExecutionStatus::Unknown)
                 // A process stop can end a submitted start before its response
                 // records an outcome; a held restart marker keeps that attempt
                 // without one, which is unknown too.
