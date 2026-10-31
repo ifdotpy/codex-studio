@@ -107,9 +107,10 @@ fn compare(
     root: &Path,
     binary: &Path,
 ) -> Result<Option<String>> {
-    if bundled.version != developer.version || bundled.format != developer.format {
+    // The store format is the compatibility contract; any release of the same format may share it.
+    if bundled.format != developer.format {
         return Err(NativeLayrError::Refused(format!(
-            "Store {} requires matching Layr versions. Studio: {} (format {}, build {}). Developer {}: {} (format {}, build {}). Upgrade the developer binary to the bundled release; see docs/native-layr.md.",
+            "Store {} requires the same Layr store format. Studio: {} (format {}, build {}). Developer {}: {} (format {}, build {}). Use a developer binary with the bundled store format; see docs/native-layr.md.",
             root.display(),
             bundled.version,
             bundled.format,
@@ -120,13 +121,15 @@ fn compare(
             developer.build
         )));
     }
-    Ok((bundled.build != developer.build).then(|| {
+    Ok((bundled.version != developer.version || bundled.build != developer.build).then(|| {
         format!(
-            "Store {} uses Layr {} with different builds. Studio: {}. Developer {}: {}.",
+            "Store {} uses Layr format {} with different releases. Studio: {} ({}). Developer {}: {} ({}).",
             root.display(),
+            bundled.format,
             bundled.version,
             bundled.build,
             binary.display(),
+            developer.version,
             developer.build
         )
     }))
@@ -213,17 +216,18 @@ esac
         );
     }
     #[test]
-    fn native_layr_package_mismatch_refuses_but_build_difference_is_visible() {
+    fn native_layr_format_mismatch_refuses_but_version_difference_is_visible() {
         let bundled = Identity {
             format: 1,
             version: "0.4.0".into(),
             build: "upstream".into(),
         };
         let mut developer = Identity {
-            format: 1,
-            version: "0.2.3".into(),
-            build: "old".into(),
+            format: 2,
+            version: "0.6.0".into(),
+            build: "new".into(),
         };
+<<<<<<< head
         let error = compare(
             &bundled,
             &developer,
@@ -235,15 +239,46 @@ esac
         assert!(error.contains("0.2.3") && error.contains("0.4.0") && error.contains("/store"));
         developer.version = bundled.version.clone();
         assert!(
+||||||| base
+        let error = compare(
+            &bundled,
+            &developer,
+            Path::new("/store"),
+            Path::new("/developer/layr"),
+        )
+        .expect_err("different package")
+        .to_string();
+        assert!(error.contains("0.2.3") && error.contains("0.5.1") && error.contains("/store"));
+        developer.version = bundled.version.clone();
+        assert!(
+=======
+        let compare_now = |developer: &Identity| {
+>>>>>>> 96b3372
             compare(
                 &bundled,
-                &developer,
+                developer,
                 Path::new("/store"),
-                Path::new("/developer/layr")
+                Path::new("/developer/layr"),
             )
-            .expect("compatible")
-            .expect("warning")
-            .contains("old")
+        };
+        let error = compare_now(&developer)
+            .expect_err("different store format")
+            .to_string();
+        assert!(
+            error.contains("format 2") && error.contains("format 1") && error.contains("/store")
+        );
+        developer.format = 1;
+        developer.version = "0.5.2".into();
+        let note = compare_now(&developer)
+            .expect("same store format")
+            .expect("visible difference");
+        assert!(note.contains("0.5.2") && note.contains("0.5.1"));
+        developer.version = bundled.version.clone();
+        assert!(
+            compare_now(&developer)
+                .expect("compatible")
+                .expect("warning")
+                .contains("new")
         );
     }
 }

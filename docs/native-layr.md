@@ -127,8 +127,9 @@ studio-runtime-server native-layr upgrade-store --state /path/to/studio-state
 
 For a shared root, Studio also inspects `~/.local/bin/layr`.
 The capability probe uses a private temporary root, so an old binary cannot change the selected store during the probe.
-That binary must support `store-version` and use the same package version and store format as the bundled binary.
-Studio reports a different build identity as `layrVersionWarning` on the prepared chat.
+That binary must support `store-version` and use the same store format as the bundled binary.
+The store format is the compatibility contract, so a newer or older layr release of the same format may share the root.
+Studio reports a different release or build as `layrVersionWarning` on the prepared chat.
 Upgrade an old developer binary before you use the shared root.
 The format guard cannot protect a store from an old binary that does not implement the guard.
 
