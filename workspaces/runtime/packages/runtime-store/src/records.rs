@@ -362,6 +362,8 @@ pub struct AgentRecord {
     pub is_lead: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_mode: Option<studio_runtime_schema::records::WorkspaceMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<studio_runtime_schema::claude_permissions::PermissionMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -729,6 +731,7 @@ impl AgentRecord {
             native_status: None,
             is_lead: None,
             workspace_mode: None,
+            permission_mode: None,
             model: None,
             cwd: None,
             name: None,
@@ -2649,6 +2652,14 @@ mod tests {
         assert!(serde_json::from_str::<AgentRecord>(null_mode).is_err());
         let null_intent = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"creationIntent":null}"#;
         assert!(serde_json::from_str::<AgentRecord>(null_intent).is_err());
+    }
+
+    #[test]
+    fn agent_permission_mode_is_a_closed_contract() {
+        let valid = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"permissionMode":"bypassPermissions"}"#;
+        let unknown = r#"{"id":"agent","rootId":"agent","epoch":1,"status":"idle","accountKey":"default","compactions":0,"permissionMode":"unknown"}"#;
+        assert!(serde_json::from_str::<AgentRecord>(valid).is_ok());
+        assert!(serde_json::from_str::<AgentRecord>(unknown).is_err());
     }
 
     #[test]
