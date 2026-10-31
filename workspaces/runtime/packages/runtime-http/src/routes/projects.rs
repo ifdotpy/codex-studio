@@ -1140,8 +1140,7 @@ async fn remote_location_request(
             let project_id = project_id.ok_or_else(|| {
                 ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project")
             })?;
-            studio_runtime_store::ProjectsRepository::get(db, &project_id)?
-                .map(|(_, value)| value)
+            studio_runtime_store::ProjectsRepository::get_record(db, &project_id)?
                 .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project"))
         })
         .await?;
@@ -1159,25 +1158,17 @@ async fn remote_location_request(
 /// checkout's Git origin, so it runs on a blocking thread.
 fn remote_location_action(
     query: &Value,
-    project: &Value,
+    project: &studio_runtime_schema::project_record::ProjectRecord,
     server: String,
 ) -> Result<(String, String, Value), ApiError> {
     let action = if query.get("action").and_then(Value::as_str) == Some("matches") {
         let origin = project
-            .get("locations")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find_map(|row| {
-                row.get("gitOrigin")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
+            .locations
+            .iter()
+            .find_map(|row| row.git_origin.clone())
             .or_else(|| {
-                project
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .filter(|path| !path.starts_with("project:"))
+                (!project.path.starts_with("project:"))
+                    .then_some(project.path.as_str())
                     .and_then(|path| {
                         studio_runtime_services::projects::peer_location_info(path).ok()
                     })
@@ -1202,14 +1193,10 @@ fn remote_location_action(
             .filter(|path| !path.is_empty())
             .or_else(|| {
                 project
-                    .get("locations")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .find(|row| {
-                        row.get("serverId").and_then(Value::as_str) == Some(server.as_str())
-                    })
-                    .and_then(|row| row.get("path").and_then(Value::as_str))
+                    .locations
+                    .iter()
+                    .find(|row| row.server_id == server)
+                    .map(|row| row.path.as_str())
             })
             .ok_or_else(|| {
                 ApiError::new(
@@ -1326,6 +1313,22 @@ inventory::submit! {
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod local_registration_tests {
+    #[test]
+    fn remote_location_uses_typed_project_location() {
+        let project = serde_json::from_str::<studio_runtime_schema::project_record::ProjectRecord>(
+            r#"{"id":"project","path":"project:id","peerTeams":[],"locations":[{"serverId":"server","path":"/folder","projectId":"id","gitOrigin":"origin"}]}"#,
+        ).unwrap();
+        let (_, action, payload) =
+            super::remote_location_action(&json!({}), &project, "server".into()).unwrap();
+        assert_eq!(action, "location_info");
+        assert_eq!(payload, json!({"cwd":"/folder"}));
+        let (_, action, payload) =
+            super::remote_location_action(&json!({"action":"matches"}), &project, "server".into())
+                .unwrap();
+        assert_eq!(action, "location_matches");
+        assert_eq!(payload, json!({"origin":"origin","cwd":null}));
+    }
+
     #[test]
     fn project_record_refuses_malformed_locations() {
         let raw =
