@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::{StoreError, StoreResult};
 
-const SNAPSHOT: &str = include_str!("runtime-state-schema.json");
+pub(crate) const SNAPSHOT: &str = include_str!("runtime-state-schema.json");
 const CORE_DATABASES: [&str; 2] = ["canvas.sqlite3", "analytics.sqlite3"];
 pub(crate) const TERMINAL_ERROR_REPAIR_KEY: &str = "terminalErrorRepairV1";
 /// The process supervisor's journal (`codex_process_supervisor.Journal` and

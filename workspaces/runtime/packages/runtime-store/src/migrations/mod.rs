@@ -36,6 +36,7 @@ mod m2026_10_30_text_blobs;
 mod m2026_10_30_unused_agent_columns;
 mod m2026_10_30_unused_start_action;
 mod m2026_10_30_vm_stream_owners;
+mod m2026_10_31_current_checks;
 mod m2026_10_31_native_status_error;
 mod m2026_10_31_project_record_kind;
 mod m2026_10_31_retired_start_indexes;
@@ -776,6 +777,16 @@ static CATALOG: &[&dyn Migration] = &[
             c.transaction.execute_batch("DROP TABLE IF EXISTS analytics_capture_effect_receipts; DROP TABLE IF EXISTS analytics_capture_legacy_watermarks; DROP TABLE IF EXISTS analytics_capture_receipt_migrations;")?;
             Ok(())
         },
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-31-current-checks",
+            introduced: OCTOBER_31,
+            target: MigrationTarget::Canvas,
+            supported_source: "Completed stores with earlier agent and server outbox CHECK constraints",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_31_current_checks::apply(c.transaction),
     },
 ];
 
