@@ -308,6 +308,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const {
     get,
     post,
+    command: serverCommand,
     save,
     saved,
     isApiSchemaMismatch,
@@ -1788,10 +1789,10 @@ export default function App({ active = true }: { active?: boolean }) {
             );
           }
         } else if (command === "/stop" || command === "/stop-team")
-          await post("/api/stop", {
-            id: command === "/stop-team" ? (agent.rootId ?? id) : id,
-            descendants: command === "/stop-team",
-          });
+          await serverCommand.stop(
+            command === "/stop-team" ? (agent.rootId ?? id) : id,
+            command === "/stop-team",
+          );
         else
           await submitNativeAction(
             agent,
@@ -2675,10 +2676,7 @@ export default function App({ active = true }: { active?: boolean }) {
               leftSection={<Square size={14} />}
               onClick={() => {
                 void run(() =>
-                  post("/api/stop", {
-                    id: agent.rootId ?? agent.id,
-                    descendants: true,
-                  }),
+                  serverCommand.stop(agent.rootId ?? agent.id, true),
                 );
               }}
             >

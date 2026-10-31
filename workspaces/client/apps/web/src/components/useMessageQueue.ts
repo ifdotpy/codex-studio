@@ -83,7 +83,7 @@ export function useMessageQueue(p: {
   refresh: () => Promise<void>;
 }) {
   const { subscribeStateProjection } = useServerSync();
-  const { get, syncPost } = useServerApi();
+  const { get, syncPost, command } = useServerApi();
   const storage = useServerStorage();
   const { updateLocalDraft } = useServerLocalDrafts();
   const serverStorageEventKey = useServerStorageEventKey();
@@ -281,8 +281,33 @@ export function useMessageQueue(p: {
         expectedText: current?.text === text.trim() ? current.text : item.text,
       });
     },
-    cancel: (item: QueueItemDto) =>
-      mutate({ action: "cancel", id: item.id, expectedText: item.text }),
+    // Withdraw is a command: the server deletes the queued message (see runtime-schema
+    // command.rs). A second click after a lost answer makes a new command, and the server
+    // answers that the message already left the queue.
+    cancel: async (item: QueueItemDto) => {
+      if (!p.id) throw new Error("The queue belongs to another chat.");
+      if (locks.current.has(key))
+        throw new Error("Wait for the current queue change.");
+      locks.current.add(key);
+      setBusy(key);
+      serial.current++;
+      try {
+        await command.withdraw(p.id, item.id, { workspaceId: p.workspaceId });
+        p.observed?.([item.id]);
+        if (currentKey.current === key) {
+          await reload().catch((error) => {
+            setFailure({ key, text: errorText(error) });
+          });
+          void p.refresh().catch(() => {});
+        }
+      } catch (error) {
+        if (currentKey.current === key) await reload().catch(() => {});
+        throw error;
+      } finally {
+        locks.current.delete(key);
+        setBusy((value) => (value === key ? null : value));
+      }
+    },
     sendNow: (item: QueueItemDto) =>
       mutate({ action: "send_now", id: item.id, expectedText: item.text }),
     reorder: (ids: string[]) => mutate({ action: "reorder", ordered_ids: ids }),

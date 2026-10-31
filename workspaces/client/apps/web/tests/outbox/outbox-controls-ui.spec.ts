@@ -561,7 +561,9 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     page.on("request", (request) => {
       if (
         request.method() === "POST" &&
-        ["/api/queue", "/api/stop"].includes(new URL(request.url()).pathname)
+        ["/api/queue", "/api/stop", "/api/commands"].includes(
+          new URL(request.url()).pathname,
+        )
       )
         forbiddenNativeMutations.push(request.url());
     });
