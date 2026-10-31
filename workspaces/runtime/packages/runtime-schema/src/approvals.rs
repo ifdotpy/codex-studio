@@ -156,7 +156,7 @@ pub struct BrowserRedirect {
 /// A forward of the callback to another server. Only the hash of the token is stored.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct BrowserForward {
+pub struct BrowserCallbackForward {
     pub token_hash: String,
     pub expires_at: Timestamp,
 }
@@ -224,7 +224,7 @@ pub struct BrowserCard {
     pub expires_at: Option<Timestamp>,
     /// Other chats that wait on this card.
     pub joined: Vec<AgentId>,
-    pub forward: Option<BrowserForward>,
+    pub forward: Option<BrowserCallbackForward>,
     pub phase: BrowserPhase,
 }
 

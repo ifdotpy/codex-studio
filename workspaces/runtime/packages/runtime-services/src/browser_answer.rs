@@ -5,8 +5,8 @@ use std::{sync::Arc, time::Duration};
 use base64::Engine as _;
 use serde_json::{Value, json};
 use studio_runtime_schema::approvals::{
-    Answer, Approval, ApprovalId, ApprovalState, BrowserCard, BrowserForward, BrowserOutcome,
-    BrowserPhase, CloseReason, CommandId, Decision, Principal, Timestamp,
+    Answer, Approval, ApprovalId, ApprovalState, BrowserCallbackForward, BrowserCard,
+    BrowserOutcome, BrowserPhase, CloseReason, CommandId, Decision, Principal, Timestamp,
 };
 use studio_runtime_store::approvals::{self, AnswerOutcome, ApprovalError};
 use studio_runtime_store::{RuntimeStore, Transaction};
@@ -357,7 +357,7 @@ pub async fn answer(
         let server = store
             .local_server_id()?
             .ok_or(BrowserAnswerError::Unknown)?;
-        let state = BrowserForward {
+        let state = BrowserCallbackForward {
             token_hash: studio_runtime_store::sha256_hex(token.as_bytes()),
             expires_at: Timestamp(expires_at),
         };
@@ -680,7 +680,7 @@ fn finish(
     tx: &Transaction<'_>,
     id: &str,
     decision: Decision,
-    forward: Option<BrowserForward>,
+    forward: Option<BrowserCallbackForward>,
     now: f64,
 ) -> Result<(), BrowserAnswerError> {
     if !record_answer(tx, id, decision, now)? {

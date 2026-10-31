@@ -1369,7 +1369,7 @@ async fn browser_callback_matches_python_and_replays_without_second_loopback_rel
         user_code: None,
         expires_at: None,
         joined: Vec::new(),
-        forward: Some(typed::BrowserForward {
+        forward: Some(typed::BrowserCallbackForward {
             token_hash: digest,
             expires_at: typed::Timestamp(9.0),
         }),

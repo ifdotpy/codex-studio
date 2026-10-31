@@ -8,7 +8,7 @@ use rusqlite::Transaction;
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use studio_runtime_schema::approvals::{
-    AgentId, Answer, Approval, ApprovalId, ApprovalState, BrowserCard, BrowserForward,
+    AgentId, Answer, Approval, ApprovalId, ApprovalState, BrowserCallbackForward, BrowserCard,
     BrowserOutcome, BrowserPhase, BrowserRedirect, BrowserSource, CloseReason, CommandId, Decision,
     Deferral, Delivery, Detail, Hidden, Principal, ProviderObject, Question, QuestionAnswer,
     Request, RequestKind, RpcId, Supervisor, Timestamp, TurnId,
@@ -230,7 +230,7 @@ fn browser_card(id: &str, params: &mut Map<String, Value>) -> StoreResult<Browse
         Some(value) => {
             let legacy: LegacyForward = serde_json::from_value(value)
                 .map_err(|e| bad(id, &format!("browser forward: {e}")))?;
-            Some(BrowserForward {
+            Some(BrowserCallbackForward {
                 token_hash: legacy.token_hash,
                 expires_at: Timestamp(legacy.expires_at),
             })
