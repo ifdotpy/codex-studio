@@ -83,7 +83,7 @@ pub(super) fn apply(tx: &Transaction<'_>) -> StoreResult<()> {
             let valid = fields.get(key).is_none_or(|v| match key {
                 "updated" => v.is_number(),
                 "version" => serde_json::from_value::<
-                    studio_runtime_schema::rule_record::RuleInteger<0, 9007199254740991>,
+                    studio_runtime_schema::work_item_record::WorkItemVersion,
                 >(v.clone())
                 .is_ok(),
                 "dependencies" => v

@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 use std::collections::BTreeMap;
 
+/// Persisted work version, bounded to the JSON safe integer range.
+pub type WorkItemVersion = RuleInteger<0, 9007199254740991>;
+
 fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     d: D,
 ) -> Result<Option<T>, D::Error> {
@@ -61,8 +64,8 @@ pub struct WorkItem {
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
-    #[schemars(with = "RuleInteger<0, 9007199254740991>")]
-    version: Option<RuleInteger<0, 9007199254740991>>,
+    #[schemars(with = "WorkItemVersion")]
+    version: Option<WorkItemVersion>,
     #[serde(
         default,
         deserialize_with = "present",
