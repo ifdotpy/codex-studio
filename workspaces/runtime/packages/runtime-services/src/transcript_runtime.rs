@@ -277,11 +277,7 @@ pub(crate) fn project(
         if let Some(turn) = item["turnId"].as_str()
             && !turn.is_empty()
         {
-            let ended = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_completed_turns WHERE id=?1)",
-                [format!("{agent}:{turn}")],
-                |r| r.get::<_, bool>(0),
-            )?;
+            let ended = studio_runtime_store::domain::turn_completed(connection, agent, turn)?;
             if ended && item.get("turnStatus").is_none() {
                 item["turnStatus"] = json!("ended");
             }

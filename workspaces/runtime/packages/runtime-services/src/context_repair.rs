@@ -793,7 +793,7 @@ pub fn capture(
             "runtime_event_meta",
             "runtime_items",
             "runtime_item_fulltext",
-            "runtime_completed_turns",
+            "turns",
         ],
     )?;
     let (agent, events) = ContextRepairRepository::capture(tx, agent, MAX_CAPTURE_BYTES)?
@@ -1180,7 +1180,7 @@ async fn repair_idle_with_broker_inner(
         {
             return Ok((agent, Vec::new(), Vec::new(), Vec::new(), None, String::new()));
         }
-        require_schema(tx, &["runtime_event_meta", "runtime_completed_turns"])?;
+        require_schema(tx, &["runtime_event_meta", "turns"])?;
         ensure_local_idle(tx, &agent)?;
         let tool_receipts = crate::provider_callbacks::revalidate_unresolved_context_tool_receipts(
             tx,

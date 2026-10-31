@@ -65,10 +65,6 @@ const TABLES: &[TableRequirement] = &[
         columns: &["id", "record"],
     },
     TableRequirement {
-        name: "runtime_completed_turns",
-        columns: &["id"],
-    },
-    TableRequirement {
         name: "runtime_events",
         columns: &[
             "id", "agent", "kind", "text", "status", "created", "epoch", "turn_id", "error",
@@ -107,7 +103,7 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     triggers: &[],
     conditional_triggers: &[],
     connection_functions: &[],
-    bootstrap_tables: &[TABLES[2]],
+    bootstrap_tables: &[crate::domain::TABLE_REQUIREMENTS[1]],
     bootstrap_triggers: &[],
     bootstrap_connection_functions: &[],
 };

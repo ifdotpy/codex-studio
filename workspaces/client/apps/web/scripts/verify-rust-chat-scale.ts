@@ -3057,9 +3057,9 @@ export function runEventEvidenceQuery(
         agentId,
         database
           .prepare(
-            "SELECT count(*) AS count FROM runtime_completed_turns WHERE id>=? AND id<?",
+            "SELECT count(*) AS count FROM turns WHERE chat=? AND state='completed'",
           )
-          .get(agentId + ":", agentId + ";")!.count as number,
+          .get(agentId)!.count as number,
       ]),
     );
     return {
