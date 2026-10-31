@@ -897,9 +897,13 @@ function browserPlan(root: string, smoke = false) {
 
 // Bounded lanes share preparation milestones. Only Rust compiles Cargo targets;
 // types wait for WASM, web and guest tests wait for the workspace, tools start immediately.
-// layr-retest takes the nextest arguments that follow "nextest run".
+// `layr retest run` takes the nextest arguments that follow "nextest run".
+function isRetest(bin: string, args: string[]): boolean {
+  return bin === "layr" && args[0] === "retest";
+}
+
 export function retestCommand([, args]: Command): Command {
-  return ["layr-retest", ["run", "--", ...args.slice(2)]];
+  return ["layr", ["retest", "run", "--", ...args.slice(2)]];
 }
 
 // The Rust workspace step: per-crate reuse, or layr-retest when STUDIO_RETEST=1.
@@ -1911,7 +1915,7 @@ export async function execute(
           }
         : scrubAgentEnvironment({ ...process.env });
     const retestEnv: NodeJS.ProcessEnv =
-      bin === "layr-retest" ? retestEnvironment(root) : {};
+      isRetest(bin, args) ? retestEnvironment(root) : {};
     const commandEnv = {
       ...baseEnv,
       CARGO_BUILD_JOBS: String(CARGO_BUILD_JOBS),
@@ -1927,7 +1931,7 @@ export async function execute(
     const child = await runLogged(bin, args, root, logPath, env, {
       signal: options.signal,
     });
-    if (bin === "layr-retest")
+    if (isRetest(bin, args))
       rmSync(path.dirname(retestEnv.LAYR_ROOT!), {
         recursive: true,
         force: true,

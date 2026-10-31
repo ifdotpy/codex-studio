@@ -193,14 +193,14 @@ STUDIO_TEST_REUSE=0 just test-comprehensive
 ### Retest: run only the Rust tests a change can reach (opt-in, experiment)
 
 `STUDIO_RETEST=1 just test-fast` (or any gate that has the Rust nextest step)
-runs that step as `layr-retest run -- <same nextest args>`. Default behavior is
+runs that step as `layr retest run -- <same nextest args>`. Default behavior is
 unchanged. The per-crate result cache does not apply to that step when the
 switch is on.
 
 - `layr-retest` builds the tests with LLVM coverage in `target/retest`, records the
   lines each test executed, and later runs only the tests whose executed code
   changed. A test with no record, or one that failed, always runs.
-- Needs `layr` and `layr-retest` on `PATH` and the `llvm-tools` rustup component.
+- Needs `layr` (with `layr retest`) on `PATH` and the `llvm-tools` rustup component.
   Run it in a layr line. Records are in `.layr-retest/` (a cache path in
   `.layrattributes`, ignored by Git), so a new line takes them.
 - The step passes with zero selected tests. Its counts come from the line
@@ -243,7 +243,7 @@ Limits:
   either. Coverage export is the cost, plus about 28 GB of temporary raw profiles.
 - Disk: `target/retest` is about 19 to 41 GB. Delete it when you stop.
 - Files a test reads (fixtures, `include_str!`) and toolchain changes are seen only
-  by `layr-retest run --full`. A saved pass is for speed, not evidence.
+  by `layr retest run --full`. A saved pass is for speed, not evidence.
 - Doc tests are not run by `layr-retest`; the separate doctest steps stay as they are.
 
 ### Disk

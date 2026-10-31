@@ -1877,7 +1877,7 @@ test("the retest command reuses the nextest arguments", () => {
       "cargo",
       ["nextest", "run", "--workspace", "--profile", "fast"],
     ]),
-    ["layr-retest", ["run", "--", "--workspace", "--profile", "fast"]],
+    ["layr", ["retest", "run", "--", "--workspace", "--profile", "fast"]],
   );
 });
 
@@ -1895,8 +1895,8 @@ test("STUDIO_RETEST=1 switches only the Rust workspace step", () => {
     assert.equal(rust("0").commands![0]![0], "cargo");
     const retest = rust("1");
     assert.deepEqual(retest.commands![0], [
-      "layr-retest",
-      ["run", "--", "--workspace", "--profile", "fast"],
+      "layr",
+      ["retest", "run", "--", "--workspace", "--profile", "fast"],
     ]);
     assert.notEqual(retest.crateReuse, true);
     assert.equal(retest.options?.allowZeroTests, true);
