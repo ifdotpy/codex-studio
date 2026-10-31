@@ -289,6 +289,9 @@ mod tests {
             .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         connection
+            .execute_batch(&crate::domain::tables_sql())
+            .expect("domain tables create");
+        connection
     }
 
     fn agent(connection: &Connection, id: &str, fields: Value) {
@@ -303,6 +306,7 @@ mod tests {
                 [id, &record.to_string()],
             )
             .expect("agent writes");
+        crate::domain::project(connection, id, &record).expect("session follows the record");
     }
 
     fn thread_in_use(connection: &Connection) -> bool {

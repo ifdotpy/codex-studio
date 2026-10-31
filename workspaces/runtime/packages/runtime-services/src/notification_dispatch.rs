@@ -2627,6 +2627,15 @@ mod tests {
             )
             .expect("notification dispatch agent");
         connection
+            .execute_batch(&studio_runtime_store::domain::tables_sql())
+            .expect("domain tables create");
+        connection
+            .execute(
+                "INSERT INTO sessions(id,chat,thread_id,account_key,state) VALUES('agent:thread','agent','thread','default','ready')",
+                [],
+            )
+            .expect("notification dispatch session");
+        connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         connection

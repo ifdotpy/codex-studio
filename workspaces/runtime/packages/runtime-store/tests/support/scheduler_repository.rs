@@ -86,6 +86,7 @@ fn thread_attempt_rejects_mismatched_physical_agent_id() {
             [record.to_string()],
         )
         .unwrap();
+    crate::domain::project(&connection, "agent", &record).unwrap();
     assert!(
         SchedulerRepository::find_attempt_for_thread(&connection, "account", 1, "thread", None)
             .is_err()
