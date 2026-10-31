@@ -1107,7 +1107,10 @@ mod request_tests {
         assert_eq!(members.keys().collect::<Vec<_>>(), ["lead"]);
         assert_eq!(stored(&store, "lead")["accountKey"], "target");
         assert_eq!(stored(&store, "child")["accountKey"], "source");
-        assert_eq!(stored(&store, "lead")["workerDefaults"], before["workerDefaults"]);
+        assert_eq!(
+            stored(&store, "lead")["workerDefaults"],
+            before["workerDefaults"]
+        );
         run_async(store.transaction(|tx| {
             let late = AgentRecord::from_value(
                 json!({"compactions":0,"id":"late","rootId":"lead","epoch":3,

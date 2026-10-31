@@ -552,7 +552,6 @@ function ScopedExecutionSettings({
   roleSwitchId,
   catalog: parentCatalog,
   accounts = [],
-  team,
   refresh,
   teamDefaults = false,
   nextTurnSupported,
