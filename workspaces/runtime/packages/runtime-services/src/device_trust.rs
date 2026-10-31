@@ -283,7 +283,7 @@ pub fn digest(entries: &[Entry]) -> String {
 /// The current list of this server.
 pub async fn read(store: &RuntimeStore) -> Result<Vec<Entry>, StoreError> {
     store
-        .read_async("runtime-services/device_trust", |tx| read_entries(tx))
+        .read_async("runtime-services/device_trust", read_entries)
         .await
 }
 
