@@ -53065,11 +53065,18 @@
             "maxLength": 36,
             "minLength": 36,
             "type": "string"
+          },
+          "token": {
+            "type": "string"
+          },
+          "workspaceId": {
+            "type": "string"
           }
         },
         "required": [
           "sessionId",
-          "routes"
+          "routes",
+          "workspaceId"
         ],
         "title": "SyncSessionEvent",
         "type": "object"
