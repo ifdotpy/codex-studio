@@ -1699,66 +1699,6 @@ fn callback_error(error: crate::provider_callbacks::CallbackError) -> AccessErro
     }
 }
 
-<<<<<<< head
-||||||| base
-fn is_descendant_of(
-    tx: &rusqlite::Transaction<'_>,
-    target_id: &str,
-    ancestor_id: &str,
-) -> Result<bool, AccessError> {
-    let mut current = studio_runtime_store::AgentRepository::get(
-        tx,
-        &studio_runtime_store::AgentId::from(target_id),
-    )?;
-    let mut seen = std::collections::HashSet::new();
-    while let Some(agent) = current {
-        let parent = agent
-            .extra
-            .get("parentId")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if parent == ancestor_id {
-            return Ok(true);
-        }
-        if parent.is_empty() || !seen.insert(parent.to_owned()) {
-            return Ok(false);
-        }
-        current = studio_runtime_store::AgentRepository::get(
-            tx,
-            &studio_runtime_store::AgentId::from(parent),
-        )?;
-    }
-    Ok(false)
-}
-
-=======
-fn is_descendant_of(
-    tx: &rusqlite::Transaction<'_>,
-    target_id: &str,
-    ancestor_id: &str,
-) -> Result<bool, AccessError> {
-    let mut current = studio_runtime_store::AgentRepository::get(
-        tx,
-        &studio_runtime_store::AgentId::from(target_id),
-    )?;
-    let mut seen = std::collections::HashSet::new();
-    while let Some(agent) = current {
-        let parent = agent.parent_id.as_deref().unwrap_or_default();
-        if parent == ancestor_id {
-            return Ok(true);
-        }
-        if parent.is_empty() || !seen.insert(parent.to_owned()) {
-            return Ok(false);
-        }
-        current = studio_runtime_store::AgentRepository::get(
-            tx,
-            &studio_runtime_store::AgentId::from(parent),
-        )?;
-    }
-    Ok(false)
-}
-
->>>>>>> origin/main
 impl OrchestrationEffects for RuntimeOrchestrationEffects {
     fn supports(&self, action: &str) -> bool {
         matches!(
