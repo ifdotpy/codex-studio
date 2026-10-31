@@ -860,7 +860,8 @@ pub async fn is_monitor_approval(
             };
             let request: studio_runtime_schema::request_record::RequestRecord =
                 serde_json::from_str(&request).map_err(|_| VoiceProviderError::Operation)?;
-            Ok(request.method() == Some("monitor/approve"))
+            Ok(request.method
+                == studio_runtime_schema::request_record::RequestMethod::MonitorApprove)
         })
         .await
 }
