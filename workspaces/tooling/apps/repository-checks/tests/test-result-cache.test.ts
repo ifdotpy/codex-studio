@@ -154,15 +154,22 @@ test("a step without declared inputs is keyed by the whole tree, an artifact ste
   );
 });
 
-test("passedCrates lists the crates of a nextest report without a failure", () => {
-  const report = `<testsuites><testsuite name="studio-a" tests="2" failures="0" errors="0"><testcase name="x"/></testsuite>
-<testsuite name="studio-b::bin/studio-b" tests="1" failures="1" errors="0"><testcase name="y"><failure/></testcase></testsuite>
-<testsuite name="studio-b::integration" tests="1" failures="0" errors="0"><testcase name="z"/></testsuite>
-<testsuite name="studio-c" tests="1" failures="0" errors="1"><testcase name="w"><error/></testcase></testsuite></testsuites>`;
-  assert.deepEqual([...passedCrates(report)], ["studio-a"]);
-  assert.deepEqual([...passedCrates("not a report")], []);
+test("passedCrates lists the crates of a complete nextest report without a failure", () => {
+  const report = (
+    total: number,
+  ) => `<testsuites name="nextest-run" tests="${total}"><testsuite name="studio-a" tests="2" skipped="0" failures="0" errors="0"><testcase name="x"/></testsuite>
+<testsuite name="studio-b::bin/studio-b" tests="1" skipped="0" failures="1" errors="0"><testcase name="y"><failure/></testcase></testsuite>
+<testsuite name="studio-b::integration" tests="1" skipped="0" failures="0" errors="0"><testcase name="z"/></testsuite>
+<testsuite name="studio-c" tests="1" skipped="0" failures="0" errors="1"><testcase name="w"><error/></testcase></testsuite>
+<testsuite name="studio-d" tests="1" skipped="1" failures="0" errors="0"><testcase name="v"><skipped/></testcase></testsuite></testsuites>`;
+  // The run planned 6 tests and reported 6: only crate studio-a has all tests passed.
+  assert.deepEqual([...passedCrates(report(6), 6)], ["studio-a"]);
+  // A run that stopped early reports fewer tests than planned: no crate counts as passed,
+  // also not the crates that never ran or ran only partly.
+  assert.deepEqual([...passedCrates(report(5), 6)], []);
+  assert.deepEqual([...passedCrates("not a report", 6)], []);
+  assert.deepEqual([...passedCrates(report(6), undefined)], []);
 });
-
 test("nextest selects stale crates with a filter so the workspace feature set and build stay the same", () => {
   const selected = selectCrates(
     [["cargo", ["nextest", "run", "--workspace", "--profile", "fast"]]],

@@ -1011,6 +1011,8 @@ export function gateSteps(root: string, name: string): GateStep[] {
           "nextest",
           "run",
           "--workspace",
+          // Every crate must finish after a failure: saved per-crate results rely on it.
+          "--no-fail-fast",
           "--profile",
           fast ? "fast" : "ci",
         ]),
@@ -1310,7 +1312,12 @@ export function recipePlan(root: string, name: string) {
 }
 
 // Crates that passed in this step's nextest report. A report older than the step is ignored.
-function nextestPassedCrates(root: string, step: GateStep, since: number) {
+function nextestPassedCrates(
+  root: string,
+  step: GateStep,
+  since: number,
+  log: string | undefined,
+) {
   const args = step.commands?.[0]?.[1] ?? [];
   const report = path.join(
     cargoTarget(root),
@@ -1319,8 +1326,16 @@ function nextestPassedCrates(root: string, step: GateStep, since: number) {
     "junit.xml",
   );
   try {
+    // oxlint-disable-next-line no-control-regex
+    const color = /\u001b\[[0-9;]*m/g;
+    const planned = /Starting (\d+) tests/.exec(
+      readFileSync(log!, "utf8").replace(color, ""),
+    )?.[1];
     return statSync(report).mtimeMs >= since
-      ? passedCrates(readFileSync(report, "utf8"))
+      ? passedCrates(
+          readFileSync(report, "utf8"),
+          planned === undefined ? undefined : Number(planned),
+        )
       : new Set<string>();
   } catch {
     return new Set<string>();
@@ -1485,7 +1500,12 @@ export async function executeRecipe(
           if (key) recordPass(root, { id: `${step.id}-${name}` }, key, result);
       if (crates && step.id === "rust-tests" && result.status === "failed")
         // Nextest runs every crate after a failure: the crates without a failed test passed.
-        for (const name of nextestPassedCrates(root, step, stepStarted)) {
+        for (const name of nextestPassedCrates(
+          root,
+          step,
+          stepStarted,
+          result.logPath,
+        )) {
           const key = crates.get(name);
           if (key && stale.some(([stale]) => stale === name))
             recordPass(root, { id: `${step.id}-${name}` }, key, {

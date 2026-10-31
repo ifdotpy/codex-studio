@@ -147,9 +147,16 @@ export function selectCrates(
   ]);
 }
 
-/** Crates of a nextest JUnit report that have a test suite and no failed or errored test. */
-export function passedCrates(report: string): Set<string> {
+/** Crates of a nextest JUnit report whose tests all passed. `planned` is the test count that
+ * nextest announced at the start ("Starting N tests"). A report with another count belongs to a
+ * run that stopped early, so no crate in it counts as passed. */
+export function passedCrates(
+  report: string,
+  planned: number | undefined,
+): Set<string> {
   const passed = new Set<string>();
+  const total = Number(/<testsuites[^>]* tests="(\d+)"/.exec(report)?.[1]);
+  if (planned === undefined || total !== planned) return passed;
   const failed = new Set<string>();
   for (const [, name, attributes] of report.matchAll(
     /<testsuite name="([^"]+)"([^>]*)>/g,
@@ -157,7 +164,10 @@ export function passedCrates(report: string): Set<string> {
     const crate = name!.split("::")[0]!;
     const count = (attribute: string) =>
       Number(new RegExp(`${attribute}="(\\d+)"`).exec(attributes!)?.[1] ?? 1);
-    (count("failures") || count("errors") ? failed : passed).add(crate);
+    (count("failures") || count("errors") || count("skipped")
+      ? failed
+      : passed
+    ).add(crate);
   }
   for (const crate of failed) passed.delete(crate);
   return passed;

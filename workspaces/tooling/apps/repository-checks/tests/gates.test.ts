@@ -365,10 +365,11 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
     const rust = steps.find((s) => s.id === "rust-tests");
     const [rustCommand] = rust?.commands ?? [];
     assert.ok(rustCommand);
-    assert.deepEqual(rustCommand[1].slice(0, 4), [
+    assert.deepEqual(rustCommand[1].slice(0, 5), [
       "nextest",
       "run",
       "--workspace",
+      "--no-fail-fast",
       "--profile",
     ]);
     assert.ok(!JSON.stringify(steps).includes("--release"));
