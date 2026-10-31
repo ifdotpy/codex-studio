@@ -1236,10 +1236,10 @@ mod tests {
         );
     }
 
-    fn attempt_columns(
-        db: &Connection,
-        chat: &str,
-    ) -> Vec<(Option<i64>, Option<i64>, Option<String>, Option<i64>)> {
+    /// Submitted, connection generation, action and active-at-reservation of an attempt.
+    type AttemptColumns = (Option<i64>, Option<i64>, Option<String>, Option<i64>);
+
+    fn attempt_columns(db: &Connection, chat: &str) -> Vec<AttemptColumns> {
         db.prepare(
             "SELECT attempt_submitted,attempt_connection_generation,attempt_action,attempt_active_at_reservation
              FROM turns WHERE chat=?1 AND attempt IS NOT NULL",
