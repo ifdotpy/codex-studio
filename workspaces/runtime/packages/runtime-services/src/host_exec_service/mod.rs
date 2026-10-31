@@ -123,6 +123,17 @@ struct HealthParams {}
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ListParams {
+    agent_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RecoverParams {
+    owner: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RunParams {
     operation_id: String,
     agent_id: String,
@@ -294,6 +305,8 @@ enum FrameParams {
     Cancel(TransferCommon),
     Attach(AttachParams),
     Read(ReadParams),
+    List(ListParams),
+    Recover(RecoverParams),
     ResultManifest(ResultManifestParams),
     // Existing dispatch until each remaining method has its own typed variant.
     Legacy(Map<String, Value>),
@@ -755,11 +768,8 @@ impl HostService {
         method: &str,
         params: &Map<String, Value>,
     ) -> Outcome<Value> {
-        match method {
-            "acquire" => return self.acquire(params).await.map(Value::Object),
-            "list" => return self.operations(params.get("agentId")),
-            "recover" => return self.recover(params.get("owner")),
-            _ => {}
+        if method == "acquire" {
+            return self.acquire(params).await.map(Value::Object);
         }
         let identity = params
             .get("operationId")
@@ -789,6 +799,8 @@ impl HostService {
     ) -> Outcome<Value> {
         match params {
             FrameParams::Legacy(params) => self.dispatch(method, params).await,
+            FrameParams::List(params) => self.operations(&params.agent_id),
+            FrameParams::Recover(params) => self.recover(&params.owner),
             FrameParams::Run(params) => {
                 let op = self.load(&params.operation_id)?;
                 require(
@@ -1082,6 +1094,14 @@ impl HostService {
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
             "status" => FrameParams::Status(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "list" => FrameParams::List(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "recover" => FrameParams::Recover(
                 serde_json::from_str(raw)
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),

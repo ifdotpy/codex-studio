@@ -762,11 +762,12 @@ impl HostService {
 
     /// The newest operations of one agent, the ones that hold a Mac slot first.
     /// The agent finds an operation here when it lost the result that named it.
-    pub(crate) fn operations(&self, agent: Option<&Value>) -> Outcome<Value> {
-        let agent = agent
-            .and_then(Value::as_str)
-            .filter(|agent| !agent.is_empty())
-            .ok_or_else(|| HostExecError::new(INVALID, "Missing host command context: agentId"))?;
+    pub(crate) fn operations(&self, agent: &str) -> Outcome<Value> {
+        require(
+            !agent.is_empty(),
+            "Missing host command context: agentId",
+            INVALID,
+        )?;
         let leased: std::collections::HashSet<String> = self
             .leases()
             .into_iter()
@@ -831,11 +832,12 @@ impl HostService {
     /// service at a time, and its requests die with its process. Exited operations
     /// of an earlier owner free their slots now. A running command keeps its slot
     /// until it exits. An unknown outcome of a lost host owner keeps its slot.
-    pub(crate) fn recover(&self, owner: Option<&Value>) -> Outcome<Value> {
-        let owner = owner
-            .and_then(Value::as_str)
-            .filter(|owner| !owner.is_empty() && owner.chars().count() <= 128)
-            .ok_or_else(|| HostExecError::new(INVALID, "Invalid guest owner"))?;
+    pub(crate) fn recover(&self, owner: &str) -> Outcome<Value> {
+        require(
+            !owner.is_empty() && owner.chars().count() <= 128,
+            "Invalid guest owner",
+            INVALID,
+        )?;
         let (mut released, mut orphaned, mut kept, mut released_slots) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (identity, slot) in self.leases() {
