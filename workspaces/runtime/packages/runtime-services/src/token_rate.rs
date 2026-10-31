@@ -619,7 +619,7 @@ fn project_effect(
     provider: ProviderKind,
 ) {
     let params = &observation.params;
-    let at = observation.observed_at;
+    let at = observation.observed_at.get();
     match effect {
         NotificationPostCommit::TokenRateStream(_) => match observation.method.as_str() {
             "provider/generationStarted" => {
@@ -746,7 +746,7 @@ fn project_usage(
     if turn != Some(state.turn.as_str()) {
         return;
     }
-    project_usage_observation(state, usage, observation.observed_at);
+    project_usage_observation(state, usage, observation.observed_at.get());
 }
 
 fn project_usage_observation(state: &mut ProjectedAgent, usage: UsageObservation, at: f64) {
@@ -864,7 +864,7 @@ fn project_item_association(state: &mut ProjectedAgent, observation: &Notificati
     let item = &params["item"];
     if observation.method == "item/started" && item["type"] == "agentMessage" && !state.timing_valid
     {
-        state.generation_started = Some(observation.observed_at);
+        state.generation_started = Some(observation.observed_at.get());
         state.generation_elapsed = 0.0;
         state.timing_valid = true;
     }
@@ -884,7 +884,7 @@ fn project_item_association(state: &mut ProjectedAgent, observation: &Notificati
             if state.tools.is_empty()
                 && let Some(started) = state.generation_started.take()
             {
-                let elapsed = (observation.observed_at - started).max(0.0);
+                let elapsed = (observation.observed_at.get() - started).max(0.0);
                 state.generation_elapsed += elapsed;
                 append_response_duration(state, elapsed, state.pending);
                 state.pending = 0.0;
@@ -895,7 +895,7 @@ fn project_item_association(state: &mut ProjectedAgent, observation: &Notificati
             && state.tools.remove(item_id)
             && state.tools.is_empty()
         {
-            state.generation_started = Some(observation.observed_at);
+            state.generation_started = Some(observation.observed_at.get());
             state.timing_valid = true;
         }
     }
@@ -1008,8 +1008,8 @@ mod tests {
                 generation,
                 cursor,
             },
-            observed_at: cursor as f64,
-            provider_at: cursor as f64,
+            observed_at: crate::notification_dispatch::ObservationTime::new(cursor as f64).unwrap(),
+            provider_at: crate::notification_dispatch::ObservationTime::new(cursor as f64).unwrap(),
         })
     }
 
@@ -1027,7 +1027,8 @@ mod tests {
             ));
             observation.method = "thread/tokenUsage/updated".into();
             observation.params = SharedJson::new(params);
-            observation.observed_at = at;
+            observation.observed_at =
+                crate::notification_dispatch::ObservationTime::new(at).unwrap();
         }
         assert!(observe(projector, &effect));
     }
@@ -1508,8 +1509,8 @@ mod tests {
                 generation: 1,
                 cursor: at as u64,
             },
-            observed_at: at,
-            provider_at: at,
+            observed_at: crate::notification_dispatch::ObservationTime::new(at).unwrap(),
+            provider_at: crate::notification_dispatch::ObservationTime::new(at).unwrap(),
         };
         let started = observation("item/started", 5.0);
         super::project_effect(
@@ -1705,8 +1706,11 @@ mod tests {
                     generation: 1,
                     cursor: base + cursor,
                 },
-                observed_at: (base + cursor) as f64 * 0.1,
-                provider_at: 0.0,
+                observed_at: crate::notification_dispatch::ObservationTime::new(
+                    (base + cursor) as f64 * 0.1,
+                )
+                .unwrap(),
+                provider_at: crate::notification_dispatch::ObservationTime::new(0.0).unwrap(),
             }
         };
         let delta = match provider {

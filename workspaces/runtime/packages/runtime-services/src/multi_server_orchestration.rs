@@ -921,8 +921,7 @@ impl RuntimeOrchestrationEffects {
                 )
             })?
             .ok()
-            .and_then(|value| value.get("gitOrigin").cloned())
-            .unwrap_or(Value::Null);
+            .and_then(|value| value.git_origin);
             let project_id_for_write = project_id.to_owned();
             let principal_for_write = principal.to_owned();
             let home_project_for_write = home_project.to_owned();
@@ -1704,8 +1703,7 @@ fn is_descendant_of(
     )?;
     let mut seen = std::collections::HashSet::new();
     while let Some(agent) = current {
-        let parent = agent.parent_id.as_deref()
-            .unwrap_or_default();
+        let parent = agent.parent_id.as_deref().unwrap_or_default();
         if parent == ancestor_id {
             return Ok(true);
         }
@@ -2146,7 +2144,17 @@ impl RuntimeOrchestrationEffects {
                             "The result worker is unavailable",
                         )
                     })?;
-                    proxy.last_answer = Some(details.get("result").or_else(|| details.get("reason")).map(|value| value.as_str().map_or_else(|| value.to_string(), str::to_owned)).unwrap_or_default());
+                    proxy.last_answer = Some(
+                        details
+                            .get("result")
+                            .or_else(|| details.get("reason"))
+                            .map(|value| {
+                                value
+                                    .as_str()
+                                    .map_or_else(|| value.to_string(), str::to_owned)
+                            })
+                            .unwrap_or_default(),
+                    );
                     proxy
                         .extra
                         .insert("lastCompletedTurn".to_owned(), json!(key_for_write));

@@ -329,8 +329,13 @@ pub async fn cancel_checked(
                 })?;
                 if !crate::process_controls::matches(&process, expected)
                     || process["capabilities"]["stop"] != true
-                    || studio_runtime_schema::studio_errors::MonitorStatus::deserialize(&expected["_raw"]["status"]).ok() != Some(snapshot.record().status)
-                    || snapshot.record().reattached_connection_id.as_deref() != expected["_raw"]["reattachedConnectionId"].as_str()
+                    || studio_runtime_schema::studio_errors::MonitorStatus::deserialize(
+                        &expected["_raw"]["status"],
+                    )
+                    .ok()
+                        != Some(snapshot.record().status)
+                    || snapshot.record().reattached_connection_id.as_deref()
+                        != expected["_raw"]["reattachedConnectionId"].as_str()
                 {
                     return Err(MonitorError::Refused(
                         "The process owner changed. Refresh the process list",
@@ -514,29 +519,63 @@ pub fn reserve_cancel(
     let mut decision = monitor_policy::cancel(&snapshot, owner, now)?;
     // An explicit owner stop is independent of the automatic pressure policy.
     // Its permission check above must pass before removing the extra guard.
-    use studio_runtime_schema::{monitor_record::{MonitorCancelDispatch, MonitorCancelStatus}, studio_errors::MonitorStatus};
-    if owner.is_some() { decision.record.shell_pressure_cleanup = None; }
+    use studio_runtime_schema::{
+        monitor_record::{MonitorCancelDispatch, MonitorCancelStatus},
+        studio_errors::MonitorStatus,
+    };
+    if owner.is_some() {
+        decision.record.shell_pressure_cleanup = None;
+    }
     let dispatch = snapshot.record().cancel_dispatch.as_ref();
     let needs_dispatch = decision.effects.contains(&Effect::Terminate)
         || (snapshot.record().status == MonitorStatus::Running
             && snapshot.record().cancel_requested == Some(true)
-            && dispatch.is_none_or(|dispatch| dispatch.status == MonitorCancelStatus::Pending && dispatch.next_attempt_at.is_none_or(|retry_at| retry_at <= now)));
+            && dispatch.is_none_or(|dispatch| {
+                dispatch.status == MonitorCancelStatus::Pending
+                    && dispatch
+                        .next_attempt_at
+                        .is_none_or(|retry_at| retry_at <= now)
+            }));
     let previous_attempts = dispatch.and_then(|dispatch| dispatch.attempts).unwrap_or(0);
     if needs_dispatch {
-        decision.record.cancel_dispatch = Some(MonitorCancelDispatch { status: MonitorCancelStatus::Pending, attempts: Some(previous_attempts), updated_at: None, next_attempt_at: None, error: None });
-        if !decision.effects.contains(&Effect::Terminate) { decision.effects.push(Effect::Terminate); }
+        decision.record.cancel_dispatch = Some(MonitorCancelDispatch {
+            status: MonitorCancelStatus::Pending,
+            attempts: Some(previous_attempts),
+            updated_at: None,
+            next_attempt_at: None,
+            error: None,
+        });
+        if !decision.effects.contains(&Effect::Terminate) {
+            decision.effects.push(Effect::Terminate);
+        }
     }
     let operation = if decision.effects.contains(&Effect::Terminate) {
-        if let Some(operation) = snapshot.operation().cloned() { Some(operation) } else {
+        if let Some(operation) = snapshot.operation().cloned() {
+            Some(operation)
+        } else {
             let error = "Cancel requested. Process termination was not confirmed: monitor operation metadata is unavailable";
-            decision.record.cancel_dispatch = Some(MonitorCancelDispatch { status: MonitorCancelStatus::Unknown, attempts: Some(previous_attempts), updated_at: None, next_attempt_at: None, error: Some(error.into()) });
-            decision.record.error = Some(error.to_owned().try_into().map_err(|_| MonitorError::Refused("Invalid monitor error"))?);
+            decision.record.cancel_dispatch = Some(MonitorCancelDispatch {
+                status: MonitorCancelStatus::Unknown,
+                attempts: Some(previous_attempts),
+                updated_at: None,
+                next_attempt_at: None,
+                error: Some(error.into()),
+            });
+            decision.record.error = Some(
+                error
+                    .to_owned()
+                    .try_into()
+                    .map_err(|_| MonitorError::Refused("Invalid monitor error"))?,
+            );
             decision.response["error"] = json!(error);
             None
         }
-    } else { None };
+    } else {
+        None
+    };
     if operation.is_some() && decision.record.cancel_root_request_id.is_none() {
-        decision.record.cancel_root_request_id = Some(studio_runtime_schema::persistence::RequestIdentity::issue_root());
+        decision.record.cancel_root_request_id =
+            Some(studio_runtime_schema::persistence::RequestIdentity::issue_root());
     }
     monitor_runtime::apply(tx, &snapshot, &actor, &decision, now)?;
     Ok::<_, MonitorError>((decision.response, operation))

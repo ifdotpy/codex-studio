@@ -265,7 +265,11 @@ pub fn merge(connection: &Connection, id: &str, record: &mut Value) -> StoreResu
 }
 
 /// Read the volatile columns into the same typed agent record as its stored row.
-pub(crate) fn merge_agent(connection: &Connection, id: &str, agent: &mut crate::AgentRecord) -> StoreResult<()> {
+pub(crate) fn merge_agent(
+    connection: &Connection,
+    id: &str,
+    agent: &mut crate::AgentRecord,
+) -> StoreResult<()> {
     #[cfg(any(test, feature = "test-support"))]
     publication_work::record(id, publication_work::Operation::VolatileLoad);
     let mut statement = connection.prepare_cached(&SELECT_SQL)?;
@@ -276,16 +280,34 @@ pub(crate) fn merge_agent(connection: &Connection, id: &str, agent: &mut crate::
     Ok(())
 }
 
-pub(crate) fn merge_agent_row(row: &rusqlite::Row<'_>, id: &str, agent: &mut crate::AgentRecord) -> StoreResult<()> {
-    fn field<T: serde::de::DeserializeOwned>(row: &rusqlite::Row<'_>, index: usize, id: &str, target: &mut Option<T>) -> StoreResult<()> {
-        *target = row.get::<_, Option<String>>(index)?
+pub(crate) fn merge_agent_row(
+    row: &rusqlite::Row<'_>,
+    id: &str,
+    agent: &mut crate::AgentRecord,
+) -> StoreResult<()> {
+    fn field<T: serde::de::DeserializeOwned>(
+        row: &rusqlite::Row<'_>,
+        index: usize,
+        id: &str,
+        target: &mut Option<T>,
+    ) -> StoreResult<()> {
+        *target = row
+            .get::<_, Option<String>>(index)?
             .map(|encoded| serde_json::from_str(&encoded).map_err(|_| invalid(id)))
-            .transpose()?.flatten();
+            .transpose()?
+            .flatten();
         Ok(())
     }
-    agent.events = row.get::<_, Option<String>>(0)?
-        .map(|encoded| crate::records::deserialize_optional_safe_counter(&mut serde_json::Deserializer::from_str(&encoded)).map_err(|_| invalid(id)))
-        .transpose()?.flatten();
+    agent.events = row
+        .get::<_, Option<String>>(0)?
+        .map(|encoded| {
+            crate::records::deserialize_optional_safe_counter(
+                &mut serde_json::Deserializer::from_str(&encoded),
+            )
+            .map_err(|_| invalid(id))
+        })
+        .transpose()?
+        .flatten();
     field(row, 1, id, &mut agent.last_event)?;
     field(row, 2, id, &mut agent.activity)?;
     field(row, 3, id, &mut agent.active_tools)?;
@@ -396,7 +418,9 @@ pub(crate) fn merge_row(
 ) -> StoreResult<()> {
     for (index, field) in AGENT_VOLATILE_FIELDS.iter().enumerate() {
         match row.get_ref(index)? {
-            ValueRef::Null => { fields.remove(*field); }
+            ValueRef::Null => {
+                fields.remove(*field);
+            }
             ValueRef::Text(text) => {
                 let value = serde_json::from_slice(text).map_err(|_| invalid(id))?;
                 fields.insert((*field).to_owned(), value);
@@ -514,11 +538,11 @@ mod tests {
 
     fn agents() -> Vec<Value> {
         vec![
-            json!({"id":"a","provider":"codex","rootId":"a","epoch":1,"status":"running","threadId":"t","accountKey":"default",
+            json!({"compactions":0,"id":"a","provider":"codex","rootId":"a","epoch":1,"status":"running","threadId":"t","accountKey":"default",
                 "events":7,"lastEvent":"2026-10-20T00:00:00Z","activity":{"phase":"writing","at":5.0},
                 "activeTools":[],"tail":"answer tail","lastAnswer":"answer","contextUsage":null,
                 "tokensUsed":120,"tokenUsageAccounting":"total","prompt":"keep"}),
-            json!({"id":"b","provider":"codex","rootId":"a","epoch":0,"status":"idle","name":"no volatile fields","accountKey":"default"}),
+            json!({"compactions":0,"id":"b","provider":"codex","rootId":"a","epoch":0,"status":"idle","name":"no volatile fields","accountKey":"default"}),
         ]
     }
 

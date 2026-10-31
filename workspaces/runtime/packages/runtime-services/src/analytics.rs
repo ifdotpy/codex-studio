@@ -299,7 +299,7 @@ mod provider_identity_tests {
     async fn historical_message_info_keeps_partial_and_ambiguous_rows() {
         let root = tempfile::tempdir().expect("state");
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
-        let agent = json!({"id":"agent","name":"Agent","rootId":"agent","provider":"claude","accountKey":"account","threadId":"thread","turnId":"turn","status":"running","epoch":0});
+        let agent = json!({"compactions":0,"id":"agent","name":"Agent","rootId":"agent","provider":"claude","accountKey":"account","threadId":"thread","turnId":"turn","status":"running","epoch":0});
         store
             .transaction(move |tx| {
                 tx.execute(
@@ -384,7 +384,7 @@ mod provider_identity_tests {
     async fn provider_identity_message_info_preserves_typed_facts_and_canonical_account_metadata() {
         let root = tempfile::tempdir().expect("state");
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
-        let agent = json!({"id":"agent","name":"Agent","rootId":"agent","provider":"claude","accountKey":"account","threadId":"thread","turnId":"turn","status":"running","epoch":0});
+        let agent = json!({"compactions":0,"id":"agent","name":"Agent","rootId":"agent","provider":"claude","accountKey":"account","threadId":"thread","turnId":"turn","status":"running","epoch":0});
         let seed = agent.clone();
         store
             .transaction(move |tx| {

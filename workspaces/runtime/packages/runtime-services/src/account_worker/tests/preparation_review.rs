@@ -93,7 +93,7 @@ async fn compiler_dependencies_and_late_holds_are_checked_before_commit() {
                     "owner_moved" => { tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.rootId','foreign') WHERE id='asset-owner'", [])?; }
                     "asset_path" => { tx.execute("UPDATE runtime_assets SET record=json_set(record,'$.path','/changed') WHERE id='asset'", [])?; }
                     "plan" => { tx.execute("INSERT INTO runtime_plans(id,record) VALUES(?1,?2)", rusqlite::params![mutation_id,json!({"id":mutation_id,"rootId":mutation_id,"native":{"plan":[{"step":"new plan", "status":"pending"}]}}).to_string()])?; }
-                    "complaint" => { tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('new',?1)", [json!({"id":"new","leadId":mutation_id,"recipient":"lead","status":"open","responses":[],"author":mutation_id,"text":"new question","created":1,"version":1}).to_string()])?; }
+                    "complaint" => { tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('new',?1)", [json!({"id":"new","leadId":mutation_id,"recipient":"lead","status":"open","responses":[],"author":mutation_id,"text":"new question","created":1,"readAt":null,"updated":null,"version":1}).to_string()])?; }
                     _ => {
                         let mut row = AgentRepository::get(tx, &AgentId::from(mutation_id.as_str()))?.unwrap();
                         let (key, value) = match mutation_name {
@@ -180,7 +180,7 @@ async fn context_repair_holds_and_complaint_ownership_preserve_input() {
             store.transaction_with(move |tx| {
                 let body=if write_payload=="malformed" {"important evidence".into()} else {json!({"complaints":[{"complaint_id":write_payload,"text":"important evidence"}]}).to_string()};
                 tx.execute("UPDATE runtime_events SET kind='complaint',text=?1 WHERE id='annotation:input'",[body])?;
-                if write_payload=="owned" {tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('owned',?1)",[json!({"id":"owned","leadId":if foreign {"other"}else {&write_id},"recipient":"lead","status":"open","responses":[],"author":write_id,"text":"owned body","created":1,"version":1}).to_string()])?;}
+                if write_payload=="owned" {tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('owned',?1)",[json!({"id":"owned","leadId":if foreign {"other"}else {&write_id},"recipient":"lead","status":"open","responses":[],"author":write_id,"text":"owned body","created":1,"readAt":null,"updated":null,"version":1}).to_string()])?;}
                 Ok::<(), WorkerError>(())
             }).await?;
             let intent=store::claim(Arc::clone(&store),"default",&id,epoch).await?.unwrap();

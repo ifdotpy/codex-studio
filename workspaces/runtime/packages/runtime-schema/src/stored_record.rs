@@ -80,7 +80,6 @@ impl<'de> Deserialize<'de> for NonnegativeNumber {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use serde::{Deserialize, Serialize};
@@ -118,9 +117,6 @@ mod tests {
         }
         for (field, value) in [("agent", json!("a")), ("created", json!(1.5))] {
             check::<crate::checkpoint_record::CheckpointRecord>(json!({"id":"c"}), field, value);
-        }
-        for field in ["author", "leadId", "status", "text"] {
-            check::<crate::complaint_record::ComplaintRecord>(json!({"id":"c"}), field, json!("a"));
         }
         for (field, value) in [("agent", json!("a")), ("native", json!({"plan":[]}))] {
             check::<crate::plan_record::PlanRecord>(

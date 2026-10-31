@@ -27,7 +27,13 @@ fn database() -> Connection {
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                    PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER);
+<<<<<<< head
                  CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER);"),
+||||||| base
+                 CREATE TABLE sync_versions(seq INTEGER);"),
+=======
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);"),
+>>>>>>> origin/main
             )
             .expect("scheduler tables create");
     connection
@@ -75,7 +81,7 @@ fn database() -> Connection {
 #[test]
 fn thread_attempt_rejects_mismatched_physical_agent_id() {
     let connection = database();
-    let record = json!({"id":"other","rootId":"agent","epoch":4,"status":"running",
+    let record = json!({"compactions":0,"id":"other","rootId":"agent","epoch":4,"status":"running",
         "provider":"codex","accountKey":"account","threadId":"thread",
         "turnEpoch":4,"autoWake":true,"inFlight":true,
         "startAttempt":{"id":"attempt","epoch":4,"submitted":true,"accountKey":"account",
@@ -435,10 +441,13 @@ fn deleted_agent_is_skipped_at_claim_and_refused_at_submission_recheck() {
     let mut agent = AgentRepository::get(&connection, &AgentId::from("agent"))
         .expect("deleted agent reads")
         .expect("agent exists");
-    agent.extra.insert(
-        "startAttempt".to_owned(),
-        json!({"id":"attempt","epoch":4,"submitted":false,"events":["first"]}),
-    );
+    agent.start_attempt = Some(Box::new(studio_runtime_store::StartAttemptView {
+        id: Some("attempt".into()),
+        epoch: Some(4),
+        submitted: Some(false),
+        events: Some(vec!["first".into()]),
+        ..Default::default()
+    }));
     AgentRepository::put(&connection, &agent).expect("submission marker writes");
     let transaction = connection.transaction().expect("submission recheck begins");
     assert!(matches!(
@@ -462,7 +471,14 @@ fn submission_recheck_retires_decided_work_review_and_keeps_reconciliation_field
         .expect("agent exists");
     agent.status = AgentStatus::Starting;
     agent.in_flight = Some(true);
-    agent.extra.insert("startAttempt".into(), json!({"id":"attempt","epoch":4,"submitted":false,"activeAtReservation":false,"events":["first"]}));
+    agent.start_attempt = Some(Box::new(studio_runtime_store::StartAttemptView {
+        id: Some("attempt".into()),
+        epoch: Some(4),
+        submitted: Some(false),
+        active_at_reservation: Some(false),
+        events: Some(vec!["first".into()]),
+        ..Default::default()
+    }));
     AgentRepository::put(&connection, &agent).expect("attempt fixture writes");
     let transaction = connection
         .transaction()
@@ -496,12 +512,22 @@ fn submission_recheck_retires_decided_work_review_and_keeps_reconciliation_field
         .expect("agent reads")
         .expect("agent exists");
     assert_eq!(
-        agent.extra["startAttempt"]["notSubmittedReason"],
-        "Notifications resolved before native submission"
+        agent
+            .start_attempt
+            .as_ref()
+            .unwrap()
+            .not_submitted_reason
+            .as_deref(),
+        Some("Notifications resolved before native submission")
     );
     assert_eq!(
-        agent.extra["startAttempt"]["retiredEvents"],
-        json!(["first"])
+        agent
+            .start_attempt
+            .as_ref()
+            .unwrap()
+            .retired_events
+            .as_deref(),
+        Some(["first".to_string()].as_slice())
     );
     assert!(agent.in_flight == Some(false));
 }
@@ -626,15 +652,8 @@ fn snapshot(connection: &Connection) -> serde_json::Value {
         .expect("sync-document snapshot queries")
         .collect::<Result<Vec<_>, _>>()
         .expect("sync-document snapshot reads");
-    let sync_versions = connection
-        .prepare("SELECT seq FROM sync_versions ORDER BY seq")
-        .expect("sync-version snapshot prepares")
-        .query_map([], |row| row.get::<_, i64>(0))
-        .expect("sync-version snapshot queries")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("sync-version snapshot reads");
     json!({"agent":agent,"events":events,"metadata":metadata,"sync":sync,
-        "completed":completed,"syncDocuments":sync_documents,"syncVersions":sync_versions})
+        "completed":completed,"syncDocuments":sync_documents})
 }
 
 fn selected_event(id: &str, kind: &str, text: &str) -> QueueEvent {
@@ -682,6 +701,36 @@ fn preparation_claims_one_thousand_small_mixed_events_and_replays_exact_batch() 
     assert_eq!(claimed.events, replay.events);
     assert_eq!(claimed.metadata, replay.metadata);
     tx.commit().expect("claim commits");
+}
+
+#[test]
+fn preparation_replay_checks_saved_thread_scope() {
+    let mut connection = database();
+    let tx = connection.transaction().unwrap();
+    let claimed = SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "scope", 1.0, 10)
+        .unwrap()
+        .unwrap();
+    let mut agent = AgentRepository::get(&tx, &AgentId::from("agent"))
+        .unwrap()
+        .unwrap();
+    let account = agent.account_key.clone();
+    agent.thread_id = Some("prepared-thread".into());
+    AgentRepository::put(&tx, &agent).unwrap();
+    crate::ExecutionHistoryRepository::save_receipt(
+        &tx,
+        "scope",
+        studio_runtime_schema::persistence::ExecutionReceiptKind::ThreadPrepared,
+        json!({"agent":"agent", "epoch":4, "account":account, "previousThread":null, "thread":"prepared-thread"}),
+        json!(true),
+    )
+    .unwrap();
+    let replay = SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "scope", 2.0, 10)
+        .unwrap()
+        .unwrap();
+    assert_eq!(replay.events, claimed.events);
+    agent.thread_id = Some("other-thread".into());
+    AgentRepository::put(&tx, &agent).unwrap();
+    assert!(SchedulerRepository::claim_for_preparation(&tx, "agent", 4, "scope", 3.0, 10).is_err());
 }
 
 #[test]

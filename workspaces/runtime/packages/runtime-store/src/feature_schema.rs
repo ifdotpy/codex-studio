@@ -101,7 +101,6 @@ const FEATURE_SCHEMA: &str = r#"
                   id TEXT PRIMARY KEY, room TEXT NOT NULL, author TEXT NOT NULL,
                   text TEXT NOT NULL, at REAL NOT NULL, deliveries TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS messages_room ON messages(room, at);
-            CREATE TABLE IF NOT EXISTS graph_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS graph_edges (
                   id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
                   kind TEXT NOT NULL, UNIQUE(source, target, kind));
@@ -245,9 +244,16 @@ pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
              INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
              SELECT '{collection}',OLD.id,(SELECT max(seq)+1 FROM (
                  SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
+<<<<<<< head
                  SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
                  SELECT COALESCE(MAX(seq),0) FROM sync_versions UNION ALL
                  SELECT COALESCE(MAX(seq),0) FROM durable_rows)),
+||||||| base
+                 SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
+                 SELECT COALESCE(MAX(seq),0) FROM sync_versions)),
+=======
+                 SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents)),
+>>>>>>> origin/main
                  sync_entity_hash({tombstone}),{tombstone},1
              WHERE EXISTS(SELECT 1 FROM sync_entities WHERE collection='{collection}' AND id=OLD.id AND deleted=0)
              ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=1;

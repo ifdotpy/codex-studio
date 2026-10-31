@@ -38,41 +38,7 @@ pub struct PeerUpdateBuild {
     pub branch: String,
 }
 
-/// The last pull or install attempt of the update puller.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PeerUpdateEvent {
-    /// Time of the pull or install attempt, in seconds since the epoch.
-    pub at: Option<f64>,
-    /// The paired server that offered the build.
-    pub server: Option<String>,
-    pub build: Option<PeerUpdateBuild>,
-    pub outcome: Option<String>,
-    pub reason: Option<String>,
-}
-
-/// The staged update that the desktop installer takes next.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PeerUpdatePending {
-    pub build: PeerUpdateBuild,
-    pub server: String,
-}
-
-/// The update state from a paired server, as `/api/desktop` shows it (`peerUpdate`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct PeerUpdateStatus {
-    /// The build of the installed app; null for a source checkout.
-    pub build: Option<PeerUpdateBuild>,
-    /// Time of the last check, in seconds since the epoch.
-    pub checked_at: Option<f64>,
-    pub last_pull: Option<PeerUpdateEvent>,
-    pub pending: Option<PeerUpdatePending>,
-    pub last_install: Option<PeerUpdateEvent>,
-}
-
-pub(crate) fn schemas() -> [(&'static str, serde_json::Value); 5] {
+pub(crate) fn schemas() -> [(&'static str, serde_json::Value); 2] {
     let mut generator = schemars::generate::SchemaSettings::openapi3()
         .for_serialize()
         .into_generator();
@@ -82,20 +48,8 @@ pub(crate) fn schemas() -> [(&'static str, serde_json::Value); 5] {
             DiskSpaceStatus::json_schema(&mut generator).to_value(),
         ),
         (
-            "PeerUpdateStatus",
-            PeerUpdateStatus::json_schema(&mut generator).to_value(),
-        ),
-        (
             "PeerUpdateBuild",
             PeerUpdateBuild::json_schema(&mut generator).to_value(),
-        ),
-        (
-            "PeerUpdateEvent",
-            PeerUpdateEvent::json_schema(&mut generator).to_value(),
-        ),
-        (
-            "PeerUpdatePending",
-            PeerUpdatePending::json_schema(&mut generator).to_value(),
         ),
     ]
 }

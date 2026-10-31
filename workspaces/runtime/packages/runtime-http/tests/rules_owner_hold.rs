@@ -37,7 +37,7 @@ async fn post(app: &axum::Router, body: Value) -> (u16, Value) {
 }
 
 fn owner_held_rule() -> Value {
-    json!({"accountKey":"default","id":"rule","agent":"owner","rootId":"owner","epoch":0,"name":"Watch",
+    json!({"compactions":0,"accountKey":"default","id":"rule","agent":"owner","rootId":"owner","epoch":0,"name":"Watch",
         "kind":"interval","intervalSeconds":240,"nextAt":1_800_000_000.0,"at":1_800_000_000.0,
         "path":null,"event":"worker_completed","command":"check.sh","stallTimeoutSeconds":0,
         "livenessCommand":"","fileActivityAt":1_800_000_000.0,"fileGeneration":0,
@@ -57,11 +57,16 @@ async fn a_manual_pause_or_resume_replaces_the_owner_hold_pause() {
             .transaction(move |tx| {
                 AgentRepository::put(
                     tx,
-                    &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,
+                    &AgentRecord::from_value(
+                        json!({"compactions":0,"id":"owner","rootId":"owner","epoch":0,
                         "status":"waiting","autoWake":true,"cwd":path.to_string_lossy(),
-                        "accountKey":"default","provider":"codex","name":"Fixture lead"}))?,
+                        "accountKey":"default","provider":"codex","name":"Fixture lead"}),
+                    )?,
                 )?;
-                RulesRepository::put(tx, &serde_json::from_value::<RuleRecord>(owner_held_rule())?)?;
+                RulesRepository::put(
+                    tx,
+                    &serde_json::from_value::<RuleRecord>(owner_held_rule())?,
+                )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await
@@ -78,9 +83,12 @@ async fn a_manual_pause_or_resume_replaces_the_owner_hold_pause() {
         let app = router(state).unwrap();
         let (code, body) = post(&app, json!({"action":action,"id":"rule","agent":"owner"})).await;
         assert_eq!(code, 200, "{action}: {body}");
-        let stored = serde_json::to_value(RulesRepository::get(&store.test_reader().unwrap(), "rule")
-            .unwrap()
-            .unwrap()).unwrap();
+        let stored = serde_json::to_value(
+            RulesRepository::get(&store.test_reader().unwrap(), "rule")
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(stored["status"], status, "{action}: {stored}");
         assert!(
             stored.get("ownerHold").is_none_or(Value::is_null),
@@ -95,7 +103,7 @@ async fn rule_actions_preserve_the_target_and_time_bounds() {
     let root = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
     store.transaction(|tx| {
-        AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"owner","rootId":"owner","epoch":0,
+        AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"id":"owner","rootId":"owner","epoch":0,
             "status":"waiting","autoWake":true,"accountKey":"default","provider":"codex","name":"Fixture lead"}))?)?;
         Ok::<_, studio_runtime_store::StoreError>(())
     }).await.unwrap();

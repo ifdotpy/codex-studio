@@ -65,7 +65,7 @@
       "type": "array"
     }
   },
-  "required": ["id"],
+  "required": ["id", "peerTeams"],
   "title": "PersistedProjectRecord",
   "type": "object"
 }

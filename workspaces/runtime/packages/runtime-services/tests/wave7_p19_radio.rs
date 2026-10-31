@@ -1,3 +1,11 @@
+fn typed_question(value: &serde_json::Value) -> studio_runtime_store::RequestRecord {
+    let mut fixture = value.clone();
+    fixture["status"] = serde_json::json!("pending");
+    fixture["createdAt"] = serde_json::json!(0.0);
+    fixture["params"] = serde_json::json!({});
+    serde_json::from_str(&fixture.to_string()).expect("typed question fixture")
+}
+
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
@@ -75,6 +83,52 @@ fn corpus() -> RadioCorpus {
     let mut cases: Vec<Value> = serde_json::from_str(expected).expect("frozen radio corpus");
     for case in &mut cases {
         for side in ["before", "after"] {
+            if let Some(rows) = case[side]["complaints"].as_array_mut() {
+                for row in rows {
+                    let mut record: Value =
+                        serde_json::from_str(row["record"].as_str().expect("complaint record"))
+                            .expect("complaint JSON");
+                    for (field, value) in [
+                        ("recipient", json!("lead")),
+                        ("version", Value::Null),
+                        ("created", Value::Null),
+                        ("updated", Value::Null),
+                        ("readAt", Value::Null),
+                        ("responses", json!([])),
+                    ] {
+                        record
+                            .as_object_mut()
+                            .expect("complaint object")
+                            .entry(field)
+                            .or_insert(value);
+                    }
+                    row["record"] = json!(record.to_string());
+                }
+            }
+            if let Some(rows) = case[side]["sync_entities"].as_array_mut() {
+                for row in rows {
+                    if row["collection"] == "agent" && row["deleted"] == 0 {
+                        let mut payload: Value =
+                            serde_json::from_str(row["payload"].as_str().expect("agent payload"))
+                                .expect("agent payload JSON");
+                        payload["value"]["compactions"] = json!(0);
+                        row["payload"] = json!(payload.to_string());
+                    }
+                }
+            }
+            if let Some(rows) = case[side]["agents"].as_array_mut() {
+                for row in rows {
+                    let mut record: Value =
+                        serde_json::from_str(row["record"].as_str().expect("agent record"))
+                            .expect("agent JSON");
+                    record
+                        .as_object_mut()
+                        .expect("agent object")
+                        .entry("compactions")
+                        .or_insert(json!(0));
+                    row["record"] = json!(record.to_string());
+                }
+            }
             if let Some(rows) = case[side]["rules"].as_array_mut() {
                 for row in rows {
                     let saved: LegacyRule =
@@ -260,6 +314,8 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
                 }
             }
             db.execute("INSERT OR IGNORE INTO runtime_agent_volatile(id) SELECT id FROM runtime_agents", [])?;
+            studio_runtime_store::migrations::migrate_radio_room(db)?;
+            studio_runtime_store::migrations::migrate_project_teams(db)?;
             Ok(())
         })
         .await
@@ -334,6 +390,12 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
 fn normalize(value: &mut Value) {
     match value {
         Value::Object(map) => {
+            if map.contains_key("path") && map.get("peerTeams") == Some(&json!([])) {
+                map.remove("peerTeams");
+            }
+            if map.contains_key("teamId") && map.get("direct") == Some(&json!(false)) {
+                map.remove("direct");
+            }
             if map.contains_key("rootId") && map.contains_key("epoch") && map.contains_key("status")
             {
                 for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
@@ -439,7 +501,11 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
                 let [first, second] = case["drafts"].as_array().expect("Python drafts").as_slice() else {
                     panic!("expected two Python drafts");
                 };
-                let drafts = [first, second].map(|value| AgentRecord::from_value(value.clone()).expect("checked Python agent draft"));
+                let drafts = [first, second].map(|value| {
+                    let mut value = value.clone();
+                    value["compactions"] = json!(0);
+                    AgentRecord::from_value(value).expect("checked Python agent draft")
+                });
                 radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await.map(|reply| serde_json::from_str(&serde_json::to_string(&reply).expect("reply encodes")).expect("reply decodes"))
             }
         },
@@ -458,7 +524,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             radio_runtime::route_question_answer(
                 db,
                 &prepared,
-                &case["body"]["question"],
+                &typed_question(&case["body"]["question"]),
                 case["body"]["text"].as_str().unwrap_or("answer"),
                 None,
                 1000.0,
@@ -760,7 +826,7 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
     seed(&store, &case["before"]).await;
     assert!(radio_runtime::holds_floor(&store.test_reader().expect("read"), "a").expect("floor"));
     let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
-    let question = case["body"]["question"].clone();
+    let question = typed_question(&case["body"]["question"]);
     store.transaction_with(move |db|->Result<(),ProjectsError> {
         assert_eq!(radio_runtime::route_question_answer(db,&prepared,&question,"answer",None,1000.0)?, radio_runtime::QuestionAnswerRoute::ConsumedByRadio);
         db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;

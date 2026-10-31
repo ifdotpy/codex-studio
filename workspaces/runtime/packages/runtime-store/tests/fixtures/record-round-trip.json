@@ -97,7 +97,11 @@
   "task": {
     "id": "cross-task",
     "agent": "fixture-agent",
+    "itemId": "fixture-item",
+    "turnId": "fixture-turn",
     "kind": "command",
+    "type": "commandExecution",
+    "name": "commandExecution",
     "status": "completed",
     "created": 1e-7,
     "interactive": true,

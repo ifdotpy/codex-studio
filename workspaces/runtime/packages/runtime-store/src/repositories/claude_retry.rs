@@ -5,8 +5,9 @@ use crate::{
     Transaction,
 };
 use rusqlite::{OptionalExtension, params};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
+use studio_runtime_schema::json_object::JsonObject;
 
 pub struct ClaudeRetryRecords {
     pub agent: Value,
@@ -27,9 +28,8 @@ impl ClaudeRetryRepository {
         let Some(raw) = raw else {
             return Ok(None);
         };
-        let attempt: Value = serde_json::from_str(&raw)?;
-        validate_attempt(&attempt)?;
-        let attempt = ClaudeAttemptRecord::deserialize(attempt).map_err(|_| invalid("attempt"))?;
+        let JsonObject(attempt): JsonObject<ClaudeAttemptRecord> =
+            serde_json::from_str(&raw).map_err(|_| invalid("attempt"))?;
         if attempt.id() != attempt_id {
             return Err(invalid(attempt_id));
         }
@@ -43,8 +43,8 @@ impl ClaudeRetryRepository {
             let encoded = row["metadata"]
                 .as_str()
                 .ok_or_else(|| invalid(attempt_id))?;
-            let metadata: Value = serde_json::from_str(encoded)?;
-            let metadata = EventMetadataRecord::deserialize(metadata).map_err(|_| invalid(id))?;
+            let metadata: EventMetadataRecord =
+                serde_json::from_str(encoded).map_err(|_| invalid(id))?;
             row["metadata"] = metadata.into_value();
             events.push(row);
         }
@@ -78,10 +78,9 @@ impl ClaudeRetryRepository {
     ) -> StoreResult<()> {
         let value = attempt.serialize(serde_json::value::Serializer)?;
         validate_attempt(&value)?;
-        let id = attempt.id();
-        let changed=tx.execute("UPDATE runtime_execution_attempts SET record=?1 WHERE id=?2 AND run IN (SELECT id FROM runtime_execution_runs WHERE agent=?3)",params![value.to_string(),id,agent])?;
+        let changed=tx.execute("UPDATE runtime_execution_attempts SET record=?1 WHERE id=?2 AND run IN (SELECT id FROM runtime_execution_runs WHERE agent=?3)",params![value.to_string(),attempt.id(),agent])?;
         if changed != 1 {
-            return Err(invalid(id));
+            return Err(invalid(attempt.id()));
         }
         Ok(())
     }

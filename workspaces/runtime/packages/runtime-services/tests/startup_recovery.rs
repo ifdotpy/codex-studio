@@ -23,8 +23,9 @@ fn operation(case: &Value) -> Operation {
     serde_json::from_value(case["before"]["operation"].clone()).expect("monitor operation")
 }
 
-fn add_request(tx: &rusqlite::Transaction<'_>, request: Value) {
-    let record = RequestRecord::from_value(request).expect("valid request row");
+fn add_request(tx: &rusqlite::Transaction<'_>, request: &Value) {
+    let record =
+        serde_json::from_str::<RequestRecord>(&request.to_string()).expect("valid request row");
     Table::<RequestRecord>::new(tx)
         .put(&record)
         .expect("store request");
@@ -48,33 +49,28 @@ fn complete_rows(store: &RuntimeStore, id: &str) -> Value {
         .list()
         .expect("read requests")
         .into_iter()
-        .map(RequestRecord::into_value)
+        .map(|record| json!(record))
         .collect::<Vec<_>>();
     let events = fixtures::events(store);
-    let projections = [
-        "sync_entities",
-        "sync_documents",
-        "sync_versions",
-        "sync_entity_meta",
-    ]
-    .into_iter()
-    .map(|table| {
-        let mut statement = connection
-            .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
-            .expect("projection query");
-        let columns = statement.column_count();
-        let rows = statement
-            .query_map([], |row| {
-                Ok((0..columns)
-                    .map(|i| format!("{:?}", row.get_ref(i).expect("column")))
-                    .collect::<Vec<_>>())
-            })
-            .expect("projection rows")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("projections");
-        json!({"table": table, "rows": rows})
-    })
-    .collect::<Vec<_>>();
+    let projections = ["sync_entities", "sync_documents", "sync_entity_meta"]
+        .into_iter()
+        .map(|table| {
+            let mut statement = connection
+                .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                .expect("projection query");
+            let columns = statement.column_count();
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((0..columns)
+                        .map(|i| format!("{:?}", row.get_ref(i).expect("column")))
+                        .collect::<Vec<_>>())
+                })
+                .expect("projection rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("projections");
+            json!({"table": table, "rows": rows})
+        })
+        .collect::<Vec<_>>();
     json!({"monitor": monitor, "requests": requests, "events": events, "projections": projections})
 }
 
@@ -91,19 +87,19 @@ async fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() 
         .transaction(move |tx| {
             add_request(
                 tx,
-                json!({"id":"approval","agent":"agent","epoch":2,"method":"monitor/approve","status":"pending","createdAt":1000,"params":{"monitorId":monitor_id}}),
+                &json!({"id":"approval","agent":"agent","epoch":2,"method":"monitor/approve","status":"pending","createdAt":1000,"params":{"monitorId":monitor_id}}),
             );
             add_request(
                 tx,
-                json!({"id":"answering","agent":"agent","epoch":2,"method":"item/commandExecution/requestApproval","status":"answering","createdAt":1000,"params":{}}),
+                &json!({"id":"answering","agent":"agent","epoch":2,"method":"item/commandExecution/requestApproval","status":"answering","createdAt":1000,"params":{}}),
             );
             add_request(
                 tx,
-                json!({"id":"retained","agent":"agent","epoch":2,"method":"agent/asyncQuestion","status":"pending","createdAt":1000,"params":{"questions":[]}}),
+                &json!({"id":"retained","agent":"agent","epoch":2,"method":"agent/asyncQuestion","status":"pending","createdAt":1000,"params":{"questions":[]}}),
             );
             add_request(
                 tx,
-                json!({"id":"orphan","method":"mcpServer/elicitation/request","status":"pending","createdAt":1000,"params":{"mode":"form","requestedSchema":{"properties":{}}}}),
+                &json!({"id":"orphan","agent":"orphan","method":"mcpServer/elicitation/request","status":"pending","createdAt":1000,"params":{"mode":"form","requestedSchema":{"properties":{}}}}),
             );
             add_event(tx, "dispatching-without-attempt", "agent", "dispatching", 2);
             add_event(tx, "reserved-without-attempt", "orphan-agent", "reserved", 0);
@@ -133,7 +129,7 @@ async fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() 
         .list()
         .expect("list recovered requests")
         .into_iter()
-        .map(|request| (request.id().to_string(), request.into_value()))
+        .map(|request| (request.id().to_string(), json!(request)))
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(requests["approval"]["status"], "expired");
     assert_eq!(requests["answering"]["status"], "uncertain");
@@ -310,7 +306,7 @@ async fn startup_write_failure_rolls_back_all_rows_and_next_start_converges() {
             .transaction(move |tx| {
                 add_request(
                     tx,
-                    json!({"id":"approval","agent":"agent","epoch":2,"method":"monitor/approve","status":"pending","createdAt":1000,"params":{"monitorId":id_for_insert}}),
+                    &json!({"id":"approval","agent":"agent","epoch":2,"method":"monitor/approve","status":"pending","createdAt":1000,"params":{"monitorId":id_for_insert}}),
                 );
                 add_event(tx, "dispatching-without-attempt", "agent", "dispatching", 2);
                 tx.execute_batch(&format!(
@@ -365,7 +361,7 @@ async fn reserved_batch_events_are_recovered_by_the_scheduler_scan() {
     fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     store
         .transaction(move |tx| {
-            let agent = AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"starting-agent","rootId":"starting-agent","epoch":0,
                 "status":"starting","autoWake":true,"inFlight":true,
                 "startAttempt":{"id":"attempt","epoch":0,"submitted":false,"events":["reserved-batch"]}
@@ -467,7 +463,8 @@ async fn malformed_request_isolated_without_blocking_other_recovery() {
     fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
     store.transaction(|tx| {
         tx.execute("INSERT INTO runtime_requests(id,record) VALUES('bad',?1)", [json!({"id":"bad","status":"answering","method":false}).to_string()])?;
-        add_request(tx, json!({"id":"good","status":"answering","method":"future/approval","opaque":{"x":[1,null]}}));
+        tx.execute("INSERT INTO runtime_requests(id,record) VALUES('sparse','{\"id\":\"sparse\"}')", [])?;
+        add_request(tx, &json!({"id":"good","agent":"agent","createdAt":1,"status":"answering","method":"item/commandExecution/requestApproval","params":{"opaque":{"x":[1,null]}}}));
         Ok(())
     }).await.unwrap();
     let report = monitor_runtime::recover_on_startup(&store, 2000.0)
@@ -475,6 +472,19 @@ async fn malformed_request_isolated_without_blocking_other_recovery() {
         .unwrap();
     assert_eq!(report.requests, 1);
     let db = store.test_reader().unwrap();
+    let sparse: String = db
+        .query_row(
+            "SELECT record FROM runtime_requests WHERE id='sparse'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sparse, r#"{"id":"sparse"}"#);
+    assert!(
+        Table::<RequestRecord>::new(&db)
+            .get(&"sparse".into())
+            .is_err()
+    );
     let bad: String = db
         .query_row(
             "SELECT record FROM runtime_requests WHERE id='bad'",
@@ -486,13 +496,14 @@ async fn malformed_request_isolated_without_blocking_other_recovery() {
         serde_json::from_str::<Value>(&bad).unwrap()["status"],
         "answering"
     );
-    let good = Table::<RequestRecord>::new(&db)
-        .get(&"good".into())
-        .unwrap()
-        .unwrap()
-        .into_value();
+    let good = json!(
+        Table::<RequestRecord>::new(&db)
+            .get(&"good".into())
+            .unwrap()
+            .unwrap()
+    );
     assert_eq!(good["status"], "uncertain");
-    assert_eq!(good["opaque"], json!({"x":[1,null]}));
+    assert_eq!(good["params"]["opaque"], json!({"x":[1,null]}));
 }
 
 #[tokio::test]
@@ -512,7 +523,6 @@ async fn malformed_monitor_row_is_skipped_while_other_rows_are_recovered() {
             // remove it in this isolated fixture to witness row-level isolation.
             tx.execute_batch(
                 "DROP INDEX runtime_monitor_agent_status;
-                 DROP INDEX runtime_monitor_stall_due;
                  DROP INDEX runtime_monitor_status",
             )?;
             tx.execute(
@@ -560,7 +570,7 @@ async fn startup_event_ownership_uses_exact_scheduler_batch_and_submitted_attemp
         let store = fixtures::store(root.path(), name).await;
         fixtures::seed(&store, &case, fixtures::monitor(root.path())).await;
         store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"claimed-agent","rootId":"claimed-agent","epoch":0,
                 "status":"starting","autoWake":true,"inFlight":true,
                 "startAttempt":{"id":"attempt","epoch":0,"submitted":submitted,"events":events}

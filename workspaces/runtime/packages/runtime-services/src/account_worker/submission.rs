@@ -153,7 +153,7 @@ impl Commit {
                                         row.epoch == intent.epoch
                                             && row.status
                                                 == studio_runtime_store::AgentStatus::Queued
-                                            && !row.extra.contains_key("startAttempt")
+                                            && row.start_attempt.is_none()
                                     }),
                             )
                         })

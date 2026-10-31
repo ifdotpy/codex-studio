@@ -291,11 +291,13 @@ fn migrate(tx: &Transaction<'_>, row: &SourceReceipt, cutover: i64) -> Result<()
                     .as_str()
                     .is_some_and(|root| !root.is_empty())
         });
-    if (current || status != WorkEffectStatus::Complete) && proof.is_none() {
+    // A complete bootstrap without proof (written by the retired Python backend) keeps
+    // its exact reply; the agent record stays without bootstrap state, as today.
+    if status != WorkEffectStatus::Complete && proof.is_none() {
         return Err(fail(row));
     }
     let state = json!({"agentId":agent,"epoch":epoch,"requestId":operation,"rootRequestId":proof.map(|p|p["rootRequestId"].clone()).unwrap_or(Value::Null),"fingerprint":signature,"state":status,"admittedRequest":token});
-    if current {
+    if current && proof.is_some() {
         owner(tx, agent, epoch, "vmAuthBootstrap", &state)?;
     }
     if status == WorkEffectStatus::Complete {
@@ -462,6 +464,52 @@ mod tests {
         );
         let plan:String=tx.query_row("EXPLAIN QUERY PLAN SELECT id FROM runtime_outbox WHERE owner_kind='agent' AND owner_id='agent' AND kind='provider_call' ORDER BY id",[],|r|r.get(3)).expect("plan");
         assert!(plan.contains("runtime_outbox_owner"));
+    }
+    #[test]
+    fn receipt_vm_provider_complete_bootstrap_without_proof_keeps_reply_and_agent() {
+        let mut db = database();
+        let tx = db.transaction().expect("transaction");
+        let hash = "b".repeat(64);
+        let agent = json!({"id":"agent","epoch":3,"executionMode":"vm"}).to_string();
+        tx.execute("INSERT INTO runtime_agents VALUES('agent',?1)", [&agent])
+            .expect("agent");
+        for phase in ["submitted", "complete"] {
+            tx.execute(
+                "INSERT INTO runtime_operation_receipts VALUES(?1,?2,?3)",
+                params![
+                    format!(
+                        "account-worker:vm-auth-bootstrap:agent:3:{}:{phase}",
+                        &hash[..24]
+                    ),
+                    phase,
+                    json!({"signature":hash}).to_string()
+                ],
+            )
+            .expect("bootstrap");
+        }
+        let mut cp = MigrationCheckpoint::begin(&tx, Family.id(), SOURCES[0], 1000).expect("begin");
+        while cp.status != MigrationStatus::Complete {
+            cp = Family
+                .move_batch(&tx, SOURCES[0], &cp)
+                .expect("complete bootstrap migrates");
+        }
+        let saved: String = tx
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id='agent'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("agent");
+        assert_eq!(saved, agent);
+        assert_eq!(
+            tx.query_row(
+                "SELECT count(*) FROM request_results WHERE signature='complete'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .expect("reply"),
+            1
+        );
     }
     #[test]
     fn receipt_vm_provider_unlinked_bootstrap_closes_startup_and_preserves_source() {

@@ -188,7 +188,9 @@ class Listeners(unittest.TestCase):
             port, port6 = listener.getsockname()[1], six.getsockname()[1]
             self.assertIn(Listener("127.0.0.1", port, UID), rows)
             self.assertIn(Listener("::1", port6, UID), rows)
-            self.assertEqual(connect_address(UID, port6, rows), "::1")
+            # Another listener of this user may own the same port on IPv4.
+            own = [Listener("127.0.0.1", port, UID), Listener("::1", port6, UID)]
+            self.assertEqual(connect_address(UID, port6, own), "::1")
 
 
 class Bridge(unittest.IsolatedAsyncioTestCase):

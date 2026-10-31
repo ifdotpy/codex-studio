@@ -102,11 +102,19 @@ struct RulesReply {
 }
 
 #[derive(Serialize)]
-struct RuleList { rules: Vec<RuleRecord> }
+struct RuleList {
+    rules: Vec<RuleRecord>,
+}
 #[derive(Serialize)]
-struct DeletedRule<'a> { deleted: &'a str }
-fn raw_rule_reply(value: &impl Serialize) -> Result<studio_runtime_schema::raw_json::RawJson, RulesServiceError> {
-    Ok(studio_runtime_schema::raw_json::RawJson(serde_json::value::to_raw_value(value)?))
+struct DeletedRule<'a> {
+    deleted: &'a str,
+}
+fn raw_rule_reply(
+    value: &impl Serialize,
+) -> Result<studio_runtime_schema::raw_json::RawJson, RulesServiceError> {
+    Ok(studio_runtime_schema::raw_json::RawJson(
+        serde_json::value::to_raw_value(value)?,
+    ))
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -519,9 +527,7 @@ fn checked_actor(
 ) -> Result<AgentRecord, StatusError> {
     let actor =
         AgentRepository::get(connection, &AgentId::from(actor_id))?.ok_or(StatusError::Stale)?;
-    if u64::try_from(actor.epoch).ok() != Some(expected_epoch)
-        || actor.is_deleted()
-    {
+    if u64::try_from(actor.epoch).ok() != Some(expected_epoch) || actor.is_deleted() {
         return Err(StatusError::Stale);
     }
     Ok(actor)
@@ -692,7 +698,12 @@ fn agent_status_record(agent: &AgentRecord) -> Value {
         "kind": "agent",
         "error": clip_value(agent.extra.get("error")),
     });
-    if agent.status == AgentStatus::Parked && agent.parked_event.as_deref().is_some_and(|event| !event.is_empty()) {
+    if agent.status == AgentStatus::Parked
+        && agent
+            .parked_event
+            .as_deref()
+            .is_some_and(|event| !event.is_empty())
+    {
         record["waitsForEvent"] = json!(agent.parked_event);
     }
     record
@@ -788,8 +799,8 @@ fn is_active_monitor(monitor: &MonitorRecord) -> bool {
     matches!(
         monitor.status(),
         studio_runtime_schema::studio_errors::MonitorStatus::Running
-                | studio_runtime_schema::studio_errors::MonitorStatus::Starting
-                | studio_runtime_schema::studio_errors::MonitorStatus::Approval
+            | studio_runtime_schema::studio_errors::MonitorStatus::Starting
+            | studio_runtime_schema::studio_errors::MonitorStatus::Approval
     )
 }
 
@@ -797,9 +808,9 @@ fn is_terminal_monitor(monitor: &MonitorRecord) -> bool {
     matches!(
         monitor.status(),
         studio_runtime_schema::studio_errors::MonitorStatus::Completed
-                | studio_runtime_schema::studio_errors::MonitorStatus::Failed
-                | studio_runtime_schema::studio_errors::MonitorStatus::Cancelled
-                | studio_runtime_schema::studio_errors::MonitorStatus::Lost
+            | studio_runtime_schema::studio_errors::MonitorStatus::Failed
+            | studio_runtime_schema::studio_errors::MonitorStatus::Cancelled
+            | studio_runtime_schema::studio_errors::MonitorStatus::Lost
     )
 }
 
@@ -929,13 +940,27 @@ struct ManagedRuleWire {
     name: Option<String>,
     text: Option<String>,
 }
-fn rule_text(field: &Option<String>, label: &'static str, maximum: usize, empty: bool) -> Result<String, RulesServiceError> {
-    let value = field.as_deref().ok_or(RulesServiceError::Invalid(label))?.trim();
-    if value.chars().count() > maximum || (!empty && value.is_empty()) { return Err(RulesServiceError::Invalid(label)); }
+fn rule_text(
+    field: &Option<String>,
+    label: &'static str,
+    maximum: usize,
+    empty: bool,
+) -> Result<String, RulesServiceError> {
+    let value = field
+        .as_deref()
+        .ok_or(RulesServiceError::Invalid(label))?
+        .trim();
+    if value.chars().count() > maximum || (!empty && value.is_empty()) {
+        return Err(RulesServiceError::Invalid(label));
+    }
     Ok(value.to_owned())
 }
 fn rule_empty_text(field: &Option<String>, maximum: usize) -> Result<String, RulesServiceError> {
-    if field.is_some() { rule_text(field, "text", maximum, true) } else { Ok(String::new()) }
+    if field.is_some() {
+        rule_text(field, "text", maximum, true)
+    } else {
+        Ok(String::new())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -979,15 +1004,16 @@ pub async fn rules(
                 let (rules, agents) = RulesRepository::list(connection)?;
                 let live = agents
                     .into_iter()
-                    .map(|agent| { let live = !agent.is_deleted(); (agent.id.0, live) })
+                    .map(|agent| {
+                        let live = !agent.is_deleted();
+                        (agent.id.0, live)
+                    })
                     .collect::<BTreeMap<_, _>>();
                 let visible = rules
                     .into_iter()
                     .filter(|rule| {
                         rule.root_id.as_deref() == Some(root.as_str())
-                            && live.get(&rule.agent)
-                                .copied()
-                                .unwrap_or(false)
+                            && live.get(&rule.agent).copied().unwrap_or(false)
                     })
                     .collect::<Vec<_>>();
                 raw_rule_reply(&RuleList { rules: visible })
@@ -1038,11 +1064,7 @@ pub async fn rules(
         ));
     }
 
-    let kind = body
-        .kind
-        .as_deref()
-        .unwrap_or("interval")
-        .to_owned();
+    let kind = body.kind.as_deref().unwrap_or("interval").to_owned();
     let prepared_path = if action == Some(crate::rules::RuleActionName::Save) && kind == "file" {
         let raw = rule_text(&body.path, "a path", FILE_PATH_MAX_CHARS, false)?;
         let cwd = cwd(&prepared_actor)?.to_owned();
@@ -1057,7 +1079,9 @@ pub async fn rules(
         )
     } else if action == Some(crate::rules::RuleActionName::Resume) {
         old_before.as_ref().and_then(|old| {
-            let studio_runtime_schema::rule_record::RuleKind::File { path } = &old.kind else { return None };
+            let studio_runtime_schema::rule_record::RuleKind::File { path } = &old.kind else {
+                return None;
+            };
             Some(path.clone())
         })
     } else {
@@ -1151,30 +1175,61 @@ pub async fn rules(
                     use studio_runtime_schema::rule_record::{RuleKind, RuleStatus};
                     let mut old = old.ok_or(RulesServiceError::Invalid("Unknown rule"))?;
                     if matches!(action, crate::rules::RuleAction::Resume { .. }) && old.in_flight {
-                        return Err(RulesServiceError::Invalid("Wait for the current rule check before resuming"));
+                        return Err(RulesServiceError::Invalid(
+                            "Wait for the current rule check before resuming",
+                        ));
                     }
                     if matches!(action, crate::rules::RuleAction::Delete { .. }) {
                         RulesRepository::delete(tx, &key)?;
                         raw_rule_reply(&DeletedRule { deleted: &key })?
                     } else {
-                        if matches!(action, crate::rules::RuleAction::Resume { .. }) && actor.auto_wake != Some(true) {
-                            return Err(RulesServiceError::Invalid("Resume the agent before its rules"));
+                        if matches!(action, crate::rules::RuleAction::Resume { .. })
+                            && actor.auto_wake != Some(true)
+                        {
+                            return Err(RulesServiceError::Invalid(
+                                "Resume the agent before its rules",
+                            ));
                         }
                         old.restart_check = None;
-                        let desired = if matches!(action, crate::rules::RuleAction::Resume { .. }) { RuleStatus::Active } else { RuleStatus::Paused };
-                        let unchanged = matches!(old.kind, RuleKind::LowWorkers { .. }) && old.status == desired && old.epoch.get() == actor.epoch;
+                        let desired = if matches!(action, crate::rules::RuleAction::Resume { .. }) {
+                            RuleStatus::Active
+                        } else {
+                            RuleStatus::Paused
+                        };
+                        let unchanged = matches!(old.kind, RuleKind::LowWorkers { .. })
+                            && old.status == desired
+                            && old.epoch.get() == actor.epoch;
                         if !unchanged {
-                            if matches!(old.kind, RuleKind::LowWorkers { .. }) { old.low_since = None; old.alerted = Some(false); }
-                            if matches!(action, crate::rules::RuleAction::Resume { .. }) && matches!(old.kind, RuleKind::File { .. }) {
+                            if matches!(old.kind, RuleKind::LowWorkers { .. }) {
+                                old.low_since = None;
+                                old.alerted = Some(false);
+                            }
+                            if matches!(action, crate::rules::RuleAction::Resume { .. })
+                                && matches!(old.kind, RuleKind::File { .. })
+                            {
                                 let generation = old.file_generation.get().saturating_add(1);
-                                old.file_activity_at = Some(serde_json::Number::from_f64(now).ok_or(RulesServiceError::Invalid("time"))?);
+                                old.file_activity_at = Some(
+                                    serde_json::Number::from_f64(now)
+                                        .ok_or(RulesServiceError::Invalid("time"))?,
+                                );
                                 old.fingerprint = fingerprint;
-                                old.file_generation = generation.try_into().map_err(|_| RulesServiceError::Invalid("rule"))?;
-                                old.stall_wake_generation = generation.saturating_sub(1).try_into().map_err(|_| RulesServiceError::Invalid("rule"))?;
+                                old.file_generation = generation
+                                    .try_into()
+                                    .map_err(|_| RulesServiceError::Invalid("rule"))?;
+                                old.stall_wake_generation = generation
+                                    .saturating_sub(1)
+                                    .try_into()
+                                    .map_err(|_| RulesServiceError::Invalid("rule"))?;
                             }
                             old.status = desired;
-                            old.epoch = actor.epoch.try_into().map_err(|_| RulesServiceError::Invalid("rule"))?;
-                            old.next_at = serde_json::Number::from_f64(now + old.interval_seconds.get() as f64).ok_or(RulesServiceError::Invalid("time"))?;
+                            old.epoch = actor
+                                .epoch
+                                .try_into()
+                                .map_err(|_| RulesServiceError::Invalid("rule"))?;
+                            old.next_at = serde_json::Number::from_f64(
+                                now + old.interval_seconds.get() as f64,
+                            )
+                            .ok_or(RulesServiceError::Invalid("time"))?;
                             old.error = None;
                             RulesRepository::put(tx, &old)?;
                         }
@@ -1281,16 +1336,31 @@ fn check_save(
     }
     let minimum = body.minimum_workers.unwrap_or(8);
     let duration = body.duration_minutes.unwrap_or(30);
-    let interval = body.interval_seconds.unwrap_or(RULE_DEFAULT_INTERVAL_SECONDS as i64);
-    let stall = body.stall_timeout_seconds.or(body.stall_alias).unwrap_or(RULE_DEFAULT_STALL_SECONDS as i64);
+    let interval = body
+        .interval_seconds
+        .unwrap_or(RULE_DEFAULT_INTERVAL_SECONDS as i64);
+    let stall = body
+        .stall_timeout_seconds
+        .or(body.stall_alias)
+        .unwrap_or(RULE_DEFAULT_STALL_SECONDS as i64);
     let at = body.at.unwrap_or(now + interval as f64);
     let event = body.event.as_deref().unwrap_or("worker_completed");
-    let command = rule_empty_text(&body.command, RULE_COMMAND_MAX_CHARS).map_err(|_| crate::rules::RuleSaveError::InputText);
-    let liveness_field = if body.liveness_command.is_some() { &body.liveness_command } else { &body.liveness_alias };
-    let liveness_command = rule_empty_text(liveness_field, RULE_COMMAND_MAX_CHARS).map_err(|_| crate::rules::RuleSaveError::InputText);
-    let name = rule_text(&body.name, "a rule name", RULE_NAME_MAX_CHARS, false).map_err(|_| crate::rules::RuleSaveError::Name);
-    let text_value = if body.text.is_none() { Ok("Check this event and continue the original task.".to_owned()) } else {
-        rule_text(&body.text, "an instruction", RULE_TEXT_MAX_CHARS, false).map_err(|_| crate::rules::RuleSaveError::Text)
+    let command = rule_empty_text(&body.command, RULE_COMMAND_MAX_CHARS)
+        .map_err(|_| crate::rules::RuleSaveError::InputText);
+    let liveness_field = if body.liveness_command.is_some() {
+        &body.liveness_command
+    } else {
+        &body.liveness_alias
+    };
+    let liveness_command = rule_empty_text(liveness_field, RULE_COMMAND_MAX_CHARS)
+        .map_err(|_| crate::rules::RuleSaveError::InputText);
+    let name = rule_text(&body.name, "a rule name", RULE_NAME_MAX_CHARS, false)
+        .map_err(|_| crate::rules::RuleSaveError::Name);
+    let text_value = if body.text.is_none() {
+        Ok("Check this event and continue the original task.".to_owned())
+    } else {
+        rule_text(&body.text, "an instruction", RULE_TEXT_MAX_CHARS, false)
+            .map_err(|_| crate::rules::RuleSaveError::Text)
     };
     crate::rules::CheckedRuleSave::new(
         crate::rules::RuleSaveInput {
@@ -1342,15 +1412,40 @@ struct RuleSave<'a> {
     fingerprint: Option<(i64, u64, u64)>,
 }
 
-fn save_rule(tx: &Transaction<'_>, actor: &AgentRecord, save: RuleSave<'_>) -> Result<studio_runtime_schema::raw_json::RawJson, RulesServiceError> {
-    let mut record = crate::rules::persisted_rule(save.data, crate::rules::RuleRecordContext {
-        id: save.key, actor, previous: save.old, path: save.prepared_path, fingerprint: save.fingerprint, now: save.now,
-    }).map_err(rule_save_error)?;
-    let low_workers = matches!(record.kind, studio_runtime_schema::rule_record::RuleKind::LowWorkers { .. });
-    if let Some(old) = save.old.filter(|old| low_workers && old.kind == record.kind && old.name == record.name && old.text == record.text && old.epoch == record.epoch) {
+fn save_rule(
+    tx: &Transaction<'_>,
+    actor: &AgentRecord,
+    save: RuleSave<'_>,
+) -> Result<studio_runtime_schema::raw_json::RawJson, RulesServiceError> {
+    let mut record = crate::rules::persisted_rule(
+        save.data,
+        crate::rules::RuleRecordContext {
+            id: save.key,
+            actor,
+            previous: save.old,
+            path: save.prepared_path,
+            fingerprint: save.fingerprint,
+            now: save.now,
+        },
+    )
+    .map_err(rule_save_error)?;
+    let low_workers = matches!(
+        record.kind,
+        studio_runtime_schema::rule_record::RuleKind::LowWorkers { .. }
+    );
+    if let Some(old) = save.old.filter(|old| {
+        low_workers
+            && old.kind == record.kind
+            && old.name == record.name
+            && old.text == record.text
+            && old.epoch == record.epoch
+    }) {
         return raw_rule_reply(old);
     }
-    if low_workers { record.next_at = serde_json::Number::from_f64(save.now).ok_or(RulesServiceError::Invalid("time"))?; }
+    if low_workers {
+        record.next_at =
+            serde_json::Number::from_f64(save.now).ok_or(RulesServiceError::Invalid("time"))?;
+    }
     RulesRepository::put(tx, &record)?;
     raw_rule_reply(&record)
 }
@@ -1369,7 +1464,9 @@ fn active_rule_monitors(
 }
 
 fn cwd(agent: &AgentRecord) -> Result<&str, RulesServiceError> {
-    agent.cwd.as_deref()
+    agent
+        .cwd
+        .as_deref()
         .ok_or(RulesServiceError::Invalid("workspace path"))
 }
 
@@ -1396,14 +1493,14 @@ mod tests {
             .transaction_with(move |tx| {
                 studio_runtime_store::receipt_schema::create(tx)?;
                 for record in [
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"lead","rootId":"lead","epoch":3,"status":"running",
                         "isLead":true,"autoWake":true,"cwd":cwd,
                         "concurrency":2,"maxAgents":8,
                         "workerDefaults":{"model":"gpt-fixture","effort":"high","fastMode":false}
                     }),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
                 ] {
                     AgentRepository::put(
                         tx,
@@ -1539,67 +1636,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_incomplete_waits_keep_status_and_sync_available() {
-        let (_directory, store) = fixture().await;
-        for wait in [
-            json!({"reason":"slot","epoch":4}),
-            json!({"reason":"pause","epoch":4,"until":null}),
-            json!({"reason":"slot","epoch":3,"runningTurns":"invalid"}),
-            json!({"reason":"slot","epoch":3}),
-            json!({"reason":"pause","epoch":3,"until":null}),
-        ] {
-            let saved = wait.clone();
-            store
-                .transaction_with(move |tx| {
-                    let mut agent = AgentRepository::get(tx, &"queued".into())?.expect("agent");
-                    agent.auto_wake = Some(true);
-                    agent.extra.insert("startWait".into(), saved);
-                    AgentRepository::put(tx, &agent)
-                })
-                .await
-                .expect("seed wait");
-            let view = store
-                .read_async("test/legacy-view", |tx| {
-                    let agent = AgentRepository::get(tx, &"queued".into())?.expect("agent");
-                    Ok::<_, StoreError>(crate::sync_views::agent_entity_view(
-                        &agent.value(),
-                        &Default::default(),
-                    ))
-                })
-                .await
-                .expect("read")
-                .expect("agent remains visible");
-            let expected = if wait["epoch"] == 4 {
-                json!(null)
-            } else {
-                json!({"reason":"dispatch_pending","epoch":4})
-            };
-            assert_eq!(view["startWait"], expected);
-            let status = model_directory(&store, "lead", 3, &json!({}), 103.0)
-                .await
-                .expect("status remains available");
-            let reasons = status["capacity"]["queued"][0]["reasons"].clone();
-            assert_eq!(
-                reasons,
-                if expected.is_null() {
-                    json!([])
-                } else {
-                    json!([expected])
-                }
-            );
-        }
-        let record = json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"starting","startWait":{"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3,"until":null}});
-        let view = crate::sync_views::agent_entity_view(&record, &Default::default())
-            .expect("valid legacy wait");
-        assert_eq!(
-            view["startWait"],
-            json!({"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3})
-        );
-        let record = json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"running","startWait":{"reason":"slot","epoch":4}});
-        assert!(crate::sync_views::agent_entity_view(&record, &Default::default()).is_some());
-    }
-
-    #[tokio::test]
     async fn malformed_cached_status_corpus_is_rejected_with_table_and_actor() {
         let (_directory, store) = fixture().await;
         let malformed = json!([{}, {"kind":"agent","id":"partial"}]);
@@ -1642,14 +1678,29 @@ mod tests {
             json!({"kind":"low_workers","command":false,"name":false}),
         ] {
             let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
-            let error = rules(&store, ("queued", 4), WatchAction::Save, Some(&input), &request, 100.0, &Files).await.expect_err("invalid input");
-            assert!(matches!(error, RulesServiceError::Invalid("rule")), "{error:?}");
+            let error = rules(
+                &store,
+                ("queued", 4),
+                WatchAction::Save,
+                Some(&input),
+                &request,
+                100.0,
+                &Files,
+            )
+            .await
+            .expect_err("invalid input");
+            assert!(
+                matches!(error, RulesServiceError::Invalid("rule")),
+                "{error:?}"
+            );
         }
     }
 
     #[test]
     fn stored_rule_reply_remains_opaque_on_replay() {
-        let reply: super::RulesReply = serde_json::from_str(r#"{"value":{"legacy": [1, 2], "future":true}}"#).expect("stored reply");
+        let reply: super::RulesReply =
+            serde_json::from_str(r#"{"value":{"legacy": [1, 2], "future":true}}"#)
+                .expect("stored reply");
         assert_eq!(reply.value.0.get(), r#"{"legacy": [1, 2], "future":true}"#);
         let encoded = serde_json::to_string(&reply).expect("reply serializes");
         assert!(encoded.contains(reply.value.0.get()));
@@ -1665,9 +1716,17 @@ mod tests {
         let (_directory, store) = fixture().await;
         let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let value = json!({"name":"watch"});
-        let saved = rules(&store, ("lead", 3), WatchAction::Save, Some(&value), &request, 100.0, &Files)
-            .await
-            .expect("defaults");
+        let saved = rules(
+            &store,
+            ("lead", 3),
+            WatchAction::Save,
+            Some(&value),
+            &request,
+            100.0,
+            &Files,
+        )
+        .await
+        .expect("defaults");
         let saved_value: Value = serde_json::from_str(saved.value.0.get()).expect("rule reply");
         assert_eq!(saved_value["kind"], "interval");
         assert_eq!(saved_value["event"], "worker_completed");
@@ -1774,7 +1833,10 @@ mod tests {
         )
         .expect("read rule row")
         .expect("saved rule remains");
-        assert_eq!(persisted_after_mismatch, serde_json::from_str(saved.value.0.get()).expect("rule reply"));
+        assert_eq!(
+            persisted_after_mismatch,
+            serde_json::from_str(saved.value.0.get()).expect("rule reply")
+        );
         store
             .transaction_with(move |tx| {
                 tx.execute(

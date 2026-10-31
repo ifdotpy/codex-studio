@@ -44,24 +44,47 @@ pub struct WorkspaceViewData {
 #[serde(untagged)]
 pub enum WorkspaceInboxItem {
     Other(Value),
-    Monitor { id: String, kind: &'static str, agent: String, title: String, text: String, monitor: Box<crate::sync_policy::MonitorProjection> },
+    Monitor {
+        id: String,
+        kind: &'static str,
+        agent: String,
+        title: String,
+        text: String,
+        monitor: Box<crate::sync_policy::MonitorProjection>,
+    },
 }
 
 #[derive(serde::Serialize)]
 #[serde(untagged, rename_all = "camelCase")]
 pub enum WorkspaceViewResponse {
-    Work { work: Vec<Value> },
-    Inbox { inbox: Vec<WorkspaceInboxItem> },
-    Annotations { annotations: Vec<Value> },
-    Full { #[serde(flatten)] data: WorkspaceViewData, #[serde(rename = "tasksHistoryLimit")] tasks_history_limit: u32 },
+    Work {
+        work: Vec<Value>,
+    },
+    Inbox {
+        inbox: Vec<WorkspaceInboxItem>,
+    },
+    Annotations {
+        annotations: Vec<Value>,
+    },
+    Full {
+        #[serde(flatten)]
+        data: WorkspaceViewData,
+        #[serde(rename = "tasksHistoryLimit")]
+        tasks_history_limit: u32,
+    },
 }
 
 pub fn workspace_view_response(view: &str, data: WorkspaceViewData) -> WorkspaceViewResponse {
     match view {
         "work" => WorkspaceViewResponse::Work { work: data.work },
         "inbox" => WorkspaceViewResponse::Inbox { inbox: data.inbox },
-        "annotations" => WorkspaceViewResponse::Annotations { annotations: data.annotations },
-        _ => WorkspaceViewResponse::Full { data, tasks_history_limit: 100 },
+        "annotations" => WorkspaceViewResponse::Annotations {
+            annotations: data.annotations,
+        },
+        _ => WorkspaceViewResponse::Full {
+            data,
+            tasks_history_limit: 100,
+        },
     }
 }
 
@@ -529,7 +552,7 @@ pub fn workspace_inbox(
         .filter(|item| item.status() == studio_runtime_store::WorkStatus::Review)
     {
         inbox.push(WorkspaceInboxItem::Other(json!({
-            "id":item.id(),"kind":"work","agent":item.value()["rootId"],"title":item.title(),
+            "id":item.id(),"kind":"work","agent":item.root_id(),"title":item.title(),
             "text":"Result awaits acceptance","work":crate::work_policy::work_item_view(item, statuses),
         })));
     }
@@ -543,14 +566,38 @@ pub fn workspace_inbox(
         })));
     }
     for monitor in monitors.iter().filter(|monitor| {
-        matches!(monitor.status, studio_runtime_schema::studio_errors::MonitorStatus::Failed | studio_runtime_schema::studio_errors::MonitorStatus::Lost)
-            && monitor.rule_id.is_none()
+        matches!(
+            monitor.status,
+            studio_runtime_schema::studio_errors::MonitorStatus::Failed
+                | studio_runtime_schema::studio_errors::MonitorStatus::Lost
+        ) && monitor.rule_id.is_none()
     }) {
-        let text = monitor.error.as_deref().filter(|text| !text.is_empty()).map(str::to_owned)
-            .unwrap_or_else(|| format!("Exit {}", monitor.exit_code.map_or_else(|| "None".into(), |code| code.to_string())));
-        inbox.push(WorkspaceInboxItem::Monitor { id: monitor.id.clone(), kind: "monitor", agent: monitor.agent.clone(), title: monitor.command.clone(), text, monitor: Box::new(monitor.clone()) });
+        let text = monitor
+            .error
+            .as_deref()
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                format!(
+                    "Exit {}",
+                    monitor
+                        .exit_code
+                        .map_or_else(|| "None".into(), |code| code.to_string())
+                )
+            });
+        inbox.push(WorkspaceInboxItem::Monitor {
+            id: monitor.id.clone(),
+            kind: "monitor",
+            agent: monitor.agent.clone(),
+            title: monitor.command.clone(),
+            text,
+            monitor: Box::new(monitor.clone()),
+        });
     }
-    for rule in rules.iter().filter(|rule| rule.error.as_ref().is_some_and(|error| !error.is_empty())) {
+    for rule in rules
+        .iter()
+        .filter(|rule| rule.error.as_ref().is_some_and(|error| !error.is_empty()))
+    {
         inbox.push(WorkspaceInboxItem::Other(json!({"id":rule.id,"kind":"rule","agent":rule.agent,"title":rule.name,"text":rule.error})));
     }
     Ok(inbox)
@@ -582,6 +629,37 @@ mod tests {
     };
     use serde_json::json;
     use std::time::Duration;
+
+    #[test]
+    fn review_inbox_keeps_typed_work_root_and_missing_root() {
+        let work = [
+            studio_runtime_store::WorkItemRecord::checked(
+                &json!({"id":"one","status":"review","rootId":"lead"}),
+            )
+            .unwrap(),
+            studio_runtime_store::WorkItemRecord::checked(&json!({"id":"two","status":"review"}))
+                .unwrap(),
+        ];
+        let inbox = super::workspace_inbox(super::WorkspaceInboxData {
+            agents: &[],
+            all_agents: &[],
+            requests: &[],
+            complaints: &[],
+            work: &work,
+            statuses: &Default::default(),
+            monitors: &[],
+            rules: &[],
+        })
+        .unwrap();
+        let agents: Vec<_> = inbox
+            .iter()
+            .map(|item| match item {
+                super::WorkspaceInboxItem::Other(value) => value["agent"].clone(),
+                super::WorkspaceInboxItem::Monitor { .. } => unreachable!("work items only"),
+            })
+            .collect();
+        assert_eq!(agents, [json!("lead"), json!(null)]);
+    }
 
     #[test]
     fn typed_cursor_rejects_wrong_fields_unknown_fields_and_unsafe_integers() {

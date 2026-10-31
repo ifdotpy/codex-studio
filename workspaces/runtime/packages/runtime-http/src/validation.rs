@@ -2143,7 +2143,7 @@ mod tests {
     #[test]
     fn persisted_runtime_schemas_are_used_for_typed_store_records() {
         let registry = Registry::compile(&[]).expect("stored schemas compile");
-        let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"a","rootId":"a","epoch":0,"status":"idle","runtimeField":true});
+        let agent = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"a","rootId":"a","epoch":0,"status":"idle","runtimeField":true});
         assert!(registry.validate_table_record("runtime_agents", &agent));
         assert!(!registry.validate_table_record(
             "runtime_agents",

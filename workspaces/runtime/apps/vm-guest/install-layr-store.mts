@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import type { TestContext } from "node:test";
 
 const guest = path.dirname(fileURLToPath(import.meta.url));
-export const binary = { format: 1, version: "0.4.0", build: "fixture" };
+export const binary = { format: 1, version: "0.5.1", build: "fixture" };
 export const compatible = {
   binary,
   store: binary,

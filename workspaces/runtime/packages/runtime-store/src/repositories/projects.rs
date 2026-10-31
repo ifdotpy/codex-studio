@@ -90,7 +90,7 @@ impl ProjectsRepository {
             deleted_at,
         };
         tx.execute("INSERT INTO runtime_projects(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
-            params![id, json!({"id":id,"removal":removal}).to_string()])?;
+            params![id, json!({"id":id,"removal":removal,"peerTeams":[]}).to_string()])?;
         Ok(())
     }
     pub fn is_destructive_removal(
@@ -161,6 +161,48 @@ impl ProjectsRepository {
             ))
         })
         .transpose()
+    }
+
+    pub fn get_record(
+        connection: &Connection,
+        id: &str,
+    ) -> StoreResult<Option<studio_runtime_schema::project_record::ProjectRecord>> {
+        let raw: Option<String> = connection
+            .query_row(
+                "SELECT record FROM runtime_projects WHERE id=?1 AND json_extract(record,'$.removal') IS NULL",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| {
+            serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredRecord {
+                object: "runtime_projects",
+                id: id.to_owned(),
+            })
+        })
+        .transpose()
+    }
+
+    pub fn list_records(
+        connection: &Connection,
+    ) -> StoreResult<Vec<(String, studio_runtime_schema::project_record::ProjectRecord)>> {
+        let mut statement = connection.prepare_cached(
+            "SELECT id,record FROM runtime_projects WHERE json_extract(record,'$.removal') IS NULL AND COALESCE(json_type(record,'$.sidebarHidden'),'')!='true' ORDER BY json_extract(record,'$.created'),id",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .map(|row| {
+                let (id, raw) = row?;
+                let project =
+                    serde_json::from_str(&raw).map_err(|_| StoreError::InvalidStoredRecord {
+                        object: "runtime_projects",
+                        id: id.clone(),
+                    })?;
+                Ok((id, project))
+            })
+            .collect()
     }
 
     pub fn location_request(
@@ -260,6 +302,23 @@ impl ProjectsRepository {
             project.clone(),
             project.get("sidebarHidden").and_then(Value::as_bool) == Some(true),
         )?;
+        Ok(())
+    }
+
+    /// Update selected fields while preserving the rest of the stored project.
+    pub fn patch_project<T: Serialize>(
+        transaction: &Transaction<'_>,
+        id: &str,
+        patch: &T,
+    ) -> StoreResult<()> {
+        let patch = serde_json::to_string(patch)?;
+        let (record, hidden): (String, bool) = transaction.query_row(
+            "UPDATE runtime_projects SET record=json_patch(record,json(?2)) WHERE id=?1 AND json_extract(record,'$.removal') IS NULL RETURNING record,json_type(record,'$.sidebarHidden')='true'",
+            params![id, patch],
+            |row| Ok((row.get(0)?, row.get::<_, Option<bool>>(1)?.unwrap_or(false))),
+        )?;
+        let record = serde_json::value::RawValue::from_string(record)?;
+        SyncDocumentsRepository::put_entity(transaction, "project", id, record, hidden)?;
         Ok(())
     }
 
@@ -473,7 +532,13 @@ mod tests {
         db.execute_batch("CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);
             CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
             CREATE TABLE sync_documents(seq INTEGER);
+<<<<<<< head
             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER);
+||||||| base
+            CREATE TABLE sync_versions(seq INTEGER);
+=======
+            CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
+>>>>>>> origin/main
             CREATE TABLE runtime_orchestration_settings(id TEXT,record TEXT);").expect("schema");
         crate::receipt_schema::create(&db).expect("request schema");
         let tx = db.transaction().expect("transaction");

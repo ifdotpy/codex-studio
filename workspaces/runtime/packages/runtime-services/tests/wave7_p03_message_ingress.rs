@@ -472,10 +472,6 @@ fn logical_state(store: &RuntimeStore) -> BTreeMap<String, Value> {
             "SELECT json_object('seq',seq,'scope',scope,'id',id,'payload',json(payload),'deleted',deleted) FROM sync_documents ORDER BY rowid",
         ),
         (
-            "sync_versions",
-            "SELECT json_object('seq',seq,'scope',scope,'hash',hash,'deleted',deleted,'updated',updated) FROM sync_versions ORDER BY rowid",
-        ),
-        (
             "runtime_capacity_retries",
             "SELECT json_object('id',id,'agent',agent,'record',json(CASE WHEN json_extract(record,'$.status')='finished' THEN json_set(record,'$.updatedAt','generated timestamp') ELSE record END)) FROM runtime_capacity_retries ORDER BY rowid",
         ),
@@ -489,8 +485,14 @@ fn assert_json(actual: &Value, expected: &Value, path: &str) {
     match (actual, expected) {
         (Value::Object(a), Value::Object(b)) => {
             let mut b = b.clone();
+            if !a.contains_key("sync_versions") {
+                b.remove("sync_versions");
+            }
             if a.contains_key("rootId") && a.contains_key("epoch") {
-                for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS.into_iter().chain(["parentId", "threadId", "turnId"]) {
+                for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
+                    .into_iter()
+                    .chain(["parentId", "threadId", "turnId"])
+                {
                     if !a.contains_key(key) && b.get(key).is_some_and(Value::is_null) {
                         b.remove(key);
                     }

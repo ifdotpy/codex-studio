@@ -1,8 +1,6 @@
 //! Bounded snapshot reads for lifecycle decisions; no independent connection.
 use crate::schema::{SchemaRequirements, TableRequirement};
-use crate::{
-    AgentRecord, AgentRepository, RequestRecord, StoreError, StoreResult, Table, WorkItemRecord,
-};
+use crate::{AgentRecord, AgentRepository, StoreError, StoreResult, Table, WorkItemRecord};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -232,16 +230,21 @@ pub fn write(transaction: &Transaction<'_>, table: &str, record: &Value) -> Stor
             &serde_json::from_value::<AgentRecord>(record.clone())?,
         ),
         "runtime_requests" => {
-            let request = RequestRecord::from_value(record.clone()).map_err(|error| {
-                record.get("id").and_then(Value::as_str).map_or_else(
-                    || StoreError::from(error),
-                    |id| StoreError::InvalidStoredObject {
-                        table: "runtime_requests",
-                        id: id.to_owned(),
-                    },
-                )
-            })?;
-            Table::<RequestRecord>::new(transaction).put(&request)
+            // ManagementSnapshot Records is an existing Value-based lifecycle debt.
+            let id = record
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or(StoreError::RecordContract("Request write requires an id"))?;
+            if !studio_runtime_schema::validate("PersistedRequestRecord", record)
+                .map_err(StoreError::SchemaValidation)?
+            {
+                return Err(StoreError::InvalidStoredObject {
+                    table: "runtime_requests",
+                    id: id.to_owned(),
+                });
+            }
+            transaction.execute("INSERT INTO runtime_requests(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record", rusqlite::params![id, serde_json::to_string(record)?])?;
+            Ok(())
         }
         "runtime_work" => Table::<WorkItemRecord>::new(transaction)
             .put(&WorkItemRecord::from_value(record.clone())?),

@@ -14,7 +14,7 @@ The original project folder is separate. Studio does not synchronize it with mai
 | Value           | Runtime source                                                                         |
 | --------------- | -------------------------------------------------------------------------------------- |
 | Store           | The chat's `layrStoreRoot`. Default: `<Studio state>/layr-native/store`.               |
-| Binary          | `<Studio state>/layr-native/bin/layr`, version 0.4.0                                   |
+| Binary          | `<Studio state>/layr-native/bin/layr`, version 0.5.1                                   |
 | Environment     | `LAYR_ROOT` selects the store. macOS uses `LAYR_DIRECT=1`. Linux uses `LAYR_DIRECT=0`. |
 | Linux socket    | `LAYR_SOCKET=<Studio state>/layr-native/layr.sock`.                                    |
 | Worker selector | `workspace: "layr-native"`. Reviewers inherit this mode.                               |

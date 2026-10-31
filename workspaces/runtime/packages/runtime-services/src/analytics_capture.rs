@@ -675,8 +675,8 @@ pub(crate) fn capture_logged_effect(
         agent,
         &observation.method,
         &observation.params,
-        observation.observed_at,
-        observation.observed_at,
+        observation.observed_at.get(),
+        observation.observed_at.get(),
         epoch,
     )?;
     if let Effect::Analytics {

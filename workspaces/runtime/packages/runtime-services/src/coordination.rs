@@ -779,16 +779,11 @@ fn capacity_reset(
             Some(false) => return Err(invalid_stored("runtime_capacity_retries", &id)),
             None => return Err(invalid_stored("runtime_capacity_retries", &id)),
         }
-        if agent
-            .extra
-            .get("startAttempt")
-            .and_then(Value::as_object)
-            .is_some_and(|attempt| {
-                attempt.get("capacityRetryId").and_then(Value::as_str) == Some(&id)
-                    && attempt.get("submitted") == Some(&Value::Bool(false))
-            })
-        {
-            agent.extra.remove("startAttempt");
+        if agent.start_attempt.as_ref().is_some_and(|attempt| {
+            attempt.capacity_retry_id.as_deref() == Some(id.as_str())
+                && attempt.submitted == Some(false)
+        }) {
+            agent.start_attempt = None;
             agent.in_flight = Some(false);
             agent.status = studio_runtime_store::AgentStatus::Failed;
         }
@@ -815,11 +810,6 @@ pub fn post_message(
     let group = CoordinationRepository::group(transaction, input.room)?;
     let Some(group) = group else {
         let directory = teams(transaction)?;
-        if directory.suppressed_aliases.contains(input.room) {
-            return Err(CoordinationError::InvalidRequest(
-                "This chat is no longer available.",
-            ));
-        }
         if directory.unresolved_thread_agents.contains(input.room) {
             return Err(CoordinationError::RequiresDependency(
                 "agent-discovery/launcher-status",
@@ -898,115 +888,36 @@ pub fn post_message(
 
 struct AgentDirectory {
     team_by_id: BTreeMap<String, String>,
-    suppressed_aliases: BTreeSet<String>,
     unresolved_thread_agents: BTreeSet<String>,
-    invalid_agents: BTreeSet<String>,
 }
 
 fn teams(transaction: &Transaction<'_>) -> Result<AgentDirectory, CoordinationError> {
-    let mut values = BTreeMap::<String, Value>::new();
-    let mut graph_agents = BTreeSet::new();
-    let mut managed_threads = BTreeSet::new();
-    let mut invalid_agents = BTreeSet::new();
-    for (id, mut value, is_graph) in CoordinationRepository::agents(transaction)? {
-        if is_graph {
-            graph_agents.insert(id.clone());
-            value["source"] = Value::String("registered".to_owned());
-        } else if let Some(thread_id) = value.get("threadId").and_then(Value::as_str) {
-            managed_threads.insert(thread_id.to_owned());
-        }
-        values.insert(id, value);
-    }
-    let mut suppressed_aliases = BTreeSet::new();
+    let mut team_by_id = BTreeMap::new();
     let mut unresolved_thread_agents = BTreeSet::new();
-    for id in &graph_agents {
-        let Some(record) = values.get_mut(id) else {
-            continue;
-        };
-        record["source"] = Value::String("registered".to_owned());
-        if let Some(thread_id) = record.get("threadId").and_then(Value::as_str) {
-            if managed_threads.contains(thread_id) {
-                suppressed_aliases.insert(id.clone());
-            } else {
-                unresolved_thread_agents.insert(id.clone());
-            }
-        }
-    }
-    let mut result = BTreeMap::new();
-    'agents: for (id, value) in &values {
-        if suppressed_aliases.contains(id) || unresolved_thread_agents.contains(id) {
+    for (id, value) in CoordinationRepository::agents(transaction)? {
+        if super::workspace_views::deleted_agent(&value) {
             continue;
         }
-        if super::workspace_views::deleted_agent(value) {
-            continue;
-        }
-        let team = if let Some(root) = value
+        if let Some(root) = value
             .get("rootId")
             .and_then(Value::as_str)
             .filter(|root| !root.is_empty())
         {
-            format!("managed:{root}")
+            team_by_id.insert(id, format!("managed:{root}"));
         } else if value.get("source").and_then(Value::as_str) == Some("app-server")
             && let (Some(wave), Some(run_id)) = (
                 value.get("wave").and_then(Value::as_str),
                 value.get("runId").and_then(Value::as_str),
             )
         {
-            format!("wave:{wave}:{run_id}")
-        } else if value.get("source").and_then(Value::as_str) == Some("registered") {
-            let mut current = id.as_str();
-            let mut seen = BTreeSet::new();
-            loop {
-                if !seen.insert(current.to_owned()) {
-                    invalid_agents.insert(id.clone());
-                    continue 'agents;
-                }
-                let Some(node) = values.get(current) else {
-                    unresolved_thread_agents.insert(id.clone());
-                    continue 'agents;
-                };
-                if let Some(root) = node
-                    .get("rootId")
-                    .and_then(Value::as_str)
-                    .filter(|root| !root.is_empty())
-                {
-                    break format!("managed:{root}");
-                }
-                if node.get("source").and_then(Value::as_str) == Some("app-server")
-                    && let (Some(wave), Some(run_id)) = (
-                        node.get("wave").and_then(Value::as_str),
-                        node.get("runId").and_then(Value::as_str),
-                    )
-                {
-                    break format!("wave:{wave}:{run_id}");
-                }
-                if node.get("source").and_then(Value::as_str) == Some("registered") {
-                    match node
-                        .get("parentId")
-                        .and_then(Value::as_str)
-                        .filter(|parent| !parent.is_empty())
-                    {
-                        Some(parent) => current = parent,
-                        None => break format!("registered:{current}"),
-                    }
-                } else {
-                    unresolved_thread_agents.insert(id.clone());
-                    continue 'agents;
-                }
-            }
+            team_by_id.insert(id, format!("wave:{wave}:{run_id}"));
         } else {
-            unresolved_thread_agents.insert(id.clone());
-            continue 'agents;
-        };
-        if !suppressed_aliases.contains(id) && !unresolved_thread_agents.contains(id) {
-            result.insert(id.clone(), team);
+            unresolved_thread_agents.insert(id);
         }
     }
     Ok(AgentDirectory {
-        team_by_id: result,
-        suppressed_aliases,
+        team_by_id,
         unresolved_thread_agents,
-        invalid_agents,
     })
 }
 
@@ -1042,14 +953,8 @@ fn check_historical_team(
 fn required_team<'a>(
     directory: &'a AgentDirectory,
     id: &str,
-    unavailable: &'static str,
+    _unavailable: &'static str,
 ) -> Result<&'a str, CoordinationError> {
-    if directory.invalid_agents.contains(id) {
-        return Err(invalid_agent(id));
-    }
-    if directory.suppressed_aliases.contains(id) {
-        return Err(CoordinationError::InvalidRequest(unavailable));
-    }
     if directory.unresolved_thread_agents.contains(id) {
         return Err(CoordinationError::RequiresDependency(
             "agent-discovery/launcher-status",
@@ -1197,13 +1102,6 @@ fn message_receipt(message: ValidatedMessage, newly_queued: bool) -> GroupMessag
     }
 }
 
-fn invalid_agent(id: &str) -> CoordinationError {
-    CoordinationError::InvalidStored {
-        object: "agents",
-        id: id.to_owned(),
-    }
-}
-
 fn invalid_stored(object: &'static str, id: &str) -> CoordinationError {
     CoordinationError::InvalidStored {
         object,
@@ -1268,17 +1166,22 @@ mod tests {
              CREATE TABLE runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             CREATE TABLE graph_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY AUTOINCREMENT,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
+<<<<<<< head
              CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);")
+||||||| base
+             CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);")
+=======
+             CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);")
+>>>>>>> origin/main
         ).expect("coordination schema creates");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         studio_runtime_store::receipt_schema::create(&connection).expect("request results schema");
         for (id, root) in [("lead", "lead"), ("worker", "lead"), ("other", "other")] {
-            let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
+            let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":"idle"}).to_string();
             connection
                 .execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -1298,17 +1201,22 @@ mod tests {
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,text TEXT,status TEXT,created REAL,epoch INTEGER,turn_id TEXT,error TEXT);
              CREATE TABLE IF NOT EXISTS runtime_event_meta(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS graph_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS sync_entities(collection TEXT NOT NULL,id TEXT NOT NULL,seq INTEGER NOT NULL,hash TEXT NOT NULL,payload TEXT,deleted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(collection,id));
              CREATE TABLE IF NOT EXISTS sync_documents(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,id TEXT NOT NULL,payload TEXT NOT NULL,deleted INTEGER NOT NULL DEFAULT 0);
+<<<<<<< head
              CREATE TABLE IF NOT EXISTS durable_rows(seq INTEGER); CREATE TABLE IF NOT EXISTS sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);")
+||||||| base
+             CREATE TABLE IF NOT EXISTS sync_versions(seq INTEGER PRIMARY KEY,scope TEXT NOT NULL,hash TEXT NOT NULL,deleted INTEGER NOT NULL,updated REAL NOT NULL);")
+=======
+             CREATE TABLE IF NOT EXISTS sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT OR IGNORE INTO sync_generation VALUES(1,0);")
+>>>>>>> origin/main
         ).expect("durable test schema creates");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
         studio_runtime_store::receipt_schema::create(&connection).expect("request results schema");
         for (id, root) in [("lead", "lead"), ("worker", "lead")] {
-            let record = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
+            let record = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":root,"epoch":0,"status":if id == "lead" {"running"} else {"idle"},"autoWake":id == "lead","inFlight":id == "lead"}).to_string();
             connection
                 .execute(
                     "INSERT OR IGNORE INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -1336,21 +1244,6 @@ mod tests {
     #[test]
     fn refused_chat_validation_does_not_advance_sqlite_sequence() {
         let mut connection = database();
-        let mut lead = studio_runtime_store::AgentRepository::get(
-            &connection,
-            &studio_runtime_store::AgentId::from("lead"),
-        )
-        .expect("lead lookup succeeds")
-        .expect("lead exists");
-        lead.thread_id = Some("thread-1".to_string());
-        studio_runtime_store::AgentRepository::put(&connection, &lead)
-            .expect("managed thread persists");
-        connection
-            .execute(
-                "INSERT INTO graph_agents(id,record) VALUES('alias',?1)",
-                [json!({"id":"alias","threadId":"thread-1"}).to_string()],
-            )
-            .expect("registered alias inserts");
         let before: i64 = connection
             .query_row(
                 "SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name='sync_documents'),0)",
@@ -1360,7 +1253,10 @@ mod tests {
             .expect("sequence reads");
         let transaction = connection.transaction().expect("transaction starts");
         let result = create_chat(&transaction, "chat", "Team", &["alias".into()]);
-        assert!(matches!(result, Err(CoordinationError::InvalidRequest(_))));
+        assert!(matches!(
+            result,
+            Err(CoordinationError::RequiresDependency(_))
+        ));
         drop(transaction);
         let after: i64 = connection
             .query_row(
@@ -2082,61 +1978,8 @@ mod tests {
     }
 
     #[test]
-    fn registered_descendants_inherit_managed_team_and_managed_aliases_are_suppressed() {
+    fn status_file_agents_require_launcher_discovery_without_writes() {
         let mut connection = database();
-        connection
-            .execute(
-                "UPDATE runtime_agents SET record=?1 WHERE id='lead'",
-                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"idle","threadId":"managed-thread"}).to_string()],
-            )
-            .expect("managed thread fixture updates");
-        connection
-            .execute(
-                "INSERT INTO graph_agents VALUES('child',?1),('alias',?2)",
-                [
-                    json!({"id":"child","parentId":"lead"}).to_string(),
-                    json!({"id":"alias","threadId":"managed-thread"}).to_string(),
-                ],
-            )
-            .expect("registered fixtures insert");
-        let transaction = connection.transaction().expect("transaction starts");
-        create_chat(
-            &transaction,
-            "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "Team",
-            &["lead".to_owned(), "child".to_owned()],
-        )
-        .expect("child inherits parent team");
-        transaction.commit().expect("chat commits");
-        let before = count(&connection, "groups");
-        let transaction = connection.transaction().expect("transaction starts");
-        assert!(matches!(
-            create_chat(
-                &transaction,
-                "cccccccc-cccc-cccc-cccc-cccccccccccc",
-                "Alias",
-                &["alias".to_owned()]
-            ),
-            Err(CoordinationError::InvalidRequest(
-                "The selected agents are no longer available."
-            ))
-        ));
-        drop(transaction);
-        assert_eq!(count(&connection, "groups"), before);
-    }
-
-    #[test]
-    fn status_file_agents_and_aliases_require_launcher_discovery_without_writes() {
-        let mut connection = database();
-        connection
-            .execute(
-                "INSERT INTO graph_agents VALUES('launcher-alias',?1)",
-                [
-                    json!({"id":"launcher-alias","threadId":"thread-only-in-status-file"})
-                        .to_string(),
-                ],
-            )
-            .expect("alias fixture inserts");
         let transaction = connection.transaction().expect("transaction starts");
         assert!(matches!(
             create_chat(
@@ -2186,7 +2029,7 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES('user',?1)",
-                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
+                [json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"user","rootId":"lead","epoch":0,"status":"idle"}).to_string()],
             )
             .expect("user agent fixture inserts");
         let room = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
@@ -2296,7 +2139,6 @@ mod tests {
         assert_eq!(count(&connection, "graph_edges"), 0);
         assert_eq!(count(&connection, "sync_entities"), 0);
         assert_eq!(count(&connection, "sync_documents"), 0);
-        assert_eq!(count(&connection, "sync_versions"), 0);
     }
 
     #[test]

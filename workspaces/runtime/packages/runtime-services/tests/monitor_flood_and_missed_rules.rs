@@ -195,7 +195,7 @@ const ONCE_RULE: &str = r#"{"id":"once","agent":"owner","epoch":1,"name":"Once",
 fn once() -> (Value, Value) {
     (
         serde_json::from_str(ONCE_RULE).expect("rule fixture"),
-        json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"owner","rootId":"owner","epoch":1,"status":"idle","autoWake":true,"isLead":true}),
+        json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"owner","rootId":"owner","epoch":1,"status":"idle","autoWake":true,"isLead":true}),
     )
 }
 

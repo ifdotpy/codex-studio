@@ -96,7 +96,8 @@ pub(crate) fn agent_view_contexts(
                 .query_map([], |row| row.get::<_, String>(0))?
                 .collect::<Result<Vec<_>, _>>()?
             {
-                if let Ok(record) = serde_json::from_str::<studio_runtime_store::MonitorRecord>(&raw)
+                if let Ok(record) =
+                    serde_json::from_str::<studio_runtime_store::MonitorRecord>(&raw)
                     && lead_set.contains(record.agent.as_str())
                 {
                     monitor_agents.insert(record.agent);
@@ -251,13 +252,7 @@ pub(crate) fn agent_view_context(
     let mut assigned = Vec::with_capacity(rows.len());
     for (work_id, raw) in rows {
         let assignment = crate::agent_progress::Assignment::decode(&work_id, &raw)?;
-        let work = assignment.value();
-        for result in work
-            .get("results")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
+        for result in assignment.results().into_iter().flatten() {
             if result.get("agent").and_then(Value::as_str) != Some(id) {
                 continue;
             }
@@ -394,9 +389,15 @@ impl RoomDirectory {
     ) -> StoreResult<Self> {
         let mut peers = Vec::new();
         for project in &projects {
-            let Some(path) = project.path.as_deref().filter(|s| !s.is_empty()) else {
+            let ProjectAuthorityRow::Active {
+                path, peer_teams, ..
+            } = project
+            else {
                 continue;
             };
+            if path.is_empty() {
+                continue;
+            }
             // Project/agent writers persist resolved host paths. Room membership
             // compares those stored identities; it must not inspect today's filesystem.
             let Some(path) =
@@ -406,7 +407,7 @@ impl RoomDirectory {
                 // directory and cannot bind local peer membership.
                 continue;
             };
-            for team in &project.peer_teams {
+            for team in peer_teams {
                 let mut members = Vec::new();
                 for id in &team.members {
                     if agents.iter().any(|a| {
@@ -579,9 +580,9 @@ mod room_preparation_tests {
                 ..agent(id)
             })
             .collect();
-        let projects = vec![ProjectAuthorityRow {
+        let projects = vec![ProjectAuthorityRow::Active {
             id: Some("project".to_owned()),
-            path: Some(first.to_str().expect("UTF-8 path").to_owned()),
+            path: first.to_str().expect("UTF-8 path").to_owned(),
             peer_teams: vec![PeerTeamRow {
                 id: "peers".to_owned(),
                 name: "Peers".to_owned(),
@@ -605,7 +606,10 @@ mod room_preparation_tests {
         connection
             .execute(
                 "INSERT INTO runtime_projects(id,record) VALUES ('project',?1)",
-                [json!({"id":"project","path":root.path(),"name":"before"}).to_string()],
+                [
+                    json!({"id":"project","path":root.path(),"name":"before","peerTeams":[]})
+                        .to_string(),
+                ],
             )
             .expect("project");
         let prepared =
@@ -632,7 +636,7 @@ mod room_preparation_tests {
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile table");
-        connection.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","provider":"codex"}).to_string()]).expect("agent");
+        connection.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","epoch":1,"status":"idle","provider":"codex"}).to_string()]).expect("agent");
         for sql in [
             "UPDATE runtime_agents SET record=json_set(record,'$.prompt','changed') WHERE id='agent'",
             "INSERT INTO runtime_agent_volatile(id,tail) VALUES('agent','\"changed\"')",
@@ -714,7 +718,7 @@ mod room_preparation_tests {
         connection
             .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
                 "CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
-                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_events(agent TEXT NOT NULL);
                  CREATE TABLE runtime_items(agent TEXT NOT NULL);
@@ -789,12 +793,12 @@ mod room_preparation_tests {
         connection
             .execute_batch(
                 &studio_runtime_store::agent_columns::fixture_sql("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
                  CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(
                      json_extract(record,'$.agent'),json_extract(record,'$.status'));
                  CREATE TABLE runtime_events(agent TEXT NOT NULL);
                  CREATE TABLE runtime_items(agent TEXT NOT NULL);
-                 INSERT INTO runtime_monitors VALUES
+                 INSERT INTO runtime_monitors(id,record) VALUES
                      ('old-monitor','{\"id\":\"old-monitor\",\"agent\":\"lead-busy\",\"status\":\"completed\"}');"),
             )
             .expect("context fixture");

@@ -73,8 +73,7 @@ pub fn enqueue_output_with_scope_in_transaction(
     scope: JournalEventScope<'_>,
     params: &OutputDelta,
 ) -> Result<bool, NotificationDispatchError> {
-    let Some(mut record) = Table::<MonitorRecord>::new(tx).get(&process_id.to_owned())?
-    else {
+    let Some(mut record) = Table::<MonitorRecord>::new(tx).get(&process_id.to_owned())? else {
         return Ok(false);
     };
     let Some(operation) = record.operation.as_ref() else {
@@ -140,12 +139,17 @@ pub fn enqueue_output_with_scope_in_transaction(
     }
     let encoded = &params.delta_base64;
     let stream = params.stream.unwrap_or(MonitorStream::Stdout);
-    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
         .map_err(|_| NotificationDispatchError::invalid())?;
-    let key = format!("{}:{}:{}", scope.cursor_scope, scope.generation, scope.cursor);
+    let key = format!(
+        "{}:{}:{}",
+        scope.cursor_scope, scope.generation, scope.cursor
+    );
     let queue = record.stream_queue.get_or_insert_with(Vec::new);
     if let Some(existing) = queue.iter().find(|item| item.cursor() == key) {
-        return if matches!(existing, MonitorQueueEvent::Output { delta_base64, stream: saved, .. } if delta_base64 == encoded && *saved == stream) {
+        return if matches!(existing, MonitorQueueEvent::Output { delta_base64, stream: saved, .. } if delta_base64 == encoded && *saved == stream)
+        {
             Ok(true)
         } else {
             Err(NotificationDispatchError::ConflictingDelivery)
@@ -154,9 +158,13 @@ pub fn enqueue_output_with_scope_in_transaction(
     if record.stream_ack_cursor.as_deref() == Some(key.as_str()) {
         return Ok(true);
     }
-    let queued_bytes = queue.iter().map(MonitorQueueEvent::byte_length).sum::<u64>();
+    let queued_bytes = queue
+        .iter()
+        .map(MonitorQueueEvent::byte_length)
+        .sum::<u64>();
     if queue.len() >= MAX_EVENTS - RESERVED_EVENTS
-        || queued_bytes.saturating_add(bytes.len() as u64) > (STREAM_QUEUE_MAX_BYTES - TERMINAL_RECEIPT_RESERVE_BYTES) as u64
+        || queued_bytes.saturating_add(bytes.len() as u64)
+            > (STREAM_QUEUE_MAX_BYTES - TERMINAL_RECEIPT_RESERVE_BYTES) as u64
     {
         return Err(NotificationDispatchError::StreamCapacity);
     }
@@ -205,28 +213,65 @@ pub async fn next(store: &RuntimeStore) -> Result<Option<Delivery>, MonitorError
     let record: MonitorRecord = serde_json::from_str(&encoded)
         .map_err(|_| MonitorError::InvalidDeliveryIdentity("monitor output queue"))?;
     if record.id != id {
-        return Err(MonitorError::InvalidDeliveryIdentity("monitor output owner"));
+        return Err(MonitorError::InvalidDeliveryIdentity(
+            "monitor output owner",
+        ));
     }
-    let item = record.stream_queue.and_then(|queue| queue.into_iter().next())
+    let item = record
+        .stream_queue
+        .and_then(|queue| queue.into_iter().next())
         .ok_or(MonitorError::InvalidDeliveryIdentity("monitor output head"))?;
     let cursor = item.cursor().to_owned();
     if cursor.is_empty() {
-        return Err(MonitorError::InvalidDeliveryIdentity("monitor output cursor"));
+        return Err(MonitorError::InvalidDeliveryIdentity(
+            "monitor output cursor",
+        ));
     }
     let operation = item.operation().clone();
     let event = match item {
-        MonitorQueueEvent::Exit { code, error, finished, .. } => MonitorEvent::Exit { code, error, finished },
-        MonitorQueueEvent::Probe { generation, result, .. } => MonitorEvent::Probe { generation, result },
-        MonitorQueueEvent::Output { offset, delta_base64, byte_length, stream, .. } => {
-            let bytes = base64::engine::general_purpose::STANDARD.decode(delta_base64)
+        MonitorQueueEvent::Exit {
+            code,
+            error,
+            finished,
+            ..
+        } => MonitorEvent::Exit {
+            code,
+            error,
+            finished,
+        },
+        MonitorQueueEvent::Probe {
+            generation, result, ..
+        } => MonitorEvent::Probe { generation, result },
+        MonitorQueueEvent::Output {
+            offset,
+            delta_base64,
+            byte_length,
+            stream,
+            ..
+        } => {
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(delta_base64)
                 .map_err(|_| MonitorError::InvalidDeliveryIdentity("monitor output encoding"))?;
             if byte_length != bytes.len() as u64 {
                 return Err(MonitorError::InvalidDeliveryIdentity("monitor output size"));
             }
-            MonitorEvent::OutputStream { offset, stream: match stream { MonitorStream::Stdout => "stdout", MonitorStream::Stderr => "stderr" }.to_owned(), bytes }
+            MonitorEvent::OutputStream {
+                offset,
+                stream: match stream {
+                    MonitorStream::Stdout => "stdout",
+                    MonitorStream::Stderr => "stderr",
+                }
+                .to_owned(),
+                bytes,
+            }
         }
     };
-    Ok(Some(Delivery { id, operation, cursor, event }))
+    Ok(Some(Delivery {
+        id,
+        operation,
+        cursor,
+        event,
+    }))
 }
 
 /// Persist a completed liveness request behind already-received output. The
@@ -293,24 +338,47 @@ pub fn enqueue_exit_in_transaction(
     let Some(mut record) = Table::<MonitorRecord>::new(tx).get(&id.to_owned())? else {
         return Err(MonitorError::Refused("Unknown command watch"));
     };
-    if record.operation.as_ref().is_none_or(|saved| !saved.same_identity(operation)) {
-        return Err(MonitorError::InvalidDeliveryIdentity("monitor operation changed"));
+    if record
+        .operation
+        .as_ref()
+        .is_none_or(|saved| !saved.same_identity(operation))
+    {
+        return Err(MonitorError::InvalidDeliveryIdentity(
+            "monitor operation changed",
+        ));
     }
-    if record.stream_ack_cursor.as_deref() == Some(cursor) { return Ok(true); }
+    if record.stream_ack_cursor.as_deref() == Some(cursor) {
+        return Ok(true);
+    }
     let queue = record.stream_queue.get_or_insert_with(Vec::new);
     if let Some(existing) = queue.iter().find(|item| item.cursor() == cursor) {
-        return if matches!(existing, MonitorQueueEvent::Exit { code: saved_code, error: saved_error, .. } if *saved_code == code && *saved_error == error) {
+        return if matches!(existing, MonitorQueueEvent::Exit { code: saved_code, error: saved_error, .. } if *saved_code == code && *saved_error == error)
+        {
             Ok(true)
         } else {
-            Err(MonitorError::InvalidDeliveryIdentity("conflicting monitor result"))
+            Err(MonitorError::InvalidDeliveryIdentity(
+                "conflicting monitor result",
+            ))
         };
     }
-    let queued_bytes = queue.iter().map(MonitorQueueEvent::byte_length).sum::<u64>();
+    let queued_bytes = queue
+        .iter()
+        .map(MonitorQueueEvent::byte_length)
+        .sum::<u64>();
     let error_bytes = error.as_ref().map_or(0, |value| value.len()) as u64;
-    if queue.len() >= MAX_EVENTS || queued_bytes.saturating_add(error_bytes) > STREAM_QUEUE_MAX_BYTES as u64 {
+    if queue.len() >= MAX_EVENTS
+        || queued_bytes.saturating_add(error_bytes) > STREAM_QUEUE_MAX_BYTES as u64
+    {
         return Ok(false);
     }
-    queue.push(MonitorQueueEvent::Exit { cursor: cursor.to_owned(), code, error, finished, byte_length: error_bytes, operation: operation.clone() });
+    queue.push(MonitorQueueEvent::Exit {
+        cursor: cursor.to_owned(),
+        code,
+        error,
+        finished,
+        byte_length: error_bytes,
+        operation: operation.clone(),
+    });
     Table::<MonitorRecord>::new(tx).put(&record)?;
     Ok(true)
 }
@@ -356,13 +424,25 @@ pub async fn acknowledge(store: &RuntimeStore, delivery: &Delivery) -> Result<()
             let Some(mut record) = MonitorsRepository::get(tx, &delivery.id)? else {
                 return Err(MonitorError::Refused("Unknown command watch"));
             };
-            if record.stream_ack_cursor.as_deref() == Some(delivery.cursor.as_str()) { return Ok(()); }
-            if record.operation.as_ref() != Some(&delivery.operation) {
-                return Err(MonitorError::InvalidDeliveryIdentity("monitor operation changed"));
+            if record.stream_ack_cursor.as_deref() == Some(delivery.cursor.as_str()) {
+                return Ok(());
             }
-            let queue = record.stream_queue.as_mut().ok_or(MonitorError::InvalidDeliveryIdentity("monitor output queue"))?;
+            if record.operation.as_ref() != Some(&delivery.operation) {
+                return Err(MonitorError::InvalidDeliveryIdentity(
+                    "monitor operation changed",
+                ));
+            }
+            let queue =
+                record
+                    .stream_queue
+                    .as_mut()
+                    .ok_or(MonitorError::InvalidDeliveryIdentity(
+                        "monitor output queue",
+                    ))?;
             if queue.first().map(MonitorQueueEvent::cursor) != Some(delivery.cursor.as_str()) {
-                return Err(MonitorError::InvalidDeliveryIdentity("monitor output ACK order"));
+                return Err(MonitorError::InvalidDeliveryIdentity(
+                    "monitor output ACK order",
+                ));
             }
             queue.remove(0);
             record.stream_ack_cursor = Some(delivery.cursor);

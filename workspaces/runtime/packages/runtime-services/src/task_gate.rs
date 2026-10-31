@@ -7,6 +7,7 @@ use crate::monitor_runtime::{MonitorAdmission, WorkspaceAdmission};
 use serde_json::{Value, json};
 use std::path::Path;
 use studio_runtime_schema::persistence::RequestIdentity;
+use studio_runtime_store::WorkItemRecord;
 use studio_runtime_store::{AgentRecord, AgentRepository, Transaction, WorkItemsRepository};
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -96,16 +97,20 @@ pub fn admit(
         return Ok(false);
     };
     let config = normalize(&config)?;
-    let mut results = task.value()["results"].clone();
-    let result = results
-        .as_array_mut()
+    let task_id = task.id().0.clone();
+    let result = task
+        .results_mut()
         .and_then(|v| v.last_mut())
         .ok_or(MonitorError::Refused("Missing gate submission"))?;
-    let result_id = result["id"]
-        .as_str()
+    let result_id = result
+        .get("id")
+        .and_then(Value::as_str)
         .ok_or(MonitorError::Refused("Missing result identity"))?
         .to_owned();
-    let revision = result["revision"].as_str().unwrap_or_default();
+    let revision = result
+        .get("revision")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let cwd = &submitter.cwd;
     let mut evidence = json!({"status":"not_run","config":config,"cwd":cwd,"revision":revision,
         "exitCode":null,"output":"","log":null,"monitorId":null});
@@ -119,8 +124,11 @@ pub fn admit(
         let request_id = RequestIdentity::issue_root();
         evidence["requestId"] = json!(request_id);
         let request = crate::monitor_policy::MonitorCreateInput {
-            command, timeout_ms: config["timeout_ms"].as_i64(),
-            stall_timeout_seconds: Some(0), success_exit_codes: Some(vec![0]), ..Default::default()
+            command,
+            timeout_ms: config["timeout_ms"].as_i64(),
+            stall_timeout_seconds: Some(0),
+            success_exit_codes: Some(vec![0]),
+            ..Default::default()
         };
         let log_root = crate::monitor_output::log_root(state_dir)
             .to_string_lossy()
@@ -134,7 +142,8 @@ pub fn admit(
         };
         let mut monitor =
             crate::monitor_runtime::create_in_transaction(tx, &admission, workspace, now)?;
-        monitor.task_gate = Some(studio_runtime_schema::monitor_record::MonitorTaskGate { task_id: task.id().0.clone(), result_id });
+        monitor.task_gate =
+            Some(studio_runtime_schema::monitor_record::MonitorTaskGate { task_id, result_id });
         studio_runtime_store::monitor_runtime::put(tx, &monitor)?;
         evidence["status"] = json!("running");
         evidence["monitorId"] = json!(monitor.id);
@@ -142,18 +151,12 @@ pub fn admit(
     } else {
         evidence["error"] = json!("Acceptance gate workspace was not prepared; submit again");
     }
-    results
-        .as_array_mut()
-        .expect("validated results remain an array")
-        .last_mut()
-        .expect("validated submission remains present")["gate"] = evidence;
-    task.set("results", results)
-        .map_err(studio_runtime_store::StoreError::from)?;
+    result.insert("gate".into(), evidence);
     Ok(true)
 }
 
-pub fn require_pass(task: &Value, override_reason: Option<&str>) -> Result<(), EventWriteError> {
-    if let Some(reason) = override_reason {
+pub fn require_pass(task: &WorkItemRecord, reason: Option<&str>) -> Result<(), EventWriteError> {
+    if let Some(reason) = reason {
         if reason.trim().is_empty()
             || reason.chars().count() > studio_runtime_schema::task_gate::MAX_TEXT_CODEPOINTS
         {
@@ -163,13 +166,10 @@ pub fn require_pass(task: &Value, override_reason: Option<&str>) -> Result<(), E
         }
         return Ok(());
     }
-    let Some(config) = task.get("gate").filter(|v| !v.is_null()) else {
+    let Some(config) = task.extension("gate").filter(|v| !v.is_null()) else {
         return Ok(());
     };
-    let gate = task["results"]
-        .as_array()
-        .and_then(|v| v.last())
-        .and_then(|v| v.get("gate"));
+    let gate = task.results().and_then(|v| v.last()?.get("gate"));
     if gate.is_some_and(|gate| {
         gate["status"] == "passed"
             && gate["exitCode"] == 0
@@ -204,7 +204,11 @@ pub fn notify_review(
 }
 
 /// Return true for a gate monitor, including stale deliveries. A stale success cannot replace unknown.
-pub fn settle(tx: &Transaction<'_>, monitor: &studio_runtime_store::MonitorRecord, now: f64) -> Result<bool, MonitorError> {
+pub fn settle(
+    tx: &Transaction<'_>,
+    monitor: &studio_runtime_store::MonitorRecord,
+    now: f64,
+) -> Result<bool, MonitorError> {
     let Some(binding) = &monitor.task_gate else {
         return Ok(false);
     };
@@ -227,12 +231,16 @@ pub fn settle(tx: &Transaction<'_>, monitor: &studio_runtime_store::MonitorRecor
         MonitorStatus::Completed if monitor.exit_code == Some(0) => "passed",
         MonitorStatus::Lost => "unknown",
         MonitorStatus::Failed | MonitorStatus::Cancelled | MonitorStatus::Completed => "failed",
-        MonitorStatus::Approval | MonitorStatus::Starting | MonitorStatus::Running => return Ok(true),
+        MonitorStatus::Approval | MonitorStatus::Starting | MonitorStatus::Running => {
+            return Ok(true);
+        }
     };
     result["gate"]["status"] = json!(status);
     result["gate"]["exitCode"] = json!(monitor.exit_code);
     result["gate"]["output"] = json!(
-        monitor.tail.as_str()
+        monitor
+            .tail
+            .as_str()
             .chars()
             .take(studio_runtime_schema::shared_values::MONITOR_OUTPUT_TAIL_CODEPOINTS)
             .collect::<String>()
@@ -357,7 +365,7 @@ mod tests {
         let cwd = root.path().to_string_lossy().into_owned();
         store.transaction(move |tx| {
             for id in ["lead", "worker", "dependent"] {
-                AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":"lead","isLead":id=="lead",
+                AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":"lead","isLead":id=="lead",
                     "epoch":1,"status":"running","autoWake":true,"agentMode":"multi","concurrency":8,"cwd":cwd,"yoloMode":approved}))?)?;
             }
             for (id, owner, deps) in [("task","worker",json!([])),("next","dependent",json!(["task"]))] {
@@ -556,8 +564,7 @@ mod tests {
             .to_owned();
         store
             .transaction_with(move |tx| {
-                let mut monitor = MonitorsRepository::get(tx, &id)?
-                    .expect("gate monitor exists");
+                let mut monitor = MonitorsRepository::get(tx, &id)?.expect("gate monitor exists");
                 monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Completed;
                 monitor.exit_code = Some(0);
                 settle(tx, &monitor, 4.0)
@@ -612,7 +619,10 @@ mod tests {
             .await
             .expect("gate monitor query succeeds")
             .expect("gate monitor exists");
-        assert_eq!(monitor.status, studio_runtime_schema::studio_errors::MonitorStatus::Approval);
+        assert_eq!(
+            monitor.status,
+            studio_runtime_schema::studio_errors::MonitorStatus::Approval
+        );
         assert_eq!(monitor.agent, "worker");
         assert_eq!(monitor.timeout_ms.get(), 1234);
         assert!(accept(&store, None).await.is_err());

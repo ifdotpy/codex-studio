@@ -82,9 +82,9 @@ pub struct WorkspaceTaskRow {
 impl WorkspaceTaskRow {
     /// Decode a served row without another lookup; the lookahead row stays unchecked.
     pub fn decode(self, connection: &Connection) -> StoreResult<Value> {
-        Ok(Table::<TaskRecord>::new(connection)
-            .decode_stored(&self.id, &self.record)?
-            .into_value())
+        Ok(crate::projection_value(
+            &Table::<TaskRecord>::new(connection).decode_stored(&self.id, &self.record)?,
+        ))
     }
 }
 
@@ -154,9 +154,7 @@ impl WorkspaceViewsRepository {
         .collect()
     }
 
-    pub fn agents(
-        connection: &Connection,
-    ) -> StoreResult<Vec<crate::AgentRecord>> {
+    pub fn agents(connection: &Connection) -> StoreResult<Vec<crate::AgentRecord>> {
         let fields = crate::agent_volatile::columns("v.");
         let mut statement = connection.prepare_cached(&format!(
             "SELECT {fields},a.id,a.record,v.id IS NOT NULL FROM runtime_agents a \
@@ -250,7 +248,7 @@ impl WorkspaceViewsRepository {
     pub fn task(connection: &Connection, id: &str) -> StoreResult<Option<Value>> {
         Ok(Table::<TaskRecord>::new(connection)
             .get(&TaskId::from(id))?
-            .map(TaskRecord::into_value))
+            .map(|record| crate::projection_value(&record)))
     }
 
     pub fn agent(connection: &Connection, id: &str) -> StoreResult<Option<AgentRecord>> {
@@ -458,7 +456,7 @@ mod bulk_read_tests {
                     "INSERT INTO runtime_tasks VALUES(?1,?2)",
                     (
                         id,
-                        json!({"id":id,"agent":"agent","created":created,"status":"completed"})
+                        json!({"id":id,"agent":"agent","created":created,"itemId":id,"turnId":"turn","kind":"command","status":"completed","type":"commandExecution","name":"commandExecution"})
                             .to_string(),
                     ),
                 )
@@ -495,7 +493,7 @@ mod bulk_read_tests {
         for (id, created, finished) in [("a", 1, 1), ("b", 2, 5), ("c", 2, 4), ("foreign", 9, 9)] {
             let agent = if id == "foreign" { "other" } else { "agent" };
             let payload_id = if id == "a" { "wrong" } else { id };
-            connection.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":payload_id,"agent":agent,"created":created,"finished":finished}).to_string())).expect("task");
+            connection.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":payload_id,"agent":agent,"created":created,"finished":finished,"itemId":id,"turnId":"turn","kind":"command","status":"completed","type":"commandExecution","name":"commandExecution"}).to_string())).expect("task");
         }
         let agents = ["agent".to_owned()];
         let page =
@@ -548,7 +546,7 @@ mod bulk_read_tests {
                     "INSERT INTO runtime_agents VALUES(?1,?2)",
                     (
                         id,
-                        json!({"accountKey":"default","id":id,"provider":"codex","rootId":"a","epoch":0,"status":"idle","tail":"legacy"})
+                        json!({"compactions":0,"accountKey":"default","id":id,"provider":"codex","rootId":"a","epoch":0,"status":"idle","tail":"legacy"})
                             .to_string(),
                     ),
                 )

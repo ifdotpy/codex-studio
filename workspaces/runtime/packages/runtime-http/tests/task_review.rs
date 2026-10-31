@@ -53,9 +53,9 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
         .unwrap();
     store.transaction(|tx| {
         for agent in [
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":1,"status":"running","autoWake":true,"isLead":true,"name":"lead"}),
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","parentId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":false,"name":"worker"}),
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"other","rootId":"other","parentId":null,"epoch":1,"status":"running","autoWake":true,"isLead":true,"name":"other"}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":1,"status":"running","autoWake":true,"isLead":true,"name":"lead"}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","parentId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":false,"name":"worker"}),
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"other","rootId":"other","parentId":null,"epoch":1,"status":"running","autoWake":true,"isLead":true,"name":"other"}),
         ] { AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?; }
         Ok(())
     }).await.unwrap();
@@ -197,8 +197,8 @@ async fn archive_fixture(
     let owner = owner.map(str::to_owned);
     store.transaction(move |tx| {
         for agent in [
-            json!({"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":true,"executionMode":if vm { "vm" } else { "host" }}),
-            json!({"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","parentId":"lead","epoch":2,"status":"failed","autoWake":true,"executionMode":"vm"}),
+            json!({"compactions":0,"accountKey":"default","provider":"codex","id":"lead","rootId":"lead","epoch":1,"status":"running","autoWake":true,"isLead":true,"executionMode":if vm { "vm" } else { "host" }}),
+            json!({"compactions":0,"accountKey":"default","provider":"codex","id":"worker","rootId":"lead","parentId":"lead","epoch":2,"status":"failed","autoWake":true,"executionMode":"vm"}),
         ] { AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?; }
         let mut work = json!({"id":"archive-task","rootId":"lead","owner":owner,"status":"review","title":"archive-task","description":"","created":1.0,"updated":1.0,"version":2,"dependencies":[],"results":[{"id":"result-1","agent":"lead","text":"done","checks":"checked","revision":"state","files":[]}],"decisions":[],"createdBy":"lead"});
         if vm { work["vmAccept"] = json!({"status":"completed","requestId":"layr-accept:result-1","taskId":"archive-task","owner":"worker","revision":"state","resultId":"result-1","created":1.0}); }
@@ -315,7 +315,7 @@ async fn legacy_work_is_available_in_the_first_sse_baseline_without_an_entity_pu
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     store.transaction(|tx| {
-        AgentRepository::put(tx,&AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"completed","isLead":true,"taskDefaultGate":{"command":"upgrade-check","timeout_ms":1234}}))?)?;
+        AgentRepository::put(tx,&AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"completed","isLead":true,"taskDefaultGate":{"command":"upgrade-check","timeout_ms":1234}}))?)?;
         tx.execute("INSERT INTO runtime_work(id,record) VALUES('old-work',?1)",[json!({"id":"old-work","rootId":"lead","title":"Legacy assignment","status":"review","created":1,"updated":1,"version":1,"results":[{"id":"old-result","agent":"lead","text":"Legacy evidence","checks":"Checked","revision":"abc","files":[],"created":1}]}).to_string()])?;
         tx.execute("DELETE FROM sync_entity_meta WHERE key=?1",[studio_runtime_store::WORK_DETAILS_SEED_MARKER])?;
         Ok(())
@@ -379,7 +379,7 @@ async fn task_http_description_and_reason_keep_their_transport_bounds() {
     let directory = tempfile::tempdir().unwrap();
     let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
     store.transaction(|tx| {
-        AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":1,"status":"running","autoWake":true,"isLead":true,"name":"lead"}))?)?;
+        AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":1,"status":"running","autoWake":true,"isLead":true,"name":"lead"}))?)?;
         Ok(())
     }).await.unwrap();
     let app = router(HttpState::new(

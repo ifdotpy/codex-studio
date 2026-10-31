@@ -28,6 +28,7 @@ mod path;
 pub mod path_identity;
 pub mod receipt_migration_contract;
 pub mod receipt_schema;
+pub use studio_runtime_schema::raw_object;
 mod records;
 mod repositories;
 pub use repositories::multi_server_delivery;
@@ -96,9 +97,9 @@ use sqlite_actor::{ActorResponseDisposition, SqliteActor};
 
 pub use path::{NATIVE_LAYR_DIRECTORY, resolve_state_dir};
 pub use records::{
-    ActiveExecutionView, AgentExecutionMode, AgentId, AgentRecord, AgentRepository, AgentSandbox, AgentStatus,
-    AnnotationRecord, ChatMessage, ChatMessageId, CheckpointRecord, ComplaintRecord,
-    CredentialCopy, EventMetadataRecord, ExecutionRunRecord, GraphAgentRecord, InterruptOutcome,
+    ActiveExecutionView, AgentDraft, AgentExecutionMode, AgentId, AgentRecord, AgentRepository,
+    AgentSandbox, AgentStatus, AnnotationRecord, ChatMessage, ChatMessageId, CheckpointRecord,
+    ComplaintRecord, CredentialCopy, EventMetadataRecord, ExecutionRunRecord, InterruptOutcome,
     JsonRecord, LegacyWorkReply, MessageRepository, MonitorRecord, NativeRelease,
     NativeReleaseScope, NativeReviewThread, PlanRecord, QueueEvent, QueueEventId,
     QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate, RecordQueryShape,
@@ -830,6 +831,10 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("invalid stored object {table}/{id}")]
     InvalidStoredObject { table: &'static str, id: String },
+    #[error("full transcript text is unavailable for {id}")]
+    TranscriptFullTextUnavailable { id: String },
+    #[error("transcript inputs are incomplete for {id}")]
+    TranscriptInputsIncomplete { id: String },
     #[error("persisted JSON schema validation failed: {0}")]
     SchemaValidation(String),
     #[error("invalid JSON-record table contract: {0}")]

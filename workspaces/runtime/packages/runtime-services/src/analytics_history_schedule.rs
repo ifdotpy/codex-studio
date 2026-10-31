@@ -1392,6 +1392,7 @@ mod tests {
         let mut valid = agent("paused");
         valid["rootId"] = json!("history-agent");
         valid["epoch"] = json!(0);
+        valid["compactions"] = json!(0);
         let actor =
             studio_runtime_store::AgentRecord::from_value(valid.clone()).expect("store record");
         let mut schedule = HistorySchedule::default();

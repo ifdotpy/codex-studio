@@ -38,11 +38,8 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 /// historical monitor (93,650 rows, 209 MB, about 0.55 s on 22 October 2026).
 const QUEUED_STREAM_INDEX: &str = "runtime_monitor_queued_stream";
 
-/// SQL predicate of `QUEUED_STREAM_INDEX` and of the query that must use it:
-/// the record's `streamQueue` holds at least one event. A malformed record is
-/// never selected, so it cannot refuse the index build or the stream read.
-const QUEUED_STREAM_PREDICATE: &str =
-    "CASE WHEN json_valid(record) THEN json_array_length(record,'$.streamQueue')>0 ELSE 0 END";
+/// SQL predicate of `QUEUED_STREAM_INDEX` and its queue-head query.
+const QUEUED_STREAM_PREDICATE: &str = "stream_pending=1";
 
 /// Partial index, by creation time, of the monitors that may be a
 /// Studio-caused ending. The Studio error list reads them in nearly every
@@ -59,7 +56,7 @@ const LEGACY_STUDIO_ERROR_INDEX: &str = "runtime_monitor_studio_error";
 /// (or a null) `exitCode`. The owner-stop test is
 /// left to the classifier, so this is a superset of its accepted rows. A
 /// malformed record is selected as a diagnostic, without parsing it in SQL.
-fn studio_error_predicate() -> String {
+pub(crate) fn legacy_studio_error_predicate() -> String {
     let statuses = studio_runtime_schema::studio_errors::MonitorStatus::ALL
         .iter()
         .map(|status| format!("'{}'", status.as_str()))
@@ -71,10 +68,12 @@ fn studio_error_predicate() -> String {
 }
 
 /// Creation time of a monitor, in Unix seconds; the key of `STUDIO_ERROR_INDEX`.
-const CREATED_EXPRESSION: &str = "CASE WHEN json_valid(record) THEN CASE WHEN json_type(record,'$.created') IN ('integer','real') AND json_extract(record,'$.created')>=0 THEN json_extract(record,'$.created') ELSE 0 END ELSE 0 END";
+pub(crate) const LEGACY_CREATED_EXPRESSION: &str = "CASE WHEN json_valid(record) THEN CASE WHEN json_type(record,'$.created') IN ('integer','real') AND json_extract(record,'$.created')>=0 AND json_extract(record,'$.created')<=1.7976931348623157e308 THEN json_extract(record,'$.created') ELSE 0 END ELSE 0 END";
+const CREATED_EXPRESSION: &str = "monitor_created";
+const STUDIO_ERROR_PREDICATE: &str = "monitor_error_candidate=1";
 
 fn studio_error_candidates_sql() -> String {
-    let predicate = studio_error_predicate();
+    let predicate = STUDIO_ERROR_PREDICATE;
     format!(
         "SELECT id,record FROM runtime_monitors WHERE {predicate} \
          AND {CREATED_EXPRESSION}>=?1 UNION ALL \
@@ -104,7 +103,7 @@ impl MonitorsRepository {
     /// build pass over malformed rows of an older state.
     pub(crate) fn prepare_indexes(connection: &Connection) -> StoreResult<()> {
         if crate::schema::table_exists(connection, MONITOR_TABLE.name)? {
-            let predicate = studio_error_predicate();
+            let predicate = STUDIO_ERROR_PREDICATE;
             connection.execute_batch(&format!(
                 "CREATE INDEX IF NOT EXISTS {QUEUED_STREAM_INDEX} ON runtime_monitors(id) \
                  WHERE {QUEUED_STREAM_PREDICATE};
@@ -129,20 +128,14 @@ impl MonitorsRepository {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    /// The record of monitor `id` when it was created at or after `since`
-    /// (Unix seconds) and may be a Studio-caused ending.
+    /// Raw changed monitor for classification by the Studio-error owner.
     pub fn studio_error_candidate(
         connection: &Connection,
         id: &str,
-        since: f64,
     ) -> StoreResult<Option<String>> {
-        let predicate = studio_error_predicate();
         Ok(connection
-            .prepare_cached(&format!(
-                "SELECT record FROM runtime_monitors WHERE id=?1 AND {predicate} \
-                 AND ({CREATED_EXPRESSION}>=?2 OR {CREATED_EXPRESSION}=0)"
-            ))?
-            .query_row(rusqlite::params![id, since], |row| row.get(0))
+            .prepare_cached("SELECT record FROM runtime_monitors WHERE id=?1")?
+            .query_row([id], |row| row.get(0))
             .optional()?)
     }
 
@@ -171,16 +164,89 @@ mod tests {
     use super::{MonitorsRepository, QUEUED_STREAM_INDEX, STUDIO_ERROR_INDEX};
     use rusqlite::Connection;
 
+    #[tokio::test]
+    async fn typed_monitor_writes_update_plain_queued_stream_index() {
+        let dir = tempfile::tempdir().expect("state");
+        let store = crate::RuntimeStore::open(Some(dir.path()))
+            .await
+            .expect("store");
+        store.transaction(|tx| {
+            let raw = r#"{"id":"m","agent":"a","epoch":1,"requestId":"r","status":"completed","activityAt":1,"activityGeneration":0,"bytes":0,"command":"","created":1,"cwd":"/","interactive":false,"livenessCommand":"","log":"/log","stallTimeoutSeconds":0,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit","streamQueue":[{"kind":"exit","cursor":"result:m","code":0,"error":null,"finished":1,"byteLength":0,"operation":{"agent":"a","epoch":1,"accountKey":"default","connectionId":"c"}}]}"#;
+            let mut monitor: super::MonitorRecord = serde_json::from_str(raw)?;
+            crate::Table::<super::MonitorRecord>::new(tx).put(&monitor)?;
+            let sql: String = tx.query_row("SELECT sql FROM sqlite_schema WHERE name=?1", [QUEUED_STREAM_INDEX], |row| row.get(0))?;
+            assert!(!sql.contains("json_"), "queue index must use a plain column");
+            assert!(MonitorsRepository::first_queued_stream(tx)?.is_some());
+            monitor.stream_queue = None;
+            assert!(crate::Table::<super::MonitorRecord>::new(tx).update(&monitor)?);
+            assert!(MonitorsRepository::first_queued_stream(tx)?.is_none());
+            monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Running;
+            assert!(crate::Table::<super::MonitorRecord>::new(tx).update(&monitor)?);
+            let sql: String = tx.query_row("SELECT sql FROM sqlite_schema WHERE name='runtime_monitor_startup_active'", [], |row| row.get(0))?;
+            assert!(!sql.contains("json_"), "active monitor index must use a plain status column");
+            assert_eq!(crate::StartupRecoveryRepository::active_monitors(tx)?.len(), 1);
+            let sql: String = tx.query_row("SELECT sql FROM sqlite_schema WHERE name=?1", [STUDIO_ERROR_INDEX], |row| row.get(0))?;
+            assert!(!sql.contains("json_"), "studio-error index must use plain columns");
+            assert!(MonitorsRepository::studio_error_candidates(tx, 0.0)?.is_empty());
+            monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Lost;
+            assert!(crate::Table::<super::MonitorRecord>::new(tx).update(&monitor)?);
+            assert_eq!(MonitorsRepository::studio_error_candidates(tx, 0.0)?.len(), 1);
+            Ok::<_, crate::StoreError>(())
+        }).await.expect("typed writes");
+    }
+
+    #[test]
+    fn single_studio_error_candidate_does_not_parse_json_in_sql() {
+        thread_local! { static JSON_SQL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+        let connection = Connection::open_in_memory().expect("database");
+        connection.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL); INSERT INTO runtime_monitors(id,record) VALUES('m','{\"status\":\"lost\",\"created\":100}');").expect("monitor");
+        connection.trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(|event| {
+                if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+                    && sql.contains("json_")
+                {
+                    JSON_SQL.set(true);
+                }
+            }),
+        );
+        assert!(
+            MonitorsRepository::studio_error_candidate(&connection, "m")
+                .expect("candidate")
+                .is_some()
+        );
+        assert!(
+            !JSON_SQL.get(),
+            "single-monitor lookup should not parse JSON in SQLite"
+        );
+    }
+
     #[test]
     fn monitor_rows_check_identity_and_discard_unknown_fields() {
         let db = Connection::open_in_memory().unwrap();
-        db.execute_batch("CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL)").unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL)",
+        )
+        .unwrap();
         let raw = r#"{"id":"m","agent":"a","epoch":1,"requestId":"r","turnId":null,"status":"running","activityAt":1,"activityGeneration":0,"bytes":0,"command":"","created":1,"cwd":"/","interactive":false,"livenessCommand":"","log":"/log","stallTimeoutSeconds":0,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":1000,"wakeOn":"exit","future":true}"#;
-        db.execute("INSERT INTO runtime_monitors VALUES ('m',?1)", [raw]).unwrap();
+        db.execute(
+            "INSERT INTO runtime_monitors(id,record) VALUES ('m',?1)",
+            [raw],
+        )
+        .unwrap();
         let saved = MonitorsRepository::get(&db, "m").unwrap().unwrap();
-        assert!(!serde_json::to_string(&saved).unwrap().contains("\"future\""));
-        for invalid in [raw.replace("\"id\":\"m\"", "\"id\":\"wrong\""), raw.replace("\"status\":\"running\"", "\"status\":\"unknown\""), raw.replace("\"id\":\"m\"", "\"id\":\"m\",\"id\":\"wrong\"")] {
-            db.execute("UPDATE runtime_monitors SET record=?1", [&invalid]).unwrap();
+        assert!(
+            !serde_json::to_string(&saved)
+                .unwrap()
+                .contains("\"future\"")
+        );
+        for invalid in [
+            raw.replace("\"id\":\"m\"", "\"id\":\"wrong\""),
+            raw.replace("\"status\":\"running\"", "\"status\":\"unknown\""),
+            raw.replace("\"id\":\"m\"", "\"id\":\"m\",\"id\":\"wrong\""),
+        ] {
+            db.execute("UPDATE runtime_monitors SET record=?1", [&invalid])
+                .unwrap();
             assert!(MonitorsRepository::get(&db, "m").is_err());
         }
     }
@@ -230,17 +296,24 @@ mod tests {
     /// repeated, and serve the stream read without refusing the valid rows.
     #[test]
     fn queued_stream_index_builds_over_malformed_rows_and_serves_the_stream_read() {
-        let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        let mut connection = Connection::open_in_memory().expect("memory SQLite opens");
         connection
             .execute_batch(
                 "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 INSERT INTO runtime_monitors VALUES
+                 INSERT INTO runtime_monitors(id,record) VALUES
                    ('a-malformed','{'),
                    ('b-done','{\"status\":\"completed\",\"streamQueue\":[]}'),
                    ('c-other','{\"status\":\"completed\",\"streamQueue\":{}}'),
                    ('d-queued','{\"status\":\"completed\",\"streamQueue\":[{\"cursor\":\"result:d\"}]}');",
             )
             .expect("monitor rows");
+        let tx = connection.transaction().expect("migration");
+        crate::migrations::m2026_10_30_monitor_queue::apply(&tx).expect("queue migration");
+        crate::migrations::m2026_10_30_monitor_errors::apply(&tx).expect("error migration");
+        tx.commit().expect("commit migration");
+        let tx = connection.transaction().expect("retry migration");
+        crate::migrations::m2026_10_30_monitor_queue::apply(&tx).expect("retry queue migration");
+        tx.commit().expect("commit retry");
         MonitorsRepository::prepare_indexes(&connection).expect("index builds");
         MonitorsRepository::prepare_indexes(&connection).expect("repeated build is a no-op");
         let indexes: i64 = connection
@@ -266,7 +339,7 @@ mod tests {
         assert_eq!(head.map(|(id, _)| id).as_deref(), Some("d-queued"));
         connection
             .execute(
-                "UPDATE runtime_monitors SET record='{\"streamQueue\":[]}' WHERE id='d-queued'",
+                "UPDATE runtime_monitors SET record='{\"streamQueue\":[]}',stream_pending=0 WHERE id='d-queued'",
                 [],
             )
             .expect("acknowledge");
@@ -284,11 +357,11 @@ mod tests {
     /// a narrow index search, and a malformed row must not refuse it.
     #[test]
     fn studio_error_candidates_skip_own_exits_and_use_their_index() {
-        let connection = Connection::open_in_memory().expect("memory SQLite opens");
+        let mut connection = Connection::open_in_memory().expect("memory SQLite opens");
         connection
             .execute_batch(
                 r#"CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-                 INSERT INTO runtime_monitors VALUES
+                 INSERT INTO runtime_monitors(id,record) VALUES
                    ('a-malformed','{'),
                    ('b-lost','{"status":"lost","created":100,"exitCode":null}'),
                    ('c-lost-old','{"status":"lost","created":10}'),
@@ -303,6 +376,10 @@ mod tests {
                    ('l-running','{"status":"running","created":100}');"#,
             )
             .expect("monitor rows");
+        let tx = connection.transaction().expect("migration");
+        crate::migrations::m2026_10_30_monitor_queue::apply(&tx).expect("queue migration");
+        crate::migrations::m2026_10_30_monitor_errors::apply(&tx).expect("error migration");
+        tx.commit().expect("commit migration");
         MonitorsRepository::prepare_indexes(&connection).expect("index builds");
         MonitorsRepository::prepare_indexes(&connection).expect("repeated build is a no-op");
         let mut ids = MonitorsRepository::studio_error_candidates(&connection, 50.0)

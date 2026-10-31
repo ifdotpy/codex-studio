@@ -94,7 +94,14 @@ pub(crate) async fn prepare_with_budget(
     timeout: Duration,
     queue: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
-    match Box::pin(prepare_attempt(Arc::clone(&store), agent_id.clone(), timeout, queue)).await {
+    match Box::pin(prepare_attempt(
+        Arc::clone(&store),
+        agent_id.clone(),
+        timeout,
+        queue,
+    ))
+    .await
+    {
         Err(WorkspaceError::Deadline(step)) => {
             recovery_required(
                 store,

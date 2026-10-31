@@ -1058,16 +1058,22 @@ impl RegistryState {
 #[derive(Clone)]
 pub struct AccountChangeSignal {
     sender: tokio::sync::watch::Sender<u64>,
+    registry: tokio::sync::watch::Sender<u64>,
 }
 
 impl AccountChangeSignal {
     pub fn new() -> Self {
         let (sender, _) = tokio::sync::watch::channel(0);
-        Self { sender }
+        let (registry, _) = tokio::sync::watch::channel(0);
+        Self { sender, registry }
     }
 
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.sender.subscribe()
+    }
+
+    pub fn subscribe_registry(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.registry.subscribe()
     }
 
     /// Publishes a retained-session change after its registry guard is released.
@@ -1088,6 +1094,9 @@ impl RegistryState {
         self.revision = self.revision.wrapping_add(1);
         self.change_signal
             .sender
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+        self.change_signal
+            .registry
             .send_modify(|generation| *generation = generation.wrapping_add(1));
     }
 }
@@ -2383,6 +2392,13 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     }
 
     pub fn register(&self, home: &str) -> Result<AccountsSnapshot, AccountDriverError> {
+        self.register_with_key(home).map(|(snapshot, _)| snapshot)
+    }
+
+    pub fn register_with_key(
+        &self,
+        home: &str,
+    ) -> Result<(AccountsSnapshot, String), AccountDriverError> {
         if python_strip(home).is_empty() {
             return Err(AccountDriverError::InvalidCodexProfile);
         }
@@ -2398,10 +2414,11 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .map_err(|_| AccountDriverError::Poisoned)?;
         let mut updated = state.value.clone();
         let mut order = state.order.clone();
-        if register_metadata(&mut updated, &mut order, &path, &metadata, true)? {
+        let (changed, key) = register_metadata(&mut updated, &mut order, &path, &metadata, true)?;
+        if changed {
             self.persist_registry(&mut state, updated, &order)?;
         }
-        state.public_snapshot()
+        Ok((state.public_snapshot()?, key))
     }
 
     pub fn discover_codex(&self) -> Result<AccountsSnapshot, AccountDriverError> {
@@ -2454,7 +2471,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         let mut order = state.order.clone();
         let mut changed = false;
         for (path, metadata) in registrations {
-            changed |= register_metadata(&mut updated, &mut order, &path, &metadata, false)?;
+            changed |= register_metadata(&mut updated, &mut order, &path, &metadata, false)?.0;
         }
         if changed {
             self.persist_registry(&mut state, updated, &order)?;
@@ -2693,7 +2710,7 @@ fn register_metadata(
     path: &Path,
     metadata: &AuthMetadata,
     restore_deleted: bool,
-) -> Result<bool, AccountDriverError> {
+) -> Result<(bool, String), AccountDriverError> {
     let home = path
         .to_str()
         .ok_or(AccountDriverError::InvalidCodexProfile)?
@@ -2713,9 +2730,9 @@ fn register_metadata(
             .ok_or(AccountDriverError::InvalidRegistry)?;
         if restore_deleted && row.get("deleted") == Some(&Value::Bool(true)) {
             row.remove("deleted");
-            return Ok(true);
+            return Ok((true, key));
         }
-        return Ok(false);
+        return Ok((false, key));
     }
     let digest = hex_sha256(home.as_bytes());
     let account = format!("profile-{}", &digest[..20]);
@@ -2744,8 +2761,8 @@ fn register_metadata(
         .and_then(Value::as_object_mut)
         .ok_or(AccountDriverError::InvalidRegistry)?
         .insert(account.clone(), Value::Object(row));
-    order.accounts.push(account);
-    Ok(true)
+    order.accounts.push(account.clone());
+    Ok((true, account))
 }
 
 fn reconcile_local_login(
@@ -5016,6 +5033,7 @@ exit 0
             assert!(
                 !register_metadata(&mut value, &mut order, &canonical, &metadata, true)
                     .expect("same account remains unchanged")
+                    .0
             );
             assert_eq!(value["accounts"]["existing"]["deleted"], marker);
         }
@@ -5023,6 +5041,7 @@ exit 0
         assert!(
             register_metadata(&mut value, &mut order, &canonical, &metadata, true)
                 .expect("deleted row is restored")
+                .0
         );
         assert!(value["accounts"]["existing"].get("deleted").is_none());
     }
@@ -5157,7 +5176,17 @@ exit 0
             )),
         )
         .expect("open registry");
-        let mut changes = driver.change_signal().subscribe();
+        let signal = driver.change_signal();
+        let mut changes = signal.subscribe();
+        let mut registry_changes = signal.subscribe_registry();
+        signal.publish_session_change();
+        assert!(changes.has_changed().expect("session notification"));
+        assert!(
+            !registry_changes
+                .has_changed()
+                .expect("session is not a registry change")
+        );
+        let _observed_session = *changes.borrow_and_update();
         assert_eq!(driver.revision().expect("read revision"), 0);
         driver
             .set_name("default", "Codex", "abc")
@@ -5183,6 +5212,12 @@ exit 0
                 .has_changed()
                 .expect("public profile change publishes")
         );
+        assert!(
+            registry_changes
+                .has_changed()
+                .expect("registry change publishes")
+        );
+        let _observed_registry = *registry_changes.borrow_and_update();
         let _observed_generation = *changes.borrow_and_update();
         driver
             .set_name("default", "Renamed", "def")
