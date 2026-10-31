@@ -29,16 +29,12 @@ pub async fn hold(store: &RuntimeStore) -> Result<(), RecoveryError> {
             crate::native_actions::hold_unclean_actions(tx)?;
             crate::title_generation::hold_unclean_jobs(tx)?;
             RemoteOutbox::hold_unclean(tx).map_err(StoreError::from)?;
-<<<<<<< head
             crate::multi_server_orchestration::hold_unclean_server_requests(tx).map_err(
                 |error| match error {
                     crate::multi_server_auth::AccessError::Store(error) => error,
                     other => StoreError::SchemaMismatch(other.to_string()),
                 },
             )?;
-||||||| base
-=======
->>>>>>> origin/feat/one-outbox-1
             Ok::<_, RecoveryError>(())
         })
         .await

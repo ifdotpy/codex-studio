@@ -757,12 +757,7 @@ static CATALOG: &[&dyn Migration] = &[
             id: "2026-10-30-one-outbox",
             introduced: OCTOBER_30,
             target: MigrationTarget::Canvas,
-<<<<<<< head
             supported_source: "Pending rows of the four transport outboxes",
-||||||| base
-=======
-            supported_source: "Pending reservations in runtime_access_outbound and runtime_server_fetch",
->>>>>>> origin/feat/one-outbox-1
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_one_outbox::apply(c.transaction),

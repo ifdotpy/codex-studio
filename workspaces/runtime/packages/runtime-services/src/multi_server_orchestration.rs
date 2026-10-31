@@ -2806,7 +2806,6 @@ pub fn release_peer(
     let Some(server) = server else {
         return Ok(0);
     };
-<<<<<<< head
     Ok(crate::server_outbox::release(tx, &server, now)?)
 }
 
@@ -2816,19 +2815,6 @@ pub fn hold_unclean_server_requests(tx: &Transaction<'_>) -> Result<usize, Acces
         tx,
         &outgoing_retry_sql_values(),
     )?)
-||||||| base
-=======
-    let waiting = tx.execute(
-        "UPDATE runtime_server_outbox SET next_at=?2 WHERE server=?1 AND state=?3 AND next_at>?2",
-        params![server, now, ServerDeliveryState::Queued],
-    )?;
-    let shared = studio_runtime_store::remote_outbox::RemoteOutbox::release_target(
-        tx,
-        &server,
-        now.saturating_mul(1000),
-    )?;
-    Ok(waiting + shared)
->>>>>>> origin/feat/one-outbox-1
 }
 
 pub fn enqueue_in_transaction(
@@ -4118,7 +4104,6 @@ mod tests {
     fn restored_connection_makes_only_that_peers_waiting_deliveries_due_now() {
         let mut db = rusqlite::Connection::open_in_memory().expect("database");
         db.execute_batch(
-<<<<<<< head
             "CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY, record TEXT NOT NULL);",
         )
         .expect("tables");
@@ -4150,38 +4135,6 @@ mod tests {
         tx.commit().expect("commit");
         let due: Vec<String> = db
             .prepare("SELECT target FROM runtime_outbox WHERE kind='remote_delivery' AND next_at<=100000")
-||||||| base
-=======
-            "CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY, record TEXT NOT NULL);
-             CREATE TABLE runtime_server_outbox(server TEXT,body TEXT,state TEXT,next_at REAL);",
-        )
-        .expect("tables");
-        studio_runtime_store::receipt_schema::create(&db).expect("shared outbox");
-        db.execute(
-            "INSERT INTO runtime_access_clients VALUES('peer',?1)",
-            [
-                serde_json::json!({"kind":"server","status":"paired","publicKey":"PEM-A"})
-                    .to_string(),
-            ],
-        )
-        .expect("paired peer");
-        for server in ["peer", "other"] {
-            db.execute(
-                "INSERT INTO runtime_server_outbox VALUES(?1,'{}','queued',9999999999)",
-                [server],
-            )
-            .expect("waiting delivery");
-        }
-        let tx = db.transaction().expect("transaction");
-        assert_eq!(super::release_peer(&tx, "PEM-A", 100).expect("release"), 1);
-        assert_eq!(
-            super::release_peer(&tx, "PEM-B", 100).expect("unknown key"),
-            0
-        );
-        tx.commit().expect("commit");
-        let due: Vec<String> = db
-            .prepare("SELECT server FROM runtime_server_outbox WHERE next_at<=100")
->>>>>>> origin/feat/one-outbox-1
             .expect("query")
             .query_map([], |row| row.get(0))
             .expect("rows")
