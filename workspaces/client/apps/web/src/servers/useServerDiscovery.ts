@@ -167,7 +167,6 @@ export function useServerDiscovery(
       );
     },
   );
-  const loading = useRef<Promise<void> | null>(null);
   const apply = async (state: Parameters<typeof discoverySnapshot>[0]) => {
     const next = discoverySnapshot(state);
     if (!active.current && !localAvailable) return;
@@ -236,17 +235,7 @@ export function useServerDiscovery(
         return undefined;
       });
     }
-    if (loading.current) return loading.current;
-    const generation = ++loadGeneration.current;
-    loading.current = (async () => {
-      await attempts.current!.initialize();
-      const value = await serverAccess("GET");
-      // A newer inline snapshot supersedes a recovery already in flight.
-      if (generation === loadGeneration.current) await apply(value);
-    })().finally(() => {
-      loading.current = null;
-    });
-    return loading.current;
+    return Promise.resolve();
   };
   const loadRef = useRef(load);
   loadRef.current = load;
@@ -301,16 +290,11 @@ export function useServerDiscovery(
           );
         }
       }
-      // A retry receipt contains the original snapshot. Read the current state.
       if (
-        enabled ||
-        (localAvailable &&
-          request.action === "name" &&
-          request.serverId === "local")
+        !enabled &&
+        request.action === "name" &&
+        (!localAvailable || request.serverId !== "local")
       ) {
-        if (loading.current) await loading.current;
-        await load();
-      } else if (request.action === "name") {
         const server = readServers().find((row) => row.id === request.serverId);
         if (server) await refreshServerName(server);
       }
@@ -398,7 +382,10 @@ export function useServerDiscovery(
         setServerExcluded(id, false);
         controller.current?.retry(id);
         setExcluded(excludedServers());
-        void load().catch((failure) => setError(errorText(failure)));
+        if (snapshot)
+          void controller.current
+            ?.reconcile(snapshot)
+            .catch((failure) => setError(errorText(failure)));
       } catch (failure) {
         setError(errorText(failure));
       }
