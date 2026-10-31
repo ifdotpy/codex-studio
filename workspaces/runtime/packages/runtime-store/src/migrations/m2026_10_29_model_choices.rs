@@ -49,13 +49,10 @@ mod tests {
             ),
         )
         .expect("legacy preferences write");
+        super::apply(&transaction).expect("remove retired preference");
+        super::apply(&transaction).expect("repeat migration");
         transaction.commit().expect("commit");
         drop(db);
-        drop(
-            RuntimeStore::open(Some(root.path()))
-                .await
-                .expect("migrated"),
-        );
         let db = crate::open_database(&canvas, OpenFlags::SQLITE_OPEN_READ_ONLY).expect("reader");
         let payload: serde_json::Value = serde_json::from_str(
             &SyncDocumentsRepository::preference_payload(&db, "server")
