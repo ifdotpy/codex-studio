@@ -13,7 +13,7 @@ use tokio::io::AsyncReadExt;
 use super::protocol::{self, Failure, HostExecError, INVALID, Manifest, Outcome, require};
 use super::{
     ChildHandle, ENV_ARTIFACTS, ENV_DERIVED_DATA, ENV_PACKAGE_CACHE, ENV_STATE, ENV_TREE,
-    HostService, Op, integer, now, number, string_list, text,
+    HostService, Op, RunParams, now, string_list, text,
 };
 
 /// Command output that the service keeps, in bytes; more stops the command.
@@ -254,53 +254,49 @@ impl HostService {
         op: Op,
         slot: PathBuf,
         mac_only: Vec<String>,
-        params: &Map<String, Value>,
+        params: &RunParams,
     ) -> Outcome<Op> {
         require(
             text(&op, "state") == "leased",
             "The command already started",
             "outcome_unknown",
         )?;
-        let argv: Vec<String> = match params.get("argv") {
-            Some(Value::Array(items))
-                if !items.is_empty()
-                    && items.len() <= MAX_ARGUMENTS
-                    && items
-                        .iter()
-                        .all(|item| item.as_str().is_some_and(|item| !item.contains('\0'))) =>
-            {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect()
-            }
-            _ => return Err(HostExecError::new(INVALID, "Invalid command arguments").into()),
-        };
-        let timeout = match params.get("timeoutSeconds") {
-            None => crate::host_exec::DEFAULT_TIMEOUT_SECONDS,
-            value => number(value)
-                .filter(|seconds| {
-                    *seconds > 0.0 && *seconds <= crate::host_exec::MAX_TIMEOUT_SECONDS
-                })
-                .ok_or_else(|| HostExecError::new(INVALID, "Invalid command timeout"))?,
-        };
+        require(
+            !params.argv.is_empty()
+                && params.argv.len() <= MAX_ARGUMENTS
+                && params.argv.iter().all(|item| !item.contains('\0')),
+            "Invalid command arguments",
+            INVALID,
+        )?;
+        let argv = params.argv.clone();
+        let timeout = params
+            .timeout_seconds
+            .unwrap_or(crate::host_exec::DEFAULT_TIMEOUT_SECONDS);
+        require(
+            timeout > 0.0 && timeout <= crate::host_exec::MAX_TIMEOUT_SECONDS,
+            "Invalid command timeout",
+            INVALID,
+        )?;
         // Cache folders of the line: the Mac receives them, and its changes there never return.
-        let caches = Self::cache_list(params.get("caches"))?;
+        let caches = Self::cache_paths(&params.caches)?;
         // The layr state that the guest wrote into the slot; an older guest sends none.
-        let layr_state = match params.get("layrState") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(state)) if layr_id(state, 7..=64) => Some(state.clone()),
-            Some(_) => return Err(HostExecError::new(INVALID, "Invalid layr state ID").into()),
-        };
+        let layr_state = params.layr_state.clone();
+        require(
+            layr_state
+                .as_ref()
+                .is_none_or(|state| layr_id(state, 7..=64)),
+            "Invalid layr state ID",
+            INVALID,
+        )?;
         // The git tree ID of that state; a guest whose layr cannot name it sends none.
-        let layr_tree = match params.get("layrTree") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(tree)) if layr_state.is_some() && layr_id(tree, 40..=40) => {
-                Some(tree.clone())
-            }
-            Some(_) => return Err(HostExecError::new(INVALID, "Invalid layr tree ID").into()),
-        };
+        let layr_tree = params.layr_tree.clone();
+        require(
+            layr_tree
+                .as_ref()
+                .is_none_or(|tree| layr_state.is_some() && layr_id(tree, 40..=40)),
+            "Invalid layr tree ID",
+            INVALID,
+        )?;
         let lock = self.lock_for(&format!("run\0{identity}"));
         let _held = lock.lock().await;
         let source = self.scan_slot_blocking(&slot, mac_only).await?;
@@ -319,8 +315,7 @@ impl HostService {
             "name_conflict",
         )?;
         require(
-            params.get("manifestSha256").and_then(Value::as_str)
-                == Some(protocol::manifest_digest(&source).as_str()),
+            params.manifest_sha256 == protocol::manifest_digest(&source)?,
             "The host sources differ from the layr slot",
             "sync_conflict",
         )?;
@@ -328,8 +323,8 @@ impl HostService {
             self.link_git_objects(&op, &slot.join("source"))?;
         }
         let mut cwd = slot.join("source");
-        if studio_runtime_store::truthy(params.get("cwd")) {
-            cwd = protocol::inside(&cwd, params.get("cwd"), true)?;
+        if let Some(path) = params.cwd.as_ref().filter(|path| !path.is_empty()) {
+            cwd = protocol::inside(&cwd, Some(&protocol::text_value(path)), true)?;
             require(cwd.is_dir(), "The command cwd is not a directory", INVALID)?;
         }
         self.evict(
@@ -570,51 +565,43 @@ impl HostService {
         skip.extend(caches.iter().cloned());
         let after = self.scan_slot_blocking(&slot, skip).await?;
         before.retain(|path, _| !protocol::under(path, &caches));
-        let mut changed = Map::new();
+        let mut changed = std::collections::BTreeMap::new();
         for path in before.keys().chain(after.keys()) {
             if before.get(path) != after.get(path) {
-                changed.insert(
-                    path.clone(),
-                    after.get(path).cloned().unwrap_or(Value::Null),
-                );
+                changed.insert(path.clone(), after.get(path).cloned());
             }
         }
         let result_dir = self.opdir(identity).join("changes");
         fs::create_dir(&result_dir)?;
         for (path, entry) in &changed {
-            let kind = entry
-                .get("kind")
-                .and_then(Value::as_str)
-                .unwrap_or("directory");
-            if kind == "directory" {
+            let Some(
+                entry @ (protocol::ManifestEntry::Link { .. }
+                | protocol::ManifestEntry::File { .. }),
+            ) = entry
+            else {
                 continue;
-            }
+            };
             let name = protocol::text_value(path);
             let source = protocol::inside(&slot.join("source"), Some(&name), false)?;
             let target = protocol::inside(&result_dir, Some(&name), false)?;
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
-            if kind == "link" {
-                std::os::unix::fs::symlink(text_of(entry, "target"), &target)?;
-            } else {
-                fs::copy(&source, &target)?;
-                let mode = integer(entry.get("mode"))
-                    .and_then(|mode| u32::try_from(mode).ok())
-                    .unwrap_or(0o600);
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&target, fs::Permissions::from_mode(mode))?;
+            match entry {
+                protocol::ManifestEntry::Link { target: link } => {
+                    std::os::unix::fs::symlink(link, &target)?
+                }
+                protocol::ManifestEntry::File { mode, .. } => {
+                    fs::copy(&source, &target)?;
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&target, fs::Permissions::from_mode(*mode))?;
+                }
+                protocol::ManifestEntry::Directory => continue,
             }
         }
         let artifacts = protocol::scan(&self.opdir(identity).join("artifacts"), &[], None)?;
-        protocol::atomic(
-            &self.opdir(identity).join("changes.json"),
-            &Value::Object(changed.clone()),
-        )?;
-        protocol::atomic(
-            &self.opdir(identity).join("artifacts.json"),
-            &protocol::manifest_value(&artifacts),
-        )?;
+        protocol::atomic(&self.opdir(identity).join("changes.json"), &changed)?;
+        protocol::atomic(&self.opdir(identity).join("artifacts.json"), &artifacts)?;
         // A cancel or a guest recovery saved its flag during the command.
         let latest = self.load(identity)?;
         for field in ["cancelRequested", "orphaned"] {
@@ -669,10 +656,6 @@ impl HostService {
         }
         self.load(identity)
     }
-}
-
-fn text_of<'a>(entry: &'a Value, field: &str) -> &'a str {
-    entry.get(field).and_then(Value::as_str).unwrap_or_default()
 }
 
 enum Pipe {

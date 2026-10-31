@@ -640,7 +640,7 @@ async fn summary_entities_publish_at_the_source_write() {
             .1["status"],
         "delivered"
     );
-    let task = json!({"id":"task","agent":CHAT,"kind":"command","status":"running","created":1,"tail":"output","error":"failure","arguments":"Explicit read only"});
+    let task = json!({"id":"task","agent":CHAT,"itemId":"item","turnId":"turn","type":"commandExecution","name":"command","kind":"command","status":"running","created":1,"tail":"output","error":"failure","arguments":"Explicit read only"});
     write(
         &store,
         "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
@@ -695,7 +695,7 @@ async fn summary_entities_publish_at_the_source_write() {
 }
 
 fn chat(extra: Value) -> Value {
-    let mut record = json!({
+    let mut record = json!({"compactions":0,
         "id":CHAT,"rootId":CHAT,"epoch":1,"status":"idle","name":"Published chat",
         "provider":"codex","model":"gpt-6","prompt":"Start","cwd":"/fixture",
         "accountKey":"default","isLead":true,"autoWake":false
@@ -796,7 +796,7 @@ async fn a_raw_request_row_write_reaches_the_client_and_a_closed_one_leaves_it()
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
     let card = json!({"id":"raw-card","agent":CHAT,"method":"agent/asyncQuestion",
-        "status":"pending","params":{"message":"Continue?"}});
+        "status":"pending","createdAt":1,"params":{"message":"Continue?"}});
     write(
         &store,
         "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
@@ -824,7 +824,7 @@ async fn a_publication_before_a_later_write_in_the_same_transaction_is_redone() 
         .transaction_with(|tx| {
             let mut agent = AgentRepository::get(tx, &CHAT.into())?.expect("chat");
             crate::agents_create::publish_agent(tx, &agent.value())?;
-            agent.extra.insert("name".into(), json!("Written after"));
+            agent.name = Some("Written after".into());
             AgentRepository::put(tx, &agent)?;
             Ok::<_, StoreError>(())
         })
@@ -839,7 +839,7 @@ async fn synced_agent_values_recompute_the_view_and_create_a_missing_entity() {
     let store = studio_runtime_store::RuntimeStore::open(Some(dir.path()))
         .await
         .expect("store");
-    let worker = json!({
+    let worker = json!({"compactions":0,
         "id":"sync-worker","rootId":CHAT,"parentId":CHAT,"epoch":1,"status":"running",
         "name":"Worker","provider":"codex","model":"gpt-6","prompt":"Task","cwd":"/fixture",
         "accountKey":"default","isLead":false,"autoWake":false
@@ -857,13 +857,11 @@ async fn synced_agent_values_recompute_the_view_and_create_a_missing_entity() {
     store
         .transaction_with(|tx| {
             let mut agent = AgentRepository::get(tx, &"sync-worker".into())?.expect("worker");
-            for (key, value) in [
-                ("status", json!("completed")),
-                ("lastCompletedTurn", json!("turn-1")),
-                ("lastAnswer", json!("The work is done.")),
-            ] {
-                agent.extra.insert(key.into(), value);
-            }
+            agent.status = studio_runtime_store::AgentStatus::Completed;
+            agent.last_answer = Some("The work is done.".into());
+            agent
+                .extra
+                .insert("lastCompletedTurn".into(), json!("turn-1"));
             AgentRepository::put(tx, &agent)?;
             studio_runtime_store::EventWriteRepository::set_agent_sync_values(
                 tx,
@@ -1010,7 +1008,7 @@ async fn terminal_source_writes_publish_summary_without_process_identity() {
 async fn retained_worktree_entities_follow_cleanup_even_after_worker_deletion() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let worker = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"retained-worker","rootId":CHAT,"epoch":0,"status":"completed",
+    let worker = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"retained-worker","rootId":CHAT,"epoch":0,"status":"completed",
         "name":"Retained worker","accountKey":"default","deletedAt":1,
         "workspaceCleanupIntent":{"phase":"unknown","effect":{"kind":"remove_worktree","identity":{"cwd":"/fixture/retained"}},"receipt":{"reason":"Modified files"},"requestId":"private"}});
     write(
@@ -1038,7 +1036,7 @@ async fn retained_worktree_entities_follow_cleanup_even_after_worker_deletion() 
 async fn question_history_entities_retain_answers_after_pending_request_is_retired() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let question = json!({"id":"history-question","agent":CHAT,"method":"agent/asyncQuestion","status":"pending",
+    let question = json!({"id":"history-question","agent":CHAT,"method":"agent/asyncQuestion","status":"pending","createdAt":1,
         "params":{"message":"Continue?","questions":[{"id":"choice","question":"Continue?","options":[{"label":"Yes"}]}]}});
     write(
         &store,
@@ -1078,7 +1076,7 @@ async fn question_history_entities_retain_answers_after_pending_request_is_retir
 async fn conversation_detail_entities_remove_private_answers_and_hard_deleted_sources() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let question = json!({"id":"private-question","agent":CHAT,"method":"agent/asyncQuestion","status":"answered",
+    let question = json!({"id":"private-question","agent":CHAT,"method":"agent/asyncQuestion","status":"answered","createdAt":1,
         "params":{"questions":[{"id":"password","question":"Password?","isSecret":true}]},
         "answerHistory":[{"id":"password","question":"Password?","isSecret":true,"answer":"never-cache-this"}]});
     write(
@@ -1124,9 +1122,11 @@ async fn conversation_detail_entities_remove_private_answers_and_hard_deleted_so
 
 /// A lost monitor of `agent`, created and finished at `at`.
 fn lost_monitor(id: &str, agent: &str, at: f64) -> String {
-    json!({"id":id,"agent":agent,"status":"lost","exitCode":null,
+    crate::monitor_policy::complete_test_monitor(
+        json!({"id":id,"agent":agent,"status":"lost","exitCode":null,
         "error":"Command outcome unknown after losing the provider result; not rerun.",
-        "command":format!("run {id}"),"created":at,"finished":at})
+        "command":format!("run {id}"),"created":at,"finished":at}),
+    )
     .to_string()
 }
 
@@ -1210,7 +1210,9 @@ async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
     );
     let before = full_publications(&store).await;
 
-    let running = json!({"id":"running","agent":CHAT,"status":"running","created":now,"tail":""});
+    let running = crate::monitor_policy::complete_test_monitor(
+        json!({"id":"running","agent":CHAT,"status":"running","created":now,"tail":""}),
+    );
     write(
         &store,
         "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",

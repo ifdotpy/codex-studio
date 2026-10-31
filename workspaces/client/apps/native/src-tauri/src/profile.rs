@@ -40,16 +40,6 @@ struct Archive {
     snapshots: Field<Vec<Value>>,
     parts: Field<String>,
 }
-impl Archive {
-    fn from_value(value: Value) -> Self {
-        if value.is_object() {
-            serde_json::from_value(value).unwrap_or_default()
-        } else {
-            Self::default()
-        }
-    }
-}
-
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct Origin<'a> {
@@ -119,9 +109,12 @@ fn read_archive(path: &Path) -> Result<Archive, String> {
     if bytes.len() as u64 > MAX_ARCHIVE {
         return Err("The profile archive exceeds 256 MiB.".into());
     }
-    serde_json::from_slice(&bytes)
-        .map(Archive::from_value)
-        .map_err(|e| e.to_string())
+    let field: Field<Object<Archive>> =
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    Ok(match field {
+        Field::Valid(Object(archive)) => archive,
+        Field::Invalid(_) | Field::Missing => Archive::default(),
+    })
 }
 
 fn select(archive: &Archive, owner: &str) -> Result<Value, String> {
@@ -285,10 +278,9 @@ fn read_chunk(archive: &Archive, path: &Path, owner: &str, digest: &str) -> Resu
     if actual != digest {
         return Err("The profile chunk checksum changed.".into());
     }
-    let records: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    if !records.is_array()
-        || records.as_array().map(|v| v.len() as u64) != reference.records.get().copied()
-    {
+    let records: Vec<serde::de::IgnoredAny> =
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    if Some(records.len() as u64) != reference.records.get().copied() {
         return Err("The profile chunk record count changed.".into());
     }
     // Keep a large nested array out of WebKit's callback source. The renderer
@@ -305,14 +297,17 @@ pub fn chunk(owner: &str, digest: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn archive(value: &Value) -> Archive {
+        Archive::deserialize(value.clone()).unwrap_or_default()
+    }
     fn select(value: &Value, owner: &str) -> Result<Value, String> {
-        super::select(&Archive::from_value(value.clone()), owner)
+        super::select(&archive(value), owner)
     }
     fn select_workspace(value: &Value) -> Result<Value, String> {
-        super::select_workspace(&Archive::from_value(value.clone()))
+        super::select_workspace(&archive(value))
     }
     fn read_chunk(value: &Value, path: &Path, owner: &str, digest: &str) -> Result<Value, String> {
-        super::read_chunk(&Archive::from_value(value.clone()), path, owner, digest)
+        super::read_chunk(&archive(value), path, owner, digest)
     }
     #[test]
     fn workspace_requires_explicit_complete_owner_mappings() {
@@ -386,6 +381,12 @@ mod tests {
           "snapshots":[{"origin":"local","databases":[{"stores":[{"chunks":[{"sha256":hash,"bytes":bytes.len(),"records":1}]}]}]},
                        {"origin":"remote","databases":[]}]});
         let path = dir.join("archive.json");
+        for raw in ["null", "[]", "7"] {
+            std::fs::write(&path, raw).unwrap();
+            assert!(read_archive(&path).unwrap().id.get().is_none());
+        }
+        std::fs::write(&path, "{").unwrap();
+        assert!(read_archive(&path).is_err());
         std::fs::write(&path, serde_json::to_vec(&archive).unwrap()).unwrap();
         let parsed = super::read_archive(&path).unwrap();
         assert_eq!(

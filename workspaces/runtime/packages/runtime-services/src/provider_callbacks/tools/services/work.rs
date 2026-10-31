@@ -30,7 +30,7 @@ pub(super) fn execute(
     }
     let records = WorkItemsRepository::work(tx)?
         .into_iter()
-        .filter(|record| record.value()["rootId"] == root)
+        .filter(|record| record.root_id() == Some(root))
         .collect::<Vec<_>>();
     let statuses = work_policy::work_statuses(&records);
     if action == "list" {
@@ -68,23 +68,22 @@ pub(super) fn execute(
                 result["resultSchema"] = schema.clone();
             }
             result["dependencies"] = json!(work.dependencies());
-            result["latestResult"] = work.value()["results"]
-                .as_array()
+            result["latestResult"] = work
+                .results()
                 .and_then(|v| v.last())
-                .cloned()
-                .unwrap_or(Value::Null);
-            result["latestDecision"] = work.value()["decisions"]
-                .as_array()
+                .map_or(Value::Null, |value| json!(value));
+            result["latestDecision"] = work
+                .decisions()
                 .and_then(|v| v.last())
-                .cloned()
-                .unwrap_or(Value::Null);
-            result["history"] = json!({"results":work.value()["results"].as_array().map_or(0,Vec::len),"decisions":work.value()["decisions"].as_array().map_or(0,Vec::len)});
+                .map_or(Value::Null, |value| json!(value));
+            result["history"] = json!({"results":work.results().map_or(0,|items| items.len()),"decisions":work.decisions().map_or(0,|items| items.len())});
             return Ok(result);
         }
         if action == "history" {
             let mut rows = Vec::new();
-            for (field, kind) in [("results", "result"), ("decisions", "decision")] {
-                for mut row in work.value()[field].as_array().cloned().unwrap_or_default() {
+            for (records, kind) in [(work.results(), "result"), (work.decisions(), "decision")] {
+                for record in records.into_iter().flatten() {
+                    let mut row = json!(record);
                     row["kind"] = json!(kind);
                     rows.push(row);
                 }

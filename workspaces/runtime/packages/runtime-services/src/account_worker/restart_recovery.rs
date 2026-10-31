@@ -648,11 +648,14 @@ impl CompletionWriter for RestartInputCompletion {
         if record["accountKey"].as_str().unwrap_or("default") != scope.account {
             return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Superseded));
         }
+        let typed_attempt = expected
+            .typed_start_attempt()
+            .ok_or(RecoveryError::CommitFailed)?;
         let accepted = SchedulerRepository::settle_restart_started(
             tx,
             agent_id,
             epoch,
-            attempt,
+            typed_attempt,
             &record["contextRepairWait"],
             turn_id,
         )?;
@@ -667,9 +670,11 @@ impl CompletionWriter for RestartInputCompletion {
         agent.start_outcome_hold = None;
         agent.auto_wake = Some(true);
         agent.extra.insert("error".into(), Value::Null);
-        if let Some(marker) = agent.extra.get_mut("restartRecovery") {
-            marker["stage"] = json!("finished");
-            marker["reconciledAt"] = json!(unix_seconds());
+        if let Some(marker) = agent.restart_recovery.as_deref_mut() {
+            marker.stage = Some("finished".into());
+            marker
+                .extra
+                .insert("reconciledAt".into(), json!(unix_seconds()));
         }
         AgentRepository::put(tx, &agent)?;
         let terminal = CodexTurnStatus::observe(turn).and_then(|status| status.terminal());
@@ -726,7 +731,10 @@ impl CompletionWriter for RestartInputCompletion {
                         agent: agent_value.clone(),
                         method: "item/completed".into(),
                         params,
-                        observed_at: unix_seconds(),
+                        observed_at: crate::notification_dispatch::ObservationTime::new(
+                            unix_seconds(),
+                        )
+                        .ok_or(RecoveryError::CommitFailed)?,
                     },
                 );
             }
@@ -779,7 +787,8 @@ impl CompletionWriter for RestartInputCompletion {
                         "turnId":turn_id,
                         "turn":turn
                     }),
-                    observed_at: unix_seconds(),
+                    observed_at: crate::notification_dispatch::ObservationTime::new(unix_seconds())
+                        .ok_or(RecoveryError::CommitFailed)?,
                 },
             );
             let batch = streams

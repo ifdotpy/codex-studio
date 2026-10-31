@@ -9,13 +9,13 @@ use serde_json::{Value, json};
 use studio_runtime_store::{StoreError, system_reads as records};
 use thiserror::Error;
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct DirectoryEntry {
     pub name: String,
     pub path: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct DirectoryListing {
     pub path: String,
     pub parent: Option<String>,

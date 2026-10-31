@@ -110,9 +110,9 @@ pub async fn location_query(store: &RuntimeStore, query: Value) -> Result<Value,
     let matches = query.get("action").and_then(Value::as_str) == Some("matches");
     let (project, projects) = store
         .read_async("runtime-services/projects", move |db| {
-            let project = ProjectsRepository::get(db, &project_id)?.map(|(_, value)| value);
+            let project = ProjectsRepository::get_record(db, &project_id)?;
             let projects = if matches {
-                ProjectsRepository::list(db)?
+                ProjectsRepository::list_records(db)?
             } else {
                 Vec::new()
             };
@@ -131,23 +131,17 @@ pub async fn location_query(store: &RuntimeStore, query: Value) -> Result<Value,
 fn location_from_rows(
     query: &Value,
     server_id: &str,
-    project: &Value,
-    projects: Vec<(String, Value)>,
+    project: &studio_runtime_schema::project_record::ProjectRecord,
+    projects: Vec<(String, studio_runtime_schema::project_record::ProjectRecord)>,
 ) -> Result<Value, ProjectsError> {
     if query.get("action").and_then(Value::as_str) == Some("matches") {
         let origin = project
-            .get("locations")
-            .and_then(Value::as_array)
-            .and_then(|rows| {
-                rows.iter()
-                    .find_map(|row| row.get("gitOrigin").and_then(Value::as_str))
-            })
-            .map(str::to_owned)
+            .locations
+            .iter()
+            .find_map(|row| row.git_origin.clone())
             .or_else(|| {
-                project
-                    .get("path")
-                    .and_then(Value::as_str)
-                    .filter(|path| !path.starts_with("project:"))
+                (!project.path.starts_with("project:"))
+                    .then_some(project.path.as_str())
                     .and_then(|path| git_origin(std::path::Path::new(path)))
             });
         let Some(origin) = origin else {
@@ -156,15 +150,12 @@ fn location_from_rows(
         let mut candidates = Vec::new();
         let mut seen = BTreeSet::new();
         for (id, candidate) in projects {
-            let Some(path) = candidate
-                .get("path")
-                .and_then(Value::as_str)
-                .filter(|path| !path.starts_with("project:"))
-            else {
+            let path = &candidate.path;
+            if path.starts_with("project:") {
                 continue;
-            };
+            }
             if seen.insert(path.to_owned()) {
-                candidates.push(json!({"projectId":id,"path":path,"name":candidate.get("name")}));
+                candidates.push(json!({"projectId":id,"path":path,"name":candidate.name}));
             }
         }
         if let Some(cwd) = query
@@ -221,16 +212,10 @@ fn location_from_rows(
         .filter(|path| !path.is_empty())
         .or_else(|| {
             project
-                .get("locations")
-                .and_then(Value::as_array)
-                .and_then(|rows| {
-                    rows.iter().find(|row| {
-                        row.get("serverId")
-                            .and_then(Value::as_str)
-                            .is_some_and(|id| id == server_id)
-                    })
-                })
-                .and_then(|row| row.get("path").and_then(Value::as_str))
+                .locations
+                .iter()
+                .find(|row| row.server_id == server_id)
+                .map(|row| row.path.as_str())
         })
         .ok_or(ProjectsError::BadRequest(
             "This server has no folder for the project",
@@ -314,7 +299,15 @@ fn git_origin(directory: &std::path::Path) -> Option<String> {
 
 /// Read-only paired-server project-location actions. They expose only bounded
 /// directory metadata and visible project names, matching the Python peer API.
-pub fn peer_location_info(path: &str) -> Result<Value, ProjectsError> {
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerLocationInfo {
+    pub git_head: Option<String>,
+    pub git_origin: Option<String>,
+    pub matches: [(); 0],
+}
+
+pub fn peer_location_info(path: &str) -> Result<PeerLocationInfo, ProjectsError> {
     if path.is_empty() || path.chars().count() > 4096 {
         return Err(ProjectsError::BadRequest("a folder path is invalid"));
     }
@@ -326,7 +319,11 @@ pub fn peer_location_info(path: &str) -> Result<Value, ProjectsError> {
     let head = git_read(&directory, &["rev-parse", "--verify", "HEAD"])
         .filter(|value| value.len() == 40 || value.len() == 64)
         .map(|value| value[..8].to_owned());
-    Ok(json!({"gitHead":head,"gitOrigin":git_origin(&directory),"matches":[]}))
+    Ok(PeerLocationInfo {
+        git_head: head,
+        git_origin: git_origin(&directory),
+        matches: [],
+    })
 }
 
 pub async fn peer_location_matches(
@@ -413,6 +410,37 @@ mod peer_location_tests {
     use super::*;
 
     #[tokio::test]
+    async fn local_location_query_refuses_malformed_project_locations() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
+        crate::federation_credentials::Credentials::default()
+            .identity(store.clone(), None)
+            .await
+            .unwrap();
+        store
+            .transaction(|tx| {
+                tx.execute("INSERT INTO runtime_projects(id,record) VALUES('p',?1)",
+                [r#"{"id":"p","path":"/project","peerTeams":[],"locations":[{"serverId":42}]}"#])?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let query = json!({"project":"p","server":"local","path":root.path().to_string_lossy()});
+        assert!(location_query(&store, query.clone()).await.is_err());
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_projects SET record=?1 WHERE id='p'",
+                    [r#"{"id":"p","path":"/project","peerTeams":[],"locations":[]}"#],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert!(location_query(&store, query).await.is_ok());
+    }
+
+    #[tokio::test]
     async fn peer_location_reads_return_only_bounded_metadata_and_matches() {
         let temp = tempfile::tempdir().expect("temporary project root");
         // A browsed folder is reported in its canonical form.
@@ -442,8 +470,11 @@ mod peer_location_tests {
             .expect("open isolated store");
         let info = peer_location_info(repo.to_str().expect("UTF-8 temp path"))
             .expect("read peer location");
-        assert_eq!(info["gitOrigin"], "example.invalid/team/repo");
-        assert_eq!(info["matches"], json!([]));
+        assert_eq!(
+            info.git_origin.as_deref(),
+            Some("example.invalid/team/repo")
+        );
+        assert!(info.matches.is_empty());
         let matches = peer_location_matches(
             &store,
             "example.invalid/team/repo".to_owned(),
@@ -737,7 +768,7 @@ fn new_project(
     let server = prepared.server()?;
     Ok(
         json!({"id":path,"path":path,"name":name,"created":now_seconds(),"accountKey":account,"accountRevision":1,
-        "homeServerId":server,"locations":[{"serverId":server,"path":path,"projectId":path}],"locationsRevision":0}),
+        "homeServerId":server,"locations":[{"serverId":server,"path":path,"projectId":path}],"locationsRevision":0,"peerTeams":[]}),
     )
 }
 
@@ -1304,6 +1335,21 @@ mod compatibility_tests {
 mod account_order_tests {
     use super::*;
 
+    #[test]
+    fn persisted_projects_require_canonical_peer_teams() {
+        assert!(
+            !studio_runtime_schema::validate("PersistedProjectRecord", &json!({"id":"p"}))
+                .expect("project schema")
+        );
+        assert!(
+            studio_runtime_schema::validate(
+                "PersistedProjectRecord",
+                &json!({"id":"p","peerTeams":[]})
+            )
+            .expect("project schema")
+        );
+    }
+
     #[tokio::test]
     async fn explicit_registration_reveals_the_retained_project_owner() {
         let folder = tempfile::tempdir().expect("project folder");
@@ -1314,7 +1360,7 @@ mod account_order_tests {
         let state = tempfile::tempdir().expect("state");
         let store = Arc::new(RuntimeStore::open(Some(state.path())).await.expect("store"));
         let seeded = path.clone();
-        store.transaction(move |tx| ProjectsRepository::put_project(tx,&json!({"id":seeded,"path":seeded,"name":"Retained","sidebarHidden":true,"locationsRevision":9}))).await.expect("hidden owner");
+        store.transaction(move |tx| ProjectsRepository::put_project(tx,&json!({"id":seeded,"path":seeded,"name":"Retained","sidebarHidden":true,"locationsRevision":9,"peerTeams":[]}))).await.expect("hidden owner");
         assert!(
             list(&store).await.expect("sidebar")["items"]
                 .as_array()
@@ -1351,7 +1397,7 @@ mod account_order_tests {
             .transaction(move |tx| {
                 ProjectsRepository::put_project(
                     tx,
-                    &json!({"id":seeded,"path":seeded,"name":"P","created":0,"accountKey":"default"}),
+                    &json!({"id":seeded,"path":seeded,"name":"P","created":0,"accountKey":"default","peerTeams":[]}),
                 )
             })
             .await

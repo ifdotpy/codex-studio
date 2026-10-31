@@ -2123,6 +2123,7 @@ mod bounded_reconcile_tests {
                         root_id: id,
                         epoch: 1,
                         status: AgentStatus::Queued,
+                        workspace_mode: Some(studio_runtime_schema::records::WorkspaceMode::Image),
                         account_key: "account-a".into(),
                         auto_wake: Some(true),
                         usage_resume_enabled: None,
@@ -2131,13 +2132,11 @@ mod bounded_reconcile_tests {
                         turn_epoch: None,
                         thread_id: None,
                         turn_id: None,
-                        extra: BTreeMap::from([
-                            (
-                                "provider".to_owned(),
-                                serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
-                            ),
-                            ("workspaceMode".to_owned(), serde_json::json!("image")),
-                        ]),
+                        extra: BTreeMap::from([(
+                            "provider".to_owned(),
+                            serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
+                        )]),
+                        ..AgentRecord::test_defaults()
                     },
                 )?;
                 Ok(())
@@ -2197,7 +2196,7 @@ mod bounded_reconcile_tests {
         );
         store.transaction(|tx| {
             for id in ["bad-mode", "healthy-mode", "absent-mode", "null-mode"] {
-                let mut agent = serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"queued","autoWake":true,"inFlight":false,"accountKey":"default"});
+                let mut agent = serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"queued","autoWake":true,"inFlight":false,"accountKey":"default"});
                 if id == "healthy-mode" { agent["workspaceMode"] = serde_json::json!("shared"); }
                 if id == "null-mode" { agent["workspaceMode"] = serde_json::Value::Null; }
                 AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
@@ -2309,6 +2308,7 @@ mod bounded_reconcile_tests {
                         root_id: id.clone(),
                         epoch: 1,
                         status: AgentStatus::Queued,
+                        workspace_mode: Some(studio_runtime_schema::records::WorkspaceMode::Image),
                         account_key: "default".into(),
                         auto_wake: Some(true),
                         usage_resume_enabled: None,
@@ -2316,8 +2316,8 @@ mod bounded_reconcile_tests {
                         execution_mode: None, turn_epoch: None, thread_id: None, turn_id: None,
                         extra: BTreeMap::from([
                             ("provider".to_owned(), serde_json::json!(studio_runtime_schema::ProviderKind::Codex)),
-                            ("workspaceMode".to_owned(), serde_json::json!("image")),
                         ]),
+                        ..AgentRecord::test_defaults()
                     },
                 )?;
                 transaction.execute(
@@ -2355,13 +2355,10 @@ mod bounded_reconcile_tests {
                     ("lead", None, AgentStatus::Queued),
                     ("worker", Some("lead"), AgentStatus::Running),
                 ] {
-                    let mut extra = BTreeMap::from([(
+                    let extra = BTreeMap::from([(
                         "provider".to_owned(),
                         serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
                     )]);
-                    if let Some(parent) = parent {
-                        extra.insert("parentId".to_owned(), serde_json::json!(parent));
-                    }
                     AgentRepository::put(
                         transaction,
                         &AgentRecord {
@@ -2377,6 +2374,7 @@ mod bounded_reconcile_tests {
                             root_id: AgentId::from("lead"),
                             epoch: 1,
                             status,
+                            parent_id: parent.map(str::to_owned),
                             account_key: "default".into(),
                             auto_wake: None,
                             usage_resume_enabled: None,
@@ -2386,6 +2384,7 @@ mod bounded_reconcile_tests {
                             thread_id: None,
                             turn_id: None,
                             extra,
+                            ..AgentRecord::test_defaults()
                         },
                     )?;
                 }
@@ -2513,7 +2512,7 @@ mod tests {
         let hints = Arc::new(RegistryHints::default());
         hints.observe(&store);
         for &(id, provider, account, parent) in agents {
-            let agent = AgentRecord::from_value(json!({
+            let agent = AgentRecord::from_value(json!({"compactions":0,
                 "id":id, "rootId":id, "parentId":parent, "name":"Registry fixture",
                 "epoch":0, "status":"queued", "autoWake":true, "inFlight":false,
                 "accountHistory":[], "provider":provider,
@@ -2600,7 +2599,7 @@ mod tests {
         }
 
         // A child's change also reaches its parent's account: held child results wait for it.
-        let kid = AgentRecord::from_value(json!({
+        let kid = AgentRecord::from_value(json!({"compactions":0,
             "id":"kid", "rootId":"parent", "parentId":"parent", "name":"Registry fixture",
             "epoch":0, "status":"running", "accountHistory":[], "provider":"claude",
             "accountKey":"acct-claude", "threadId":"kid", "turnId":"turn", "effort":"high",

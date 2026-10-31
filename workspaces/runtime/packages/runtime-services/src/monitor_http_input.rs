@@ -125,7 +125,9 @@ pub(crate) fn read(connection: &Connection, query: &Value) -> Result<ProcessRece
     let Some((_, receipt)) = saved(connection, request_id)? else {
         return Ok(missing());
     };
-    if query["agent"] != receipt.operation.agent || query["epoch"] != receipt.operation.epoch {
+    if query["agent"] != receipt.operation.agent.as_str()
+        || query["epoch"] != receipt.operation.epoch.get()
+    {
         return Ok(missing());
     }
     let Some(actor) =
@@ -141,9 +143,12 @@ pub(crate) fn read(connection: &Connection, query: &Value) -> Result<ProcessRece
     let Some(monitor) = MonitorsRepository::get(connection, &receipt.monitor)? else {
         return Ok(missing());
     };
-    let snapshot =
-        monitor_policy::MonitorSnapshot::checked(monitor.value(), actor.value().clone())?;
-    if !snapshot.active_owner() || snapshot.operation() != Some(&receipt.operation) {
+    let snapshot = monitor_policy::MonitorSnapshot::checked_stored(&monitor, actor.value())?;
+    if !snapshot.active_owner()
+        || snapshot
+            .operation()
+            .is_none_or(|current| !current.same_identity(&receipt.operation))
+    {
         return Ok(missing());
     }
     let (status, terminal) = match receipt.status {
@@ -209,7 +214,7 @@ fn request_context(
                 "Monitor input request content changed",
             ));
         }
-        if receipt.monitor != id || receipt.operation != operation {
+        if receipt.monitor != id || !receipt.operation.same_identity(&operation) {
             return Err(MonitorError::Refused("Monitor input request owner changed"));
         }
         Some(receipt)
@@ -253,7 +258,12 @@ fn put_receipt(
         status,
         Status::Acknowledged | Status::Rejected | Status::Expired
     ) {
-        settle_request(tx, &admitted, Some(&receipt.operation.agent), &receipt)?;
+        settle_request(
+            tx,
+            &admitted,
+            Some(receipt.operation.agent.as_str()),
+            &receipt,
+        )?;
     } else {
         Outbox::put(
             tx,
@@ -265,7 +275,7 @@ fn put_receipt(
                 request_id: Some(admitted.id().into()),
                 signature: context.signature.clone(),
                 status: OutboxStatus::Unknown,
-                account: Some(receipt.operation.account_key.clone()),
+                account: Some(receipt.operation.account_key.as_str().to_owned()),
                 stream_id: None,
                 generation: None,
                 ordinal: None,
@@ -341,7 +351,7 @@ pub(crate) fn settle(
         return Ok(());
     };
     let receipt = &mut saved.payload.receipt;
-    if receipt.monitor != id || &receipt.operation != operation {
+    if receipt.monitor != id || !receipt.operation.same_identity(operation) {
         return Err(MonitorError::Refused(
             "Monitor input receipt identity changed",
         ));
@@ -365,7 +375,7 @@ pub(crate) fn settle(
         settle_request(
             tx,
             &saved.payload.admitted,
-            Some(&receipt.operation.agent),
+            Some(receipt.operation.agent.as_str()),
             &receipt,
         )?;
         Outbox::delete_settled(tx, &key, &saved.signature)?;
@@ -391,10 +401,10 @@ mod tests {
         let root = RequestIdentity::issue_root();
         let identity = identity(&root).expect("identity");
         let operation: Operation = Operation {
-            agent: "agent".into(),
-            epoch: 1,
-            account_key: "account".into(),
-            connection_id: "connection".into(),
+            agent: "agent".to_owned().try_into().unwrap(),
+            epoch: 1_i64.try_into().unwrap(),
+            account_key: "account".to_owned().try_into().unwrap(),
+            connection_id: "connection".to_owned().try_into().unwrap(),
             evidence: Default::default(),
         };
         let tx = db.transaction().expect("transaction");
@@ -475,10 +485,10 @@ mod tests {
         )
         .expect("identity");
         let operation: Operation = Operation {
-            agent: "agent".into(),
-            epoch: 1,
-            account_key: "account".into(),
-            connection_id: "connection".into(),
+            agent: "agent".to_owned().try_into().unwrap(),
+            epoch: 1_i64.try_into().unwrap(),
+            account_key: "account".to_owned().try_into().unwrap(),
+            connection_id: "connection".to_owned().try_into().unwrap(),
             evidence: Default::default(),
         };
         let payload = json!({"admitted":{"id":identity.id(),"signature":"signature","created":identity.issued_ms()},"receipt":{"operation":operation,"monitor":"monitor","status":"Unknown"}});

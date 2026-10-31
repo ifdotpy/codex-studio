@@ -126,8 +126,12 @@ async fn installed_runtime_drives_input_through_http() {
         .expect("case")
         .clone();
     case["before"]["interactive"] = json!(true);
+    crate::monitor_fixtures::checked(case["before"].clone(), case["actor"].clone())
+        .expect("valid monitor fixture");
     let store = Arc::new(fixtures::store(root.path(), "http").await);
-    fixtures::seed(&store, &case).await;
+    let mut monitor = crate::monitor_fixtures::monitor(root.path());
+    monitor.interactive = true;
+    fixtures::seed(&store, &case, monitor).await;
     let port = Arc::new(support::Port::default());
     let state = HttpState::new(
         "fixture-token".into(),
@@ -201,7 +205,9 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
         .clone();
     case["before"]["interactive"] = json!(true);
     let store = Arc::new(fixtures::store(root.path(), "http-input-ack").await);
-    fixtures::seed(&store, &case).await;
+    let mut monitor = crate::monitor_fixtures::monitor(root.path());
+    monitor.interactive = true;
+    fixtures::seed(&store, &case, monitor).await;
     let port = Arc::new(support::Port::default());
     let state = HttpState::new(
         "fixture-token".into(),
@@ -302,11 +308,12 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
         );
     }
 
-    let saved = MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
-        .expect("read monitor record")
-        .expect("monitor record")
-        .value()
-        .clone();
+    let saved = serde_json::to_value(
+        MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
+            .expect("read monitor record")
+            .expect("monitor record"),
+    )
+    .unwrap();
     assert_eq!(saved["lastInputAttempt"]["status"], "acknowledged");
     assert_eq!(saved["lastInputAttempt"]["method"], "command/exec/write");
     assert_eq!(
@@ -436,17 +443,20 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
         studio_runtime_services::monitor_runtime::recover_on_startup(&store, 999.0)
             .await
             .expect("server startup recovery");
-        fixtures::seed(&store, &case).await;
+        let mut monitor = crate::monitor_fixtures::monitor(root.path());
+        monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Approval;
+        monitor.operation = None;
+        fixtures::seed(&store, &case, monitor).await;
         let id = case["before"]["id"].as_str().expect("monitor id");
         let request_id = format!("monitor-approval:{id}");
-        let request = RequestRecord::from_value(json!({
+        let request: RequestRecord = serde_json::from_str(&json!({
             "id":request_id,
             "method":"monitor/approve",
             "agent":"agent",
             "params":{"monitorId":id,"command":case["before"]["command"],"cwd":case["before"]["cwd"]},
             "status":"pending",
             "createdAt":1000.0
-        }))
+        }).to_string())
         .expect("approval request");
         store
             .transaction(move |tx| Table::<RequestRecord>::new(tx).put(&request))
@@ -482,13 +492,17 @@ async fn monitor_approval_routes_commit_decision_then_launch_only_accepts() {
             .get(&request_id)
             .expect("get approval request")
             .expect("approval request");
-        assert_eq!(request.value()["status"], "answered");
-        assert_eq!(request.value()["answerDecision"], decision);
-        let monitor = MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
-            .expect("get monitor")
-            .expect("monitor")
-            .value()
-            .clone();
+        assert_eq!(request.status.as_str(), "answered");
+        assert_eq!(
+            request.answer_decision.map(|value| value.as_str()),
+            Some(decision)
+        );
+        let monitor = serde_json::to_value(
+            MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
+                .expect("get monitor")
+                .expect("monitor"),
+        )
+        .unwrap();
         if decision == "accept" {
             assert_eq!(monitor["status"], "starting");
             runtime

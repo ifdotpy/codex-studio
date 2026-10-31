@@ -419,18 +419,14 @@ impl ResourceNotifications {
     }
 
     /// Latest scoped external publication; exact receipt retries do not advance it.
-    pub fn published_revision(&self, resource: &Value) -> Result<i64, ResourceNotifyError> {
+    pub fn published_revision<T: serde::Serialize>(
+        &self,
+        resource: &T,
+    ) -> Result<i64, ResourceNotifyError> {
+        let key = serde_json::to_string(resource).map_err(|_| ResourceNotifyError::Invalid)?;
         self.publications
             .lock()
-            .map(|state| state.resource_revision(&resource.to_string()))
-            .map_err(|_| ResourceNotifyError::Unavailable)
-    }
-
-    /// External state notifications require a reset even if their entity sequence is unchanged.
-    pub fn entity_reset_after(&self, revision: i64) -> Result<bool, ResourceNotifyError> {
-        self.publications
-            .lock()
-            .map(|state| state.entity_reset_revision > revision)
+            .map(|state| state.resource_revision(&key))
             .map_err(|_| ResourceNotifyError::Unavailable)
     }
 }

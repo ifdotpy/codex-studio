@@ -27,8 +27,8 @@ impl ClaudeAttemptRecord {
         self.fields.get(key)
     }
 
-    // Compare both presence and value: omission and explicit null are distinct
-    // receipt evidence even though neither is a usable event list or bool.
+    // The live typed record canonicalizes absent optional fields and null alike;
+    // the original receipt remains unchanged in storage.
     pub fn matches_field(&self, key: &str, value: Option<&Value>) -> bool {
         match key {
             "id" => value.and_then(Value::as_str) == Some(self.id.as_str()),
@@ -48,7 +48,7 @@ impl ClaudeAttemptRecord {
                 Field::Null => value == Some(&Value::Null),
                 Field::Value(submitted) => value.and_then(Value::as_bool) == Some(*submitted),
             },
-            _ => self.fields.get(key) == value,
+            _ => self.fields.get(key).filter(|v| !v.is_null()) == value.filter(|v| !v.is_null()),
         }
     }
     pub fn set_frozen_input(&mut self, value: Value) {
@@ -92,6 +92,10 @@ mod tests {
                 assert!(record.matches_field(field, input.get(field)));
             }
         }
+        let receipt: ClaudeAttemptRecord =
+            serde_json::from_str(r#"{"id":"attempt","supervisorIdentity":null}"#).unwrap();
+        assert!(receipt.matches_field("supervisorIdentity", None));
+        assert!(!receipt.matches_field("supervisorIdentity", Some(&json!({"handle":"other"}))));
         let missing: ClaudeAttemptRecord = serde_json::from_str(r#"{"id":"attempt"}"#).unwrap();
         let null: ClaudeAttemptRecord =
             serde_json::from_str(r#"{"id":"attempt","events":null,"submitted":null}"#).unwrap();

@@ -135,23 +135,20 @@ impl MessageAdmission for PreparedAdmission {
             }
             unsupported_operation |= !matches!(operation, "checkpoint" | "capture");
             let mut blocker = json!({"agentId":id,"operation":operation});
-            if let Some(id) = other
+            let record = other
                 .extra
                 .get("workspaceReservationId")
                 .and_then(Value::as_str)
-                && let Some(record) =
-                    studio_runtime_store::system_reads::get(tx, "runtime_workspace_operations", id)?
-            {
-                for key in ["phase", "created", "turnId"] {
-                    blocker[key] = record.get(key).cloned().unwrap_or(Value::Null);
-                }
-                blocker["operationId"] = record["id"].clone();
-            }
-            if !matches!(operation, "checkpoint" | "capture")
-                && blocker.get("operationId").is_none()
-                && let Some(record) = other_operation(tx, &id)?
-            {
-                blocker["phase"] = serde_json::json!(record.phase);
+                .map(|id| studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(tx, id))
+                .transpose()?
+                .flatten();
+            let record = if record.is_none() && !matches!(operation, "checkpoint" | "capture") {
+                other_operation(tx, &id)?
+            } else {
+                record
+            };
+            if let Some(record) = record {
+                blocker["phase"] = json!(record.phase);
                 for key in ["created", "turnId"] {
                     blocker[key] = record.extensions().get(key).cloned().unwrap_or(Value::Null);
                 }
@@ -226,9 +223,8 @@ impl MessageAdmission for MessageIngressAdmission {
 
 fn cwd(agent: &AgentRecord) -> Result<&str, CoordinationError> {
     agent
-        .extra
-        .get("cwd")
-        .and_then(Value::as_str)
+        .cwd
+        .as_deref()
         .ok_or_else(|| CoordinationError::InvalidStored {
             object: "runtime_agents",
             id: agent.id.0.clone(),
@@ -261,13 +257,15 @@ fn provision_destination(
         return Ok(None);
     };
     let Some(record) =
-        studio_runtime_store::system_reads::get(tx, "runtime_workspace_operations", id)?
+        studio_runtime_store::workspace_operations::WorkspaceOperationsRepository::operation(
+            tx, id,
+        )?
     else {
         return Ok(None);
     };
-    let owned = record.get("kind").and_then(Value::as_str) == Some("provision")
-        && record.get("agent").and_then(Value::as_str) == Some(agent.id.0.as_str());
-    let destination = record.get("cwd").and_then(Value::as_str);
+    let owned = record.kind == studio_runtime_schema::workspace_operation::OperationKind::Provision
+        && record.agent == agent.id.0;
+    let destination = record.extensions().get("cwd").and_then(Value::as_str);
     Ok(destination.filter(|_| owned).map(std::path::PathBuf::from))
 }
 
@@ -314,14 +312,14 @@ mod tests {
         );
         let operation = "provision:child:0";
         let agents = [
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true,
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true,
                 "autoWake":true,"cwd":project}),
             // A failed provisioning keeps its reservation; its cwd is the source.
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"lead","parentId":"lead","epoch":0,"status":"failed",
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"child","rootId":"lead","parentId":"lead","epoch":0,"status":"failed",
                 "autoWake":true,"cwd":project,"worktree":true,"worktreeReady":false,
                 "workspaceOperation":"provision","workspaceReservationId":operation,
                 "worktreePreparation":"preparing"}),
-            json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"inside","rootId":"inside","epoch":0,"status":"idle","autoWake":true,
+            json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"inside","rootId":"inside","epoch":0,"status":"idle","autoWake":true,
                 "cwd":destination.join("project")}),
         ];
         let record = json!({"id":operation,"kind":"provision","agent":"child","epoch":0,

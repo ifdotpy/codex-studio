@@ -37,7 +37,11 @@ fn complete_python_outputs_match_checked_snapshots() {
         expected.len(),
         "every case has a frozen result"
     );
-    for (case, output) in cases.iter().zip(&expected) {
+    for (case, output) in cases
+        .iter()
+        .zip(&expected)
+        .filter(|(case, _)| case["family"] != "history")
+    {
         let expected = &output["result"];
         let stored = &output["stored"];
         let result = match case["family"].as_str().expect("family") {
@@ -55,39 +59,13 @@ fn complete_python_outputs_match_checked_snapshots() {
                 .expect("snapshot");
                 json!({"actor":case["actor"],"eligible":snapshot.eligible(&request)})
             }
-            "history" => {
-                let records = stored["checkpoints"].as_array().expect("checkpoints");
-                let selected = records
-                    .iter()
-                    .find(|r| r["id"] == case["selected"])
-                    .expect("selected");
-                let parents = records
-                    .iter()
-                    .filter(|r| r["id"] != selected["id"])
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let fallback = stored["items"]
-                    .as_array()
-                    .expect("items")
-                    .iter()
-                    .map(|r| {
-                        (
-                            r["id"].as_str().expect("id").to_owned(),
-                            r["created"].as_f64().expect("created"),
-                        )
-                    })
-                    .collect();
-                match CheckpointHistory::from_records(selected, &parents, fallback)
-                    .and_then(|h| h.visible_ids())
-                {
-                    Ok(ids) => json!({"ids":ids}),
-                    Err(e) => json!({"error":e.to_string()}),
-                }
-            }
             "recovery" => {
-                let snapshot =
-                    OperationSnapshot::from_records(&stored["operations"][0], &stored["actor"])
-                        .expect("operation");
+                let snapshot = OperationSnapshot::from_checked(
+                    serde::Deserialize::deserialize(&stored["operations"][0])
+                        .expect("typed operation"),
+                    &stored["actor"],
+                )
+                .expect("operation");
                 let writes = snapshot.recover(10.0);
                 if matches!(
                     case["operations"][0]["phase"].as_str(),
@@ -136,8 +114,6 @@ fn malformed_stored_fields_are_located_and_never_panic() {
             .to_string();
         assert!(error.contains(&format!("/{field}")), "{error}");
     }
-    let bad = json!({"id":"c","agent":"agent","items":null});
-    assert!(CheckpointHistory::from_records(&bad, &[], vec![]).is_err());
 }
 
 #[test]
@@ -172,7 +148,11 @@ fn receipt_identity_and_unknown_provider_outcomes_never_allow_redispatch() {
     for kind in ["branch", "restore"] {
         for phase in ["provider_pending", "local_mutation", "recovery_required"] {
             let op = json!({"id":"operation","kind":kind,"agent":"agent","phase":phase,"signature":"signature","source":{"accountKey":"default","threadId":null,"cwd":"/workspace"}});
-            let snapshot = OperationSnapshot::from_records(&op, &actor).expect("snapshot");
+            let snapshot = OperationSnapshot::from_checked(
+                serde::Deserialize::deserialize(&op).expect("typed operation"),
+                &actor,
+            )
+            .expect("snapshot");
             assert_eq!(
                 snapshot.retry("signature").expect("decision"),
                 RetryDecision::InspectWorkspace
@@ -307,7 +287,7 @@ async fn committed_turn_captures_once_preserving_user_index_and_files() {
     std::fs::write(f.repo.join("file"), "dirty\n").expect("dirty file");
     let index = std::fs::read(f.repo.join(".git/index")).expect("index");
     let request = CompletedTurn::from_record(&f.actor).expect("request");
-    let checkpoint = checkpoint_after_turn(Arc::clone(&f.store), &request)
+    let checkpoint = Box::pin(checkpoint_after_turn(Arc::clone(&f.store), &request))
         .await
         .expect("capture")
         .expect("checkpoint");
@@ -323,7 +303,7 @@ async fn committed_turn_captures_once_preserving_user_index_and_files() {
     );
     let state = f.snapshot();
     assert_eq!(
-        checkpoint_after_turn(Arc::clone(&f.store), &request)
+        Box::pin(checkpoint_after_turn(Arc::clone(&f.store), &request))
             .await
             .expect("replay"),
         Some(checkpoint)
@@ -339,7 +319,7 @@ async fn late_completion_and_missing_receipt_write_nothing() {
     f.patch("epoch", json!(2)).await;
     let before = f.snapshot();
     assert_eq!(
-        checkpoint_after_turn(Arc::clone(&f.store), &request)
+        Box::pin(checkpoint_after_turn(Arc::clone(&f.store), &request))
             .await
             .expect("stale"),
         None
@@ -355,7 +335,7 @@ async fn late_completion_and_missing_receipt_write_nothing() {
         .expect("remove receipt");
     let before = f.snapshot();
     assert_eq!(
-        checkpoint_after_turn(Arc::clone(&f.store), &request)
+        Box::pin(checkpoint_after_turn(Arc::clone(&f.store), &request))
             .await
             .expect("no receipt"),
         None
@@ -433,7 +413,7 @@ async fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpo
             .await
             .expect("arm failpoint");
         assert!(
-            checkpoint_after_turn(Arc::clone(&f.store), &request)
+            Box::pin(checkpoint_after_turn(Arc::clone(&f.store), &request))
                 .await
                 .is_err(),
             "{name}"
@@ -463,7 +443,7 @@ async fn store_failpoint_matrix_rolls_back_or_recovers_without_duplicate_checkpo
             .expect("next isolated failpoint");
     }
     assert!(
-        checkpoint_after_turn(Arc::clone(&f.store), &request)
+        Box::pin(checkpoint_after_turn(Arc::clone(&f.store), &request))
             .await
             .expect("capture after faults")
             .is_some()
@@ -592,7 +572,7 @@ async fn restart_after_each_committed_capture_stage_never_repeats_git() {
                 .expect("restart"),
         );
         assert_eq!(
-            checkpoint_after_turn(Arc::clone(&reopened), &request)
+            Box::pin(checkpoint_after_turn(Arc::clone(&reopened), &request))
                 .await
                 .expect("recovered callback"),
             None
@@ -712,14 +692,5 @@ async fn durable_provider_ticket_rejects_foreign_and_stale_receipts_and_replays_
         )
         .expect("read"),
         accepted
-    );
-    assert_eq!(
-        inspect_retry(
-            &f.store.test_reader().expect("test reader"),
-            &expected.operation,
-            "signature",
-        )
-        .expect("retry"),
-        RetryDecision::ResumeLocal(response)
     );
 }

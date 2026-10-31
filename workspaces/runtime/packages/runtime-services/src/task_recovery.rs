@@ -3,12 +3,14 @@
 use crate::recovery_policy::{InvalidRecoveryRecord, RecoverySnapshot};
 use serde_json::{Value, json};
 use std::sync::Arc;
+use studio_runtime_schema::task_record::{TaskKind, TaskStatus, TaskType};
+use studio_runtime_store::TaskRecord;
 
 const MAX_RECEIPTS: usize = 2;
 #[derive(Clone)]
 pub struct TaskRecoverySnapshot {
     agent: RecoverySnapshot,
-    task: Arc<Value>,
+    task: Arc<TaskRecord>,
     pub(crate) aliases: Vec<String>,
     pub(crate) receipts: Vec<(String, Arc<Value>)>,
 }
@@ -21,19 +23,19 @@ pub enum TaskRecoveryDecision {
 impl TaskRecoverySnapshot {
     pub fn from_records(
         agent: Value,
-        task: Value,
+        task: TaskRecord,
         aliases: Vec<String>,
         receipts: Vec<(String, Value)>,
     ) -> Result<Self, InvalidRecoveryRecord> {
         let agent_id = agent["id"].as_str().unwrap_or("<missing>").to_owned();
-        let task_id = task["id"].as_str().unwrap_or("<missing>").to_owned();
+        let task_id = task.id().as_ref().to_owned();
         Self::from_stored_records(&agent_id, &task_id, agent, task, aliases, receipts)
     }
     pub(crate) fn from_stored_records(
         agent_id: &str,
         task_id: &str,
         agent: Value,
-        task: Value,
+        task: TaskRecord,
         aliases: Vec<String>,
         receipts: Vec<(String, Value)>,
     ) -> Result<Self, InvalidRecoveryRecord> {
@@ -43,8 +45,10 @@ impl TaskRecoverySnapshot {
         };
         let agent = RecoverySnapshot::from_record(agent)
             .map_err(|_| located("runtime_agents", agent_id))?;
-        if !studio_runtime_schema::validate("RecoveryTaskRecord", &task)
-            .map_err(|_| located("runtime_tasks", task_id))?
+        if task.id().as_ref() != task_id
+            || task.agent().is_empty()
+            || task.item_id().is_empty()
+            || task.turn_id().is_empty()
             || aliases.len() > MAX_RECEIPTS
             || receipts.len() > MAX_RECEIPTS
         {
@@ -68,7 +72,7 @@ impl TaskRecoverySnapshot {
                 .collect(),
         })
     }
-    pub fn task(&self) -> &Value {
+    pub fn task(&self) -> &TaskRecord {
         self.task.as_ref()
     }
     pub fn agent(&self) -> &RecoverySnapshot {
@@ -88,8 +92,8 @@ impl TaskRecoverySnapshot {
             || r["agent"] != a["id"]
             || r["accountKey"] != a.get("accountKey").cloned().unwrap_or(json!("default"))
             || r["threadId"] != a["threadId"]
-            || r["turnId"] != t["turnId"]
-            || r["callId"] != t["itemId"]
+            || r["turnId"].as_str() != Some(t.turn_id())
+            || r["callId"].as_str() != Some(t.item_id())
             || r["finished"].is_null()
         {
             return None;
@@ -118,25 +122,21 @@ impl TaskRecoverySnapshot {
     ) -> TaskRecoveryDecision {
         let a = self.agent.record();
         let t = &self.task;
-        let kind = t["type"].as_str().unwrap_or_default();
+        let kind = t.task_type().as_str();
         if !self.agent.eligibility().task_owner
-            || t["status"] != "running"
-            || t["agent"] != a["id"]
-            || t["id"]
-                != format!(
-                    "{}:{}",
-                    a["id"].as_str().unwrap_or_default(),
-                    t["itemId"].as_str().unwrap_or_default()
-                )
+            || t.status() != TaskStatus::Running
+            || Some(t.agent()) != a["id"].as_str()
+            || t.id().as_ref()
+                != format!("{}:{}", a["id"].as_str().unwrap_or_default(), t.item_id())
             || !matches!(
                 kind,
                 "commandExecution" | "fileChange" | "dynamicToolCall" | "mcpToolCall"
             )
-            || t["kind"]
+            || t.kind()
                 != if kind == "commandExecution" {
-                    "command"
+                    TaskKind::Command
                 } else {
-                    "tool"
+                    TaskKind::Tool
                 }
         {
             return TaskRecoveryDecision::Unconfirmed;
@@ -180,17 +180,21 @@ impl TaskRecoverySnapshot {
                 return TaskRecoveryDecision::Unconfirmed;
             }
             return TaskRecoveryDecision::Complete(
-                json!({"id":t["itemId"],"type":t["type"],"status":"completed","success":success,"contentItems":result.get("contentItems").cloned().unwrap_or(json!([]))}),
+                json!({"id":t.item_id(),"type":kind,"status":"completed","success":success,"contentItems":result.get("contentItems").cloned().unwrap_or(json!([]))}),
             );
         }
-        let mut matches = native_items.iter().filter(|item| item["id"] == t["itemId"]);
+        let mut matches = native_items
+            .iter()
+            .filter(|item| item["id"].as_str() == Some(t.item_id()));
         let Some(item) = matches.next() else {
             return TaskRecoveryDecision::Unconfirmed;
         };
         if matches.next().is_some()
-            || item["type"] != t["type"]
+            || item["type"].as_str() != Some(kind)
             || item.get("threadId").is_some_and(|v| v != &a["threadId"])
-            || item.get("turnId").is_some_and(|v| v != &t["turnId"])
+            || item
+                .get("turnId")
+                .is_some_and(|v| v.as_str() != Some(t.turn_id()))
         {
             return TaskRecoveryDecision::Unconfirmed;
         }
@@ -244,8 +248,8 @@ pub async fn recover_task(
         return Ok(false);
     }
     if !snapshot.agent.eligibility().task_owner
-        || snapshot.task["status"] != "running"
-        || snapshot.task["agent"] != a["id"]
+        || snapshot.task.status() != TaskStatus::Running
+        || Some(snapshot.task.agent()) != a["id"].as_str()
     {
         return Ok(false);
     }
@@ -274,10 +278,9 @@ pub async fn recover_task(
         let thread = a["threadId"]
             .as_str()
             .ok_or(HistoryError::Invalid("threadId"))?;
-        let turn = snapshot.task["turnId"]
-            .as_str()
-            .ok_or(HistoryError::Invalid("turnId"))?;
-        if snapshot.task["type"] == "commandExecution" && read.barrier().await.is_err() {
+        let turn = snapshot.task.turn_id();
+        if snapshot.task.task_type() == TaskType::CommandExecution && read.barrier().await.is_err()
+        {
             let observation = read.observation()?;
             return effects
                 .apply_absence(
@@ -325,18 +328,18 @@ pub async fn recover_task(
             let observation = read.observation()?;
             let matches: Vec<_> = items
                 .iter()
-                .filter(|i| i["id"] == snapshot.task["itemId"])
+                .filter(|i| i["id"].as_str() == Some(snapshot.task.item_id()))
                 .collect();
             let candidate = matches.is_empty()
                 || (matches.len() == 1
                     && matches[0]["type"] == "commandExecution"
                     && matches[0]["status"] == "inProgress"
-                    && process_identity(
-                        matches[0]
-                            .get("processId")
-                            .unwrap_or(&snapshot.task["processId"]),
-                    ) == process_identity(&snapshot.task["processId"]));
-            let absent = if snapshot.task["type"] == "commandExecution"
+                    && matches[0]
+                        .get("processId")
+                        .map(process_identity)
+                        .unwrap_or_else(|| snapshot.task.process_id().map(|id| id.normalized()))
+                        == snapshot.task.process_id().map(|id| id.normalized()));
+            let absent = if snapshot.task.task_type() == TaskType::CommandExecution
                 && candidate
                 && observation.quiet
             {
@@ -347,9 +350,12 @@ pub async fn recover_task(
                             .ok()
                             .map(|terminals| {
                                 terminals.iter().all(|t| {
-                                    t["itemId"] != snapshot.task["itemId"]
+                                    t["itemId"].as_str() != Some(snapshot.task.item_id())
                                         && t["processId"].as_str()
-                                            != process_identity(&snapshot.task["processId"])
+                                            != snapshot
+                                                .task
+                                                .process_id()
+                                                .map(|id| id.normalized())
                                                 .as_deref()
                                 })
                             })
@@ -403,12 +409,12 @@ impl TaskRecoverySnapshot {
             == Some(&format!(
                 "{}:{}",
                 self.agent.record()["id"].as_str().unwrap_or_default(),
-                self.task["turnId"].as_str().unwrap_or_default()
+                self.task.turn_id()
             ));
         if !self.has_local_receipt()
             && self.agent.eligibility().task_owner
-            && self.task["status"] == "running"
-            && self.task["agent"] == self.agent.record()["id"]
+            && self.task.status() == TaskStatus::Running
+            && Some(self.task.agent()) == self.agent.record()["id"].as_str()
             && observation.quiet
             && absent_from_complete_terminals
             && command_absence_source(&self.agent, &self.task, observation, completed)

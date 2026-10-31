@@ -100,7 +100,7 @@ impl AccountTransferRepository {
                 continue;
             };
             let agent = Table::<AgentRecord>::new(db).decode_stored(&id, &raw)?;
-            if !crate::truthy(agent.extra.get("deletedAt")) {
+            if !agent.is_deleted() {
                 bytes = bytes.saturating_add(serde_json::to_vec(&agent)?.len());
                 if agents.len() >= studio_runtime_schema::agent_limits::MAX_TRANSFER_AGENT_RECORDS
                     || bytes > Self::MAX_SNAPSHOT_BYTES

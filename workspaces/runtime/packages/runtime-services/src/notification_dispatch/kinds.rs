@@ -1,6 +1,6 @@
 //! Thin transactional adapter for notification decisions.
 use super::effects::NotificationDependency;
-use super::snapshot::{NotificationSnapshot, checked};
+use super::snapshot::NotificationSnapshot;
 use super::{
     DispatchOutcome, NotificationDispatchError, ProviderDeliveryIdentity, persist_agent,
     update_common_agent_fields,
@@ -78,13 +78,15 @@ pub(super) fn apply(
         else {
             return Ok(Some(DispatchOutcome::Written));
         };
+        let delta = <crate::monitor_event_queue::OutputDelta as serde::Deserialize>::deserialize(p)
+            .map_err(|_| NotificationDispatchError::invalid())?;
         crate::monitor_event_queue::enqueue_output_in_transaction(
             tx,
             process_id,
             account,
             identity.generation,
             identity.cursor,
-            p,
+            &delta,
         )?;
         return Ok(Some(DispatchOutcome::Written));
     }
@@ -243,19 +245,12 @@ pub(super) fn apply(
                 return Ok(Some(DispatchOutcome::Written));
             }
             if stale {
-                if snapshot
-                    .task()
-                    .is_none_or(|task| task.status() == Some("running"))
-                    && let Some(task) = items::task_transition(
-                        snapshot.agent(),
-                        method,
-                        p,
-                        snapshot.task(),
-                        true,
-                        at,
-                    )?
+                if snapshot.task().is_none_or(|task| {
+                    task.status() == studio_runtime_schema::task_record::TaskStatus::Running
+                }) && let Some(task) =
+                    items::task_transition(snapshot.agent(), method, p, snapshot.task(), true, at)?
                 {
-                    put_task(tx, &task)?;
+                    put_checked_task(tx, &task, &studio_runtime_store::projection_value(&task))?;
                     write_historical_item(tx, &id, p, &task, at)?;
                 }
                 return Ok(Some(DispatchOutcome::Ignored {
@@ -273,25 +268,29 @@ pub(super) fn apply(
                 items::non_text(agent, method, p, snapshot.task(), already_compacted, at)?;
             if let Some(mut task) = decision.task {
                 if snapshot.task().is_none() {
-                    task["ownerEpoch"] = agent["epoch"].clone();
+                    task.owner_epoch = agent["epoch"].as_i64();
                     let source = publication.native_source.as_ref().filter(|source| {
                         source.account == account
                             && source.generation.is_none_or(|g| g == identity.generation)
                     });
-                    task["sourceAccountKey"] = json!(
+                    task.source_account_key = Some(
                         source
                             .map(|source| source.account.as_str())
                             .unwrap_or(account)
+                            .to_owned(),
                     );
-                    task["sourceConnectionId"] = json!(source.map(|source| &source.connection));
-                    task["sourceThreadId"] = if source.is_some() {
-                        agent["threadId"].clone()
+                    task.source_connection_id = source.map(|source| source.connection.clone());
+                    task.source_thread_id = if source.is_some() {
+                        agent["threadId"].as_str().map(str::to_owned)
                     } else {
-                        Value::Null
+                        None
                     };
-                    task["sourceProvider"] = json!(source.map(|source| source.provider.as_str()));
+                    task.source_provider = source
+                        .map(|source| source.provider.as_str().parse())
+                        .transpose()
+                        .map_err(|_| NotificationDispatchError::invalid())?;
                 }
-                put_task(tx, &task)?;
+                put_checked_task(tx, &task, &studio_runtime_store::projection_value(&task))?;
             }
             if decision.compacted {
                 let deferred = p["item"]["idleCompactionOnReturn"] == true
@@ -418,11 +417,12 @@ fn turn(agent: &Value, params: &Value) -> Value {
 fn required(service: NotificationDependency) -> DispatchOutcome {
     DispatchOutcome::RequiresService { service }
 }
+#[cfg(test)]
 pub(super) fn put_task(
     tx: &Transaction<'_>,
     task: &Value,
 ) -> Result<(), NotificationDispatchError> {
-    let task_record = TaskRecord::from_value(task.clone())
+    let task_record: TaskRecord = serde_json::from_str(&task.to_string())
         .map_err(|_| super::stored("runtime_tasks", task["id"].as_str().unwrap_or("<missing>")))?;
     put_checked_task(tx, &task_record, task)
 }
@@ -449,8 +449,15 @@ pub(super) fn put_checked_task(
             .optional()
             .map_err(StoreError::from)?;
         previous_raw
-            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-            .filter(|previous| checked("runtime_tasks", previous).is_ok())
+            .map(|raw| {
+                let record: TaskRecord = serde_json::from_str(&raw)
+                    .map_err(|_| super::stored("runtime_tasks", task_id))?;
+                if record.id().as_ref() != task_id {
+                    return Err(super::stored("runtime_tasks", task_id));
+                }
+                Ok(studio_runtime_store::projection_value(&record))
+            })
+            .transpose()?
     } else {
         None
     };
@@ -516,7 +523,8 @@ pub(super) fn flush_command(
     streams.flush_analytics(key, agent);
     if stale
         && !task.as_ref().is_some_and(|task| {
-            task.kind() == Some("command") && task.turn_id().map(str::to_owned) == key.turn
+            task.kind() == studio_runtime_schema::task_record::TaskKind::Command
+                && Some(task.turn_id()) == key.turn.as_deref()
         })
     {
         streams.discard(key);
@@ -564,7 +572,7 @@ pub(super) fn flush_command(
                     .to_owned(),
             );
             task.set_output_truncated(truncated);
-            put_checked_task(tx, task, &task.value())?;
+            put_checked_task(tx, task, &studio_runtime_store::projection_value(task))?;
         }
         if !stale {
             agent["events"] = json!(
@@ -617,43 +625,48 @@ pub(super) fn write_historical_item(
     tx: &Transaction<'_>,
     agent: &str,
     p: &Value,
-    task: &Value,
+    task: &TaskRecord,
     at: f64,
 ) -> Result<(), NotificationDispatchError> {
-    let id = task["id"]
-        .as_str()
-        .ok_or(NotificationDispatchError::invalid())?;
+    let id = task.id().as_ref();
     let Some((record, _)) = NotificationDispatchRepository::notification_item(tx, agent, id)?
     else {
         return Ok(());
     };
     let saved = serde_json::from_str::<Value>(record["text"].as_str().unwrap_or_default()).ok();
-    let historical_tool = task["kind"] == "tool";
+    let historical_tool = task.kind() == studio_runtime_schema::task_record::TaskKind::Tool;
     let item = if historical_tool {
-        if record["turnId"] != task["turnId"]
-            || record["title"] != task["type"]
+        if record["turnId"].as_str() != Some(task.turn_id())
+            || record["title"].as_str() != Some(task.task_type().as_str())
             || !saved.as_ref().is_some_and(|s| {
-                s.is_object() && s["id"] == p["item"]["id"] && s["type"] == task["type"]
+                s.is_object()
+                    && s["id"] == p["item"]["id"]
+                    && s["type"].as_str() == Some(task.task_type().as_str())
             })
         {
             return Ok(());
         }
         let mut item = p["item"].clone();
-        for field in ["durationMs", "startedAtMs", "completedAtMs"] {
-            if !task[field].is_null() {
-                item[field] = task[field].clone();
+        for (field, value) in [
+            ("durationMs", &task.duration_ms),
+            ("startedAtMs", &task.started_at_ms),
+            ("completedAtMs", &task.completed_at_ms),
+        ] {
+            if let Some(value) = value {
+                item[field] = json!(value);
             }
         }
         item
     } else {
         let mut item = saved.filter(Value::is_object).unwrap_or_else(
-            || json!({"id":task["itemId"],"type":"commandExecution","command":task["command"]}),
+            || json!({"id":task.item_id(),"type":"commandExecution","command":task.command}),
         );
-        item["aggregatedOutput"] = task.get("tail").cloned().unwrap_or(json!(""));
-        item["outputTruncated"] = task.get("outputTruncated").cloned().unwrap_or(json!(false));
-        for field in ["exitCode", "durationMs", "startedAtMs", "completedAtMs"] {
-            item[field] = task[field].clone();
-        }
+        item["aggregatedOutput"] = json!(task.tail().unwrap_or(""));
+        item["outputTruncated"] = json!(task.output_truncated().unwrap_or(false));
+        item["exitCode"] = json!(task.exit_code);
+        item["durationMs"] = json!(task.duration_ms);
+        item["startedAtMs"] = json!(task.started_at_ms);
+        item["completedAtMs"] = json!(task.completed_at_ms);
         item
     };
     // Historical Python tool records use ASCII JSON escaping.
@@ -687,17 +700,17 @@ pub(super) fn write_historical_item(
     write_item(
         tx,
         agent,
-        task["itemId"].as_str().unwrap_or_default(),
+        task.item_id(),
         (
             "output",
             if historical_tool {
-                task["type"].as_str().unwrap_or_default()
+                task.task_type().as_str()
             } else {
                 "commandExecution"
             },
         ),
         &text,
-        json!({"toolStatus":task["status"],"turnId":task["turnId"]}),
+        json!({"toolStatus":task.status(),"turnId":task.turn_id()}),
         at,
     )
 }

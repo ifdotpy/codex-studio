@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_schema::process_controls::{
     ProcessActionResult, ProcessActionStatus, ProcessControlRequest, ProcessEntry, ProcessOutcome,
-    ProcessReceipt, Request,
+    ProcessReceipt, ProcessResponseTarget,
 };
 use studio_runtime_store::{
     ProcessActionKind, ProcessActionPhase, ProcessActionRecord, StoreError, Transaction,
@@ -117,36 +117,31 @@ impl HeldResponseProof {
 
 fn retained_monitor_scope(
     tx: &Transaction<'_>,
-    monitor: &Value,
+    monitor: &studio_runtime_store::MonitorRecord,
     owner: &Value,
 ) -> Result<Option<ConnectionScope>, Error> {
-    if monitor["status"] != "running"
-        || monitor["agent"] != owner["id"]
-        || monitor["epoch"] != owner["epoch"]
+    if monitor.status != studio_runtime_schema::studio_errors::MonitorStatus::Running
+        || monitor.agent != text(owner, "id", "")
+        || Some(monitor.epoch.get()) != owner["epoch"].as_i64()
         || owner["deleted"] == true
         || studio_runtime_store::truthy(owner.get("deletedAt"))
     {
         return Ok(None);
     }
-    let Ok(operation) =
-        serde_json::from_value::<crate::monitor_policy::Operation>(monitor["operation"].clone())
-    else {
+    let Some(operation) = &monitor.operation else {
         return Ok(None);
     };
-    if operation.agent != text(owner, "id", "") || Some(operation.epoch) != owner["epoch"].as_i64()
+    if operation.agent.as_str() != text(owner, "id", "")
+        || Some(operation.epoch.get()) != owner["epoch"].as_i64()
     {
         return Ok(None);
     }
-    match crate::account_worker::retained::vm_actor(tx, &operation.agent) {
+    match crate::account_worker::retained::vm_actor(tx, operation.agent.as_str()) {
         Ok(false) => {}
         Err(crate::account_worker::WorkerError::Store(error)) => return Err(Error::Store(error)),
         _ => return Ok(None),
     }
-    match crate::account_worker::retained::monitor_command_scope(
-        tx,
-        text(monitor, "id", ""),
-        &operation,
-    ) {
+    match crate::account_worker::retained::monitor_command_scope(tx, &monitor.id, operation) {
         Ok(scope) => Ok(scope),
         Err(crate::account_worker::WorkerError::Store(error)) => Err(Error::Store(error)),
         _ => Ok(None),
@@ -157,11 +152,13 @@ fn retained_monitor_scope(
 /// observes those accounts' existing sessions; it never starts another session.
 pub fn monitor_sources(
     tx: &Transaction<'_>,
-    rows: &[(bool, &Value, Value)],
+    rows: &[(&Value, ProcessSource)],
 ) -> Result<Vec<ConnectionScope>, Error> {
     let mut scopes = BTreeMap::new();
-    for (_, owner, monitor) in rows.iter().filter(|(monitor, _, _)| *monitor) {
-        if let Some(scope) = retained_monitor_scope(tx, monitor, owner)? {
+    for (owner, source) in rows {
+        if let ProcessSource::Monitor(monitor) = source
+            && let Some(scope) = retained_monitor_scope(tx, monitor, owner)?
+        {
             scopes.insert(scope.account.clone(), scope);
         }
     }
@@ -172,7 +169,7 @@ pub fn monitor_sources(
 /// and an observed live source scope, never by the actor's new model thread.
 pub fn project_monitor(
     tx: &Transaction<'_>,
-    raw: &Value,
+    raw: &studio_runtime_store::MonitorRecord,
     owner: &Value,
     owner_connection: Option<&str>,
     source: Option<&ConnectionScope>,
@@ -183,15 +180,14 @@ pub fn project_monitor(
                 && live.generation == original.generation
                 && !live.connection.is_empty()
                 && (live.connection == original.connection
-                    || raw["reattachedConnectionId"].as_str()
+                    || raw.reattached_connection_id.as_deref()
                         == Some(live.connection.as_str())) =>
         {
             Some(live)
         }
         _ => None,
     };
-    Ok(project_bound(
-        "monitor",
+    Ok(project_monitor_bound(
         raw,
         owner,
         proven
@@ -200,6 +196,95 @@ pub fn project_monitor(
         proven.map(|scope| scope.generation),
     ))
 }
+fn project_monitor_bound(
+    monitor: &studio_runtime_store::MonitorRecord,
+    owner: &Value,
+    connection: Option<&str>,
+    generation: Option<u64>,
+) -> Value {
+    use studio_runtime_schema::studio_errors::MonitorStatus;
+    let agent = monitor.agent.as_str();
+    let account = text(owner, "accountKey", "default");
+    let pending = matches!(
+        monitor.status,
+        MonitorStatus::Approval | MonitorStatus::Starting
+    );
+    let operation = monitor.operation.as_ref();
+    let source_account = operation
+        .map(|op| op.account_key.as_str())
+        .or(pending.then_some(account));
+    let mut source_connection = operation.map(|op| op.connection_id.as_str());
+    let mut source_thread = operation.and_then(|op| op.evidence.thread_id.as_deref());
+    if generation.is_some() {
+        source_connection = connection;
+    } else if monitor.status == MonitorStatus::Running
+        && connection.is_some()
+        && monitor.reattached_connection_id.as_deref() == connection
+    {
+        source_connection = connection;
+        source_thread = owner["threadId"].as_str();
+    }
+    if generation.is_none()
+        && source_thread.is_none_or(str::is_empty)
+        && operation.map(|op| op.connection_id.as_str()) == connection
+    {
+        source_thread = owner["threadId"].as_str();
+    }
+    let epoch = monitor.epoch.get();
+    let mut native = json!([
+        monitor.id,
+        epoch,
+        source_account,
+        source_connection,
+        source_thread
+    ]);
+    if let Some(generation) = generation {
+        native
+            .as_array_mut()
+            .expect("identity")
+            .push(json!(generation));
+    }
+    let same = (generation.is_some() || source_account == Some(account))
+        && owner["epoch"].as_i64() == Some(epoch)
+        && connection.is_some_and(|c| !c.is_empty())
+        && source_connection == connection
+        && (generation.is_some()
+            || (source_thread.is_some_and(|v| !v.is_empty())
+                && source_thread == owner["threadId"].as_str()));
+    let can_input = same
+        && owner["autoWake"] == true
+        && monitor.interactive
+        && monitor.status == MonitorStatus::Running;
+    let output = monitor.tail.as_str();
+    let bytes = monitor.bytes.get() as u64;
+    let command = monitor.command.as_str();
+    let name = if command.is_empty() {
+        "Command monitor"
+    } else {
+        command
+    };
+    let mut result = json!({"id":monitor.id,"key":URL_SAFE_NO_PAD.encode(json!(["monitor",agent,monitor.id]).to_string()),
+        "generation":digest(&json!(["monitor",agent,native])),"agent":agent,"accountKey":account,"epoch":owner["epoch"],
+        "source":"monitor","status":monitor.status,"cancelRequested":monitor.cancel_requested == Some(true),
+        "created":monitor.created.seconds(),"name":name,"command":command,"cwd":monitor.cwd,"log":monitor.log,
+        "output":output,"error":monitor.error.as_ref().map(|v| v.as_str()),"stdinError":monitor.stdin_error,
+        "stdinClosed":monitor.stdin_closed == Some(true),"stdinCloseRequested":false,
+        "bytes":bytes,"outputTruncated":monitor.output_truncated.unwrap_or(bytes > output.len() as u64),
+        "capabilities":{"readOutput":true,"sendInput":can_input,"resize":can_input,"stop":same || (pending && owner["epoch"].as_i64() == Some(epoch) && source_account == Some(account))},
+        "_raw":{"id":monitor.id,"status":monitor.status,"reattachedConnectionId":monitor.reattached_connection_id},
+        "_sourceAccountKey":source_account,"_sourceConnectionId":source_connection,"_sourceThreadId":source_thread,"_sourceEpoch":epoch});
+    if let Some(generation) = generation {
+        result["_sourceGeneration"] = json!(generation);
+    }
+    if let Some(budget) = &monitor.output_wake_budget {
+        result["outputWakeBudget"] = json!({"totalSuppressedMatches":budget.total_suppressed_matches,"paused":budget.paused,"tokens":budget.tokens});
+    }
+    if let Some(patterns) = &monitor.output_patterns {
+        result["outputPatterns"] = json!(patterns);
+    }
+    result
+}
+
 fn raw(connection: &Connection, table: &str, id: &str) -> Result<Option<Value>, Error> {
     let text: Option<String> = connection
         .query_row(
@@ -250,11 +335,17 @@ pub fn owners(connection: &Connection, scope: &str) -> Result<Vec<Value>, Error>
     Ok(result)
 }
 
+/// A process source retains its owning record type through selection.
+pub enum ProcessSource {
+    Monitor(Box<studio_runtime_store::MonitorRecord>),
+    Task(Box<studio_runtime_store::TaskRecord>),
+}
+
 /// Scoped active commands paired with their already-loaded owners.
 pub fn process_rows<'a>(
     connection: &Connection,
     owners: &'a [Value],
-) -> Result<Vec<(bool, &'a Value, Value)>, Error> {
+) -> Result<Vec<(&'a Value, ProcessSource)>, Error> {
     let mut result = Vec::new();
     for table in ["runtime_monitors", "runtime_tasks"] {
         let (index, status) = if table == "runtime_monitors" {
@@ -263,7 +354,7 @@ pub fn process_rows<'a>(
             ("runtime_task_agent_created_id", "= ?2")
         };
         let sql = format!(
-            "SELECT record FROM {table} INDEXED BY {index} WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') {status}"
+            "SELECT id,record FROM {table} INDEXED BY {index} WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') {status}"
         );
         let mut statement = connection.prepare_cached(&sql).map_err(StoreError::from)?;
         for owner in owners {
@@ -277,16 +368,28 @@ pub fn process_rows<'a>(
             };
             let rows = statement
                 .query_map(rusqlite::params_from_iter(args), |row| {
-                    row.get::<_, String>(0)
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })
                 .map_err(StoreError::from)?;
             for row in rows {
-                result.push((
-                    table == "runtime_monitors",
-                    owner,
-                    serde_json::from_str(&row.map_err(StoreError::from)?)
-                        .map_err(StoreError::from)?,
-                ));
+                let (row_id, raw) = row.map_err(StoreError::from)?;
+                let source = if table == "runtime_monitors" {
+                    ProcessSource::Monitor(Box::new(
+                        serde_json::from_str(&raw).map_err(StoreError::from)?,
+                    ))
+                } else {
+                    let record: studio_runtime_store::TaskRecord =
+                        serde_json::from_str(&raw).map_err(StoreError::from)?;
+                    if record.id().as_ref() != row_id {
+                        return Err(StoreError::InvalidStoredObject {
+                            table: "runtime_tasks",
+                            id: row_id,
+                        }
+                        .into());
+                    }
+                    ProcessSource::Task(Box::new(record))
+                };
+                result.push((owner, source));
             }
         }
     }
@@ -302,33 +405,86 @@ fn text<'a>(value: &'a Value, key: &str, default: &'a str) -> &'a str {
 fn string(value: &Value, key: &str) -> Value {
     value[key].as_str().map_or(Value::Null, |v| json!(v))
 }
-fn canonical(value: &Value) -> String {
-    match value {
-        Value::Object(map) => {
-            let ordered: BTreeMap<_, _> = map.iter().collect();
-            format!(
-                "{{{}}}",
-                ordered
-                    .iter()
-                    .map(|(key, value)| format!("{}:{}", json!(key), canonical(value)))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )
-        }
-        Value::Array(items) => format!(
-            "[{}]",
-            items.iter().map(canonical).collect::<Vec<_>>().join(",")
-        ),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => value.to_string(),
-    }
-}
 pub fn digest(value: &Value) -> String {
-    studio_runtime_store::sha256_hex(canonical(value).as_bytes())
+    studio_runtime_store::sha256_hex(value.to_string().as_bytes())
+}
+fn request_digest(request: &ProcessControlRequest) -> Result<String, Error> {
+    let bytes = serde_json::to_vec(request).map_err(StoreError::from)?;
+    Ok(studio_runtime_store::sha256_hex(&bytes))
 }
 pub fn project(source: &str, raw: &Value, owner: &Value, connection: Option<&str>) -> Value {
-    project_bound(source, raw, owner, connection, None)
+    let agent = text(raw, "agent", text(owner, "id", ""));
+    let account = text(owner, "accountKey", "default");
+    let source_account = string(raw, "sourceAccountKey");
+    let source_connection = string(raw, "sourceConnectionId");
+    let source_thread = string(raw, "sourceThreadId");
+    let epoch = raw["ownerEpoch"].clone();
+    let claude = source == "claude_task";
+    let item = text(raw, "itemId", "");
+    let opaque = if claude {
+        item.strip_prefix("task:").unwrap_or(item)
+    } else {
+        text(raw, "processId", item)
+    };
+    let native = if claude {
+        json!([
+            opaque,
+            epoch,
+            source_account,
+            source_connection,
+            source_thread,
+            raw["turnId"]
+        ])
+    } else {
+        json!([
+            opaque,
+            item,
+            epoch,
+            source_account,
+            source_connection,
+            source_thread,
+            raw["turnId"]
+        ])
+    };
+    let same = source_account == account
+        && epoch == owner["epoch"]
+        && connection.is_some_and(|c| !c.is_empty())
+        && source_connection.as_str() == connection
+        && source_thread.as_str().is_some_and(|v| !v.is_empty())
+        && source_thread == owner["threadId"];
+    let can_input = same
+        && owner["autoWake"] == true
+        && !claude
+        && raw["processId"].as_str().is_some_and(|v| !v.is_empty());
+    let output = if claude { "" } else { text(raw, "tail", "") };
+    let bytes = raw["bytes"].as_u64().unwrap_or(output.len() as u64);
+    let default_name = if claude {
+        "Claude background task"
+    } else {
+        "Background command"
+    };
+    let name = if claude {
+        text(raw, "name", text(raw, "command", default_name))
+    } else {
+        text(raw, "command", text(raw, "name", default_name))
+    };
+    let mut result = json!({"id":text(raw,"id",opaque),"key":URL_SAFE_NO_PAD.encode(json!([source,agent,opaque]).to_string()),
+        "generation":digest(&json!([source,agent,native])),"agent":agent,"accountKey":account,"epoch":owner["epoch"],
+        "source":source,"status":text(raw,"status","unknown"),"cancelRequested":raw["cancelRequested"]==true,
+        "created":raw["created"].as_f64().unwrap_or(0.0),"name":name,"command":string(raw,"command"),"cwd":string(raw,"cwd"),"log":string(raw,"log"),
+        "output":output,"error":string(raw,"error"),"stdinError":string(raw,"stdinError"),"stdinClosed":raw["stdinClosed"]==true,
+        "stdinCloseRequested":raw["stdinCloseRequested"]==true,"bytes":bytes,"outputTruncated":raw["outputTruncated"].as_bool().unwrap_or(bytes>output.len() as u64),
+        "capabilities":{"readOutput":!claude,"sendInput":can_input,"resize":false,"stop":same},
+        "_raw":raw,"_sourceAccountKey":source_account,"_sourceConnectionId":source_connection,"_sourceThreadId":source_thread,"_sourceEpoch":epoch});
+    if claude && raw["outputFile"].is_string() {
+        result["outputFile"] = raw["outputFile"].clone();
+        result["capabilities"]["readOutput"] = json!(true);
+    }
+    result
 }
-fn project_bound(
+
+#[cfg(test)]
+fn legacy_project_bound(
     source: &str,
     raw: &Value,
     owner: &Value,
@@ -443,7 +599,7 @@ fn project_bound(
     } else {
         text(raw, "command", text(raw, "name", default_name))
     };
-    let mut result = json!({"id":text(raw,"id",&opaque),"key":URL_SAFE_NO_PAD.encode(canonical(&json!([source,agent,opaque]))),
+    let mut result = json!({"id":text(raw,"id",&opaque),"key":URL_SAFE_NO_PAD.encode(json!([source,agent,opaque]).to_string()),
         "generation":digest(&json!([source,agent,native])),"agent":agent,"accountKey":account,"epoch":owner["epoch"],
         "source":source,"status":text(raw,"status","unknown"),"cancelRequested":raw["cancelRequested"]==true,
         "created":raw["created"].as_f64().unwrap_or(0.0),"name":name,"command":string(raw,"command"),"cwd":string(raw,"cwd"),"log":string(raw,"log"),
@@ -470,49 +626,52 @@ fn project_bound(
 }
 pub fn processes(
     connection: &Transaction<'_>,
-    rows: &[(bool, &Value, Value)],
+    rows: &[(&Value, ProcessSource)],
     connections: &Connections,
 ) -> Result<Vec<Value>, Error> {
     let mut output = Vec::new();
-    for (monitor, owner, raw) in rows {
-        let mut raw = raw.clone();
-        let provider = text(
-            &raw,
-            "sourceProvider",
-            text(owner, "provider", ProviderKind::Codex.key()),
-        )
-        .to_owned();
-        let source = if *monitor {
-            "monitor"
-        } else if raw["kind"] == "command" && studio_runtime_store::truthy(raw.get("processId")) {
-            "codex_task"
-        } else if provider == ProviderKind::Claude.key()
-            && raw["kind"] == "tool"
-            && text(&raw, "itemId", "")
-                .strip_prefix("task:")
-                .is_some_and(|v| !v.is_empty())
-        {
-            "claude_task"
-        } else {
-            continue;
-        };
-        if source != "monitor" {
-            raw["sourceProvider"] = json!(provider);
-        }
+    for (owner, row) in rows {
         let owner_connection = connections.get(text(owner, "id", "")).map(String::as_str);
-        output.push(if source == "monitor" {
-            project_monitor(
-                connection,
-                &raw,
-                owner,
-                owner_connection,
-                connections
-                    .sources
-                    .get(text(&raw["operation"], "accountKey", "default")),
-            )?
-        } else {
-            project(source, &raw, owner, owner_connection)
-        });
+        match row {
+            ProcessSource::Monitor(monitor) => {
+                let account = monitor
+                    .operation
+                    .as_ref()
+                    .map(|op| op.account_key.as_str())
+                    .unwrap_or("default");
+                output.push(project_monitor(
+                    connection,
+                    monitor,
+                    owner,
+                    owner_connection,
+                    connections.sources.get(account),
+                )?);
+            }
+            ProcessSource::Task(raw) => {
+                let provider = raw
+                    .source_provider
+                    .map(|provider| provider.key())
+                    .unwrap_or_else(|| text(owner, "provider", ProviderKind::Codex.key()));
+                let source = if raw.kind() == studio_runtime_schema::task_record::TaskKind::Command
+                    && raw.process_id().is_some_and(|id| id.truthy())
+                {
+                    "codex_task"
+                } else if provider == ProviderKind::Claude.key()
+                    && raw.kind() == studio_runtime_schema::task_record::TaskKind::Tool
+                    && raw
+                        .item_id()
+                        .strip_prefix("task:")
+                        .is_some_and(|v| !v.is_empty())
+                {
+                    "claude_task"
+                } else {
+                    continue;
+                };
+                let mut raw = studio_runtime_store::projection_value(raw);
+                raw["sourceProvider"] = json!(provider);
+                output.push(project(source, &raw, owner, owner_connection));
+            }
+        }
     }
     output.sort_by(|a, b| {
         b["created"]
@@ -553,7 +712,7 @@ fn response_identity(owner: &Value, connection: &str) -> Value {
 pub fn listing(
     connection: &Transaction<'_>,
     owners: &[Value],
-    rows: &[(bool, &Value, Value)],
+    rows: &[(&Value, ProcessSource)],
     connections: &Connections,
 ) -> Result<Value, Error> {
     let mut processes = processes(connection, rows, connections)?;
@@ -569,18 +728,32 @@ pub fn matches(process: &Value, identity: &Value) -> bool {
         .iter()
         .all(|k| process[k] == identity[k])
 }
-pub fn validate_response(owner: &Value, target: &Value, connection: Option<&str>) -> bool {
-    !target.is_null() && response_target(owner, connection) == *target
+fn response_matches(expected: &Value, target: &ProcessResponseTarget) -> bool {
+    expected.as_object().is_some_and(|object| object.len() == 6)
+        && expected["agent"] == target.agent.as_str()
+        && expected["accountKey"] == target.account_key.as_str()
+        && expected["epoch"].as_u64() == Some(target.epoch)
+        && expected["connectionId"] == target.connection_id.as_str()
+        && expected["threadId"] == target.thread_id.as_str()
+        && expected["turnId"] == target.turn_id.as_str()
+}
+pub fn validate_response(
+    owner: &Value,
+    target: &ProcessResponseTarget,
+    connection: Option<&str>,
+) -> bool {
+    response_matches(&response_target(owner, connection), target)
 }
 pub fn validate_stop_response(
     owner: &Value,
-    target: &Value,
+    target: &ProcessResponseTarget,
     scope: &ConnectionScope,
     proof: Option<&HeldResponseProof>,
 ) -> bool {
     validate_response(owner, target, Some(&scope.connection))
         || proof.is_some_and(|proof| {
-            proof.matches(owner, scope) && response_identity(owner, &scope.connection) == *target
+            proof.matches(owner, scope)
+                && response_matches(&response_identity(owner, &scope.connection), target)
         })
 }
 
@@ -595,24 +768,24 @@ pub enum Claim {
 
 pub fn claim(
     tx: &Transaction<'_>,
-    request: &Request,
+    request: &ProcessControlRequest,
     connections: &Connections,
     now: f64,
 ) -> Result<Claim, Error> {
-    if let Some(result) = replay(tx, request.raw())? {
+    if let Some(result) = replay(tx, request)? {
         return Ok(Claim::Replay(result));
     }
-    let command = request.command();
-    let request = request.raw();
-    let id = text(request, "requestId", "");
-    let signature = digest(request);
-    let scope = text(request, "agent", "");
+    let command = request;
+    let command_scope = command.scope();
+    let id = command_scope.request_id.as_str();
+    let signature = request_digest(request)?;
+    let scope = command_scope.agent.as_str();
     let owners = owners(tx, scope)?;
     let rows = process_rows(tx, &owners)?;
     let processes = processes(tx, &rows, connections)?;
     let owner = &owners[0];
-    if text(owner, "accountKey", "default") != request["accountKey"]
-        || owner["epoch"] != request["epoch"]
+    if text(owner, "accountKey", "default") != command_scope.account_key.as_str()
+        || owner["epoch"].as_u64() != Some(command_scope.epoch)
     {
         return Err(Error::Invalid(
             "The process owner changed. Refresh the process list",
@@ -620,27 +793,25 @@ pub fn claim(
     }
     let mut targets = Vec::new();
     let mut entries = Vec::new();
-    let response = if matches!(
-        command,
-        ProcessControlRequest::StopResponse { .. }
-            | ProcessControlRequest::BackgroundCommand { .. }
-    ) {
-        let valid = if matches!(command, ProcessControlRequest::StopResponse { .. }) {
-            !request["responseTarget"].is_null()
-                && stop_target(owner, connections) == request["responseTarget"]
+    let response = if let ProcessControlRequest::StopResponse {
+        response_target, ..
+    }
+    | ProcessControlRequest::BackgroundCommand {
+        response_target, ..
+    } = command
+    {
+        let expected = if matches!(command, ProcessControlRequest::StopResponse { .. }) {
+            stop_target(owner, connections)
         } else {
-            validate_response(
-                owner,
-                &request["responseTarget"],
-                connections.get(scope).map(String::as_str),
-            )
+            self::response_target(owner, connections.get(scope).map(String::as_str))
         };
+        let valid = response_matches(&expected, response_target);
         if !valid {
             return Err(Error::Invalid(
                 "The response changed. Refresh the process list",
             ));
         }
-        request["responseTarget"].clone()
+        Some(serde_json::value::to_raw_value(response_target).map_err(StoreError::from)?)
     } else {
         let (selected, include_descendants) = match command {
             ProcessControlRequest::StopSelected {
@@ -659,17 +830,17 @@ pub fn claim(
             }
         };
         let mut seen = HashSet::new();
-        for (index, identity) in selected.iter().enumerate() {
-            // Keep numeric spellings in identity comparisons as well as the signature.
-            let raw_identity = if matches!(command, ProcessControlRequest::StopSelected { .. }) {
-                &request["process"]
-            } else {
-                &request["processes"][index]
-            };
-            let found = processes.iter().find(|p| matches(p, raw_identity));
-            let error = if !seen.insert(&identity.key) {
+        for identity in selected {
+            let found = processes.iter().find(|p| {
+                text(p, "key", "") == identity.key.as_str()
+                    && text(p, "generation", "") == identity.generation.as_str()
+                    && text(p, "agent", "") == identity.agent.as_str()
+                    && text(p, "accountKey", "") == identity.account_key.as_str()
+                    && p["epoch"].as_u64() == Some(identity.epoch)
+            });
+            let error = if !seen.insert(identity.key.as_str()) {
                 Some("A process identity was repeated")
-            } else if !include_descendants && identity.agent != scope {
+            } else if !include_descendants && identity.agent.as_str() != scope {
                 Some("Worker processes are outside this stop scope")
             } else if found.is_none() {
                 Some("This process changed or finished. Refresh the process list")
@@ -680,8 +851,8 @@ pub fn claim(
             };
             if let Some(error) = error {
                 entries.push(ProcessEntry {
-                    key: identity.key.clone(),
-                    agent: identity.agent.clone(),
+                    key: identity.key.as_str().to_owned(),
+                    agent: identity.agent.as_str().to_owned(),
                     source: None,
                     generation: None,
                     outcome: ProcessOutcome::Stale {
@@ -701,7 +872,7 @@ pub fn claim(
                 targets.push(process.clone());
             }
         }
-        Value::Null
+        None
     };
     let result = ProcessActionResult {
         request_id: id.into(),
@@ -717,8 +888,8 @@ pub fn claim(
             "process-action",
             &[
                 scope,
-                text(request, "accountKey", ""),
-                &request["epoch"].to_string(),
+                command_scope.account_key.as_str(),
+                &command_scope.epoch.to_string(),
             ],
             &root_request_id,
         )
@@ -746,11 +917,8 @@ pub fn claim(
         signature: signature.clone(),
         phase: ProcessActionPhase::Dispatching,
         scope_agent: scope.into(),
-        scope_account_key: text(request, "accountKey", "").into(),
-        scope_epoch: request["epoch"]
-            .as_number()
-            .cloned()
-            .ok_or(Error::Invalid("Invalid process epoch"))?,
+        scope_account_key: command_scope.account_key.as_str().to_owned(),
+        scope_epoch: command_scope.epoch.into(),
         action: match command {
             ProcessControlRequest::StopSelected { .. } => ProcessActionKind::StopSelected,
             ProcessControlRequest::StopOwned { .. } => ProcessActionKind::StopOwned,
@@ -779,11 +947,14 @@ pub fn claim(
 }
 /// Reuse a durable action before any fresh native observation. Changed content
 /// under the same request ID remains an error, including after a lost response.
-pub fn replay(tx: &Transaction<'_>, request: &Value) -> Result<Option<ProcessActionResult>, Error> {
+pub fn replay(
+    tx: &Transaction<'_>,
+    request: &ProcessControlRequest,
+) -> Result<Option<ProcessActionResult>, Error> {
     let prior: Option<(String, String)> = tx
         .query_row(
             "SELECT signature,record FROM runtime_process_actions WHERE id=?",
-            [text(request, "requestId", "")],
+            [request.scope().request_id.as_str()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
@@ -791,7 +962,7 @@ pub fn replay(tx: &Transaction<'_>, request: &Value) -> Result<Option<ProcessAct
     let Some((signature, raw)) = prior else {
         return Ok(None);
     };
-    if signature != digest(request) {
+    if signature != request_digest(request)? {
         return Err(Error::Invalid(
             "This process action ID has different content",
         ));
@@ -831,7 +1002,7 @@ pub fn receipt(connection: &Connection, query: &Value) -> Result<ProcessReceipt,
     if let Some(record) = record
         && record.scope_agent == query["agent"]
         && record.scope_account_key == query["accountKey"]
-        && query["epoch"].as_number() == Some(&record.scope_epoch)
+        && query["epoch"].as_f64() == record.scope_epoch.as_f64()
     {
         return Ok(ProcessReceipt::found(record.result));
     }
@@ -867,20 +1038,71 @@ mod claim_identity_tests {
     use studio_runtime_store::request_results::RequestResults;
 
     #[test]
-    fn raw_request_keeps_the_existing_canonical_signature() {
-        let raw = serde_json::value::RawValue::from_string(r#"{"action":"stop_owned","requestId":"request","agent":"owner","accountKey":"acct","epoch":1.0,"processes":[{"key":"key","generation":"gen","agent":"owner","accountKey":"acct","epoch":1.0}],"responseTarget":null}"#.into()).expect("fixture JSON");
-        let request = Request::parse(&raw).expect("request");
+    fn typed_monitor_process_projection_preserves_identity_and_capabilities() {
+        let owner = json!({"id":"owner","epoch":1,"accountKey":"default","threadId":"thread","autoWake":true});
+        for status in ["starting", "running"] {
+            let raw = json!({"id":"watch","agent":"owner","epoch":1,"status":status,"requestId":"request","created":1,"activityAt":1,"activityGeneration":0,"bytes":12,"command":"printf x","cwd":std::env::temp_dir(),"interactive":true,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"x","timeout_ms":3600000,"wakeOn":"exit","operation":{"agent":"owner","epoch":1,"accountKey":"default","connectionId":"connection","threadId":"thread"}});
+            let fixture = format!(
+                r#"{{"id":"watch","agent":"owner","epoch":1,"status":"{status}","requestId":"request","created":1,"activityAt":1,"activityGeneration":0,"bytes":12,"command":"printf x","cwd":{},"interactive":true,"livenessCommand":"","log":{},"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"x","timeout_ms":3600000,"wakeOn":"exit","operation":{{"agent":"owner","epoch":1,"accountKey":"default","connectionId":"connection","threadId":"thread"}}}}"#,
+                serde_json::to_string(&std::env::temp_dir()).unwrap(),
+                serde_json::to_string(&std::env::temp_dir().join("watch.log")).unwrap()
+            );
+            let record: studio_runtime_store::MonitorRecord =
+                serde_json::from_str(&fixture).unwrap();
+            let mut expected =
+                legacy_project_bound("monitor", &raw, &owner, Some("connection"), None);
+            let mut actual = project_monitor_bound(&record, &owner, Some("connection"), None);
+            expected.as_object_mut().unwrap().remove("_raw");
+            actual.as_object_mut().unwrap().remove("_raw");
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn process_generation_digest_keeps_canonical_nested_keys() {
+        let value = json!({"z":[{"b":2,"a":1}],"a":{"y":3,"b":2}});
         assert_eq!(
-            digest(request.raw()),
-            "b16654521805af453f0fc6e0b9f42fb54887c3b20eb1fb103b50e05a645497f8"
+            digest(&value),
+            "72ddf54a7a1042b66ae85c35ecc5c9b2d5fea1cce275577cf0502e1f1965da22"
         );
+    }
+
+    #[test]
+    fn normalized_signature_replays_and_refuses_preupgrade_receipt() {
+        let raw = r#"{"action":"stop_owned","requestId":"request","agent":"owner","accountKey":"acct","epoch":1.0,"processes":[{"key":"key","generation":"gen","agent":"owner","accountKey":"acct","epoch":1.0}],"responseTarget":null}"#;
+        let request: ProcessControlRequest = serde_json::from_str(raw).expect("request");
+        let normalized = raw
+            .replace("1.0", "1")
+            .replace(",\"responseTarget\":null", "");
+        let retry: ProcessControlRequest = serde_json::from_str(&normalized).expect("retry");
+        let signature = request_digest(&request).expect("signature");
+        assert_eq!(signature, request_digest(&retry).expect("retry signature"));
+        let old = "b16654521805af453f0fc6e0b9f42fb54887c3b20eb1fb103b50e05a645497f8";
+        assert_ne!(signature, old);
+        let mut db = Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_process_actions(id TEXT PRIMARY KEY,signature TEXT,record TEXT);",
+        )
+        .expect("table");
+        db.execute(
+            "INSERT INTO runtime_process_actions VALUES('request',?1,'{}')",
+            [old],
+        )
+        .expect("old receipt");
+        let tx = db.transaction().expect("transaction");
+        assert!(matches!(
+            replay(&tx, &retry),
+            Err(Error::Invalid(
+                "This process action ID has different content"
+            ))
+        ));
     }
 
     #[test]
     fn process_claim_reuses_its_admitted_token_after_expiry_without_another_effect() {
         let mut db = Connection::open_in_memory().expect("database");
         db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT,parent_id TEXT,deleted_at REAL);
-            CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT);
+            CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
             CREATE INDEX runtime_monitor_agent_status ON runtime_monitors(id);
             CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY,record TEXT);
             CREATE INDEX runtime_task_agent_created_id ON runtime_tasks(id);
@@ -905,7 +1127,7 @@ mod claim_identity_tests {
             .to_string(),
         )
         .expect("fixture JSON");
-        let request = Request::parse(&raw).expect("request");
+        let request: ProcessControlRequest = serde_json::from_str(raw.get()).expect("request");
         let connections = Connections::from([("owner".into(), "connection".into())]);
         let tx = db.transaction().expect("transaction");
         let Claim::New { record, .. } =
@@ -952,4 +1174,21 @@ mod claim_identity_tests {
             1
         );
     }
+}
+#[test]
+fn typed_task_keeps_numeric_process_identity_projection() {
+    let raw = r#"{"id":"a:i","agent":"a","created":1,"itemId":"i","turnId":"turn","kind":"command","status":"running","type":"commandExecution","name":"commandExecution","processId":42}"#;
+    let typed: studio_runtime_store::TaskRecord = serde_json::from_str(raw).expect("task fixture");
+    let old = serde_json::json!({"id":"a:i","agent":"a","created":1,"itemId":"i","turnId":"turn","kind":"command","status":"running","type":"commandExecution","name":"commandExecution","processId":42});
+    let owner = serde_json::json!({"id":"a","epoch":1,"accountKey":"default","threadId":"thread","autoWake":true});
+    let before = project("codex_task", &old, &owner, Some("connection"));
+    let after = project(
+        "codex_task",
+        &studio_runtime_store::projection_value(&typed),
+        &owner,
+        Some("connection"),
+    );
+    assert_eq!(before["key"], after["key"]);
+    assert_eq!(before["generation"], after["generation"]);
+    assert_eq!(before["canInput"], after["canInput"]);
 }

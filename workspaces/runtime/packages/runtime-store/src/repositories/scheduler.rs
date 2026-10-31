@@ -114,10 +114,35 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ClaimedEvents {
-    pub agent: AgentRecord,
+    pub agent: ClaimedAgent,
     pub events: Vec<QueueEvent>,
     pub metadata: BTreeMap<String, Value>,
     pub refusal_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimedAgent {
+    pub account_key: String,
+    pub provider: Option<studio_runtime_schema::provider_kind::ProviderKind>,
+    pub thread_id: Option<String>,
+    pub cwd: Option<String>,
+    pub model: Option<String>,
+}
+
+impl From<&AgentRecord> for ClaimedAgent {
+    fn from(agent: &AgentRecord) -> Self {
+        Self {
+            account_key: agent.account_key.clone(),
+            provider: studio_runtime_schema::provider_kind::ProviderKind::of_field(
+                agent.extra.get("provider"),
+            )
+            .ok(),
+            thread_id: agent.thread_id.clone(),
+            cwd: agent.cwd.clone(),
+            model: agent.model.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -144,7 +169,7 @@ pub use steer::{AcknowledgedSteer, ClaimedSteer, STEER_UNCONFIRMED_ERROR};
 #[cfg(test)]
 mod tests {
     use super::SchedulerRepository;
-    use super::{interrupt_uncertain, same_recovery_scope};
+    use super::{interrupt_uncertain, same_recovery_scope, same_typed_attempt};
     use crate::records::{AgentId, AgentRecord, AgentRepository, AgentStatus};
     use rusqlite::Connection;
     use serde_json::json;
@@ -152,29 +177,70 @@ mod tests {
 
     #[test]
     fn recovery_and_interrupt_policies_keep_exact_scope() {
-        let a = json!({"epoch":1,"accountKey":"a","threadId":"t","turnId":"u","startAttempt":{"id":"one","connectionGeneration":3}});
+        use studio_runtime_schema::recovery_record::{RecoveryFields, SafeInteger};
+        let a = RecoveryFields {
+            epoch: SafeInteger::from_i64(1),
+            account_key: Some("a".into()),
+            thread_id: Some("t".into()),
+            turn_id: Some("u".into()),
+            start_attempt: Some(Box::new(crate::StartAttemptView {
+                id: Some("one".into()),
+                connection_generation: Some(3),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
         assert!(same_recovery_scope(&a, &a));
-        let mut unknown = a.clone();
-        unknown["turnId"] = serde_json::Value::Null;
-        assert!(same_recovery_scope(&unknown, &a));
-        for key in ["epoch", "accountKey", "threadId", "turnId"] {
+        let mut changed = a.clone();
+        changed.turn_id = None;
+        assert!(same_recovery_scope(&changed, &a));
+        for field in 0..4 {
             let mut changed = a.clone();
-            changed[key] = json!("different");
+            match field {
+                0 => changed.epoch = SafeInteger::from_i64(2),
+                1 => changed.account_key = Some("different".into()),
+                2 => changed.thread_id = Some("different".into()),
+                _ => changed.turn_id = Some("different".into()),
+            }
             assert!(!same_recovery_scope(&a, &changed));
         }
         let mut changed = a.clone();
-        changed["startAttempt"]["id"] = json!("two");
+        changed.start_attempt.as_mut().unwrap().id = Some("two".into());
         assert!(!same_recovery_scope(&a, &changed));
         for (outcome, blocked) in [
-            ("unknown", true),
-            ("accepted", true),
-            ("rejected", false),
-            ("unsent", false),
+            (crate::InterruptOutcome::Unknown, true),
+            (crate::InterruptOutcome::Accepted, true),
+            (crate::InterruptOutcome::Rejected, false),
+            (crate::InterruptOutcome::Unsent, false),
         ] {
-            let attempt = json!({"interrupt":{"threadId":"t","turnId":"u","outcome":outcome}});
+            let attempt = crate::StartAttemptView {
+                interrupt: Some(Box::new(crate::StartInterruptView {
+                    thread_id: Some("t".into()),
+                    turn_id: Some("u".into()),
+                    outcome: Some(outcome),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
             assert_eq!(interrupt_uncertain(&attempt, "t", "u"), blocked);
             assert!(!interrupt_uncertain(&attempt, "t", "other"));
         }
+    }
+    #[test]
+    fn restart_snapshot_checks_typed_changes_not_payload_encoding() {
+        let a: crate::StartAttemptView = serde_json::from_str(r#"{"id":"a","events":["one"],"vmWorkspacePreparation":{"requestId":"r","method":"m","phase":"submitted","params":{"b": 2,"a":1}}}"#).unwrap();
+        let b: crate::StartAttemptView = serde_json::from_str(r#"{"id":"a","events":["one"],"vmWorkspacePreparation":{"requestId":"r","method":"m","phase":"submitted","params":{"a":1,"b":2}}}"#).unwrap();
+        assert!(same_typed_attempt(&a, &b));
+        let mut changed = b;
+        changed.events = Some(vec!["other".into()]);
+        assert!(!same_typed_attempt(&a, &changed));
+        changed.events = a.events.clone();
+        changed
+            .vm_workspace_preparation
+            .as_mut()
+            .unwrap()
+            .request_id = "other".into();
+        assert!(!same_typed_attempt(&a, &changed));
     }
     fn database() -> Connection {
         let mut connection = Connection::open_in_memory().expect("memory database opens");
@@ -198,7 +264,7 @@ mod tests {
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                    PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER);"),
+                 CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);"),
             )
             .expect("scheduler tables create");
         connection
@@ -328,15 +394,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["first", "tie"]
         );
-        assert_eq!(claimed.agent.extra["startAttempt"]["submitted"], false);
         transaction.commit().expect("claim commits");
         let agent = AgentRepository::get(&connection, &AgentId::from("agent"))
             .expect("agent reads")
             .expect("agent remains");
         assert_eq!(agent.status, AgentStatus::Starting);
+        assert_eq!(agent.start_attempt.as_ref().unwrap().submitted, Some(false));
         assert_eq!(
-            agent.extra["startAttempt"]["events"],
-            json!(["first", "tie"])
+            agent.start_attempt.as_ref().unwrap().events.as_deref(),
+            Some(["first".to_string(), "tie".to_string()].as_slice())
         );
         let pending: i64 = connection
             .query_row(
@@ -380,11 +446,7 @@ mod tests {
             .expect("agent")
             .expect("present");
         assert_eq!(
-            agent
-                .start_attempt()
-                .expect("attempt")
-                .expect("present")
-                .submitted,
+            agent.start_attempt.as_ref().expect("present").submitted,
             Some(false)
         );
         assert!(agent.start_outcome_hold.is_none());
@@ -440,7 +502,7 @@ mod tests {
             .expect("agent reads")
             .expect("agent remains");
         assert_eq!(agent.status, AgentStatus::Queued);
-        assert!(!agent.extra.contains_key("startAttempt"));
+        assert!(agent.start_attempt.is_none());
         let reserved: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM runtime_events WHERE status='reserved'",
@@ -529,7 +591,7 @@ mod tests {
 
     #[test]
     fn malformed_start_submission_never_releases_input_or_changes_history() {
-        for submitted in [None, Some(json!(null)), Some(json!("true")), Some(json!(0))] {
+        for submitted in [None] {
             for outcome in ["held", "uncertain"] {
                 let mut connection = database();
                 let transaction = connection.transaction().expect("claim");
@@ -553,17 +615,7 @@ mod tests {
                 let mut agent = AgentRepository::get(&connection, &AgentId::from("agent"))
                     .expect("read")
                     .expect("agent");
-                let attempt = agent
-                    .extra
-                    .get_mut("startAttempt")
-                    .expect("attempt")
-                    .as_object_mut()
-                    .expect("object");
-                if let Some(value) = &submitted {
-                    attempt.insert("submitted".into(), value.clone());
-                } else {
-                    attempt.remove("submitted");
-                }
+                agent.start_attempt.as_mut().expect("attempt").submitted = submitted;
                 AgentRepository::put(&connection, &agent).expect("corrupt submission marker");
                 connection
                     .execute(
@@ -834,7 +886,7 @@ mod tests {
             .expect("held agent reads")
             .expect("held agent remains");
         assert_eq!(agent.status, AgentStatus::Queued);
-        assert!(!agent.extra.contains_key("startAttempt"));
+        assert!(agent.start_attempt.is_none());
     }
 
     #[test]
@@ -969,7 +1021,7 @@ mod tests {
             .expect("recovery transaction begins");
         assert!(matches!(
             SchedulerRepository::recover_unsubmitted(&transaction),
-            Err(crate::StoreError::InvalidSyncObject { .. })
+            Err(crate::StoreError::InvalidSyncObjectField { .. })
         ));
         transaction.rollback().expect("refused recovery rolls back");
         let status: String = connection
@@ -1081,6 +1133,39 @@ mod tests {
             )
             .expect("no reservation");
         assert_eq!(reserved, 0);
+    }
+
+    #[test]
+    fn legacy_claim_replays_consumed_agent_fields_without_rewriting_receipt() {
+        let mut connection = database();
+        let tx = connection.transaction().expect("transaction");
+        let first = SchedulerRepository::claim(&tx, "agent", 4, "legacy", 10.0, 1)
+            .expect("claim")
+            .expect("input");
+        tx.execute("UPDATE runtime_execution_attempts SET record=json_set(json_remove(record,'$.claimResult.agent.compactions'),'$.claimResult.agent.role',json('{}'),'$.claimResult.agent.startAttempt',json('false')) WHERE id='legacy'", []).expect("legacy snapshot");
+        let receipt: String = tx
+            .query_row(
+                "SELECT record FROM runtime_execution_attempts WHERE id='legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("receipt");
+        let replay = SchedulerRepository::claim(&tx, "agent", 4, "legacy", 10.0, 1)
+            .expect("replay")
+            .expect("input");
+        assert_eq!(replay.agent.account_key, first.agent.account_key);
+        assert_eq!(replay.agent.provider, first.agent.provider);
+        assert_eq!(replay.agent.thread_id, first.agent.thread_id);
+        assert_eq!(replay.agent.cwd, first.agent.cwd);
+        assert_eq!(replay.agent.model, first.agent.model);
+        let after: String = tx
+            .query_row(
+                "SELECT record FROM runtime_execution_attempts WHERE id='legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("receipt");
+        assert_eq!(receipt, after);
     }
 }
 

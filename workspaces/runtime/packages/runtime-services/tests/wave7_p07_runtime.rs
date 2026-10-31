@@ -65,7 +65,21 @@ fn normalize_agent_records(value: &mut Value) {
                 fields
                     .entry("accountKey")
                     .or_insert_with(|| json!("default"));
-                for key in ["threadId", "turnId"] {
+                fields.entry("compactions").or_insert_with(|| json!(0));
+                for key in [
+                    "threadId",
+                    "turnId",
+                    "parentId",
+                    "events",
+                    "lastEvent",
+                    "activity",
+                    "activeTools",
+                    "tail",
+                    "lastAnswer",
+                    "contextUsage",
+                    "tokensUsed",
+                    "tokenUsageAccounting",
+                ] {
                     if fields.get(key).is_some_and(Value::is_null) {
                         fields.remove(key);
                     }
@@ -83,10 +97,8 @@ async fn seed(store: &RuntimeStore, agent: &Value) {
     store
         .transaction(move |tx| {
             tx.execute("DELETE FROM runtime_events", [])?;
-            tx.execute(
-                "UPDATE runtime_agents SET record=?1 WHERE id='agent'",
-                [agent.to_string()],
-            )?;
+            let record = studio_runtime_store::AgentRecord::from_value(agent)?;
+            AgentRepository::put(tx, &record)?;
             Ok(())
         })
         .await
@@ -565,7 +577,7 @@ async fn blob_preview_is_never_mistaken_for_complete_receipt() {
 async fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     let root = fixture();
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-    let before = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
+    let before = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
     seed(&store, &before).await;
     let before = agent(&store);
     store.transaction(|tx|{tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES('event','agent','user','one original input','uncertain',1,0,NULL,NULL)",[])?;Ok(())}).await.expect("unknown input");
@@ -630,20 +642,22 @@ async fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
     ] {
         let root = fixture();
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-        let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
+        let before = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
         seed(&store, &before).await;
         let before = agent(&store);
         let task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"commandExecution","kind":"command","status":"running","created":1.0});
         let task_to_save = task.clone();
         store
-            .transaction(move |tx| {
-                TaskRepository::put(tx, &TaskRecord::from_value(task_to_save).expect("task"))
-            })
+            .transaction(move |tx| TaskRepository::put(tx, &super::task_record(&task_to_save)))
             .await
             .expect("save");
-        let snapshot =
-            TaskRecoverySnapshot::from_records(before.clone(), task.clone(), vec![], vec![])
-                .expect("snapshot");
+        let snapshot = TaskRecoverySnapshot::from_records(
+            before.clone(),
+            super::task_record(&task),
+            vec![],
+            vec![],
+        )
+        .expect("snapshot");
         if scenario == "changed-task" {
             store
                 .transaction(|tx| {
@@ -669,14 +683,18 @@ async fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
         let scenario_for_writer = scenario.to_owned();
         let write = move |tx: &Transaction<'_>,
                           _: &Value,
-                          previous: &Value,
+                          previous: &TaskRecord,
                           item: &Value,
                           at: f64| {
             calls_for_writer.fetch_add(1, Ordering::SeqCst);
             let mut next = previous.clone();
-            next["status"] = item["status"].clone();
-            next["finished"] = json!(at);
-            TaskRepository::put(tx, &TaskRecord::from_value(next).expect("task"))?;
+            next.set_status(if item["status"] == "failed" {
+                studio_runtime_schema::task_record::TaskStatus::Failed
+            } else {
+                studio_runtime_schema::task_record::TaskStatus::Completed
+            });
+            next.set_finished(at);
+            TaskRepository::put(tx, &next)?;
             if scenario_for_writer == "writer-failure" {
                 return Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::invalid());
             }
@@ -788,7 +806,7 @@ async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notificat
             delivery: Box::new(RootDelivery { fail: false }),
             write_message: Box::new(mock_message),
         };
-        let task_write = |_: &Transaction<'_>, _: &Value, _: &Value, _: &Value, _: f64| {
+        let task_write = |_: &Transaction<'_>, _: &Value, _: &TaskRecord, _: &Value, _: f64| {
             Err(
                 studio_runtime_services::notification_dispatch::NotificationDispatchError::invalid(
                 ),
@@ -912,7 +930,7 @@ async fn diagnostic_updates_do_not_reset_connection_backoff() {
 
 #[tokio::test]
 async fn accepted_start_failpoints_never_deliver_input_without_its_attempt_receipt() {
-    let mut before = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
+    let mut before = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"running","accountKey":"default","threadId":"thread","turnEpoch":0,"turnId":null,"inFlight":true,"autoWake":true,"error":"turn/start response timed out; outcome unknown","startAttempt":{"id":"attempt","epoch":0,"accountKey":"default","threadId":"thread","connectionId":"connection","connectionGeneration":1,"requestTicket":"request","events":["event"],"created":1.0,"submitted":true,"executionOutcome":"unknown"}});
     normalize_agent_records(&mut before);
     let turn = json!({"id":"turn","status":"inProgress","items":[{"id":"input","type":"userMessage","clientId":"event"}]});
     for (table, operation) in [
@@ -990,7 +1008,7 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
     for change in ["alias", "receipt"] {
         let root = fixture();
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-        let before = json!({"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
+        let before = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":0,"status":"completed","accountKey":"default","provider":"codex","threadId":"thread","turnId":null,"inFlight":false});
         seed(&store, &before).await;
         let task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","kind":"tool","status":"running","created":1.});
         let root_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
@@ -1007,7 +1025,7 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
         let saved_root = root_id.clone();
         let receipt = store
             .transaction_with(move |tx| {
-                TaskRepository::put(tx, &TaskRecord::from_value(task_to_save).expect("task"))?;
+                TaskRepository::put(tx, &super::task_record(&task_to_save))?;
                 let studio_runtime_store::request_results::Admission::Fresh(admitted) =
                     studio_runtime_store::request_results::RequestResults::admit(
                         tx,
@@ -1036,7 +1054,7 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
             .expect("seed");
         let snapshot = TaskRecoverySnapshot::from_records(
             before,
-            task,
+            super::task_record(&task),
             vec![root_id.clone()],
             vec![(root_id.clone(), receipt)],
         )
@@ -1049,7 +1067,7 @@ async fn task_completion_rejects_changed_alias_or_operation_receipt() {
         }).await.expect("race");
         let write = |_: &Transaction<'_>,
                      _: &Value,
-                     _: &Value,
+                     _: &TaskRecord,
                      _: &Value,
                      _: f64|
          -> Result<
@@ -1114,9 +1132,21 @@ async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
         let root = fixture();
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         let mut owner = corpus()["connection"][0]["before"].clone();
-        owner["events"] = if bad == "agent" { json!(-1) } else { json!(0) };
+        owner["events"] = json!(0);
         seed(&store, &owner).await;
-        let mut task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","kind":"tool","status":"running","created":1.0});
+        if bad == "agent" {
+            store
+                .transaction(|tx| {
+                    tx.execute(
+                        "UPDATE runtime_agent_volatile SET events='-1' WHERE id='agent'",
+                        [],
+                    )?;
+                    Ok(())
+                })
+                .await
+                .expect("inject corrupt counter");
+        }
+        let mut task = json!({"id":"agent:item","agent":"agent","itemId":"item","turnId":"turn","type":"dynamicToolCall","name":"tool","kind":"tool","status":"running","created":1.0});
         if bad == "task" {
             task["created"] = json!(-1);
         }
@@ -1131,7 +1161,7 @@ async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
                 valid["id"] = json!("z-agent");
                 valid["rootId"] = json!("z-agent");
                 tx.execute("INSERT INTO runtime_agents(id,record) VALUES('z-agent',?1)",[valid.to_string()])?;
-                let valid_task = json!({"id":"z-agent:item","agent":"z-agent","itemId":"item","turnId":"turn","type":"commandExecution","kind":"command","status":"running","created":1.0});
+                let valid_task = json!({"id":"z-agent:item","agent":"z-agent","itemId":"item","turnId":"turn","type":"commandExecution","name":"command","kind":"command","status":"running","created":1.0});
                 tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('z-agent:item',?1)",[valid_task.to_string()])?;
                 if bad_for_tx == "receipt" {
                     tx.execute(
@@ -1175,7 +1205,7 @@ async fn corrupt_scan_rows_keep_the_sql_table_and_identity() {
                                 later_agent |= snapshot.record()["id"] == "z-agent"
                             }
                             RecoveryJob::Task(snapshot) => {
-                                later_task |= snapshot.task()["id"] == "z-agent:item"
+                                later_task |= snapshot.task().id().as_ref() == "z-agent:item"
                             }
                             RecoveryJob::Turn(_) => panic!("unexpected turn"),
                         }
@@ -1313,7 +1343,6 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
             "runtime_completed_turns",
             "sync_entities",
             "sync_documents",
-            "sync_versions",
             "sync_generation",
             "sync_entity_meta",
         ]

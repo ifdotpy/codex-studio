@@ -23,7 +23,7 @@ async fn seeded(now: f64) -> (tempfile::TempDir, Arc<RuntimeStore>) {
                 ("capacity", json!({"status":"waiting","capacityRetry":{"id":"capacity"}})),
                 ("transfer", json!({"accountTransferId":"transfer"})),
             ] {
-                let mut record = json!({"id":id,"rootId":id,"epoch":0,"status":"completed",
+                let mut record = json!({"compactions":0,"id":id,"rootId":id,"epoch":0,"status":"completed",
                     "autoWake":true,"cwd":path.to_string_lossy(),"accountKey":"default",
                     "provider":"codex","name":id});
                 for (key, value) in fields.as_object().expect("fields") {
@@ -144,7 +144,7 @@ async fn an_exact_manual_delivery_hold_keeps_stall_detection_without_waking_or_s
                 ("old-turn", Some("turnId")),
                 ("old-generation", Some("generation")),
             ] {
-                let mut agent = AgentRecord::from_value(json!({
+                let mut agent = AgentRecord::from_value(json!({"compactions":0,
                     "id":id,"rootId":id,"epoch":3,"status":"running","autoWake":true,
                     "inFlight":true,"turnEpoch":3,"threadId":"thread","turnId":"turn",
                     "accountKey":"account","provider":"codex","cwd":cwd,

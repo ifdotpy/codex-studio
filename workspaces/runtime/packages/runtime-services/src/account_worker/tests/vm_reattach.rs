@@ -71,7 +71,11 @@ impl GuestRpc for ExistingGuest {
                     .block_on(store.transaction(move |tx| {
                         let mut record =
                             AgentRepository::get(tx, &AgentId::from(actor.as_str()))?.unwrap();
-                        record.extra.insert(field, value);
+                        if field == "cwd" {
+                            record.cwd = value.as_str().map(str::to_owned);
+                        } else {
+                            record.extra.insert(field, value);
+                        }
                         AgentRepository::put(tx, &record)
                     }))
                     .unwrap();
@@ -103,6 +107,13 @@ async fn edit_actor(state: &State, changes: Value) {
                             "accountKey" => record.account_key = value.as_str().unwrap().to_owned(),
                             "threadId" => record.thread_id = value.as_str().map(str::to_owned),
                             "turnId" => record.turn_id = value.as_str().map(str::to_owned),
+                            "cwd" => record.cwd = value.as_str().map(str::to_owned),
+                            "deletedAt" => record.deleted_at = value.as_f64(),
+                            "startAttempt" => {
+                                record.start_attempt =
+                                    serde::Deserialize::deserialize(value.clone())
+                                        .expect("typed attempt")
+                            }
                             _ => {
                                 record.extra.insert(key.clone(), value.clone());
                             }
@@ -113,6 +124,14 @@ async fn edit_actor(state: &State, changes: Value) {
                         .unwrap()
                         .value();
                     for (key, value) in changes.as_object().unwrap() {
+                        if key == "startAttempt" && value.is_null() {
+                            assert!(written.get(key).is_none_or(Value::is_null));
+                            continue;
+                        }
+                        if key == "deletedAt" {
+                            assert_eq!(written.get(key).and_then(Value::as_f64), value.as_f64());
+                            continue;
+                        }
                         assert_eq!(
                             written.get(key),
                             Some(value),
@@ -363,7 +382,7 @@ impl preparation::VmProviderLaunchResolver for AuthRecoveryCredentials {
                     Ok::<_, WorkerError>(
                         AgentRepository::get(db, &AgentId::from(actor.as_str()))?
                             .unwrap()
-                            .extra["startAttempt"]
+                            .value()["startAttempt"]
                             .clone(),
                     )
                 })
@@ -523,7 +542,7 @@ async fn auth_recovery_turn(refuse: bool) {
     let writes_before = guest.inner.state.lock().unwrap().writes.len();
     assert_eq!(writes_before, 0);
     state.wake(&worker).await;
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let reached = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let changed = guest.inner.changed.notified();
             if resolver.attempts.load(std::sync::atomic::Ordering::SeqCst) > 0
@@ -541,8 +560,12 @@ async fn auth_recovery_turn(refuse: bool) {
             changed.await;
         }
     })
-    .await
-    .expect("the auth retry reaches either its credential gate or the native submit boundary");
+    .await;
+    assert!(
+        reached.is_ok(),
+        "auth retry stalled: {}",
+        state.record().await
+    );
     worker_barrier(&worker).await;
     assert_eq!(
         resolver.attempts.load(std::sync::atomic::Ordering::SeqCst),
@@ -806,13 +829,14 @@ record.execution_mode = Some(studio_runtime_store::AgentExecutionMode::Vm);
 record.account_key = "default".to_string();
 record.thread_id = Some("fake-thread-0".to_string());
 record.turn_id = Some("vm-turn".to_string());
+record.workspace_mode = Some(studio_runtime_schema::records::WorkspaceMode::Layr);
+record.cwd = Some("/home/studio/project".into());
 for (key, value) in [
-                ("workspaceMode",json!("layr")),("layrReady",json!(true)),
+                ("layrReady",json!(true)),
                 ("provider",json!("claude")),("executionSettingsAccountKey",json!("default")),
-                ("cwd",json!("/home/studio/project")),
 
-                ("startAttempt",json!({"id":"existing-vm-attempt","epoch":epoch,"accountKey":"default","submitted":true,"events":["annotation:input"],"threadId":"fake-thread-0","turnId":"vm-turn","connectionGeneration":1,"connectionId":"previous-backend","requestTicket":"original-native-start"})),
             ] { record.extra.insert(key.into(), value); }
+            record.start_attempt = Some(Box::new(studio_runtime_store::StartAttemptView { id: Some("existing-vm-attempt".into()), epoch: Some(epoch), account_key: Some("default".into()), submitted: Some(true), events: Some(vec!["annotation:input".into()]), thread_id: Some("fake-thread-0".into()), turn_id: Some("vm-turn".into()), connection_generation: Some(1), connection_id: Some("previous-backend".into()), request_ticket: Some("original-native-start".into()), ..Default::default() }));
             AgentRepository::put(tx,&record)?;
             studio_runtime_store::ExecutionHistoryRepository::record(tx,&record)?;
             tx.execute("UPDATE runtime_events SET status='delivered',turn_id='vm-turn' WHERE agent=?1",[&actor])?;
@@ -820,7 +844,7 @@ for (key, value) in [
                 "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND epoch=?2 \
                  AND id IN (SELECT value FROM json_each(?3)) \
                  AND status='delivered' AND turn_id='vm-turn'",
-                rusqlite::params![actor,epoch,record.extra["startAttempt"]["events"].to_string()],
+                rusqlite::params![actor,epoch,serde_json::to_string(&record.start_attempt.as_ref().unwrap().events).unwrap()],
                 |row|row.get(0),
             )?;
             assert_eq!(members,1,"the saved attempt owns its exact delivered input and turn");

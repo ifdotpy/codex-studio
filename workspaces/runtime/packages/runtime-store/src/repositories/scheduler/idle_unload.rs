@@ -165,14 +165,7 @@ impl SchedulerRepository {
              FROM account_usage LEFT JOIN candidate_usage ON 1=1 \
              ORDER BY candidate_usage.thread_id"
         );
-        let encoded_threads = serde_json::Value::Array(
-            threads
-                .iter()
-                .cloned()
-                .map(serde_json::Value::String)
-                .collect(),
-        )
-        .to_string();
+        let encoded_threads = serde_json::to_string(threads)?;
         let mut statement = connection.prepare_cached(&sql)?;
         let rows = statement.query_map([account, &encoded_threads], |row| {
             Ok((
@@ -208,14 +201,7 @@ impl SchedulerRepository {
         account: &str,
         threads: &std::collections::BTreeSet<String>,
     ) -> StoreResult<std::collections::BTreeSet<String>> {
-        let encoded_threads = serde_json::Value::Array(
-            threads
-                .iter()
-                .cloned()
-                .map(serde_json::Value::String)
-                .collect(),
-        )
-        .to_string();
+        let encoded_threads = serde_json::to_string(threads)?;
         let finished = finished_worker_sql(connection)?;
         let mut statement = connection.prepare_cached(&format!(
             "SELECT c.value FROM json_each(?2) c WHERE NOT EXISTS(SELECT 1 FROM runtime_agents \
@@ -291,7 +277,7 @@ mod tests {
             .execute_batch(
                 "CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT, kind TEXT, text TEXT,
                    status TEXT, created REAL, epoch INTEGER, turn_id TEXT, error TEXT);
-                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                 CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL, monitor_status TEXT);
                  CREATE TABLE runtime_requests(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL);",
@@ -304,7 +290,7 @@ mod tests {
     }
 
     fn agent(connection: &Connection, id: &str, fields: Value) {
-        let mut record = json!({"id":id,"provider":"codex","rootId":id,"epoch":1,"status":"completed",
+        let mut record = json!({"compactions":0,"id":id,"provider":"codex","rootId":id,"epoch":1,"status":"completed",
             "accountKey":"acct","threadId":"thread"});
         for (key, value) in fields.as_object().expect("fields").clone() {
             record[key] = value;
@@ -364,7 +350,7 @@ mod tests {
             "{plan}"
         );
         agent(&connection, "a", json!({"accountKey":"target"}));
-        connection.execute("INSERT INTO runtime_monitors VALUES('watch',?1)",
+        connection.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('watch',?1,'running')",
             [json!({"id":"watch","agent":"a","epoch":1,"status":"running","operation":{"agent":"a","epoch":1,"accountKey":"acct","connectionId":"original"}}).to_string()]).expect("running source command");
         assert!(
             account_in_use(&connection),
@@ -381,7 +367,7 @@ mod tests {
         )
         .expect("batched source ownership");
         assert!(busy, "the batched idle decision uses the same source owner");
-        connection.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','completed') WHERE id='watch'",[]).expect("actual command exit");
+        connection.execute("UPDATE runtime_monitors SET record=json_set(record,'$.status','completed'),monitor_status='completed' WHERE id='watch'",[]).expect("actual command exit");
         assert!(
             !account_in_use(&connection),
             "the real exit releases its source"
@@ -470,7 +456,7 @@ mod tests {
         assert!(!thread_in_use(&connection), "settled input holds nothing");
         connection
             .execute(
-                "INSERT INTO runtime_monitors(id,record) VALUES('m',?1)",
+                "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('m',?1,'running')",
                 [json!({"id":"m","agent":"a","status":"running"}).to_string()],
             )
             .expect("monitor writes");

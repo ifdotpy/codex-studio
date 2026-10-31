@@ -95,14 +95,6 @@ pub struct Staged {
 }
 
 impl Staged {
-    pub fn agent_id(&self) -> &str {
-        &self.agent_id
-    }
-
-    pub fn epoch(&self) -> i64 {
-        self.epoch
-    }
-
     pub fn changed(&self) -> bool {
         self.changed
     }
@@ -500,14 +492,8 @@ fn stage_terminal(
             crate::disk_space::observe_full();
             crate::disk_space::held_reason(crate::disk_space::full_free_bytes())
         });
-        let decision = capacity_retry::failed_with_reason(
-            &snapshot,
-            kind,
-            turn_id,
-            &settings,
-            now,
-            reason.as_deref(),
-        )?;
+        let decision =
+            capacity_retry::failed(&snapshot, kind, turn_id, &settings, now, reason.as_deref())?;
         if let Some(record) = decision.record.as_ref()
             && record_exists(
                 tx,
@@ -876,8 +862,6 @@ fn collect_apply(
             .record
             .as_ref()
             .is_some_and(|record| snapshot.record.as_ref() != Some(&record.value()))
-        || !decision.events.is_empty()
-        || !decision.metadata.is_empty()
         || !decision.effects.is_empty();
     if !changed {
         return Ok(());

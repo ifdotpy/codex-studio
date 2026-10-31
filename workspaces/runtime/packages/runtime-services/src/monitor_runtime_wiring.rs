@@ -92,7 +92,7 @@ pub enum MonitorEvent {
     },
     Probe {
         generation: i64,
-        result: Value,
+        result: studio_runtime_schema::monitor_record::MonitorProbeResult,
     },
 }
 
@@ -302,7 +302,7 @@ impl MonitorRuntime {
         id: &str,
         deadline: Option<tokio::time::Instant>,
         after_sequence: Option<u64>,
-    ) -> Result<Value, MonitorError> {
+    ) -> Result<crate::monitor_observation::Observation, MonitorError> {
         let mut sequence = after_sequence;
         loop {
             // Register before reading so a commit between the read and await
@@ -325,7 +325,7 @@ impl MonitorRuntime {
                 return Ok(record);
             }
             let deadline = deadline.expect("wait deadline");
-            if record["waitExpired"] == true {
+            if record.wait_expired {
                 return Ok(record);
             }
             #[cfg(test)]
@@ -765,19 +765,28 @@ impl MonitorRuntime {
                     effects: vec![],
                     response: Value::Null,
                 };
-                decision.record["status"] = serde_json::json!("failed");
-                decision.record["error"] = serde_json::json!(located_error);
-                decision.record["finished"] = serde_json::json!(now);
-                decision.record["configurationPending"] = serde_json::json!(false);
-                decision.record["deliveryFailure"] = serde_json::json!({
-                    "cursor": delivery.cursor,
-                    "error": error_text,
-                });
+                decision.record.status =
+                    studio_runtime_schema::studio_errors::MonitorStatus::Failed;
+                decision.record.error = Some(
+                    located_error
+                        .try_into()
+                        .map_err(|_| MonitorError::Refused("Invalid monitor error"))?,
+                );
+                decision.record.finished = Some(
+                    now.try_into()
+                        .map_err(|_| MonitorError::Refused("Invalid monitor clock"))?,
+                );
+                decision.record.configuration_pending = Some(false);
+                decision.record.delivery_failure =
+                    Some(studio_runtime_schema::monitor_record::DeliveryFailure {
+                        cursor: delivery.cursor,
+                        error: error_text,
+                    });
                 decision.effects.push(
                     if snapshot
                         .record()
-                        .get("ruleId")
-                        .and_then(Value::as_str)
+                        .rule_id
+                        .as_deref()
                         .is_some_and(|id| !id.is_empty())
                     {
                         crate::monitor_policy::Effect::RuleFinished
@@ -795,7 +804,7 @@ impl MonitorRuntime {
         let ids = self
             .store
             .read_async("runtime-services/monitor_reattach", move |connection| {
-                let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE id>?1 AND json_extract(record,'$.status') IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2")?;
+                let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE id>?1 AND monitor_status IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2")?;
                 let ids = query
                     .query_map((&after, BATCH as i64), |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?;
@@ -930,7 +939,10 @@ impl MonitorRuntime {
                     .store
                     .transaction_with(move |tx| monitor_runtime::snapshot(tx, &id))
                     .await?;
-                if snapshot.operation() != Some(&delivery.operation) {
+                if snapshot
+                    .operation()
+                    .is_none_or(|current| !current.same_identity(&delivery.operation))
+                {
                     return Err(MonitorError::InvalidDeliveryIdentity(
                         "result operation changed",
                     ));
@@ -989,7 +1001,10 @@ impl MonitorRuntime {
                 self.store
                     .transaction_with(move |tx| {
                         let (snapshot, actor) = monitor_runtime::snapshot(tx, &id)?;
-                        if snapshot.operation() != Some(&operation) {
+                        if snapshot
+                            .operation()
+                            .is_none_or(|current| !current.same_identity(&operation))
+                        {
                             return Err(MonitorError::InvalidDeliveryIdentity(
                                 "probe operation changed",
                             ));
@@ -1150,19 +1165,18 @@ impl MonitorRuntime {
                 "runtime-services/monitor_runtime_wiring",
                 move |connection| {
                     let (caller_id, id) = (read_caller.as_str(), read_id.as_str());
-                    let caller = studio_runtime_store::system_reads::get(
+                    let caller = studio_runtime_store::AgentRepository::get(
                         connection,
-                        "runtime_agents",
-                        caller_id,
+                        &studio_runtime_store::AgentId::from(caller_id),
                     )?
                     .ok_or(
                         studio_runtime_store::StoreError::RecordContract(
                             "Monitor input caller is no longer active",
                         ),
                     )?;
-                    if caller.get("epoch").and_then(Value::as_i64) != Some(caller_epoch)
-                        || caller.get("autoWake") != Some(&Value::Bool(true))
-                        || studio_runtime_store::truthy(caller.get("deletedAt"))
+                    if caller.epoch != caller_epoch
+                        || caller.auto_wake != Some(true)
+                        || caller.is_deleted()
                     {
                         return Err(studio_runtime_store::StoreError::RecordContract(
                             "Monitor input caller is no longer active",
@@ -1192,8 +1206,7 @@ impl MonitorRuntime {
                             }
                         })?;
                     if snapshot.agent() != caller_id
-                        || snapshot.record().get("epoch").and_then(Value::as_i64)
-                            != Some(caller_epoch)
+                        || snapshot.record().epoch.get() != caller_epoch
                         || owner.epoch != caller_epoch
                     {
                         return Err(studio_runtime_store::StoreError::RecordContract(
@@ -1243,7 +1256,10 @@ fn agent_commit_needs_tick_in(
     if rules {
         return Ok(true);
     }
-    let running = "json_extract(m.record,'$.status')='running'";
+    // The IN predicate matches the active-monitor partial index; the equality
+    // narrows it to running monitors without parsing historical records.
+    let running =
+        "m.monitor_status IN ('running','starting','approval') AND m.monitor_status='running'";
     let sql = if full {
         format!("SELECT EXISTS(SELECT 1 FROM runtime_monitors m WHERE {running})")
     } else {
@@ -1265,18 +1281,16 @@ fn agent_commit_needs_tick_in(
     Ok(needed)
 }
 
-/// The earliest persisted work deadline, in Unix seconds.
-fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, MonitorError> {
-    let monitor_deadline: Option<f64> = connection
-        .query_row(
-            "SELECT MIN(deadline) FROM (
+// Keep the small active index as the outer loop. Without it, deadline reads
+// repeatedly pull the historical monitor records into the SQLite page cache.
+const MONITOR_DEADLINE_SQL: &str = "SELECT MIN(deadline) FROM (
                 SELECT CASE
                     WHEN COALESCE(json_extract(m.record,'$.stallProbeGeneration'),-1)=json_extract(m.record,'$.activityGeneration')
                         THEN COALESCE(json_extract(m.record,'$.stallProbeStarted'),json_extract(m.record,'$.activityAt'),json_extract(m.record,'$.created'))+?1
                     ELSE COALESCE(json_extract(m.record,'$.activityAt'),json_extract(m.record,'$.created'))+COALESCE(json_extract(m.record,'$.stallTimeoutSeconds'),?2)
                 END AS deadline
-                FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
-                WHERE json_extract(m.record,'$.status')='running'
+                FROM runtime_monitors m INDEXED BY runtime_monitor_startup_active CROSS JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
+                WHERE m.monitor_status IN ('running','starting','approval') AND m.monitor_status='running'
                   AND COALESCE(json_extract(m.record,'$.reattachRecovery.status'),'')!='running'
                   AND COALESCE(json_extract(m.record,'$.cancelRequested'),0)=0
                   AND json_extract(a.record,'$.autoWake')=1
@@ -1289,8 +1303,8 @@ fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, Mo
                        OR json_type(m.record,'$.stallProbeStarted') IN ('integer','real'))
                 UNION ALL
                 SELECT COALESCE(json_extract(m.record,'$.outputWakeAt'),0)+?3
-                FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
-                WHERE json_extract(m.record,'$.status')='running'
+                FROM runtime_monitors m INDEXED BY runtime_monitor_startup_active CROSS JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
+                WHERE m.monitor_status IN ('running','starting','approval') AND m.monitor_status='running'
                   AND COALESCE(json_extract(m.record,'$.reattachRecovery.status'),'')!='running'
                   AND json_extract(a.record,'$.autoWake')=1
                   AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
@@ -1299,11 +1313,18 @@ fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, Mo
                   AND EXISTS(SELECT 1 FROM json_each(m.record,'$.outputMatchesPending') WHERE value>0)
                 UNION ALL
                 SELECT COALESCE(json_extract(record,'$.cancelDispatch.nextAttemptAt'),0)
-                FROM runtime_monitors
-                WHERE json_extract(record,'$.status')='running'
+                FROM runtime_monitors INDEXED BY runtime_monitor_startup_active
+                WHERE monitor_status IN ('running','starting','approval') AND monitor_status='running'
                   AND json_extract(record,'$.cancelRequested')=1
                   AND COALESCE(json_extract(record,'$.cancelDispatch.status'),'pending')='pending'
-            )",
+            )";
+
+/// The earliest persisted work deadline, in Unix seconds. Monitor reads use
+/// the active-monitor partial index before evaluating active records' JSON.
+fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, MonitorError> {
+    let monitor_deadline: Option<f64> = connection
+        .query_row(
+            MONITOR_DEADLINE_SQL,
             rusqlite::params![
                 crate::monitor_policy::PROBE_LEASE_SECONDS,
                 crate::monitor_policy::DEFAULT_MONITOR_STALL_SECONDS as i64,
@@ -1367,7 +1388,7 @@ fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, Mo
     // An unresolved reattach recovery settles once its window ends.
     let reattach_deadline = connection
         .query_row(
-            "SELECT MIN(json_extract(record,'$.reattachRecovery.startedAt')+?1) FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running'",
+            "SELECT MIN(json_extract(record,'$.reattachRecovery.startedAt')+?1) FROM runtime_monitors WHERE monitor_status IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running'",
             [crate::monitor_policy::MONITOR_REATTACH_WINDOW_SECONDS],
             |row| row.get::<_, Option<f64>>(0),
         )
@@ -2013,7 +2034,7 @@ mod tests {
                      ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                     rusqlite::params![
                         id,
-                        serde_json::json!({"id":id,"rootId":id,"epoch":0,"status":"idle",
+                        serde_json::json!({"compactions":0,"id":id,"rootId":id,"epoch":0,"status":"idle",
                             "provider":provider})
                         .to_string()
                     ],
@@ -2104,7 +2125,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('worker',?1)",
                     [
-                        serde_json::json!({"id":"worker","rootId":"codex-agent","epoch":0,
+                        serde_json::json!({"compactions":0,"id":"worker","rootId":"codex-agent","epoch":0,
                         "status":"idle","provider":"codex"})
                         .to_string(),
                     ],
@@ -2188,7 +2209,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"owner","rootId":"owner","epoch":0,"status":"ready",
                             "autoWake":true,"accountKey":"default","threadId":"thread"
                         })
@@ -2202,12 +2223,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn input_checks_typed_owner_before_monitor() {
+        let (_root, store, port) = fixture().await;
+        insert_active_owner(&store).await;
+        let runtime = MonitorRuntime::new(store, port, Arc::new(Notify::new()));
+        let input = crate::monitor_policy::Input {
+            text: "hello".into(),
+            rows: None,
+            cols: None,
+            close_stdin: false,
+        };
+        for (epoch, expected) in [
+            (1, "Monitor input caller is no longer active"),
+            (0, "Unknown monitor in this caller's scope"),
+        ] {
+            let error = runtime
+                .input_for_owner("owner", epoch, "missing", "ticket", &input, 0.0)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, MonitorError::Store(studio_runtime_store::StoreError::RecordContract(message)) if message == expected)
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn expired_observation_does_not_decode_output() {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store.transaction_with(|tx| {
             tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
-                [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","outputEventIds":["event"]}).to_string()])?;
+                [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit","outputEventIds":["event"]}).to_string()])?;
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('event','owner','user','invalid','pending',0,0)", [])?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.unwrap();
@@ -2223,8 +2269,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result["waitExpired"], true);
-        assert_eq!(result["outputEvents"], serde_json::json!([]));
+        assert!(result.wait_expired);
+        assert!(result.output_events_is_empty());
     }
 
     #[tokio::test]
@@ -2233,7 +2279,7 @@ mod tests {
         insert_active_owner(&store).await;
         store.transaction_with(|tx| {
             tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
-                [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running"}).to_string()])?;
+                [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}).to_string()])?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.unwrap();
         let runtime = MonitorRuntime::new(Arc::clone(&store), port, Arc::new(Notify::new()));
@@ -2248,7 +2294,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(expired["waitExpired"], true);
+        assert!(expired.wait_expired);
         let slots: Vec<_> = (0..studio_runtime_schema::shared_values::MONITOR_WAIT_SLOTS)
             .map(|_| runtime.observation_slot(1).unwrap())
             .collect();
@@ -2282,7 +2328,7 @@ mod tests {
         insert_active_owner(&store).await;
         store.transaction_with(|tx| {
             tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
-                [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running"}).to_string()])?;
+                [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}).to_string()])?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.unwrap();
         let runtime = Arc::new(MonitorRuntime::new(
@@ -2306,8 +2352,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(early["outputEventSequence"], 1);
-        assert_eq!(early["waitExpired"], false);
+        assert_eq!(early.record.output_event_sequence.unwrap(), 1);
+        assert!(!early.wait_expired);
         let waiter = Arc::clone(&runtime);
         let task = tokio::spawn(async move {
             waiter
@@ -2336,8 +2382,8 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(result["outputEventSequence"], 2);
-        assert_eq!(result["waitExpired"], false);
+        assert_eq!(result.record.output_event_sequence.unwrap(), 2);
+        assert!(!result.wait_expired);
     }
 
     #[tokio::test]
@@ -2355,9 +2401,9 @@ mod tests {
             Some(MonitorError::InvalidResultReceipt("json"))
         ));
 
-        let malformed_rule = studio_runtime_store::RuleRecord::from_value(serde_json::json!({
-            "agent": "agent-without-id"
-        }))
+        let malformed_rule = serde_json::from_str::<studio_runtime_store::RuleRecord>(
+            r#"{ "agent": "agent-without-id" }"#,
+        )
         .expect_err("persisted rule without string id");
         let rule_error = MonitorError::Rules(crate::rules_tick::RulesTickError::Store(
             malformed_rule.into(),
@@ -2479,20 +2525,20 @@ mod tests {
             .transaction_with(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_rules(id,record) VALUES ('file-rule',?1)",
-                    [serde_json::json!({
+                    [crate::rules_engine::complete_test_rule(serde_json::json!({
                         "id":"file-rule","agent":"owner","epoch":0,"name":"watch",
                         "kind":"file","status":"active","intervalSeconds":30,
                         "nextAt":9_000_000_000_000_000.0,"created":1.0,"command":"true",
                         "text":"","path":watched_file,
                         "inFlight":false
-                    })
+                    }))
                     .to_string()],
                 )?;
                 tx.execute("INSERT INTO runtime_rules(id,record) VALUES ('paused-rule',?1)",
-                    [serde_json::json!({"id":"paused-rule","agent":"owner","epoch":0,"name":"paused",
+                    [crate::rules_engine::complete_test_rule(serde_json::json!({"id":"paused-rule","agent":"owner","epoch":0,"name":"paused",
                         "kind":"file","status":"paused","intervalSeconds":30,
                         "nextAt":9_000_000_000_000_000.0,"created":1.0,"command":"true",
-                        "text":"","path":state_directory.join("ignored").to_string_lossy(),"inFlight":false}).to_string()])?;
+                        "text":"","path":state_directory.join("ignored").to_string_lossy(),"inFlight":false})).to_string()])?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             })
             .await
@@ -2536,14 +2582,14 @@ mod tests {
                         "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
                         (
                             &id,
-                            serde_json::json!({
+                            crate::monitor_policy::complete_test_monitor(serde_json::json!({
                                 "id":id,"agent":"owner","epoch":0,"status":"lost","created":1.0,
                                 "finished":90.0,"operation":{"agent":"owner","epoch":0,
                                     "accountKey":"default","connectionId":"old"},
                                 "reattachRecovery":{"accountKey":"default","epoch":0,
                                     "status":"not_reattachable","startedAt":80.0,
                                     "proof":crate::monitor_policy::DEADLINE_PASSED}
-                            })
+                            }))
                             .to_string(),
                         ),
                     )?;
@@ -2594,12 +2640,12 @@ mod tests {
                         "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
                         (
                             &id,
-                            serde_json::json!({
+                            crate::monitor_policy::complete_test_monitor(serde_json::json!({
                                 "id":id,"agent":"owner","epoch":0,"status":"running",
                                 "created":activity_at,"activityAt":activity_at,
                                 "activityGeneration":1,"stallWakeGeneration":0,
                                 "stallTimeoutSeconds":50,"livenessCommand":"true"
-                            })
+                            }))
                             .to_string(),
                         ),
                     )?;
@@ -2633,11 +2679,11 @@ mod tests {
             store.transaction_with(|tx| {
                 tx.execute(
                     "INSERT INTO runtime_monitors(id,record) VALUES ('monitor',?1) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
-                    [serde_json::json!({
+                    [crate::monitor_policy::complete_test_monitor(serde_json::json!({
                         "id":"monitor","agent":"owner","epoch":0,"status":"running",
                         "created":0.0,"activityAt":0.0,"activityGeneration":1,
                         "stallWakeGeneration":0,"stallTimeoutSeconds":50,"livenessCommand":"true"
-                    }).to_string()],
+                    })).to_string()],
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
             }).await.expect("make monitor due for another probe");
@@ -2664,13 +2710,13 @@ mod tests {
                         "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
                         (
                             &id,
-                            serde_json::json!({
+                            crate::monitor_policy::complete_test_monitor(serde_json::json!({
                                 "id":id,"agent":"owner","epoch":0,"status":"running",
                                 "operation":{"agent":"owner","epoch":0,"accountKey":"default","connectionId":"test"},
                                 "created":100.0,"activityAt":100.0,
                                 "activityGeneration":1,"stallWakeGeneration":0,
                                 "stallTimeoutSeconds":0
-                            }).to_string(),
+                            })).to_string(),
                         ),
                     )?;
                 }
@@ -2733,12 +2779,12 @@ mod tests {
                         "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
                         (
                             &id,
-                            serde_json::json!({
+                            crate::monitor_policy::complete_test_monitor(serde_json::json!({
                                 "id":id,"agent":"owner","epoch":0,"status":"running",
                                 "created":activity_at,"activityAt":activity_at,
                                 "activityGeneration":1,"stallWakeGeneration":0,
                                 "stallTimeoutSeconds":50,"livenessCommand":"true"
-                            })
+                            }))
                             .to_string(),
                         ),
                     )?;
@@ -2865,6 +2911,67 @@ mod tests {
         assert_eq!(super::earliest_deadline([None, Some(f64::NAN)]), None);
     }
 
+    #[test]
+    fn monitor_deadlines_skip_historical_records_before_parsing() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL,monitor_status TEXT NOT NULL);
+             CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE INDEX runtime_monitor_startup_active ON runtime_monitors(id) WHERE monitor_status IN ('running','starting','approval');
+             INSERT INTO runtime_monitors VALUES('old','{','lost');
+             INSERT INTO runtime_monitors VALUES('active','{\"status\":\"running\",\"cancelRequested\":true,\"cancelDispatch\":{\"nextAttemptAt\":42}}','running');",
+        )
+        .expect("fixtures");
+        assert_eq!(super::next_deadline_in(&db).expect("deadline"), Some(42.0));
+    }
+
+    #[test]
+    fn monitor_deadline_plan_drives_agent_lookups_from_active_monitors() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT,monitor_status TEXT);
+             CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);
+             CREATE INDEX runtime_monitor_startup_active ON runtime_monitors(id) WHERE monitor_status IN ('running','starting','approval');
+             ANALYZE;
+             INSERT INTO sqlite_stat1 VALUES('runtime_agents','sqlite_autoindex_runtime_agents_1','3 1');
+             INSERT INTO sqlite_stat1 VALUES('runtime_monitors','runtime_monitor_startup_active','1000000 1');
+             INSERT INTO sqlite_stat1 VALUES('runtime_monitors',NULL,'100000000');
+             ANALYZE sqlite_master;",
+        ).expect("planner statistics");
+        let plan: Vec<String> = db
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                super::MONITOR_DEADLINE_SQL
+            ))
+            .expect("plan")
+            .query_map((1, 1, 1), |row| row.get(3))
+            .expect("plan rows")
+            .collect::<Result<_, _>>()
+            .expect("plan details");
+        assert_eq!(
+            plan.iter().filter(|step| step.contains("SCAN a")).count(),
+            0,
+            "{plan:?}"
+        );
+        assert_eq!(
+            plan.iter()
+                .filter(
+                    |step| step.contains("SEARCH a USING INDEX sqlite_autoindex_runtime_agents_1")
+                )
+                .count(),
+            2,
+            "{plan:?}"
+        );
+        assert_eq!(
+            plan.iter()
+                .filter(|step| step.contains("USING INDEX runtime_monitor_startup_active"))
+                .count(),
+            3,
+            "{plan:?}"
+        );
+    }
+
     #[tokio::test]
     async fn durable_stall_and_rule_deadlines_choose_the_earliest_timestamp() {
         let (_root, store, port) = fixture().await;
@@ -2910,7 +3017,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"owner","rootId":"owner","epoch":1,"status":"interrupted",
                             "autoWake":true,"accountKey":"default","threadId":"thread",
                             "nativeFailureHold":{"reason":"pending"},
@@ -2948,7 +3055,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"owner","rootId":"owner","epoch":1,"status":"ready",
                             "autoWake":true,"accountKey":"default","threadId":"thread",
                             "nativeFailureHold":{},
@@ -3106,7 +3213,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('worker',?1)",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"worker","rootId":"owner","epoch":0,
                             "status":"running","isLead":false
                         })
@@ -3115,14 +3222,14 @@ mod tests {
                 )?;
                 tx.execute(
                     "INSERT INTO runtime_rules(id,record) VALUES ('low-rule',?1)",
-                    [serde_json::json!({
+                    [crate::rules_engine::complete_test_rule(serde_json::json!({
                         "id":"low-rule","agent":"owner","epoch":0,"name":"workers",
                         "status":"active","kind":"low_workers","intervalSeconds":60,
                         "nextAt":1.0,"created":1.0,"command":"","text":"worker alert",
                         "inFlight":false,
                         "minimumWorkers":1,"durationMinutes":1,"lowSince":null,
                         "alerted":false
-                    })
+                    }))
                     .to_string()],
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
@@ -3170,7 +3277,7 @@ mod tests {
                 tx.execute(
                     "UPDATE runtime_agents SET record=?1 WHERE id='worker'",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"worker","rootId":"owner","epoch":0,
                             "status":"completed","isLead":false
                         })
@@ -3230,14 +3337,14 @@ mod tests {
             .transaction_with(move |tx| {
                 tx.execute(
                     "INSERT INTO runtime_rules(id,record) VALUES ('low-rule',?1)",
-                    [serde_json::json!({
+                    [crate::rules_engine::complete_test_rule(serde_json::json!({
                         "id":"low-rule","agent":"owner","epoch":0,"name":"workers",
                         "status":"active","kind":"low_workers","intervalSeconds":60,
                         "nextAt":1.0,"created":1.0,"command":"","text":"worker alert",
                         "inFlight":false,
                         "minimumWorkers":1,"durationMinutes":1,"lowSince":now-120.0,
                         "alerted":false
-                    })
+                    }))
                     .to_string()],
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())
@@ -3333,11 +3440,11 @@ mod tests {
     }
 
     fn lost_monitor(id: &str, now: f64) -> serde_json::Value {
-        serde_json::json!({
+        crate::monitor_policy::complete_test_monitor(serde_json::json!({
             "id":id,"agent":"owner","epoch":0,"status":"running","command":"true",
             "reattachRecovery":{"accountKey":"default","epoch":0,"status":"running","startedAt":now},
             "error":"Server restarted. Command outcome unknown; not rerun."
-        })
+        }))
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3357,11 +3464,11 @@ mod tests {
                 }
                 tx.execute(
                     "INSERT INTO runtime_rules(id,record) VALUES ('paused',?1)",
-                    [serde_json::json!({
+                    [crate::rules_engine::complete_test_rule(serde_json::json!({
                         "id":"paused","agent":"owner","epoch":0,"status":"paused","kind":"interval",
                         "inFlight":false,"created":100.0,"nextAt":5000.0,"name":"paused",
                         "intervalSeconds":60,"command":"true","text":""
-                    })
+                    }))
                     .to_string()],
                 )?;
                 Ok::<_, studio_runtime_store::StoreError>(())

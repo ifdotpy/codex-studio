@@ -846,6 +846,7 @@ async fn signed_remote_event_crosses_http_boundary_and_persists_once() {
             "provider".into(),
             serde_json::json!(studio_runtime_schema::ProviderKind::Codex),
         )]),
+        ..AgentRecord::test_defaults()
     };
     parent.auto_wake = Some(true);
     parent
