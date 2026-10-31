@@ -117,6 +117,16 @@ describe("concurrent servers in one interface", () => {
     expect(() => api.stableRequestId("operation")).toThrow();
     expect(disk.getItem("a:request-id:operation")).toBe('{"requestId":"old"}');
   });
+  it("refuses to create an identity if it cannot be stored", () => {
+    const disk = memory();
+    disk.setItem = () => {
+      throw new Error("storage unavailable");
+    };
+    const api = scope("a", async () => response({}), disk);
+    expect(() => api.stableRequestId("operation")).toThrow(
+      "storage unavailable",
+    );
+  });
   it("retains the exact uncertain mutation after an empty successful response", async () => {
     const disk = memory();
     const requests: Request[] = [];

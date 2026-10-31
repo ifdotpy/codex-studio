@@ -13,7 +13,11 @@
   },
   {
     "file": "api.ts",
-    "callee": "localStorage.getItem"
+    "callee": "localStorage"
+  },
+  {
+    "file": "api.ts",
+    "callee": "localStorage"
   },
   {
     "file": "api.ts",
