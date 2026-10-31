@@ -978,8 +978,11 @@ fn decide_inner(
                 target,
                 StopOptions {
                     descendants: *descendants,
-                    delete: false,
-                    pause: matches!(action, Action::Pause { .. }),
+                    kind: if matches!(action, Action::Pause { .. }) {
+                        StopKind::Pause
+                    } else {
+                        StopKind::Interrupt
+                    },
                     reason: reason.as_deref(),
                     now,
                     live,
@@ -1021,8 +1024,7 @@ fn decide_inner(
                 target,
                 StopOptions {
                     descendants: true,
-                    delete: false,
-                    pause: true,
+                    kind: StopKind::Pause,
                     reason: Some(reason),
                     now,
                     live,
@@ -1035,8 +1037,7 @@ fn decide_inner(
             target,
             StopOptions {
                 descendants: true,
-                delete: true,
-                pause: false,
+                kind: StopKind::Delete,
                 reason: None,
                 now,
                 live,
@@ -1095,11 +1096,19 @@ fn inspect(snapshot: &ManagementSnapshot, agent: &Agent) -> Result<Decision, Man
     })))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StopKind {
+    /// Interrupt the running turn; the chat and its queue stay.
+    Interrupt,
+    /// Interrupt, bump the epoch, pause and cancel the pending queue.
+    Pause,
+    /// Pause and tombstone.
+    Delete,
+}
+
 struct StopOptions<'a> {
     descendants: bool,
-    delete: bool,
-    /// Pause the agents; without it a stop only interrupts the running turn.
-    pause: bool,
+    kind: StopKind,
     now: f64,
     live: bool,
     reason: Option<&'a str>,
@@ -1132,13 +1141,13 @@ fn stop(
 ) -> Result<Decision, ManagementError> {
     let StopOptions {
         descendants,
-        delete,
-        pause,
+        kind,
         reason,
         now,
         live,
         remote_request,
     } = options;
+    let (delete, pause) = (kind == StopKind::Delete, kind == StopKind::Pause);
     let agents = snapshot.descendants(target, descendants)?;
     let mut required = BTreeMap::new();
     let mut interrupt_only = BTreeSet::new();
