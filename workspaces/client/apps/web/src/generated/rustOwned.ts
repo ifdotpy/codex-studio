@@ -84,7 +84,7 @@ export interface components {
           reason: components["schemas"]["CloseReason"];
         };
     /** @description A forward of the callback to another server. Only the hash of the token is stored. */
-    BrowserForward: {
+    BrowserCallbackForward: {
       expires_at: components["schemas"]["Timestamp"];
       token_hash: string;
     };
@@ -466,7 +466,7 @@ export interface components {
           client_id: string | null;
           /** @description Deadline of the guest request. */
           expires_at: components["schemas"]["Timestamp"] | null;
-          forward: components["schemas"]["BrowserForward"] | null;
+          forward: components["schemas"]["BrowserCallbackForward"] | null;
           host: string;
           /** @description Other chats that wait on this card. */
           joined: components["schemas"]["AgentId"][];
@@ -586,7 +586,8 @@ export type Answer = components["schemas"]["Answer"];
 export type Approval = components["schemas"]["Approval"];
 export type ApprovalId = components["schemas"]["ApprovalId"];
 export type ApprovalState = components["schemas"]["ApprovalState"];
-export type BrowserForward = components["schemas"]["BrowserForward"];
+export type BrowserCallbackForward =
+  components["schemas"]["BrowserCallbackForward"];
 export type BrowserOutcome = components["schemas"]["BrowserOutcome"];
 export type BrowserPhase = components["schemas"]["BrowserPhase"];
 export type BrowserRedirect = components["schemas"]["BrowserRedirect"];

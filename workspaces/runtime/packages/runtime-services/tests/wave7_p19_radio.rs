@@ -300,8 +300,12 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
                     // The oracle names the retired table. The typed rows live in `approvals`.
                     db.execute("DELETE FROM approvals", [])?;
                     for row in rows.as_array().expect("rows") {
-                        let record: Value = serde_json::from_str(row["record"].as_str().expect("record"))
+                        let mut record: Value = serde_json::from_str(row["record"].as_str().expect("record"))
                             .expect("request record");
+                        // The frozen Python record names its creation time `created`.
+                        if let Some(created) = record.as_object_mut().and_then(|map| map.remove("created")) {
+                            record["createdAt"] = created;
+                        }
                         studio_runtime_services::provider_callbacks::legacy_view::insert(db, &record)?;
                     }
                     continue;

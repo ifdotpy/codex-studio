@@ -83,7 +83,7 @@ async fn startup_recovery_is_idempotent_and_preserves_only_retained_questions() 
             );
             add_request(
                 tx,
-                &json!({"id":"answering","agent":"agent","epoch":2,"method":"item/commandExecution/requestApproval","status":"answering","createdAt":1000,"params":{}}),
+                &json!({"id":"answering","agent":"agent","epoch":2,"method":"item/commandExecution/requestApproval","status":"answering","decision":"accept","answerDecision":"accept","createdAt":1000,"params":{}}),
             );
             add_request(
                 tx,

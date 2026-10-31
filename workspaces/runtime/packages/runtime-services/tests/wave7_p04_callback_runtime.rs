@@ -62,7 +62,10 @@ async fn complete_python_answer_and_delete_corpus() {
             case["replay"]
         );
         assert_outcome(&stored(&store, id), &case["after"]);
-        assert_eq!(actor(&store, &context), case["afterActor"]);
+        assert_eq!(
+            actor(&store, &context),
+            normalized_actor(&case["afterActor"])
+        );
         assert_writes(&before_rows, &store, &case["writes"]);
         assert_eq!(
             frame_value(&port.calls.lock().unwrap().last().unwrap().frame()),
@@ -82,7 +85,10 @@ async fn complete_python_answer_and_delete_corpus() {
             assert_eq!(result.unwrap(), case["expected"]["result"]);
         }
         assert_outcome(&stored(&store, id), &case["after"]);
-        assert_eq!(actor(&store, &context), case["afterActor"]);
+        assert_eq!(
+            actor(&store, &context),
+            normalized_actor(&case["afterActor"])
+        );
         assert_writes(&before_rows, &store, &case["writes"]);
         let frames: Vec<_> = port.calls.lock().unwrap()[before..]
             .iter()
@@ -146,16 +152,14 @@ async fn written_retires_transport_body_and_preserves_exact_http_replay() {
         runtime.answer(&id, &data, 21.0).await.unwrap()["replayed"],
         true
     );
-    assert!(matches!(
-        runtime
-            .answer(
-                &id,
-                &json!({"answers":{"secret":{"answers":["other-payload"]}}}),
-                21.0
-            )
-            .await,
-        Err(CallbackError::Conflict)
-    ));
+    let other = runtime
+        .answer(
+            &id,
+            &json!({"answers":{"secret":{"answers":["other-payload"]}}}),
+            21.0,
+        )
+        .await;
+    assert!(matches!(other, Err(CallbackError::Conflict)), "{other:?}");
     assert_eq!(port.calls.lock().unwrap().len(), 1);
 }
 
@@ -211,7 +215,10 @@ async fn python_resolution_rows_match_after_completed_or_cleared_turn() {
         .await
         .unwrap();
         assert_outcome(&stored(&store, "resolve-card"), &case["expected"]);
-        assert_eq!(actor(&store, &context), case["expectedActor"]);
+        assert_eq!(
+            actor(&store, &context),
+            normalized_actor(&case["expectedActor"])
+        );
         assert_writes(&before, &store, &case["writes"]);
     }
 }

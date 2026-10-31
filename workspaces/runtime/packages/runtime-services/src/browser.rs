@@ -1799,7 +1799,9 @@ mod tests {
     #[tokio::test]
     async fn callback_request_refusal_order_follows_the_stored_card() {
         use crate::browser_cards::fixture;
-        use studio_runtime_schema::approvals::{BrowserForward, BrowserRedirect, Timestamp};
+        use studio_runtime_schema::approvals::{
+            BrowserCallbackForward, BrowserRedirect, Timestamp,
+        };
         let dir = tempfile::tempdir().expect("temporary state");
         let store = Arc::new(RuntimeStore::open(Some(dir.path())).await.expect("store"));
         let bridge = fixture::BRIDGE;
@@ -1816,7 +1818,7 @@ mod tests {
             port,
             path: "/cb".into(),
         };
-        let forward = |token: &[u8]| BrowserForward {
+        let forward = |token: &[u8]| BrowserCallbackForward {
             token_hash: studio_runtime_store::sha256_hex(token),
             expires_at: Timestamp(9.0),
         };

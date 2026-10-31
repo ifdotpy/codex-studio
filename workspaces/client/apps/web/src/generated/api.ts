@@ -9188,9 +9188,32 @@ export interface components {
       yoloMode?: boolean | null | undefined;
     };
     /** @description A forward of the callback to another server. Only the hash of the token is stored. */
-    BrowserForward: {
+    BrowserCallbackForward: {
       expires_at: components["schemas"]["Timestamp"];
       token_hash: string;
+    };
+    /**
+     * BrowserForward
+     * @description The redirect port of a sign-in that a paired server approved for a window on this Mac.
+     */
+    BrowserForward: {
+      /** Bridgeid */
+      bridgeId: string;
+      /** Expiresat */
+      expiresAt: number;
+      /**
+       * Host
+       * @enum {string}
+       */
+      host: "127.0.0.1" | "localhost" | "::1";
+      /** Path */
+      path: string;
+      /** Port */
+      port: number;
+      /** Server */
+      server: string;
+      /** Token */
+      token: string;
     };
     /** BrowserForwardResult */
     BrowserForwardResult: {
@@ -19148,7 +19171,7 @@ export interface components {
           client_id: string | null;
           /** @description Deadline of the guest request. */
           expires_at: components["schemas"]["Timestamp"] | null;
-          forward: components["schemas"]["BrowserForward"] | null;
+          forward: components["schemas"]["BrowserCallbackForward"] | null;
           host: string;
           /** @description Other chats that wait on this card. */
           joined: components["schemas"]["AgentId"][];

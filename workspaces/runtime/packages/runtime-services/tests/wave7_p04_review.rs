@@ -579,7 +579,10 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
         };
         assert!(result.is_err());
         assert_outcome(&stored(&store, id), &case["after"]);
-        assert_eq!(actor(&store, &context), case["afterActor"]);
+        assert_eq!(
+            actor(&store, &context),
+            normalized_actor(&case["afterActor"])
+        );
         assert_writes(&before, &store, &case["writes"]);
     }
     for case in template()["invalid"].as_array().unwrap() {
@@ -597,7 +600,10 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
             assert_eq!(result.unwrap(), case["expected"]["result"]);
         }
         assert_outcome(&stored(&store, id), &case["after"]);
-        assert_eq!(actor(&store, &context), case["afterActor"]);
+        assert_eq!(
+            actor(&store, &context),
+            normalized_actor(&case["afterActor"])
+        );
         assert_writes(&before, &store, &case["writes"]);
     }
     for case in template()["races"].as_array().unwrap() {
@@ -637,7 +643,10 @@ async fn python_failures_null_decisions_and_race_winners_are_preserved() {
             delivery(&store, &reply.identity, DeliveryOutcome::Written)
                 .await
                 .unwrap();
-            assert_eq!(actor(&store, &context), case["winner"]["afterActor"]);
+            assert_eq!(
+                actor(&store, &context),
+                normalized_actor(&case["winner"]["afterActor"])
+            );
             assert_outcome(&stored(&store, id), &case["pythonAfter"]["after"]);
             assert_eq!(case["pythonAfter"]["afterActor"]["status"], "running");
         }

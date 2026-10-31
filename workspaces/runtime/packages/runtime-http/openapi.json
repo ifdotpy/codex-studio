@@ -17775,7 +17775,7 @@
         "title": "BranchResponse",
         "type": "object"
       },
-      "BrowserForward": {
+      "BrowserCallbackForward": {
         "additionalProperties": false,
         "description": "A forward of the callback to another server. Only the hash of the token is stored.",
         "properties": {
@@ -17790,6 +17790,74 @@
           "token_hash",
           "expires_at"
         ],
+        "type": "object"
+      },
+      "BrowserForward": {
+        "additionalProperties": false,
+        "description": "The redirect port of a sign-in that a paired server approved for a window on this Mac.",
+        "properties": {
+          "bridgeId": {
+            "pattern": "^[0-9a-f]{32}$",
+            "title": "Bridgeid",
+            "type": "string"
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "title": "Expiresat"
+          },
+          "host": {
+            "enum": [
+              "127.0.0.1",
+              "localhost",
+              "::1"
+            ],
+            "title": "Host",
+            "type": "string"
+          },
+          "path": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Path",
+            "type": "string"
+          },
+          "port": {
+            "maximum": 65535,
+            "minimum": 1024,
+            "title": "Port",
+            "type": "integer"
+          },
+          "server": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Server",
+            "type": "string"
+          },
+          "token": {
+            "maxLength": 200,
+            "minLength": 16,
+            "title": "Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "server",
+          "bridgeId",
+          "host",
+          "port",
+          "path",
+          "expiresAt",
+          "token"
+        ],
+        "title": "BrowserForward",
         "type": "object"
       },
       "BrowserForwardResult": {
@@ -41605,7 +41673,7 @@
               "forward": {
                 "anyOf": [
                   {
-                    "$ref": "#/components/schemas/BrowserForward"
+                    "$ref": "#/components/schemas/BrowserCallbackForward"
                   },
                   {
                     "type": "null"

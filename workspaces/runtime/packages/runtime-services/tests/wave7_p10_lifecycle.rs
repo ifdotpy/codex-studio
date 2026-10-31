@@ -719,6 +719,14 @@ fn typed_table<'a>(table: &'a str, expected: &Value) -> (&'a str, Value) {
     ("approvals", Value::Array(rows))
 }
 
+/// The oracle records no close time and no close reason: compare the state kind only.
+fn loosen_approvals(rows: &mut Value) {
+    for row in rows.as_array_mut().into_iter().flatten() {
+        let kind = row["state"]["kind"].clone();
+        row["state"] = json!({ "kind": kind });
+    }
+}
+
 fn state(store: &RuntimeStore) -> Value {
     let db = store.test_reader().expect("reader");
     let records = agent_management::read(&db).expect("records");
@@ -1061,6 +1069,10 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
                     }
                 }
             }
+        }
+        if table == "approvals" {
+            loosen_approvals(&mut actual);
+            loosen_approvals(&mut expected);
         }
         crate::normalize_agent_nulls(&mut actual);
         crate::normalize_agent_nulls(&mut expected);
@@ -1518,6 +1530,10 @@ async fn production_interrupt_is_durable_post_commit_and_retry_coalesces_after_r
                         use_current_ticket_shape(row);
                     }
                 }
+                if table == "approvals" {
+                    loosen_approvals(&mut actual_rows);
+                    loosen_approvals(&mut expected);
+                }
                 crate::normalize_agent_nulls(&mut actual_rows);
                 crate::normalize_agent_nulls(&mut expected);
                 assert_eq!(actual_rows, expected, "Python effect corpus rows: {table}");
@@ -1582,6 +1598,10 @@ async fn production_child_notification_matches_python_corpus() {
                 }
             }
             let mut actual_row = actual["tables"][table].clone();
+            if table == "approvals" {
+                loosen_approvals(&mut actual_row);
+                loosen_approvals(&mut expected);
+            }
             crate::normalize_agent_nulls(&mut actual_row);
             crate::normalize_agent_nulls(&mut expected);
             assert_eq!(actual_row, expected, "Python event corpus: {table}");
