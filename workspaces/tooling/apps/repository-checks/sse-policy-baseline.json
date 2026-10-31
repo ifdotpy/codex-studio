@@ -84,14 +84,6 @@
     "callee": "localStorage.setItem"
   },
   {
-    "file": "components/BrowserDictation.tsx",
-    "callee": "localStorage.setItem"
-  },
-  {
-    "file": "components/BrowserDictation.tsx",
-    "callee": "localStorage.getItem"
-  },
-  {
     "file": "components/MessageQueue.tsx",
     "callee": "localStorage.length"
   },
