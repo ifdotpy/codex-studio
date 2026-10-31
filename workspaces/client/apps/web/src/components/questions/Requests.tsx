@@ -1,7 +1,6 @@
 import { QuestionDecision } from "../../generated/api";
 import {
   useServerApi,
-  useServerLocalDrafts,
   useServerServices,
   useServerStorage,
 } from "../../servers/ServerServicesContext";
@@ -154,14 +153,10 @@ export function AnswerForm({
   close: () => void;
   notify: Props["notify"];
 }) {
-  const { saved } = useServerApi();
-  const { writeLocalDraft } = useServerLocalDrafts();
   const answerDrafts = useAnswerDrafts();
 
   const [values, setValues] = useState<AnswerValues>(
-    () =>
-      answerDrafts.get(draftKey) ||
-      saved(`studio-answer-draft:${draftKey}`, {}),
+    () => answerDrafts.get(draftKey) || {},
   );
   const questions = requestQuestions(request);
   const method = request.method || "";
@@ -176,14 +171,6 @@ export function AnswerForm({
     const next = { ...values, [id]: value };
     answerDrafts.set(draftKey, next);
     setValues(next);
-    const publicValues = Object.fromEntries(
-      questions.filter((q) => !q.isSecret).map((q) => [q.id, next[q.id] || ""]),
-    );
-    const error = writeLocalDraft(
-      `studio-answer-draft:${draftKey}`,
-      publicValues,
-    );
-    if (error) notify(error);
   };
   const ready =
     !missingRequired &&
@@ -309,7 +296,6 @@ export function RequestCard({
 }) {
   const { post: apiPost } = useServerApi();
   const services = useServerServices();
-  const { writeLocalDraft } = useServerLocalDrafts();
   const answerDrafts = useAnswerDrafts();
 
   const draftKey = answerKey(scope, r);
@@ -397,11 +383,6 @@ export function RequestCard({
         });
       else await approve();
       answerDrafts.delete(draftKey);
-      const storageError = writeLocalDraft(
-        `studio-answer-draft:${draftKey}`,
-        null,
-      );
-      if (storageError) notify(storageError);
       if (!mounted.current) return true;
       setOpen(false);
       await refresh();

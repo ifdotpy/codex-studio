@@ -130,6 +130,7 @@ it("the actual request card prepares native sign-in before a slow approval and o
     window: "desktop",
   });
   expect(refresh).toHaveBeenCalledOnce();
+  expect(controls.write).not.toHaveBeenCalled();
 });
 
 it("does not approve the card when native preparation lacks a user action", async () => {
