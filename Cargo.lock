@@ -5456,7 +5456,6 @@ dependencies = [
  "sha2 0.11.1",
  "strum",
  "studio-client-domain",
- "studio-test-deps",
  "thiserror 2.0.21",
  "uuid",
 ]

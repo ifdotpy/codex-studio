@@ -226,8 +226,10 @@ test("consolidated Rust targets register every integration test file once", () =
       path.join(crate, "tests/integration.rs"),
       "utf8",
     );
-    const modules = [...facade.matchAll(/^mod (\w+);$/gm)]
-      .map((match) => `${match[1]}.rs`)
+    // A module with a #[path] attribute lives in another file; only the others are test files here.
+    const modules = [...facade.matchAll(/^(#\[path = [^\n]*\]\n)?mod (\w+);$/gm)]
+      .filter((match) => match[1] === undefined)
+      .map((match) => `${match[2]}.rs`)
       .sort();
     const files = readdirSync(path.join(crate, "tests"))
       .filter((name) => name.endsWith(".rs") && name !== "integration.rs")

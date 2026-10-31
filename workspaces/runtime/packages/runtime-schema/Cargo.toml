@@ -22,8 +22,5 @@ rusqlite = { workspace = true, optional = true }
 [features]
 sqlite = ["dep:rusqlite"]
 
-[dev-dependencies]
-studio-test-deps = { path = "../test-deps" }
-
 [lints]
 workspace = true

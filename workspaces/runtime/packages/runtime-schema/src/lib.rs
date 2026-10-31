@@ -1,9 +1,6 @@
 //! Compiled persisted-state validators and the Rust owners of the shared
 //! runtime contracts (`contracts` renders their copies in other languages).
 
-#[cfg(test)]
-extern crate studio_test_deps;
-
 pub mod account_registry;
 pub mod agent_limits;
 pub mod agent_progress;
