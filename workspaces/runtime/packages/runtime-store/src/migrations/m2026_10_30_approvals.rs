@@ -605,7 +605,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< head
     fn a_redacted_secret_answer_is_kept_as_redacted() {
         let mut db = Connection::open_in_memory().unwrap();
         let row = json!({"id":"s","method":"agent/asyncQuestion","agent":"a","status":"answered","createdAt":1.0,
@@ -635,8 +634,9 @@ mod tests {
         };
         assert_eq!(answers[0].answer, vec!["[redacted]"]);
         assert_eq!(answers[1].answer, vec!["x"]);
-||||||| base
-=======
+    }
+
+    #[test]
     fn browser_params_become_a_typed_card_and_phase() {
         let mut db = Connection::open_in_memory().unwrap();
         db.execute_batch(
@@ -713,7 +713,6 @@ mod tests {
             let tx = db.transaction().unwrap();
             assert!(apply(&tx).is_err(), "{params}");
         }
->>>>>>> origin/feat/approval-entity-browser
     }
 
     #[test]
