@@ -76,6 +76,82 @@ impl ProviderKind {
     }
 }
 
+/// A control or behavior that a provider adapter supports. The UI shows only the
+/// controls of the adapter's list; a missing entry hides the control.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCapability {
+    /// Input added to a running turn.
+    Steer,
+    /// Restore the thread to an earlier point.
+    Rewind,
+    /// Start a new thread from an earlier point.
+    Fork,
+    /// Change the model of a live thread.
+    ModelChange,
+    /// Set the reasoning effort.
+    Effort,
+    /// Compact the thread context.
+    Compaction,
+    /// Ask the user before a tool call.
+    Approvals,
+}
+
+impl ProviderCapability {
+    pub const ALL: [Self; 7] = [
+        Self::Steer,
+        Self::Rewind,
+        Self::Fork,
+        Self::ModelChange,
+        Self::Effort,
+        Self::Compaction,
+        Self::Approvals,
+    ];
+
+    /// Wire and generated-contract spelling.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::Steer => "steer",
+            Self::Rewind => "rewind",
+            Self::Fork => "fork",
+            Self::ModelChange => "model_change",
+            Self::Effort => "effort",
+            Self::Compaction => "compaction",
+            Self::Approvals => "approvals",
+        }
+    }
+}
+
+impl ProviderKind {
+    /// The capability list of this provider's adapter. The exhaustive match
+    /// forces a new provider to declare its list.
+    #[must_use]
+    pub const fn capabilities(self) -> &'static [ProviderCapability] {
+        use ProviderCapability::{Approvals, Compaction, Effort, Fork, ModelChange, Rewind, Steer};
+        match self {
+            // No file rewind until `edit(turn)` serves every provider.
+            Self::Codex => &[Steer, Fork, ModelChange, Effort, Compaction, Approvals],
+            Self::Claude => &[
+                Steer,
+                Rewind,
+                Fork,
+                ModelChange,
+                Effort,
+                Compaction,
+                Approvals,
+            ],
+        }
+    }
+
+    #[must_use]
+    pub fn supports(self, capability: ProviderCapability) -> bool {
+        self.capabilities().contains(&capability)
+    }
+}
+
 /// How the session numbers the requests it sends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestIdScheme {
@@ -135,8 +211,48 @@ impl fmt::Display for ProviderKind {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderKind, UnknownProvider};
+    use super::{ProviderCapability, ProviderKind, UnknownProvider};
     use serde_json::json;
+
+    #[test]
+    fn capability_lists_are_declared_per_provider() {
+        use ProviderCapability::*;
+        assert_eq!(
+            ProviderKind::Codex.capabilities(),
+            [Steer, Fork, ModelChange, Effort, Compaction, Approvals]
+        );
+        assert_eq!(
+            ProviderKind::Claude.capabilities(),
+            [
+                Steer,
+                Rewind,
+                Fork,
+                ModelChange,
+                Effort,
+                Compaction,
+                Approvals
+            ]
+        );
+        assert!(!ProviderKind::Codex.supports(Rewind));
+        assert!(ProviderKind::Claude.supports(Rewind));
+        for kind in ProviderKind::ALL {
+            let list = kind.capabilities();
+            assert!(
+                list.iter().all(|c| ProviderCapability::ALL.contains(c)),
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn capability_keys_match_serde() {
+        for capability in ProviderCapability::ALL {
+            assert_eq!(
+                serde_json::to_value(capability).expect("serialize"),
+                json!(capability.key())
+            );
+        }
+    }
 
     #[test]
     fn generated_provider_schema_preserves_wire_identity() {

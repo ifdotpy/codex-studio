@@ -408,7 +408,23 @@ fn provider_kind_ts() -> String {
         )
         .expect("String write");
     }
-    text.push_str("};\n\nexport function providerToString(provider: ProviderKind): ProviderKind {\n  return provider;\n}\n\nexport function isProviderKind(value: unknown): value is ProviderKind {\n  return PROVIDER_KINDS.some((provider) => provider === value);\n}\n\nexport function providerLabel(value: string): string {\n  return isProviderKind(value) ? PROVIDER_LABELS[value] : value;\n}\n");
+    text.push_str("};\n\nexport const PROVIDER_CAPABILITIES = [");
+    text.push_str(
+        &crate::provider_kind::ProviderCapability::ALL
+            .map(|capability| json_string(capability.key()))
+            .join(", "),
+    );
+    text.push_str("] as const;\nexport type ProviderCapability = (typeof PROVIDER_CAPABILITIES)[number];\n\nexport const PROVIDER_CAPABILITY_LISTS: Record<ProviderKind, readonly ProviderCapability[]> = {\n");
+    for provider in crate::provider_kind::ProviderKind::ALL {
+        let list = provider
+            .capabilities()
+            .iter()
+            .map(|capability| json_string(capability.key()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(text, "  {}: [{list}],", provider.key()).expect("String write");
+    }
+    text.push_str("};\n\nexport function providerCapabilities(value: unknown): readonly ProviderCapability[] {\n  return isProviderKind(value) ? PROVIDER_CAPABILITY_LISTS[value] : [];\n}\n\nexport function providerSupports(value: unknown, capability: ProviderCapability): boolean {\n  return providerCapabilities(value).includes(capability);\n}\n\nexport function providerToString(provider: ProviderKind): ProviderKind {\n  return provider;\n}\n\nexport function isProviderKind(value: unknown): value is ProviderKind {\n  return PROVIDER_KINDS.some((provider) => provider === value);\n}\n\nexport function providerLabel(value: string): string {\n  return isProviderKind(value) ? PROVIDER_LABELS[value] : value;\n}\n");
     text
 }
 

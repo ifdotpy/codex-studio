@@ -75,7 +75,7 @@ pub mod work_item_record;
 pub mod workspace_operation;
 
 pub use delivery::DeliveryMoment;
-pub use provider_kind::ProviderKind;
+pub use provider_kind::{ProviderCapability, ProviderKind};
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
