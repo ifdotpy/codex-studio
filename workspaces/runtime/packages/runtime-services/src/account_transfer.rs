@@ -1433,20 +1433,6 @@ pub(crate) fn enroll(
             ],
         )?;
     }
-    let mut defaults = value
-        .get("workerDefaults")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    if provider != target_provider {
-        defaults.insert("model".into(), Value::Null);
-        defaults.insert("effort".into(), json!("medium"));
-        defaults.insert("fastMode".into(), json!(false));
-        defaults.insert("daybreakEnabled".into(), json!(false));
-        defaults.insert("cyberAccessProgram".into(), json!("standard"));
-    }
-    defaults.insert("accountKey".into(), json!(target));
-    value["workerDefaults"] = Value::Object(defaults);
     value["pendingSettingsAccountKey"] = if value
         .get("pendingSettings")
         .is_some_and(|settings| !settings.is_null())

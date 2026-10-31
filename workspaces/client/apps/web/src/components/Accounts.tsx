@@ -505,7 +505,6 @@ export function AccountTransferStatus({
   opened = true,
   onClose = () => {},
   error,
-  retryStart,
   onAction,
 }: {
   transfer?: NonNullable<Agent["accountTransfer"]> | undefined;
@@ -514,7 +513,6 @@ export function AccountTransferStatus({
   opened?: boolean;
   onClose?: () => void;
   error?: string;
-  retryStart?: (() => void) | undefined;
   onAction: (action: "retry" | "cancel") => void;
 }) {
   const waiting = Number(transfer?.waitingCount || 0);
@@ -567,20 +565,10 @@ export function AccountTransferStatus({
           ) : (
             <p role="status">Starting transfer…</p>
           )}
-          {retryStart && (
-            <Button onClick={retryStart} disabled={!!pending}>
-              Retry
-            </Button>
-          )}
         </div>
       ) : (
         <div className="account-menu-note" role="status">
           {error && <p role="alert">{error}</p>}
-          {retryStart && (
-            <Button onClick={retryStart} disabled={!!pending}>
-              Retry
-            </Button>
-          )}
           <ArrowRightLeft size={14} />
           <div>
             {transfer.status !== GeneratedApiAccountTransferStatus.pending && (
@@ -671,22 +659,18 @@ export function AccountTransferChip({
   )
     return null;
   const blocked = Array.isArray(transfer.blocked) ? transfer.blocked : [];
-  const left =
-    Number(transfer.total ?? 0) - Number(transfer.completed ?? 0) ||
-    Number(transfer.nativeHistoryPending ?? 0);
-  const label = blocked.length
-    ? "Account move blocked"
-    : `Moving account${left > 0 ? ` · ${left} left` : ""}`;
+  // The chat shows its new account at once. Only a failed move shows here.
+  if (!blocked.length) return null;
+  const label = "Account move blocked";
   const details = [
     ...blocked.map((member) => `${member.name || "Agent"}: ${member.reason}`),
-    ...(transfer.waiting && !blocked.length ? [String(transfer.waiting)] : []),
     "Open the model settings to retry or cancel.",
   ].join("\n");
   return (
     <Tooltip label={details} multiline w={320} withinPortal>
       <span
         className="account-transfer-chip"
-        data-blocked={blocked.length ? "" : undefined}
+        data-blocked=""
         role="status"
         aria-label={`${label}. ${details}`}
       >
@@ -737,8 +721,8 @@ export function AccountTransferConfirmation({
         <strong>{target?.email || target?.label}</strong>?
       </p>
       <p>
-        Active turns move immediately and continue on the destination. Same
-        provider subagents move too; other providers stay on their accounts.
+        Active turns move immediately and continue on the destination.
+        Subagents keep their accounts.
       </p>
       {target && sourceProvider !== target.provider && (
         <p>The destination model uses the saved chat context.</p>
@@ -786,7 +770,6 @@ export default function Accounts({
   changeAccount,
   onError,
   onModalOpenChange,
-  onTransferStarted,
   managerOnly = false,
   renderPicker,
   externalCommand,
@@ -798,7 +781,6 @@ export default function Accounts({
   agent?: Agent;
   accountKey?: string;
   onModalOpenChange?: (opened: boolean) => void;
-  onTransferStarted?: () => void;
   managerOnly?: boolean;
   renderPicker?: (
     selectAccount: (key: string) => void,
@@ -1651,7 +1633,6 @@ export default function Accounts({
             account_key: transferChoice.target.id,
             request_id: transferChoice.requestId,
           });
-          onTransferStarted?.();
         }}
       />
       <Modal
