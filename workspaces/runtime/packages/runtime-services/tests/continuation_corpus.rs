@@ -17,11 +17,8 @@ fn capacity_wait_accepts_usage_record_with_matching_embedded_id() {
 
 #[test]
 fn typed_continuation_snapshot_matches_schema_shapes() {
-    let schema: Value = serde_json::from_str(include_str!(
-        "../../runtime-schema/src/schemas/persisted-continuation-snapshot.schema.json"
-    ))
-    .expect("schema");
-    let validator = jsonschema::validator_for(&schema).expect("validator");
+    let validator =
+        studio_runtime_schema::compiled_validator("continuation/Snapshot").expect("validator");
     let base = json!({"agent":{"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"}});
     for (key, value) in [
         ("ancestors", json!(null)),

@@ -4262,8 +4262,8 @@ mod tests {
             json!({"state":"conflict","conflicts":["a.txt"],"choices":[],"withAgent":[],"deletes":0,"reason":null,"at":5.0,"sent":2}).to_string(),
         )
         .unwrap();
-        let project = json!({"id":source,"path":source,"peerTeams":[],"projectAliases":[{"projectId":source}]});
-        let other = json!({"id":"/workspace/Plain","path":"/workspace/Plain","peerTeams":[]});
+        let project = json!({"recordKind":"live","id":source,"path":source,"peerTeams":[],"projectAliases":[{"serverId":"local","projectId":source,"name":"Synced"}]});
+        let other = json!({"recordKind":"live","id":"/workspace/Plain","path":"/workspace/Plain","peerTeams":[]});
         let records = [
             (source.to_owned(), project.clone()),
             ("/workspace/Plain".to_owned(), other.clone()),
@@ -4346,6 +4346,16 @@ mod tests {
             let workspace = root.path().join("workspace");
             fs::create_dir(&workspace).unwrap();
             let mut project = case["project"].clone();
+            project["recordKind"] = json!("live");
+            if let Some(aliases) = project
+                .get_mut("projectAliases")
+                .and_then(Value::as_array_mut)
+            {
+                for alias in aliases {
+                    alias["serverId"] = json!("local");
+                    alias["name"] = json!("Project");
+                }
+            }
             project["path"] = json!(workspace.to_string_lossy());
             project["peerTeams"] = json!([]);
             let prior = project.clone();

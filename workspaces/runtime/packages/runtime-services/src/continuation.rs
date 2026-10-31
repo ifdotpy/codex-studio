@@ -2,7 +2,7 @@
 //! Stored JSON is retained verbatim except for the fields a decision changes.
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use studio_runtime_schema::continuation_snapshot::{
     CapacityContinuation, CapacityContinuationStatus, ContinuationAgent, ContinuationRecord,
     ContinuationSnapshotRecord, PreparationSettings, UsageContinuation, UsageContinuationCause,
@@ -341,23 +341,8 @@ impl Snapshot {
 // Keep the existing schema diagnostic paths when typed deserialization fails.
 // The schema is only evaluated on invalid input, not on the normal read path.
 fn invalid_snapshot(raw: &Value) -> ContinuationError {
-    static VALIDATOR: OnceLock<std::result::Result<jsonschema::Validator, String>> =
-        OnceLock::new();
-    let validator = VALIDATOR.get_or_init(|| {
-        let schema: Value = serde_json::from_str(include_str!(
-            "../../runtime-schema/src/schemas/persisted-continuation-snapshot.schema.json"
-        ))
-        .map_err(|e| e.to_string())?;
-        jsonschema::validator_for(&schema).map_err(|e| e.to_string())
-    });
-    match validator {
-        Ok(validator) => ContinuationError::Invalid(
-            validator
-                .iter_errors(raw)
-                .next()
-                .map(|error| error.instance_path().to_string())
-                .unwrap_or_default(),
-        ),
+    match studio_runtime_schema::first_error("continuation/Snapshot", raw) {
+        Ok(error) => ContinuationError::Invalid(error.map(|(path, _)| path).unwrap_or_default()),
         Err(_) => ContinuationError::Invalid("schema".into()),
     }
 }
@@ -852,6 +837,15 @@ mod tests {
                 .unwrap()
                 .to_string(),
             "invalid continuation snapshot at /size"
+        );
+    }
+
+    #[test]
+    fn invalid_snapshot_uses_registered_capacity_schema_for_diagnostics() {
+        let raw = json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"idle","provider":"codex"},"record":{"id":"c","accountKey":"a","threadId":"t","epoch":1,"turnId":"v","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":[],"attempt":1,"maxAttempts":4}});
+        assert_ne!(
+            invalid_snapshot(&raw).to_string(),
+            "invalid continuation snapshot at schema"
         );
     }
 

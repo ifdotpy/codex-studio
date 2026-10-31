@@ -629,6 +629,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     crate::terminal_record::check_schema_parity()?;
     crate::work_item_record::check_schema_parity()?;
     crate::project_record::check_schema_parity()?;
+    crate::continuation_snapshot::check_capacity_schema_parity()?;
     crate::request_record::check_schema_parity()?;
     crate::workspace_operation::check_schema_parity()?;
     crate::task_record::check_schema_parity()?;
@@ -1373,6 +1374,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-project-record.schema.json", &serde_json::to_string_pretty(&crate::project_record::schema()).map_err(|error| error.to_string())?)?,
         },
         Rendered {
+            path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-capacity-continuation.schema.json".into(),
+            text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-capacity-continuation.schema.json", &serde_json::to_string_pretty(&crate::continuation_snapshot::capacity_schema()).map_err(|error| error.to_string())?)?,
+        },
+        Rendered {
             path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-work-item-record.schema.json".into(),
             text: run_node(root, "node_modules/oxfmt/bin/oxfmt", "--stdin-filepath=workspaces/runtime/packages/runtime-schema/src/schemas/persisted-work-item-record.schema.json", &serde_json::to_string_pretty(&crate::work_item_record::schema()).map_err(|error| error.to_string())?)?,
         },
@@ -1904,6 +1909,8 @@ mod tests {
 
     #[test]
     fn persisted_provider_identity_requires_a_known_provider() {
+        let openapi = read_json(&repository_root(), OPENAPI_PATH).expect("OpenAPI source");
+        let registry = crate::registry_for_document(&openapi).expect("schema registry");
         for (name, pointer) in PROVIDER_PERSISTED_RECORDS {
             let path = format!(
                 "workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json"
@@ -1911,7 +1918,10 @@ mod tests {
             let schema = read_json(&repository_root(), &path).expect("persisted schema");
             let record = schema.pointer(pointer).expect("persisted record schema");
             let contract = serde_json::json!({"$defs":schema["$defs"],"allOf":[record]});
-            let validator = jsonschema::validator_for(&contract).expect("record schema compiles");
+            let validator = jsonschema::options()
+                .with_registry(&registry)
+                .build(&contract)
+                .expect("record schema compiles");
             let mut record = if *name == "account-registry" {
                 serde_json::json!({"id":"account","home":"/account","label":"Account","source":"fixture","status":"ready"})
             } else {

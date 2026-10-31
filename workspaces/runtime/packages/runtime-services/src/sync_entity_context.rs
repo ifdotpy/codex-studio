@@ -607,7 +607,7 @@ mod room_preparation_tests {
             .execute(
                 "INSERT INTO runtime_projects(id,record) VALUES ('project',?1)",
                 [
-                    json!({"id":"project","path":root.path(),"name":"before","peerTeams":[]})
+                    json!({"recordKind":"live","id":"project","path":root.path(),"name":"before","peerTeams":[]})
                         .to_string(),
                 ],
             )

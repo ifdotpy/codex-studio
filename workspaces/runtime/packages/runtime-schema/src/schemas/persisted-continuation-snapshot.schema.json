@@ -1,174 +1,5 @@
 {
   "$defs": {
-    "CapacityContinuation": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "properties": {
-        "acceptedTurnId": {
-          "anyOf": [
-            {
-              "maxLength": 4096,
-              "minLength": 1,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Acceptedturnid"
-        },
-        "accountKey": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Accountkey",
-          "type": "string"
-        },
-        "attempt": {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "title": "Attempt",
-          "type": "integer"
-        },
-        "cause": {
-          "enum": [
-            "serverOverloaded",
-            "internalServerError",
-            "httpConnectionFailed",
-            "responseStreamConnectionFailed",
-            "responseStreamDisconnected",
-            "responseTooManyFailedAttempts",
-            "diskFull"
-          ],
-          "title": "Cause",
-          "type": "string"
-        },
-        "claimedAt": {
-          "anyOf": [
-            {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Claimedat"
-        },
-        "cwd": {
-          "maxLength": 1048576,
-          "title": "Cwd",
-          "type": "string"
-        },
-        "dueAt": {
-          "anyOf": [
-            {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Dueat"
-        },
-        "epoch": {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "title": "Epoch",
-          "type": "integer"
-        },
-        "id": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Id",
-          "type": "string"
-        },
-        "maxAttempts": {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "title": "Maxattempts",
-          "type": "integer"
-        },
-        "reason": {
-          "anyOf": [
-            {
-              "maxLength": 1048576,
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Reason"
-        },
-        "settings": {
-          "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "title": "Settings",
-          "type": "object"
-        },
-        "status": {
-          "enum": [
-            "scheduled",
-            "starting",
-            "finished",
-            "cancelled",
-            "unknown",
-            "exhausted",
-            "failed"
-          ],
-          "title": "Status",
-          "type": "string"
-        },
-        "taskClaims": {
-          "items": {
-            "maxLength": 4096,
-            "minLength": 1,
-            "type": "string"
-          },
-          "maxItems": 4096,
-          "title": "Taskclaims",
-          "type": "array"
-        },
-        "threadId": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Threadid",
-          "type": "string"
-        },
-        "turnId": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "title": "Turnid",
-          "type": "string"
-        },
-        "waits": {
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "title": "Waits",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "id",
-        "accountKey",
-        "threadId",
-        "epoch",
-        "turnId",
-        "status",
-        "cause",
-        "cwd",
-        "settings",
-        "attempt",
-        "maxAttempts"
-      ],
-      "title": "CapacityContinuation",
-      "type": "object"
-    },
     "ContinuationAgent": {
       "additionalProperties": {
         "$ref": "#/$defs/JsonValue"
@@ -193,7 +24,7 @@
         "capacityRetry": {
           "anyOf": [
             {
-              "$ref": "#/$defs/CapacityContinuation"
+              "$ref": "https://codex-studio.invalid/persisted-capacity-continuation.schema.json"
             },
             {
               "type": "null"
@@ -1058,7 +889,7 @@
           "$ref": "#/$defs/UsageContinuation"
         },
         {
-          "$ref": "#/$defs/CapacityContinuation"
+          "$ref": "https://codex-studio.invalid/persisted-capacity-continuation.schema.json"
         },
         {
           "type": "null"

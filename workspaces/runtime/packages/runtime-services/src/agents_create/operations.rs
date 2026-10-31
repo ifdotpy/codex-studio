@@ -4376,6 +4376,7 @@ mod tests {
                     rusqlite::params![
                         project_path_for_write,
                         json!({
+                            "recordKind": "live",
                             "id": project_path_for_write,
                             "path": project_path_for_write,
                             "accountKey": "project-account",
@@ -4451,6 +4452,7 @@ mod tests {
                     rusqlite::params![
                         write_path,
                         json!({
+                            "recordKind": "live",
                             "id": write_path,
                             "path": write_path,
                             "accountKey": "codex-work",
