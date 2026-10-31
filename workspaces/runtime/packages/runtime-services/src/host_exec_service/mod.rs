@@ -134,6 +134,16 @@ struct RecoverParams {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct AcquireParams {
+    operation_id: String,
+    project_id: String,
+    agent_id: String,
+    line_path: String,
+    owner: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct RunParams {
     operation_id: String,
     agent_id: String,
@@ -307,6 +317,7 @@ enum FrameParams {
     Read(ReadParams),
     List(ListParams),
     Recover(RecoverParams),
+    Acquire(AcquireParams),
     ResultManifest(ResultManifestParams),
     // Existing dispatch until each remaining method has its own typed variant.
     Legacy(Map<String, Value>),
@@ -768,9 +779,6 @@ impl HostService {
         method: &str,
         params: &Map<String, Value>,
     ) -> Outcome<Value> {
-        if method == "acquire" {
-            return self.acquire(params).await.map(Value::Object);
-        }
         let identity = params
             .get("operationId")
             .and_then(Value::as_str)
@@ -799,6 +807,7 @@ impl HostService {
     ) -> Outcome<Value> {
         match params {
             FrameParams::Legacy(params) => self.dispatch(method, params).await,
+            FrameParams::Acquire(params) => self.acquire(params).await.map(Value::Object),
             FrameParams::List(params) => self.operations(&params.agent_id),
             FrameParams::Recover(params) => self.recover(&params.owner),
             FrameParams::Run(params) => {
@@ -1098,6 +1107,10 @@ impl HostService {
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
             "list" => FrameParams::List(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "acquire" => FrameParams::Acquire(
                 serde_json::from_str(raw)
                     .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
             ),
