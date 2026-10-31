@@ -1,4 +1,5 @@
-import { AgentStatus, RequestStatus } from "../../generated/api";
+import { AgentStatus } from "../../generated/api";
+import { needsAnswer } from "../../approvals";
 import { createContext, type ReactNode } from "react";
 import { useWorkerModels, type WorkerModelInfo } from "./WorkerModelPicker";
 
@@ -32,17 +33,7 @@ import {
 type Request = NonNullable<Snapshot["runtime"]>["requests"][number];
 
 export function awaitingAnswerIds(requests: Request[]) {
-  return new Set(
-    requests
-      .filter(
-        (request) =>
-          !request.deferred &&
-          (request.status === RequestStatus.pending || !request.status),
-      )
-      .flatMap((request) =>
-        typeof request.agent === "string" ? [request.agent] : [],
-      ),
-  );
+  return new Set(requests.filter(needsAnswer).map((request) => request.agent));
 }
 
 export function workerState(

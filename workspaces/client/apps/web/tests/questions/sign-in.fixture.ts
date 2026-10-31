@@ -3,13 +3,21 @@ declare global {
     __notes: string[];
   }
 }
-import type { components } from "../../src/generated/api.ts";
+import { approval } from "../../src/approvalFixtures.ts";
+import type { Approval } from "../../src/approvals.ts";
 
-type Params = components["schemas"]["RequestParamsDto"];
+type SignInFields = {
+  clientId?: string;
+  scope?: string;
+  linuxUser?: string;
+  source?: string;
+  expiresAt?: number;
+  userCode?: string;
+};
 
 export function signInCards(
   defaults: Pick<
-    Params,
+    SignInFields,
     "clientId" | "scope" | "linuxUser" | "source" | "expiresAt"
   >,
 ) {
@@ -17,16 +25,15 @@ export function signInCards(
     id: string,
     url: string,
     host: string,
-    redirect: Params["redirect"] & components["schemas"]["JsonValue"],
-    extra: Pick<Params, "userCode"> = {},
-  ) =>
-    ({
+    redirect: { host: string; port: number; path: string } | null,
+    extra: Pick<SignInFields, "userCode"> = {},
+  ): Approval =>
+    approval({
       id,
       agent: "worker",
-      method: "browser/open",
-      status: "pending",
-      params: { bridgeId: id, url, host, redirect, ...defaults, ...extra },
-    }) satisfies components["schemas"]["RequestEntityDto"];
+      request: { kind: "browser_open", url },
+      params: { bridgeId: id, host, redirect, ...defaults, ...extra },
+    });
 }
 
 export const browserSignInUrl =

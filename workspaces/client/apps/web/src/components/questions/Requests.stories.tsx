@@ -1,11 +1,9 @@
-import { AgentSource, AgentStatus, RequestStatus } from "../../generated/api";
+import { AgentSource, AgentStatus } from "../../generated/api";
+import { approval } from "../../approvalFixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import Requests from "./Requests";
 import type { Agent } from "../../types";
-import type { components } from "../../generated/api";
-
-type RequestDto = components["schemas"]["RequestEntityDto"];
 
 const agent = {
   kind: "agent",
@@ -17,25 +15,31 @@ const agent = {
   created: 1,
 } satisfies Agent;
 
-const question: RequestDto = {
+const question = approval({
   id: "question-1",
   agent: agent.id,
-  method: "agent/asyncQuestion",
-  status: RequestStatus.pending,
-  createdAt: 1,
-  params: {
+  request: {
+    kind: "agent_question",
     questions: [
       {
         id: "scope",
         question: "Which files should I include?",
+        header: null,
         options: [
-          { label: "One file", description: "Keep the change focused." },
-          { label: "All files" },
+          {
+            label: "One file",
+            description: "Keep the change focused.",
+            preview: null,
+          },
+          { label: "All files", description: null, preview: null },
         ],
+        is_secret: false,
+        multi_select: null,
+        is_other: null,
       },
     ],
   },
-};
+});
 
 const meta = {
   title: "Questions/Requests",
@@ -68,9 +72,56 @@ export const ActiveQuestion: Story = {
   },
 };
 
+const deferredQuestion = {
+  ...question,
+  deferral: { active: true, at: 2, by: { kind: "owner" as const } },
+};
+
 export const DeferredQuestion: Story = {
   args: {
-    requests: [{ ...question, deferred: true }],
-    allRequests: [{ ...question, deferred: true }],
+    requests: [deferredQuestion],
+    allRequests: [deferredQuestion],
+  },
+};
+
+const sending = {
+  ...question,
+  state: {
+    kind: "answering" as const,
+    answer: {
+      kind: "answers" as const,
+      answers: [{ id: "scope", answer: ["One file"] }],
+    },
+    command: "command",
+  },
+};
+
+/** The answer is stored and on its way; the card shows no controls. */
+export const AnsweringQuestion: Story = {
+  args: { requests: [sending], allRequests: [sending] },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    expect(canvas.getByText("Sending your answer")).toBeVisible();
+    expect(canvas.queryByRole("button", { name: "Answer" })).toBeNull();
+  },
+};
+
+const approveCommand = approval({
+  id: "command-1",
+  agent: agent.id,
+  request: {
+    kind: "exec",
+    command: "npm run build",
+    cwd: "/work/app",
+    reason: "Build before the release",
+  },
+});
+
+export const CommandApproval: Story = {
+  args: { requests: [approveCommand], allRequests: [approveCommand] },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    expect(canvas.getByText("npm run build")).toBeVisible();
+    expect(canvas.getByRole("button", { name: "Approve" })).toBeVisible();
   },
 };

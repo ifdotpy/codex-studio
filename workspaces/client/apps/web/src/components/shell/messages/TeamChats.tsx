@@ -1,7 +1,4 @@
-import {
-  RoomKind as GeneratedApiRoomKind,
-  RequestStatus as GeneratedApiRequestStatus,
-} from "../../../generated/api.ts";
+import { RoomKind as GeneratedApiRoomKind } from "../../../generated/api.ts";
 import { useServerApi } from "../../../servers/ServerServicesContext";
 import MessageDate from "../../conversation/transcript/MessageDate";
 import { localDateTime, localTime } from "../../../local-time";
@@ -17,7 +14,12 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, Inbox, Megaphone, Search, Users } from "lucide-react";
 import "../../../api";
 import { useMessages } from "../../../hooks";
-import type { JsonInput, Snapshot } from "../../../types";
+import type { Snapshot } from "../../../types";
+import {
+  approvalCreated,
+  approvalSummary,
+  isPending,
+} from "../../../approvals";
 import StreamingText from "../../conversation/transcript/StreamingText";
 import Requests from "../../questions/Requests";
 import UserMessages from "./UserMessages";
@@ -42,17 +44,6 @@ function RoomDate({ at }: { at?: number | null | undefined }) {
         : localDateTime(date, { month: "short", day: "numeric" })}
     </time>
   );
-}
-
-function firstQuestion(params: JsonInput | undefined): string | undefined {
-  if (!params || typeof params !== "object" || Array.isArray(params))
-    return undefined;
-  const questions = params.questions;
-  if (!Array.isArray(questions)) return undefined;
-  const first = questions[0];
-  if (!first || typeof first !== "object" || Array.isArray(first))
-    return undefined;
-  return typeof first.question === "string" ? first.question : undefined;
 }
 
 export default function TeamChats({
@@ -132,18 +123,15 @@ export default function TeamChats({
   useEffect(() => {
     setSeen(saved(seenKey, {}));
   }, [seenKey]);
-  const attention = (runtime?.requests ?? []).filter(
-    (request) =>
-      request.status === GeneratedApiRequestStatus.pending || !request.status,
-  );
+  const attention = (runtime?.requests ?? []).filter(isPending);
   const latestPersonal = [
     ...(runtime?.complaints ?? []).map((item) => ({
       created: item.created,
       text: item.title,
     })),
     ...(runtime?.requests ?? []).map((item) => ({
-      created: item.createdAt ?? item.created ?? item.at,
-      text: firstQuestion(item.params) || item.title,
+      created: approvalCreated(item),
+      text: approvalSummary(item),
     })),
   ].sort((a, b) => (b.created || 0) - (a.created || 0))[0];
   const personalPreview =
@@ -225,14 +213,10 @@ export default function TeamChats({
   }, [selection.detail, selected]);
   const events = [
     ...(showYou ? (runtime?.requests ?? []) : [])
-      .filter(
-        (request) =>
-          request.status === GeneratedApiRequestStatus.pending ||
-          !request.status,
-      )
+      .filter(isPending)
       .map((request) => ({
         id: `request:${request.id}`,
-        created: request.createdAt ?? request.created ?? request.at ?? 0,
+        created: approvalCreated(request),
         content: (
           <Requests
             scope={data.stateDir}

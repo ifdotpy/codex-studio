@@ -11,6 +11,29 @@ type Schema = components["schemas"];
 // Safety bound for a broken fixture; normal completion follows the SSE event.
 const fixtureDeadlineSeconds = 60;
 
+/** A pending monitor start, as the server publishes it in the request entity. */
+function pendingStart(id: string, agent: string): Schema["Approval"] {
+  return {
+    id,
+    agent,
+    turn: null,
+    created: 1,
+    epoch: null,
+    request: { kind: "monitor_start", monitor: "m", command: "echo run" },
+    delivery: null,
+    detail: {
+      params: {},
+      preview: null,
+      answer_error: null,
+      host_close_reason: null,
+    },
+    state: { kind: "pending" },
+    deferral: null,
+    fire_at: null,
+    hidden: null,
+  };
+}
+
 for (const scenario of [
   "success",
   "duplicate",
@@ -31,26 +54,17 @@ for (const scenario of [
         id: "r1",
         seq: 1,
         op: "upsert",
-        value: {
-          id: "r1",
-          agent: scenario === "wrong-owner" ? "other" : "agent",
-          method: "monitor/approve",
-          status: "pending",
-          params: { command: "echo run", cwd: dir },
-        },
+        value: pendingStart(
+          "r1",
+          scenario === "wrong-owner" ? "other" : "agent",
+        ),
       },
       {
         collection: "request",
         id: "r2",
         seq: 2,
         op: "upsert",
-        value: {
-          id: "r2",
-          agent: "agent",
-          method: "monitor/approve",
-          status: "pending",
-          params: { command: "echo run", cwd: dir },
-        },
+        value: pendingStart("r2", "agent"),
       },
       {
         collection: "monitor",
@@ -158,7 +172,10 @@ for (const scenario of [
         documents,
       } satisfies Schema["SyncPullResponse"]);
       if (scenario === "invalid-request")
-        page = page.replace('"status":"pending"', '"status":"bogus"');
+        page = page.replace(
+          '"state":{"kind":"pending"}',
+          '"state":{"kind":"bogus"}',
+        );
       return res.end(page);
     });
     await new Promise<void>((resolve) =>

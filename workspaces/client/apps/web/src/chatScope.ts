@@ -1,3 +1,4 @@
+import { needsAnswer } from "./approvals";
 import { RoomKind } from "./generated/api";
 import type { Agent, Room, Snapshot } from "./types";
 
@@ -54,9 +55,7 @@ export function chatSnapshot(
       rooms: runtime.rooms.filter(
         (room) => !!rootId && roomLeadIds(room, data.threads).includes(rootId),
       ),
-      requests: runtime.requests.filter((request) =>
-        owns(request.agent || undefined),
-      ),
+      requests: runtime.requests.filter((request) => owns(request.agent)),
       complaints: runtime.complaints.filter(
         (complaint) => !!rootId && complaint.leadId === rootId,
       ),
@@ -73,7 +72,7 @@ export function chatSnapshot(
 export function messageAttentionCount(data: Snapshot | null): number {
   if (!data) return 0;
   return (
-    data.runtime.requests.filter((request) => !request.deferred).length +
+    data.runtime.requests.filter(needsAnswer).length +
     data.runtime.complaints.filter((complaint) => complaint.needsUserResponse)
       .length
   );

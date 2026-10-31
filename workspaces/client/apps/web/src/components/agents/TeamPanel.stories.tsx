@@ -1,10 +1,6 @@
-import {
-  AgentRole,
-  AgentSource,
-  AgentStatus,
-  RequestStatus,
-} from "../../generated/api";
+import { AgentRole, AgentSource, AgentStatus } from "../../generated/api";
 import { useState } from "react";
+import { approval, question } from "../../approvalFixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import type { Agent, Snapshot } from "../../types";
@@ -130,7 +126,11 @@ const snapshot: Snapshot = {
     monitors: [],
     complaints: [],
     requests: [
-      { id: "request", agent: "question", status: RequestStatus.pending },
+      approval({
+        id: "request",
+        agent: "question",
+        request: { kind: "question", questions: [question("q", "Continue?")] },
+      }),
     ],
     rules: [],
     projects: [],

@@ -1,4 +1,5 @@
-import type { Agent, Request } from "../../src/types.ts";
+import type { Agent } from "../../src/types.ts";
+import { approval } from "../../src/approvalFixtures.ts";
 
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -14,21 +15,25 @@ const agent: Agent = {
   turnId: "turn",
   inFlight: true,
 };
-const request: Request = {
+const request = approval({
   id: "request-159",
   agent: "lead",
-  method: "item/commandExecution/requestApproval",
-  params: {
-    kind: "writeStdin",
-    threadId: "thread-159",
-    turnId: "turn-159",
-    itemId: "exec-159",
-    startedAtMs: 1750000000000,
-    approvalId: "stdin-approval-159",
+  turn: "turn-159",
+  request: {
+    kind: "exec",
+    command: "",
+    cwd: "",
     reason:
       "Send input to an existing terminal to continue the reviewed command.",
   },
-};
+  params: {
+    kind: "writeStdin",
+    threadId: "thread-159",
+    itemId: "exec-159",
+    startedAtMs: 1750000000000,
+    approvalId: "stdin-approval-159",
+  },
+});
 createRoot(document.getElementById("root")!).render(
   React.createElement(
     MantineProvider,
