@@ -45,7 +45,7 @@ export type {
   PostInput,
 } from "./apiTypes";
 
-import type { paths } from "./generated/api";
+import type { components, paths } from "./generated/api";
 
 import {
   API_SCHEMA_HASH,
@@ -351,6 +351,29 @@ export function createApiScope(options: ApiScopeOptions) {
   let confirmedSession: { generation: number; token: string } | undefined;
 
   let workspace = "";
+
+  let latestStreamSession: components["schemas"]["SyncSessionEvent"];
+  let resolveStreamSession!: () => void;
+  const streamSession = new Promise<void>((resolve) => {
+    resolveStreamSession = resolve;
+  });
+
+  function receiveStreamSession(
+    event: components["schemas"]["SyncSessionEvent"],
+  ) {
+    if (!/^[a-f0-9]{32}$/.test(event.workspaceId))
+      throw new Error("Invalid workspace identity");
+    if (workspace && workspace !== event.workspaceId)
+      throw new Error("The server workspace changed. Reload to synchronize.");
+    workspace = event.workspaceId;
+    if (event.token !== undefined) setToken(event.token);
+    latestStreamSession = event;
+    resolveStreamSession();
+  }
+
+  function waitForStreamSession() {
+    return streamSession.then(() => latestStreamSession);
+  }
 
   const schemaMismatchListeners = new Set<() => void>();
 
@@ -1000,6 +1023,8 @@ export function createApiScope(options: ApiScopeOptions) {
     fetchApiRequest,
     client,
     serverAccess,
+    receiveStreamSession,
+    waitForStreamSession,
     setWorkspace,
     setToken,
     get,
@@ -1040,6 +1065,8 @@ export const {
   fetchApiRequest,
   client,
   serverAccess,
+  receiveStreamSession,
+  waitForStreamSession,
   setWorkspace,
   setToken,
   get,

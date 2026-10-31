@@ -56,6 +56,39 @@ const response = (value: unknown, hash = API_SCHEMA_HASH) =>
   });
 
 describe("concurrent servers in one interface", () => {
+  it("adopts the stream session without a bootstrap request and rejects workspace changes", async () => {
+    const requests: Request[] = [];
+    const api = scope(
+      "a",
+      async (request) => {
+        requests.push(request);
+        return response({});
+      },
+      memory(),
+    );
+    const waiting = api.waitForStreamSession();
+    api.receiveStreamSession({
+      routes: [],
+      sessionId: "one",
+      workspaceId: "a".repeat(32),
+      token: "owner",
+    });
+    await expect(waiting).resolves.toMatchObject({
+      workspaceId: "a".repeat(32),
+      token: "owner",
+    });
+    await api.post("/api/organization", { id: "chat" });
+    expect(requests[0]?.headers.get("X-Canvas-Token")).toBe("owner");
+    expect(requests[0]?.headers.get("X-Canvas-Workspace")).toBe("a".repeat(32));
+    expect(() =>
+      api.receiveStreamSession({
+        routes: [],
+        sessionId: "two",
+        workspaceId: "b".repeat(32),
+      }),
+    ).toThrow();
+    expect(requests).toHaveLength(1);
+  });
   it("versions disposable caches without changing request identity storage", () => {
     const disk = memory();
     const api = scope("a", async () => response({}), disk);
