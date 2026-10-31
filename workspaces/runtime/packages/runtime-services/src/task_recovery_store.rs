@@ -104,9 +104,7 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
                 t.turn_id()
             );
             current.completed_turn = studio_runtime_store::domain::turn_completed(
-                tx,
-                &agent,
-                t.turn_id(),
+                tx, agent, t.turn_id(),
             )?
             .then_some(completed);
             let decision = match decision {

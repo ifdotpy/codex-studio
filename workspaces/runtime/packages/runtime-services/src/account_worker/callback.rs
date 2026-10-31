@@ -772,7 +772,6 @@ mod tests {
 #[cfg(test)]
 mod catalog_wait_tests {
     use super::{CatalogWait, wait_for_managed_catalog};
-    use rusqlite::params;
     use serde_json::json;
     use std::sync::Mutex;
     use studio_runtime_providers::{Method, RequestFrame, RequestId};
