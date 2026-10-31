@@ -55,10 +55,10 @@ pub(super) fn run(args: &[String]) -> Result<ExitCode> {
         _ => return Err(USAGE.into()),
     }
     println!("{}", serde_json::to_string_pretty(&settings)?);
-    if command == "status" {
-        if let Ok(position) = std::fs::read_to_string(state.join("backup/state.json")) {
-            println!("{position}");
-        }
+    if command == "status"
+        && let Ok(position) = std::fs::read_to_string(state.join("backup/state.json"))
+    {
+        println!("{position}");
     }
     Ok(ExitCode::SUCCESS)
 }

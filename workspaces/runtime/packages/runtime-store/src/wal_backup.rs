@@ -156,10 +156,15 @@ impl WalBackup {
         fs::rename(temporary, self.folder.join("state.json"))
     }
 
+    /// Write the state file. A failure is logged: the shipper goes on with its state in memory.
+    fn persist(&self, state: &State) {
+        log_failure("save the backup state", self.save(state));
+    }
+
     fn mark_broken(&self, state: &mut State, reason: String) {
         eprintln!("backup generation broken: {reason}");
         state.broken = Some(reason);
-        let _ = self.save(state);
+        self.persist(state);
         self.wake();
     }
 
@@ -185,7 +190,7 @@ impl WalBackup {
         let mut state = self.lock();
         if state.last_error != error {
             state.last_error = error;
-            let _ = self.save(&state);
+            self.persist(&state);
         }
     }
 
@@ -219,7 +224,7 @@ impl WalBackup {
 
     /// Remove a segment that the paired server confirmed.
     pub fn ack(&self, segment: &Segment) {
-        let _ = fs::remove_file(&segment.path);
+        log_failure("remove a backup file", fs::remove_file(&segment.path));
     }
 
     /// Start a new generation: drop the old outbox, take a read mark on a separate
@@ -230,7 +235,10 @@ impl WalBackup {
         let mut state = self.lock();
         self.release_reader();
         if let Some(old) = state.generation.take() {
-            let _ = fs::remove_dir_all(self.outbox(&old));
+            log_failure(
+                "remove a backup file",
+                fs::remove_dir_all(self.outbox(&old)),
+            );
         }
         let seconds = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -288,7 +296,7 @@ impl WalBackup {
         }
         state.snapshot_running = false;
         state.snapshot_sent = true;
-        let _ = self.save(&state);
+        self.persist(&state);
         true
     }
 
@@ -299,7 +307,10 @@ impl WalBackup {
         self.release_reader();
         state.snapshot_running = false;
         if let Some(generation) = state.generation.clone() {
-            let _ = fs::remove_dir_all(self.outbox(&generation));
+            log_failure(
+                "remove a backup file",
+                fs::remove_dir_all(self.outbox(&generation)),
+            );
         }
         self.mark_broken(&mut state, reason.to_owned());
     }
@@ -331,7 +342,7 @@ impl WalBackup {
         };
         // The WAL may get frames again; only a finished checkpoint makes it clean.
         state.clean = false;
-        let _ = self.save(&state);
+        self.persist(&state);
         allowed
     }
 
@@ -342,7 +353,7 @@ impl WalBackup {
             return;
         }
         state.clean = complete;
-        let _ = self.save(&state);
+        self.persist(&state);
     }
 
     /// Copy the committed frames after the current position. Returns whether the copy
@@ -438,6 +449,12 @@ fn fresh_position(header: &WalHeader) -> WalPosition {
         offset: 0,
         checksum: header.checksum,
         pages: 0,
+    }
+}
+
+fn log_failure(what: &str, result: io::Result<()>) {
+    if let Err(error) = result {
+        eprintln!("backup: could not {what}: {error}");
     }
 }
 

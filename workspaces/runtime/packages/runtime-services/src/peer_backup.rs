@@ -220,7 +220,9 @@ fn prune(source: &Path, retain: usize) {
     generations.sort();
     let drop_count = generations.len().saturating_sub(retain);
     for old in generations.into_iter().take(drop_count) {
-        let _ = std::fs::remove_dir_all(old);
+        if let Err(error) = std::fs::remove_dir_all(&old) {
+            eprintln!("backup: could not remove {}: {error}", old.display());
+        }
     }
 }
 
@@ -305,9 +307,10 @@ impl Sender {
             }
             let on = Settings::read(self.store.root()).enabled;
             let segments = async {
-                match &backup {
-                    Some(backup) if on && !retry => backup.changed().await,
-                    _ => std::future::pending().await,
+                if let (Some(backup), true) = (&backup, on && !retry) {
+                    backup.changed().await;
+                } else {
+                    std::future::pending::<()>().await;
                 }
             };
             tokio::select! {
@@ -515,15 +518,17 @@ impl Sender {
     async fn put(&self, target: &str, payload: Value) -> Result<Reply, Stop> {
         let mut attempt = 1;
         loop {
-            match self.put_once(target, &payload).await {
-                Err(Stop::Error(message)) if attempt < BACKUP_PUT_ATTEMPTS => {
-                    eprintln!("backup put failed, trying again: {message}");
-                    attempt += 1;
-                    tokio::time::sleep(PUT_RETRY_DELAY).await;
-                    self.check_stop()?;
-                }
-                result => return result,
+            let result = self.put_once(target, &payload).await;
+            if let Err(Stop::Error(message)) = &result
+                && attempt < BACKUP_PUT_ATTEMPTS
+            {
+                eprintln!("backup put failed, trying again: {message}");
+                attempt += 1;
+                tokio::time::sleep(PUT_RETRY_DELAY).await;
+                self.check_stop()?;
+                continue;
             }
+            return result;
         }
     }
 
