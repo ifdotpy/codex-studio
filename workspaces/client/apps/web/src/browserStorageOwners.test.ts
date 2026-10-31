@@ -20,7 +20,6 @@ const allowed: Record<string, string> = {
   "servers/automaticAccessStore.ts":
     "servers removed from the automatic UI list",
   "servers/projectLocations.ts": "paired server list, for project locations",
-  "servers/routes.ts": "routes that a paired server reported, for each server",
   "servers/serverServices.ts": "server-scoped storage for each server view",
   "servers/storage.ts":
     "server-scoped storage that drafts, queues, uploads, and caches use",

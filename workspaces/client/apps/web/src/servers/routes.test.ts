@@ -4,6 +4,7 @@ import {
   ROUTE_FAILURE_COOLDOWN_MS,
   RouteIdentityError,
   ServerRoutes,
+  routesFor,
   retarget,
   sendRouted,
 } from "./routes";
@@ -78,7 +79,22 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(1_000_000);
 });
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+it("keeps learned routes in this page only", () => {
+  const getItem = vi.fn(() => JSON.stringify([LAN]));
+  const setItem = vi.fn();
+  vi.stubGlobal("localStorage", { getItem, setItem });
+  const routes = routesFor({ id: "memory-route-test", origin: PAIRED });
+  expect(routes.routes()).toEqual([PAIRED]);
+  routes.learn([LAN]);
+  expect(routes.routes()).toEqual([PAIRED, LAN]);
+  expect(getItem).not.toHaveBeenCalled();
+  expect(setItem).not.toHaveBeenCalled();
+});
 
 describe("route list (rule 1)", () => {
   it("lists the paired origin first, then learned routes", () => {
