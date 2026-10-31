@@ -250,7 +250,8 @@ fn load_recovery_jobs_in(
         return Ok(jobs);
     }
     if task_page {
-        let mut stmt=db.prepare_cached("SELECT t.id,t.record,a.record,a.id FROM runtime_tasks t JOIN runtime_agents a ON a.id=json_extract(t.record,'$.agent') WHERE a.account_key=?1 AND t.id>?2 AND json_extract(t.record,'$.status')='running' AND json_extract(t.record,'$.type') IN ('commandExecution','fileChange','dynamicToolCall','mcpToolCall') ORDER BY t.id LIMIT ?3")?;
+        let deleted = studio_runtime_store::agent_management::DELETED_AGENT_SQL;
+        let mut stmt=db.prepare_cached(&format!("SELECT t.id,t.record,a.record,a.id FROM runtime_tasks t JOIN (SELECT id,record,account_key FROM runtime_agents WHERE NOT {deleted}) a ON a.id=json_extract(t.record,'$.agent') WHERE a.account_key=?1 AND t.id>?2 AND json_extract(t.record,'$.status')='running' AND json_extract(t.record,'$.type') IN ('commandExecution','fileChange','dynamicToolCall','mcpToolCall') ORDER BY t.id LIMIT ?3"))?;
         let rows = stmt
             .query_map(
                 rusqlite::params![account, cursor.tasks, MAX_SCAN_JOBS as i64],
