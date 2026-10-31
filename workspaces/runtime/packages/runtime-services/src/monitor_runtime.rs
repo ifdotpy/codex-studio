@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, EventWriteRepository, MonitorsRepository, QueueEvent,
-    QueueEventId, RequestRecord, RuntimeStore, SchedulerRepository, StartupRecoveryRepository,
-    SyncDocumentsRepository, Table, Transaction, monitor_runtime as repository,
+    QueueEventId, RuntimeStore, SchedulerRepository, StartupRecoveryRepository, Table, Transaction,
+    monitor_runtime as repository,
 };
 
 use crate::event_write::{self, python_json};
@@ -68,7 +68,7 @@ pub async fn recover_on_startup(
                     return Err(MonitorError::Store(error));
                 }
             }
-            let requests = recover_requests(tx)?;
+            let requests = recover_requests(tx, now)?;
             let events = recover_uncovered_events(tx)?;
             let monitors = recover_active_monitors(tx, now)?;
             Ok((requests, events, monitors))
@@ -80,56 +80,45 @@ pub async fn recover_on_startup(
     Ok(recovery)
 }
 
-fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
-    let request_rows = StartupRecoveryRepository::unsettled_requests(tx)?;
+fn recover_requests(tx: &Transaction<'_>, now: f64) -> Result<usize, MonitorError> {
+    use studio_runtime_schema::approvals::{ApprovalState, CloseReason, Request, Timestamp};
     let mut count = 0;
-    for (id, raw) in request_rows {
-        use studio_runtime_schema::{
-            persistence::RequestCardStatus as Status, request_record::RequestMethod,
-        };
-        let mut request = match serde_json::from_str::<RequestRecord>(&raw) {
-            Ok(request) if request.id == id => request,
-            _ => {
-                eprintln!("startup request recovery skipped row id={id}: invalid record");
-                continue;
-            }
-        };
-        match request.status {
-            Status::Answering => {
-                request.status = Status::Uncertain;
-                request.answer_error =
+    for mut row in
+        studio_runtime_store::approvals::all(tx).map_err(studio_runtime_store::StoreError::from)?
+    {
+        let state = match &row.state {
+            ApprovalState::Answering { answer, .. } => {
+                row.detail.answer_error =
                     Some("Server restarted before answer delivery completed".into());
-            }
-            Status::Pending
-                if !retained_question(tx, &request)?
-                    && !retained_monitor_approval(tx, &request)? =>
-            {
-                request.status = Status::Expired;
-                if request.method == RequestMethod::BrowserOpen {
-                    request.close_reason = Some(crate::browser_cards::RESTART_CLOSE_REASON.into());
+                ApprovalState::Unknown {
+                    answer: answer.clone(),
+                    since: Timestamp(now),
                 }
             }
-            Status::Pending
-            | Status::Answered
-            | Status::Uncertain
-            | Status::Blocked
-            | Status::Resolved
-            | Status::Expired
-            | Status::Deleted => continue,
-        }
+            ApprovalState::Pending
+                if !retained_question(tx, &row)? && !retained_monitor_approval(tx, &row)? =>
+            {
+                // A sign-in request lives in its bridge across the restart; the card poll gives
+                // the card back while that request is open (`browser_cards::apply`).
+                if matches!(row.request, Request::BrowserOpen { .. }) {
+                    row.detail.host_close_reason =
+                        Some(crate::browser_cards::RESTART_CLOSE_REASON.into());
+                }
+                ApprovalState::Closed {
+                    reason: CloseReason::SessionLost,
+                    at: Timestamp(now),
+                }
+            }
+            _ => continue,
+        };
+        row.state = state;
+        row.fire_at = None;
         tx.execute_batch("SAVEPOINT startup_request_recovery_row")
             .map_err(studio_runtime_store::StoreError::from)?;
         let apply = (|| {
-            Table::<RequestRecord>::new(tx).put(&request)?;
-            let view = crate::sync_views::project_persisted_record("request", &json!(request))
-                .ok_or(MonitorError::Refused("Invalid request projection"))?;
-            SyncDocumentsRepository::put_entity(
-                tx,
-                "request",
-                request.id(),
-                view,
-                request.status != Status::Pending,
-            )?;
+            studio_runtime_store::approvals::put(tx, &row)
+                .map_err(studio_runtime_store::StoreError::from)?;
+            crate::approval_sync::publish(tx, &row)?;
             Ok::<(), MonitorError>(())
         })();
         if let Err(error) = apply {
@@ -140,7 +129,10 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
             if startup_store_failure(&error) {
                 return Err(error);
             }
-            eprintln!("startup request recovery skipped row id={id}: {error}");
+            eprintln!(
+                "startup request recovery skipped row id={}: {error}",
+                row.id.as_str()
+            );
             continue;
         }
         tx.execute_batch("RELEASE startup_request_recovery_row")
@@ -153,31 +145,30 @@ fn recover_requests(tx: &Transaction<'_>) -> Result<usize, MonitorError> {
 /// Monitor approvals are local durable intents, independent of a native turn.
 fn retained_monitor_approval(
     tx: &Transaction<'_>,
-    request: &RequestRecord,
+    row: &studio_runtime_schema::approvals::Approval,
 ) -> Result<bool, MonitorError> {
-    if request.method != studio_runtime_schema::request_record::RequestMethod::MonitorApprove {
-        return Ok(false);
-    }
-    #[derive(Deserialize)]
-    struct Params {
-        #[serde(rename = "monitorId")]
-        monitor_id: String,
-    }
-    let Ok(params) = serde_json::from_str::<Params>(request.params.get()) else {
+    let studio_runtime_schema::approvals::Request::MonitorStart { monitor, .. } = &row.request
+    else {
         return Ok(false);
     };
-    match snapshot(tx, &params.monitor_id) {
-        Ok((monitor, _)) => Ok(monitor.retains_approval_for(&request.agent)),
+    match snapshot(tx, monitor) {
+        Ok((monitor, _)) => Ok(monitor.retains_approval_for(row.agent.as_str())),
         Err(error) if startup_store_failure(&error) => Err(error),
         Err(_) => Ok(false),
     }
 }
 
-fn retained_question(tx: &Transaction<'_>, request: &RequestRecord) -> Result<bool, MonitorError> {
-    if request.method != studio_runtime_schema::request_record::RequestMethod::AsyncQuestion {
+fn retained_question(
+    tx: &Transaction<'_>,
+    row: &studio_runtime_schema::approvals::Approval,
+) -> Result<bool, MonitorError> {
+    if !matches!(
+        row.request,
+        studio_runtime_schema::approvals::Request::AgentQuestion { .. }
+    ) {
         return Ok(false);
     }
-    let id = &request.agent;
+    let id = row.agent.as_str();
     let raw: Option<String> = tx
         .query_row(
             "SELECT record FROM runtime_agents WHERE id=?1",
@@ -194,7 +185,7 @@ fn retained_question(tx: &Transaction<'_>, request: &RequestRecord) -> Result<bo
             return Ok(false);
         }
     };
-    let same_epoch = agent.get("epoch").and_then(Value::as_u64) == request.epoch;
+    let same_epoch = agent.get("epoch").and_then(Value::as_u64) == row.epoch;
     if event_write::truthy(agent.get("deletedAt")) || !same_epoch {
         return Ok(false);
     }
@@ -347,6 +338,12 @@ pub fn cancel_in_transaction(
     Ok(decision.response)
 }
 
+/// The body of the answer route: the user's decision.
+#[derive(Deserialize)]
+struct DecisionBody {
+    decision: studio_runtime_schema::approvals::Decision,
+}
+
 pub struct MonitorApprovalAnswer {
     pub response: Value,
     pub accepted: bool,
@@ -368,79 +365,63 @@ pub async fn answer_approval(
     let data = data.clone();
     store
         .transaction_with(move |tx| {
-            let Some(mut request) = Table::<RequestRecord>::new(tx).get(&request_id)? else {
+            use studio_runtime_schema::approvals as typed;
+            let id = typed::ApprovalId(request_id.clone());
+            let Some(request) = studio_runtime_store::approvals::get(tx, &id)
+                .map_err(studio_runtime_store::StoreError::from)?
+            else {
                 return Ok(None);
             };
-            if request.method
-                != studio_runtime_schema::request_record::RequestMethod::MonitorApprove
-            {
+            let typed::Request::MonitorStart { monitor, .. } = &request.request else {
                 return Ok(None);
-            }
-            let decision = data
-                .get("decision")
-                .and_then(Value::as_str)
-                .filter(|decision| matches!(*decision, "accept" | "decline" | "cancel"))
-                .ok_or(MonitorError::Refused("Invalid monitor approval decision"))?;
+            };
+            let body: DecisionBody = serde_json::from_value(data)
+                .map_err(|_| MonitorError::Refused("Invalid monitor approval decision"))?;
+            let decision = match body.decision {
+                typed::Decision::Accept => "accept",
+                typed::Decision::Decline => "decline",
+                typed::Decision::Cancel => "cancel",
+                typed::Decision::AcceptForSession => {
+                    return Err(MonitorError::Refused("Invalid monitor approval decision"));
+                }
+            };
             let accepted = decision == "accept";
-            #[derive(Deserialize)]
-            struct ApprovalParams {
-                #[serde(rename = "monitorId")]
-                monitor_id: String,
-            }
-            let params: ApprovalParams =
-                serde_json::from_str(request.params.get()).map_err(|_| {
-                    MonitorError::InvalidStored {
-                        id: request_id.clone(),
-                        location: "params/monitorId".into(),
-                    }
-                })?;
-            let monitor_id = Some(params.monitor_id.as_str())
-                .filter(|id| !id.is_empty())
-                .ok_or(MonitorError::InvalidStored {
-                    id: request_id.clone(),
-                    location: "params/monitorId".into(),
-                })?;
+            let monitor_id = monitor.as_str();
             let (snapshot, actor) = snapshot(tx, monitor_id)?;
             event_write::refuse_remote(&actor)?;
-            if request.agent != snapshot.agent() {
+            if request.agent.as_str() != snapshot.agent() {
                 return Err(MonitorError::Refused("Monitor approval identity changed"));
             }
-            if request.status == studio_runtime_schema::persistence::RequestCardStatus::Answered {
-                let saved = request
-                    .answer_decision
-                    .map(|value| value.as_str())
-                    .or_else(|| match snapshot.record().status {
-                        studio_runtime_schema::studio_errors::MonitorStatus::Starting
-                        | studio_runtime_schema::studio_errors::MonitorStatus::Running
-                        | studio_runtime_schema::studio_errors::MonitorStatus::Completed
-                        | studio_runtime_schema::studio_errors::MonitorStatus::Failed => {
-                            Some("accept")
-                        }
-                        studio_runtime_schema::studio_errors::MonitorStatus::Cancelled => {
-                            Some("decline")
-                        }
-                        studio_runtime_schema::studio_errors::MonitorStatus::Approval
-                        | studio_runtime_schema::studio_errors::MonitorStatus::Lost => None,
-                    });
-                if saved != Some(decision) {
-                    return Err(MonitorError::Refused(
-                        "This monitor approval already has a different decision",
-                    ));
+            let answer = typed::Answer::Decision {
+                decision: body.decision,
+            };
+            if !matches!(request.state, typed::ApprovalState::Pending) {
+                let given = match &request.state {
+                    typed::ApprovalState::Answering { answer, .. }
+                    | typed::ApprovalState::Answered { answer, .. }
+                    | typed::ApprovalState::Unknown { answer, .. } => Some(answer),
+                    typed::ApprovalState::Pending | typed::ApprovalState::Closed { .. } => None,
+                };
+                if let Some(given) = given {
+                    if *given != answer {
+                        return Err(MonitorError::Refused(
+                            "This monitor approval already has a different decision",
+                        ));
+                    }
+                    if accepted && !start_dispatch_available {
+                        return Err(MonitorError::Unavailable("monitor-driver/start-dispatch"));
+                    }
+                    return Ok(Some(MonitorApprovalAnswer {
+                        response: json!({"status":"answered","replayed":true}),
+                        accepted,
+                    }));
                 }
-                if accepted && !start_dispatch_available {
-                    return Err(MonitorError::Unavailable("monitor-driver/start-dispatch"));
-                }
-                return Ok(Some(MonitorApprovalAnswer {
-                    response: json!({"status":"answered","replayed":true}),
-                    accepted,
-                }));
             }
-            if request.status != studio_runtime_schema::persistence::RequestCardStatus::Pending
-                || snapshot.record().status
-                    != studio_runtime_schema::studio_errors::MonitorStatus::Approval
-                || snapshot.record().epoch.get() != actor.epoch
+            if !matches!(request.state, typed::ApprovalState::Pending)
+                || snapshot.record()["status"] != "approval"
+                || snapshot.record()["epoch"].as_i64() != Some(actor.epoch)
                 || actor.auto_wake != Some(true)
-                || actor.is_deleted()
+                || event_write::truthy(actor.extra.get("deletedAt"))
             {
                 return Err(MonitorError::Refused("Command watch was stopped"));
             }
@@ -450,15 +431,12 @@ pub async fn answer_approval(
 
             let mut monitor = snapshot.record().clone();
             if accepted {
-                monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Starting;
+                monitor["status"] = json!("starting");
             } else {
-                monitor.status = studio_runtime_schema::studio_errors::MonitorStatus::Cancelled;
-                monitor.finished = Some(
-                    now.try_into()
-                        .map_err(|_| MonitorError::Refused("Invalid monitor clock"))?,
-                );
-                monitor.configuration_pending = Some(false);
-                if let Some(rule_id) = monitor.rule_id.as_deref() {
+                monitor["status"] = json!("cancelled");
+                monitor["finished"] = json!(now);
+                monitor["configurationPending"] = json!(false);
+                if let Some(rule_id) = monitor.get("ruleId").and_then(Value::as_str) {
                     let rule = studio_runtime_store::RulesRepository::get(tx, rule_id)?
                         .ok_or(MonitorError::Refused("Unknown monitor rule"))?;
                     let rule_snapshot =
@@ -475,7 +453,10 @@ pub async fn answer_approval(
                             code: None,
                             error: Some("User declined the command"),
                             cancelled: false,
-                            output: monitor.tail.as_str(),
+                            output: monitor
+                                .get("tail")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default(),
                         },
                         now,
                     )?;
@@ -490,24 +471,25 @@ pub async fn answer_approval(
                     )?;
                 }
             }
-            let after = MonitorSnapshot::checked_stored(&monitor, actor.value())?;
-            Table::new(tx).put(&monitor)?;
+            let after = MonitorSnapshot::checked(monitor.clone(), actor.value())?;
+            repository::put(tx, monitor)?;
             crate::agent_progress::publish_owner(tx, &actor.id.0)?;
             crate::sync_policy::publish_monitor_change(tx, Some(&snapshot), &after)?;
-            request.status = studio_runtime_schema::persistence::RequestCardStatus::Answered;
-            request.answer_decision = Some(
-                decision
-                    .parse()
-                    .map_err(|_| MonitorError::Refused("Invalid monitor approval decision"))?,
-            );
-            request.answer_signature = Some(event_write::request_signature(
-                &json!({"decision":decision}),
-            ));
-            request.answered_by = Some("user".into());
-            request.answered_at = Some(now);
-            request.decision = request.answer_decision;
-            Table::<RequestRecord>::new(tx).put(&request)?;
-            SyncDocumentsRepository::put_entity(tx, "request", &request_id, json!({}), true)?;
+            studio_runtime_store::approvals::answer(
+                tx,
+                &id,
+                answer,
+                typed::CommandId(request_id.clone()),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            let answered = studio_runtime_store::approvals::confirm_delivery(
+                tx,
+                &id,
+                typed::Principal::Owner,
+                typed::Timestamp(now),
+            )
+            .map_err(studio_runtime_store::StoreError::from)?;
+            crate::approval_sync::publish(tx, &answered)?;
             Ok(Some(MonitorApprovalAnswer {
                 response: json!({"status":"answered"}),
                 accepted,
@@ -904,15 +886,13 @@ pub fn apply_with_rule(
             }
             Effect::ExpireApprovals => {
                 for mut request in repository::pending_approvals(tx, before.id())? {
-                    request.status = studio_runtime_schema::persistence::RequestCardStatus::Expired;
-                    Table::new(tx).put(&request)?;
-                    SyncDocumentsRepository::put_entity(
-                        tx,
-                        "request",
-                        request.id(),
-                        json!({}),
-                        true,
-                    )?;
+                    request.state = studio_runtime_schema::approvals::ApprovalState::Closed {
+                        reason: studio_runtime_schema::approvals::CloseReason::Expired,
+                        at: studio_runtime_schema::approvals::Timestamp(now),
+                    };
+                    studio_runtime_store::approvals::put(tx, &request)
+                        .map_err(studio_runtime_store::StoreError::from)?;
+                    crate::approval_sync::publish(tx, &request)?;
                 }
             }
             Effect::Probe { .. } | Effect::Terminate | Effect::Native { .. } => (),
@@ -1558,31 +1538,34 @@ pub fn create_in_transaction(
     repository::put(tx, &record)?;
     crate::agent_progress::publish_owner(tx, &actor.id.0)?;
     if record.status == studio_runtime_schema::studio_errors::MonitorStatus::Approval {
-        #[derive(serde::Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct ApprovalParams<'a> {
-            monitor_id: &'a str,
-            command: &'a str,
-            cwd: &'a str,
-        }
-        let params = serde_json::value::to_raw_value(&ApprovalParams {
-            monitor_id: id,
-            command: record.command.as_str(),
-            cwd: &record.cwd,
-        })
+        let approval = studio_runtime_store::approvals::create(
+            tx,
+            studio_runtime_store::approvals::NewApproval {
+                id: studio_runtime_schema::approvals::ApprovalId(format!("monitor-approval:{id}")),
+                agent: studio_runtime_schema::approvals::AgentId(actor_id.to_owned()),
+                turn: None,
+                epoch: None,
+                request: studio_runtime_schema::approvals::Request::MonitorStart {
+                    monitor: id.to_owned(),
+                    command: record.command.as_str().to_owned(),
+                },
+                delivery: None,
+                detail: studio_runtime_schema::approvals::Detail {
+                    params: studio_runtime_schema::approvals::ProviderObject(
+                        [("cwd".to_owned(), json!(record.cwd))]
+                            .into_iter()
+                            .collect(),
+                    ),
+                    preview: None,
+                    answer_error: None,
+                    host_close_reason: None,
+                },
+                fire_at: None,
+            },
+            studio_runtime_schema::approvals::Timestamp(now),
+        )
         .map_err(studio_runtime_store::StoreError::from)?;
-        let approval = studio_runtime_store::RequestRecord::new(
-            format!("monitor-approval:{id}"),
-            actor_id.to_owned(),
-            studio_runtime_schema::request_record::RequestMethod::MonitorApprove,
-            studio_runtime_schema::persistence::RequestCardStatus::Pending,
-            now,
-            params,
-        );
-        Table::new(tx).put(&approval)?;
-        let view = crate::sync_views::project_persisted_record("request", &json!(approval))
-            .ok_or_else(|| invalid(id, "request"))?;
-        SyncDocumentsRepository::put_entity(tx, "request", approval.id(), view, false)?;
+        crate::approval_sync::publish(tx, &approval)?;
     }
     let after = MonitorSnapshot::checked_stored(&record, actor_value)?;
     crate::sync_policy::publish_monitor_change(tx, None, &after)?;
