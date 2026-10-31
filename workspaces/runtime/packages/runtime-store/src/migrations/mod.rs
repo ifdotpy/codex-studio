@@ -945,7 +945,6 @@ static CATALOG: &[&dyn Migration] = &[
     },
     &SqlMigration {
         definition: MigrationDefinition {
-<<<<<<< head
             id: "2026-10-31-approvals",
             introduced: OCTOBER_31,
             target: MigrationTarget::Canvas,
@@ -963,8 +962,9 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_30_outbox_reopen::apply(c.transaction),
-||||||| base
-=======
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
             id: "2026-10-31-restore-startup-agent-indexes",
             introduced: OCTOBER_31,
             target: MigrationTarget::Canvas,
@@ -972,7 +972,6 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| crate::StartupRecoveryRepository::prepare_agent_indexes(c.transaction),
->>>>>>> origin/main
     },
 ];
 
