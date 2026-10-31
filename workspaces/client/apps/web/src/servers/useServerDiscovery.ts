@@ -208,6 +208,10 @@ export function useServerDiscovery(
         ),
       }
     : null;
+  useEffect(() => {
+    const alias = effectiveSnapshot?.aliases?.local;
+    if (alias) setLocalServerDetails({ alias });
+  }, [effectiveSnapshot?.aliases?.local]);
   const loadGeneration = useRef(0);
   const load = (version?: ResourceVersion) => {
     const snapshot = version?.discoverySnapshot;
