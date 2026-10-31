@@ -2130,7 +2130,11 @@ async fn successful_adapter_cannot_replace_attempt_or_provider_identity() {
             effect: &LifecycleEffect,
         ) -> Result<(), ManagementError> {
             let mut changed = effect.stopped().clone();
-            changed[self.0] = json!("replacement");
+            changed[self.0] = if self.0 == "startAttempt" {
+                json!({"id":"replacement"})
+            } else {
+                json!("replacement")
+            };
             agent_management::write(tx, "runtime_agents", &changed)?;
             Ok(())
         }

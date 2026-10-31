@@ -242,6 +242,8 @@ pub struct StartAttemptView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub capacity_retry_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub claude_retry_of: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_input_request: Option<Box<ClaudeInputRequest>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_settings: Option<Box<ModelSettingsAttempt>>,
@@ -329,6 +331,7 @@ impl<'de> crate::raw_object::RawObjectFields<'de> for StartAttemptFields {
         field!("actionIdentity", action_identity);
         field!("actionRequestId", action_request_id);
         field!("capacityRetryId", capacity_retry_id);
+        field!("claudeRetryOf", claude_retry_of);
         field!("claudeInputRequest", claude_input_request);
         field!("modelSettings", model_settings);
         field!("nativeRequest", native_request);

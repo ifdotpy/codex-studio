@@ -609,6 +609,9 @@
               "type": "null"
             }
           ]
+        },
+        "claudeRetryOf": {
+          "type": ["string", "null"]
         }
       },
       "additionalProperties": false

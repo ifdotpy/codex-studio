@@ -71,7 +71,11 @@ impl GuestRpc for ExistingGuest {
                     .block_on(store.transaction(move |tx| {
                         let mut record =
                             AgentRepository::get(tx, &AgentId::from(actor.as_str()))?.unwrap();
-                        record.extra.insert(field, value);
+                        if field == "cwd" {
+                            record.cwd = value.as_str().map(str::to_owned);
+                        } else {
+                            record.extra.insert(field, value);
+                        }
                         AgentRepository::put(tx, &record)
                     }))
                     .unwrap();
@@ -105,6 +109,11 @@ async fn edit_actor(state: &State, changes: Value) {
                             "turnId" => record.turn_id = value.as_str().map(str::to_owned),
                             "cwd" => record.cwd = value.as_str().map(str::to_owned),
                             "deletedAt" => record.deleted_at = value.as_f64(),
+                            "startAttempt" => {
+                                record.start_attempt =
+                                    serde::Deserialize::deserialize(value.clone())
+                                        .expect("typed attempt")
+                            }
                             _ => {
                                 record.extra.insert(key.clone(), value.clone());
                             }
@@ -115,6 +124,10 @@ async fn edit_actor(state: &State, changes: Value) {
                         .unwrap()
                         .value();
                     for (key, value) in changes.as_object().unwrap() {
+                        if key == "startAttempt" && value.is_null() {
+                            assert!(written.get(key).is_none_or(Value::is_null));
+                            continue;
+                        }
                         if key == "deletedAt" {
                             assert_eq!(written.get(key).and_then(Value::as_f64), value.as_f64());
                             continue;
@@ -529,7 +542,7 @@ async fn auth_recovery_turn(refuse: bool) {
     let writes_before = guest.inner.state.lock().unwrap().writes.len();
     assert_eq!(writes_before, 0);
     state.wake(&worker).await;
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let reached = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
             let changed = guest.inner.changed.notified();
             if resolver.attempts.load(std::sync::atomic::Ordering::SeqCst) > 0
@@ -547,8 +560,12 @@ async fn auth_recovery_turn(refuse: bool) {
             changed.await;
         }
     })
-    .await
-    .expect("the auth retry reaches either its credential gate or the native submit boundary");
+    .await;
+    assert!(
+        reached.is_ok(),
+        "auth retry stalled: {}",
+        state.record().await
+    );
     worker_barrier(&worker).await;
     assert_eq!(
         resolver.attempts.load(std::sync::atomic::Ordering::SeqCst),
