@@ -864,7 +864,8 @@ fn check_durable_blockers(tx: &Transaction<'_>, agent: &str) -> Result<(), Trans
             "Waiting for background work or a tool response",
         ));
     }
-    for table in ["runtime_tasks"] {
+    {
+        let table = "runtime_tasks";
         let sql = format!(
             "SELECT EXISTS(SELECT 1 FROM {table} WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') IN ('running','starting','approval','pending','unknown'))"
         );

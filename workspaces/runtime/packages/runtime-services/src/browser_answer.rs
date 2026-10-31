@@ -61,7 +61,11 @@ impl From<ApprovalError> for BrowserAnswerError {
             }
             ApprovalError::NotFound(_) => Self::Invalid("Unknown request"),
             ApprovalError::Sql(error) => Self::Sqlite(error),
-            _ => Self::Invalid(INVALID_CARD),
+            ApprovalError::Mismatch(_)
+            | ApprovalError::MissingTurn(_)
+            | ApprovalError::Duplicate(_)
+            | ApprovalError::Stored { .. }
+            | ApprovalError::Json(_) => Self::Invalid(INVALID_CARD),
         }
     }
 }
@@ -632,7 +636,10 @@ async fn paste(
                     )?;
                     approvals::delivery_lost(tx, &approval, Timestamp(now))?;
                 }
-                _ => {
+                BrowserOutcome::SignedIn
+                | BrowserOutcome::Refused
+                | BrowserOutcome::ProviderError
+                | BrowserOutcome::Cancelled => {
                     record_answer(tx, &final_id, Decision::Accept, now)?;
                 }
             }
@@ -659,7 +666,10 @@ async fn paste(
         BrowserOutcome::Expired => Err(BrowserAnswerError::Refused(
             "The sign-in command stopped waiting. Ask the agent to run it again.".into(),
         )),
-        _ => Ok(BrowserAnswerResult {
+        BrowserOutcome::SignedIn
+        | BrowserOutcome::Refused
+        | BrowserOutcome::ProviderError
+        | BrowserOutcome::Cancelled => Ok(BrowserAnswerResult {
             response: json!({"status":"answered"}),
             replayed: false,
         }),

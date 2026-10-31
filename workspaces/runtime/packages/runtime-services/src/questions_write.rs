@@ -466,7 +466,12 @@ fn is_approval_question(row: &Approval) -> bool {
         Request::Elicitation { .. } => {
             row.detail.params.0.get("mode").and_then(Value::as_str) == Some("form")
         }
-        _ => false,
+        Request::Exec { .. }
+        | Request::Patch { .. }
+        | Request::Permissions { .. }
+        | Request::ToolUse { .. }
+        | Request::MonitorStart { .. }
+        | Request::BrowserOpen(_) => false,
     }
 }
 

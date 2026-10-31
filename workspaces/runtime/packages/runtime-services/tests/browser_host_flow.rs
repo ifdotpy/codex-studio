@@ -549,7 +549,14 @@ fn cards(store: &studio_runtime_store::RuntimeStore) -> Vec<Card> {
         .into_iter()
         .filter_map(|row| match row.request.clone() {
             Request::BrowserOpen(card) => Some((row, card)),
-            _ => None,
+            Request::Exec { .. }
+            | Request::Patch { .. }
+            | Request::Permissions { .. }
+            | Request::Elicitation { .. }
+            | Request::Question { .. }
+            | Request::ToolUse { .. }
+            | Request::AgentQuestion { .. }
+            | Request::MonitorStart { .. } => None,
         })
         .collect()
 }

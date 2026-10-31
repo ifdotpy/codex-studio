@@ -45,12 +45,20 @@ pub enum ApprovalError {
 /// here. Callers that report them to a user match `ApprovalError` first.
 impl From<ApprovalError> for crate::StoreError {
     fn from(error: ApprovalError) -> Self {
+        let text = error.to_string();
         match error {
             ApprovalError::Sql(error) => error.into(),
             ApprovalError::Json(error) => error.into(),
-            other => crate::StoreError::InvalidStoredObject {
+            ApprovalError::NotFound(_)
+            | ApprovalError::Mismatch(_)
+            | ApprovalError::Conflict(_)
+            | ApprovalError::Closed(_)
+            | ApprovalError::State(_)
+            | ApprovalError::MissingTurn(_)
+            | ApprovalError::Duplicate(_)
+            | ApprovalError::Stored { .. } => crate::StoreError::InvalidStoredObject {
                 table: TABLE,
-                id: other.to_string(),
+                id: text,
             },
         }
     }
@@ -677,7 +685,10 @@ fn settle_open(
                 answer: answer.clone(),
                 since: now,
             },
-            _ => continue,
+            ApprovalState::Answered { .. }
+            | ApprovalState::Unknown { .. }
+            | ApprovalState::Closed { .. }
+            | ApprovalState::Pending => continue,
         };
         set_state(tx, &row.id, &state)?;
     }

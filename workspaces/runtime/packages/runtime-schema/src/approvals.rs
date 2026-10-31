@@ -93,6 +93,8 @@ pub struct Question {
 )]
 #[strum_discriminants(serde(rename_all = "snake_case"), strum(serialize_all = "snake_case"))]
 #[serde(tag = "kind", rename_all = "snake_case")]
+// The browser card is the large variant; boxing it would change every match on requests.
+#[allow(clippy::large_enum_variant)]
 pub enum Request {
     Exec {
         command: String,

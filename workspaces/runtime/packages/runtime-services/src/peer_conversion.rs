@@ -332,10 +332,10 @@ pub(crate) fn idle(
             }
         }
     }
-    for id in ids.iter().copied() {
+    for id in ids.iter() {
         let waiting = studio_runtime_store::approvals::for_agent(
             db,
-            &studio_runtime_schema::approvals::AgentId(id.to_owned()),
+            &studio_runtime_schema::approvals::AgentId((*id).to_owned()),
         )
         .map_err(studio_runtime_store::StoreError::from)?
         .iter()

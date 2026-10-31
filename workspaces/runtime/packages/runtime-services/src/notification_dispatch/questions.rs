@@ -499,7 +499,7 @@ pub(super) fn resolved(
         Value::String(value) => Some(typed::RpcId::Text {
             value: value.clone(),
         }),
-        _ => None,
+        Value::Null | Value::Bool(_) | Value::Array(_) | Value::Object(_) => None,
     };
     let mut pending = false;
     for mut row in rows {

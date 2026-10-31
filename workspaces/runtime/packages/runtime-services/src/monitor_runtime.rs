@@ -109,7 +109,10 @@ fn recover_requests(tx: &Transaction<'_>, now: f64) -> Result<usize, MonitorErro
                     at: Timestamp(now),
                 }
             }
-            _ => continue,
+            ApprovalState::Pending
+            | ApprovalState::Answered { .. }
+            | ApprovalState::Unknown { .. }
+            | ApprovalState::Closed { .. } => continue,
         };
         row.state = state;
         row.fire_at = None;

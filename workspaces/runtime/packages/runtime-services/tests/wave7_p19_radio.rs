@@ -1,11 +1,3 @@
-fn typed_question(value: &serde_json::Value) -> studio_runtime_store::RequestRecord {
-    let mut fixture = value.clone();
-    fixture["status"] = serde_json::json!("pending");
-    fixture["createdAt"] = serde_json::json!(0.0);
-    fixture["params"] = serde_json::json!({});
-    serde_json::from_str(&fixture.to_string()).expect("typed question fixture")
-}
-
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Value, json};
 use std::{fs, path::Path};

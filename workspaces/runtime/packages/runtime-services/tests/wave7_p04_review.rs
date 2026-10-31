@@ -560,9 +560,6 @@ async fn answer_and_cancellation_restart_at_each_real_store_queue_and_transport_
 
 #[tokio::test]
 async fn python_failures_null_decisions_and_race_winners_are_preserved() {
-    fn expected_actor(case: &serde_json::Value) -> serde_json::Value {
-        normalized_actor(&case["afterActor"])
-    }
     for case in template()["failures"].as_array().unwrap() {
         let (_root, store, context) = fixture().await;
         seed_case(&store, case).await;

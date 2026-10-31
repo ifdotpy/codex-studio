@@ -257,7 +257,8 @@ impl BrowserCallbackReceiver {
                     "browser_request_invalid",
                     "The sign-in request is invalid",
                 ),
-                _ => refused(
+                crate::browser_cards::BrowserCardError::Store(_)
+                | crate::browser_cards::BrowserCardError::Sqlite(_) => refused(
                     503,
                     "browser_request_unavailable",
                     "The sign-in request is unavailable",
