@@ -201,7 +201,8 @@ const RELEASE_HELD_SQL: &str = "SELECT a.id,json_extract(a.record,'$.epoch'), \
                    (SELECT MIN(e.created) FROM runtime_events e WHERE e.agent=a.id \
                       AND e.epoch=json_extract(a.record,'$.epoch') AND e.status='pending') AS first \
                  FROM runtime_agents a \
-                 WHERE a.status='failed' AND a.auto_wake=1 \
+                 WHERE a.status='failed' \
+                   AND EXISTS(SELECT 1 FROM chats ch WHERE ch.id=a.id AND ch.auto_wake=1) \
                    AND COALESCE(a.in_flight,0)=0 AND a.deleted_at IS NULL \
                    AND json_extract(a.record,'$.autoWake')=1 \
                    AND COALESCE(json_extract(a.record,'$.inFlight'),0)=0 \
@@ -346,6 +347,8 @@ mod tests {
         };
         let db = rusqlite::Connection::open_in_memory().unwrap();
         db.execute_batch(studio_runtime_store::agent_columns::agent_table_sql())
+            .unwrap();
+        db.execute_batch(&studio_runtime_store::domain::tables_sql())
             .unwrap();
         db.execute_batch(
             "CREATE TABLE runtime_events(agent TEXT, epoch INTEGER, status TEXT, created REAL)",

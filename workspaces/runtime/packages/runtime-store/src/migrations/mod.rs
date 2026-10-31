@@ -1638,10 +1638,10 @@ mod tests {
     fn vm_stream_owner_scan_uses_partial_index() {
         let db = crate::fresh_state::test_canvas();
         let detail: String = db.query_row(
-            "EXPLAIN QUERY PLAN SELECT id FROM runtime_agents INDEXED BY runtime_agent_vm_stream_owner WHERE account_key=?1 AND execution_mode='vm' AND hold_status='clear'",
+            "EXPLAIN QUERY PLAN SELECT r.id FROM chats ch INDEXED BY chats_vm CROSS JOIN runtime_agents r ON r.id=ch.id WHERE ch.execution_mode='vm' AND r.account_key=?1 AND r.hold_status='clear'",
             ["default"], |row| row.get(3),
         ).unwrap();
-        assert!(detail.contains("runtime_agent_vm_stream_owner"), "{detail}");
+        assert!(detail.contains("chats_vm"), "{detail}");
         for (id, mode, account) in [
             ("vm", "vm", "default"),
             ("host", "host", "default"),
@@ -1653,9 +1653,14 @@ mod tests {
                 rusqlite::params![id, record.to_string()],
             )
             .unwrap();
+            db.execute(
+                "INSERT INTO chats(id,state,status,execution_mode) VALUES(?1,'active','idle',?2)",
+                rusqlite::params![id, mode],
+            )
+            .unwrap();
         }
         let owners = || {
-            db.prepare("SELECT id FROM runtime_agents WHERE account_key=?1 AND execution_mode='vm' AND hold_status='clear' ORDER BY id").unwrap().query_map(["default"], |row| row.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+            db.prepare("SELECT r.id FROM chats ch JOIN runtime_agents r ON r.id=ch.id WHERE r.account_key=?1 AND ch.execution_mode='vm' AND r.hold_status='clear' ORDER BY r.id").unwrap().query_map(["default"], |row| row.get::<_,String>(0)).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
         };
         assert_eq!(owners(), ["vm"]);
         db.execute(
