@@ -265,15 +265,14 @@ mod tests {
     }
 
     #[test]
-    fn the_native_projection_store_reaches_the_core() {
-        // web/src/sync/nativeProjections.ts sends these for the local server.
+    fn the_removed_projection_row_methods_are_refused() {
         for method in [
             "projection.getRows",
             "projection.rangeRows",
             "projection.putRows",
             "projection.pruneRows",
         ] {
-            assert!(super::connected_method(method), "{method}");
+            assert!(!super::connected_method(method), "{method}");
         }
         assert!(!super::connected_method("projection.unknown"));
     }
@@ -389,10 +388,6 @@ fn connected_method(method: &str) -> bool {
             | "desktop.saveFinish"
             | "desktop.saveCancel"
             | "api.request"
-            | "projection.getRows"
-            | "projection.rangeRows"
-            | "projection.putRows"
-            | "projection.pruneRows"
     )
 }
 

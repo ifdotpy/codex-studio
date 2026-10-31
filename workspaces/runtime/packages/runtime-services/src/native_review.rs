@@ -2,26 +2,13 @@
 //! on retry. Workspace/catalog checks stay with the ordinary creation owner.
 use crate::native_actions::{NativeError, Result, bounded, checked_agent, decode};
 use rusqlite::Transaction;
-use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::start_attempt::ReviewTarget as Target;
 use studio_runtime_store::{AgentRecord, AgentRepository, ContextRepairRepository};
 
 const MAX_PROMPT: usize = 32_000;
 const DELIVERY: &str = "The review result wakes you automatically. Finish your turn while waiting.";
-
-#[derive(Deserialize)]
-#[serde(tag = "type", deny_unknown_fields)]
-enum Target {
-    #[serde(rename = "uncommittedChanges")]
-    UncommittedChanges,
-    #[serde(rename = "baseBranch")]
-    BaseBranch { branch: String },
-    #[serde(rename = "commit")]
-    Commit { sha: String, title: Option<String> },
-    #[serde(rename = "custom")]
-    Custom { instructions: String },
-}
 
 /// Preserve the original target (including absent versus null title) after
 /// validating its closed variants. The complete target stays in nativeReview.
@@ -85,23 +72,32 @@ pub fn worker_id(key: &str) -> String {
 pub(crate) fn execution_settings(
     actor: &Value,
     root: &Value,
-    args: &Value,
-) -> (Value, Value, Option<bool>) {
+    requested_model: &studio_runtime_schema::queue_command::Field<String>,
+    requested_effort: &studio_runtime_schema::queue_command::Field<String>,
+) -> (Option<String>, Option<String>, Option<bool>) {
     let defaults = &root["reviewDefaults"];
-    let model = args
-        .get("model")
-        .filter(|v| !v.is_null())
-        .or_else(|| defaults.get("model").filter(|v| !v.is_null()))
-        .unwrap_or(&actor["model"])
-        .clone();
-    let effort = if let Some(value) = args.get("effort") {
-        value.clone()
-    } else if args.get("model").is_none() && defaults.get("model").is_some_and(|v| !v.is_null()) {
-        defaults.get("effort").cloned().unwrap_or(Value::Null)
-    } else if model == actor["model"] {
-        actor.get("effort").cloned().unwrap_or(Value::Null)
+    let model = requested_model
+        .value()
+        .map(String::as_str)
+        .or_else(|| defaults.get("model").and_then(Value::as_str))
+        .or_else(|| actor.get("model").and_then(Value::as_str))
+        .map(str::to_owned);
+    let effort = if !requested_effort.is_missing() {
+        requested_effort.value().cloned()
+    } else if requested_model.is_missing()
+        && defaults.get("model").and_then(Value::as_str).is_some()
+    {
+        defaults
+            .get("effort")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    } else if model.as_deref() == actor.get("model").and_then(Value::as_str) {
+        actor
+            .get("effort")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
     } else {
-        Value::Null
+        None
     };
     (
         model,
@@ -115,8 +111,8 @@ pub struct ReviewPlan {
     root: Value,
     key: String,
     target: Value,
-    args: Value,
-    spec: Value,
+    args: studio_runtime_schema::creation_intent::CreationIntent,
+    spec: studio_runtime_schema::creation_intent::CreationIntent,
 }
 impl ReviewPlan {
     /// Directory has already been resolved and checked as a repository outside
@@ -148,55 +144,85 @@ impl ReviewPlan {
             return Err(NativeError::Invalid("review.identity"));
         }
         let target = target(&args)?;
-        let (model, effort, fast_mode) = execution_settings(&actor, &root, &args);
+        use studio_runtime_schema::queue_command::Field;
+        let requested_model = args
+            .get("model")
+            .and_then(Value::as_str)
+            .map_or(Field::Missing, |value| Field::Value(value.to_owned()));
+        let requested_effort = args
+            .get("effort")
+            .and_then(Value::as_str)
+            .map_or(Field::Missing, |value| Field::Value(value.to_owned()));
+        let (model, effort, fast_mode) =
+            execution_settings(&actor, &root, &requested_model, &requested_effort);
         let fast_mode = fast_mode
             .or_else(|| actor.get("fastMode").and_then(Value::as_bool))
             .unwrap_or(false);
-        let requested = ["model", "effort"]
-            .into_iter()
-            .filter_map(|k| args.get(k).map(|v| (k.to_owned(), v.clone())))
-            .collect::<serde_json::Map<_, _>>();
-        let prompt = format!(
-            "Run a native code review: {}",
-            studio_runtime_store::python_json_utf8(&target)
-        );
-        let spec = json!({"id":worker_id(&key),"name":"Review","cwd":directory,"role":"reviewer",
-            "prompt":prompt.chars().take(MAX_PROMPT).collect::<String>(),"model":model,"effort":effort,
-            "fast_mode":fast_mode,"daybreak_enabled":false});
+        let requested = studio_runtime_schema::creation_intent::CreationIntent {
+            model: requested_model,
+            effort: requested_effort,
+            ..Default::default()
+        };
+        let prompt = format!("Run a native code review: {target}");
+        let spec = studio_runtime_schema::creation_intent::CreationIntent {
+            id: Field::Value(worker_id(&key)),
+            name: Some("Review".into()),
+            cwd: Some(directory),
+            role: Some(studio_runtime_schema::creation_intent::AgentRole::Reviewer),
+            prompt: Some(prompt.chars().take(MAX_PROMPT).collect()),
+            model: model.map_or(Field::Null, Field::Value),
+            effort: effort.map_or(Field::Null, Field::Value),
+            fast_mode: Field::Value(fast_mode),
+            daybreak_enabled: Field::Value(false),
+            ..Default::default()
+        };
         Ok(Self {
             actor,
             root,
             key,
             target,
-            args: Value::Object(requested),
+            args: requested,
             spec,
         })
     }
-    pub fn spec(&self) -> &Value {
+    pub fn spec(&self) -> &studio_runtime_schema::creation_intent::CreationIntent {
         &self.spec
     }
     pub fn existing(&self, child: &Value) -> Result<Value> {
         checked_agent(child)?;
         let review = &child["nativeReview"];
         let same_args = if let Some(saved) = review.get("args").filter(|v| !v.is_null()) {
-            saved == &self.args
+            saved == &json!(self.args)
         } else {
-            ["model", "effort"]
-                .iter()
-                .all(|k| self.args.get(*k).is_none_or(|v| child.get(*k) == Some(v)))
+            fn matches(
+                field: &studio_runtime_schema::queue_command::Field<String>,
+                value: Option<&Value>,
+            ) -> bool {
+                use studio_runtime_schema::queue_command::Field;
+                match field {
+                    Field::Missing => true,
+                    Field::Null => value.is_some_and(Value::is_null),
+                    Field::Value(expected) => {
+                        value.and_then(Value::as_str) == Some(expected.as_str())
+                    }
+                }
+            }
+            matches(&self.args.model, child.get("model"))
+                && matches(&self.args.effort, child.get("effort"))
         };
-        if child["id"] != self.spec["id"]
+        if child.get("id").and_then(Value::as_str) != self.spec.id.value().map(String::as_str)
             || review["requestId"] != self.key
             || review["actorId"] != self.actor["id"]
             || review["target"] != self.target
-            || child["cwd"] != self.spec["cwd"]
+            || child.get("cwd").and_then(Value::as_str) != self.spec.cwd.as_deref()
             || !same_args
         {
             return Err(NativeError::Conflict);
         }
         let response = &review["response"];
         if response["requestId"] != self.key
-            || response["agentId"] != self.spec["id"]
+            || response.get("agentId").and_then(Value::as_str)
+                != self.spec.id.value().map(String::as_str)
             || response["status"] != "queued"
             || !response["reviewModel"].is_string()
             || !response["agents"].is_array()
@@ -216,7 +242,12 @@ impl ReviewPlan {
 /// connection and cancellation here. It returns the complete unsaved child and
 /// persists the tool result in this same transaction; neither method does I/O.
 pub trait ReviewCreator {
-    fn child(&self, tx: &Transaction<'_>, actor: &Value, spec: &Value) -> Result<Value>;
+    fn child(
+        &self,
+        tx: &Transaction<'_>,
+        actor: &Value,
+        spec: &studio_runtime_schema::creation_intent::CreationIntent,
+    ) -> Result<Value>;
     fn receipt(&self, tx: &Transaction<'_>, key: &str, response: &Value) -> Result<()>;
 }
 
@@ -243,8 +274,11 @@ pub fn reserve(
     plan: &ReviewPlan,
     creator: &impl ReviewCreator,
 ) -> Result<Value> {
-    let id = plan.spec["id"]
-        .as_str()
+    let id = plan
+        .spec
+        .id
+        .value()
+        .map(String::as_str)
         .ok_or(NativeError::Invalid("review.id"))?;
     if let Some(child) = ContextRepairRepository::agent(tx, id)? {
         return plan.existing(&child);
@@ -272,8 +306,8 @@ pub fn reserve(
     if child["id"] != id
         || child["parentId"] != actor_id
         || child["rootId"] != actor["rootId"]
-        || child["cwd"] != plan.spec["cwd"]
-        || child["model"] != plan.spec["model"]
+        || child.get("cwd").and_then(Value::as_str) != plan.spec.cwd.as_deref()
+        || child.get("model").and_then(Value::as_str) != plan.spec.model.value().map(String::as_str)
         || child["status"] != "queued"
     {
         return Err(NativeError::Changed);

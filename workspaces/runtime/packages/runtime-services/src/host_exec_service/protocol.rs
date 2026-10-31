@@ -12,7 +12,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 /// Largest request or response frame, in bytes.
@@ -30,7 +30,8 @@ pub(crate) const PAGE_BYTES: usize = 1024 * 1024;
 pub(crate) const RACY_NS: i128 = 2_000_000_000;
 
 /// An explicit refusal with a protocol error code (guest `HostExecError`).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct HostExecError {
     pub(crate) code: String,
     pub(crate) message: String,
@@ -42,10 +43,6 @@ impl HostExecError {
             code: code.to_owned(),
             message: message.into(),
         }
-    }
-
-    pub(crate) fn object(&self) -> Value {
-        json!({"code": self.code, "message": self.message})
     }
 }
 
@@ -103,13 +100,8 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     data_encoding::HEXLOWER.encode(bytes)
 }
 
-/// The text of Python `json.dumps(value, sort_keys=True)`, which the guest hashes.
-pub(crate) fn sorted_json(value: &Value) -> String {
-    studio_runtime_store::python_json(value)
-}
-
 /// Write `value` as JSON to `path` through a synced temporary file and a rename.
-pub(crate) fn atomic(path: &Path, value: &Value) -> std::io::Result<()> {
+pub(crate) fn atomic(path: &Path, value: &impl serde::Serialize) -> std::io::Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
     let mut temporary = tempfile::Builder::new()
         .prefix(".host-exec-")
@@ -187,30 +179,49 @@ pub(crate) fn under(path: &str, roots: &[String]) -> bool {
     })
 }
 
-/// A saved hash cache; a missing or damaged file is an empty cache.
-pub(crate) fn load_hashes(path: &Path) -> Map<String, Value> {
+/// The four metadata fields that identify a cached file hash.
+pub(crate) type Stamp = (u64, i64, u64, i64);
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct HashRow(pub u64, pub i64, pub u64, pub i64, pub String);
+
+impl HashRow {
+    pub(crate) fn new(stamp: Stamp, checksum: String) -> Self {
+        Self(stamp.0, stamp.1, stamp.2, stamp.3, checksum)
+    }
+
+    pub(crate) fn stamp(&self) -> Stamp {
+        (self.0, self.1, self.2, self.3)
+    }
+}
+
+pub(crate) type HashCache = BTreeMap<String, HashRow>;
+
+/// A missing or damaged cache is empty; individual damaged rows are discarded.
+pub(crate) fn load_hashes(path: &Path) -> HashCache {
     fs::read_to_string(path)
         .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .and_then(|value| match value {
-            Value::Object(map) => Some(map),
-            Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::String(_)
-            | Value::Array(_) => None,
+        .and_then(|text| {
+            serde_json::from_str::<BTreeMap<String, Box<serde_json::value::RawValue>>>(&text).ok()
+        })
+        .map(|rows| {
+            rows.into_iter()
+                .filter_map(|(path, row)| {
+                    serde_json::from_str(row.get()).ok().map(|row| (path, row))
+                })
+                .collect()
         })
         .unwrap_or_default()
 }
 
 /// The hash cache key of a file: size, modification time, inode and change time.
-pub(crate) fn stamp(meta: &fs::Metadata) -> [Value; 4] {
-    [
-        Value::from(meta.size()),
-        Value::from(nanoseconds(meta.mtime(), meta.mtime_nsec())),
-        Value::from(meta.ino()),
-        Value::from(nanoseconds(meta.ctime(), meta.ctime_nsec())),
-    ]
+pub(crate) fn stamp(meta: &fs::Metadata) -> Stamp {
+    (
+        meta.size(),
+        nanoseconds(meta.mtime(), meta.mtime_nsec()),
+        meta.ino(),
+        nanoseconds(meta.ctime(), meta.ctime_nsec()),
+    )
 }
 
 fn nanoseconds(seconds: i64, nanoseconds: i64) -> i64 {
@@ -247,16 +258,14 @@ pub(crate) fn file_hash(
     path: &Path,
     meta: &fs::Metadata,
     rel: &str,
-    hashes: Option<&mut Map<String, Value>>,
+    hashes: Option<&mut HashCache>,
     started: i128,
 ) -> std::io::Result<(String, bool)> {
     let key = stamp(meta);
-    if let Some(Value::Array(cached)) = hashes.as_deref().and_then(|hashes| hashes.get(rel))
-        && cached.len() == 5
-        && cached[..4] == key
-        && let Some(checksum) = cached[4].as_str()
+    if let Some(cached) = hashes.as_deref().and_then(|hashes| hashes.get(rel))
+        && cached.stamp() == key
     {
-        return Ok((checksum.to_owned(), true));
+        return Ok((cached.4.clone(), true));
     }
     let (checksum, done) = digest_file(path)?;
     let Some(hashes) = hashes else {
@@ -265,9 +274,7 @@ pub(crate) fn file_hash(
     let newest = i128::from(nanoseconds(meta.mtime(), meta.mtime_nsec()))
         .max(i128::from(nanoseconds(meta.ctime(), meta.ctime_nsec())));
     if stamp(&done) == key && started - newest > RACY_NS {
-        let mut row = key.to_vec();
-        row.push(Value::String(checksum.clone()));
-        hashes.insert(rel.to_owned(), Value::Array(row));
+        hashes.insert(rel.to_owned(), HashRow::new(key, checksum.clone()));
         return Ok((checksum, true));
     }
     hashes.remove(rel);
@@ -275,7 +282,22 @@ pub(crate) fn file_hash(
 }
 
 /// The entries of one slot or result folder, by relative path.
-pub(crate) type Manifest = BTreeMap<String, Value>;
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+pub(crate) enum ManifestEntry {
+    Directory,
+    Link {
+        target: String,
+    },
+    File {
+        bytes: u64,
+        mode: u32,
+        sha256: String,
+    },
+}
+
+pub(crate) type Manifest = BTreeMap<String, ManifestEntry>;
+pub(crate) type ManifestPageItems = Vec<(String, Option<ManifestEntry>)>;
 
 /// The entries below `root` with content hashes (guest `scan`). The relative
 /// paths in `skip` stay out with everything inside them. `hashes` is a cache:
@@ -284,7 +306,7 @@ pub(crate) type Manifest = BTreeMap<String, Value>;
 pub(crate) fn scan(
     root: &Path,
     skip: &[String],
-    mut hashes: Option<&mut Map<String, Value>>,
+    mut hashes: Option<&mut HashCache>,
 ) -> Outcome<Manifest> {
     let mut result = Manifest::new();
     let started = now_ns();
@@ -332,18 +354,21 @@ pub(crate) fn scan(
                             "The slot contains a link target that is not UTF-8",
                         )
                     })?;
-                result.insert(rel, json!({"kind": "link", "target": target}));
+                result.insert(rel, ManifestEntry::Link { target });
             } else if kind.is_file() {
                 let (checksum, _) = file_hash(&path, &meta, &rel, hashes.as_deref_mut(), started)?;
                 seen.insert(rel.clone());
                 result.insert(
                     rel,
-                    json!({"kind": "file", "bytes": meta.size(),
-                           "mode": meta.mode() & 0o777, "sha256": checksum}),
+                    ManifestEntry::File {
+                        bytes: meta.size(),
+                        mode: meta.mode() & 0o777,
+                        sha256: checksum,
+                    },
                 );
             } else if kind.is_dir() {
                 stack.push(PathBuf::from(&rel));
-                result.insert(rel, json!({"kind": "directory"}));
+                result.insert(rel, ManifestEntry::Directory);
             } else {
                 return Err(HostExecError::new(
                     "unsupported_file",
@@ -364,36 +389,82 @@ pub(crate) fn scan(
     Ok(result)
 }
 
-/// The manifest as a JSON object.
-pub(crate) fn manifest_value(manifest: &Manifest) -> Value {
-    Value::Object(
-        manifest
-            .iter()
-            .map(|(path, entry)| (path.clone(), entry.clone()))
-            .collect(),
-    )
+/// The digest that the guest sends as `manifestSha256` for the same tree.
+/// The VM guest's host_exec.py hashes Python `json.dumps(sort_keys=True)`, so
+/// its wire contract requires this serializer's matching bytes.
+fn manifest_quote(value: &str) -> String {
+    let mut output = String::from("\"");
+    for character in value.chars() {
+        match character {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{8}' => output.push_str("\\b"),
+            '\u{c}' => output.push_str("\\f"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            c if c < ' ' || c == '\u{7f}' => output.push_str(&format!("\\u{:04x}", c as u32)),
+            c if c as u32 <= 0x7e => output.push(c),
+            c if c as u32 <= 0xffff => output.push_str(&format!("\\u{:04x}", c as u32)),
+            c => {
+                let n = c as u32 - 0x10000;
+                output.push_str(&format!(
+                    "\\u{:04x}\\u{:04x}",
+                    0xd800 + (n >> 10),
+                    0xdc00 + (n & 0x3ff)
+                ));
+            }
+        }
+    }
+    output.push('"');
+    output
 }
 
-/// The digest that the guest sends as `manifestSha256` for the same tree.
+fn manifest_entry_json(entry: &ManifestEntry) -> String {
+    match entry {
+        ManifestEntry::Directory => "{\"kind\": \"directory\"}".into(),
+        ManifestEntry::Link { target } => format!(
+            "{{\"kind\": \"link\", \"target\": {}}}",
+            manifest_quote(target)
+        ),
+        ManifestEntry::File {
+            bytes,
+            mode,
+            sha256,
+        } => format!(
+            "{{\"bytes\": {bytes}, \"kind\": \"file\", \"mode\": {mode}, \"sha256\": {}}}",
+            manifest_quote(sha256)
+        ),
+    }
+}
+
+pub(crate) fn manifest_json(manifest: &Manifest) -> String {
+    let entries = manifest
+        .iter()
+        .map(|(path, entry)| format!("{}: {}", manifest_quote(path), manifest_entry_json(entry)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{{{entries}}}")
+}
+
 pub(crate) fn manifest_digest(manifest: &Manifest) -> String {
-    key(&sorted_json(&manifest_value(manifest)))
+    key(&manifest_json(manifest))
 }
 
 /// The entries of a sorted manifest after the path `after` (guest `page`) and
 /// the cursor of the next page (`null` after the last page).
 pub(crate) fn page(
-    items: &[(String, Value)],
-    after: Option<&Value>,
+    items: &[(String, Option<ManifestEntry>)],
+    after: &str,
 ) -> Result<Value, HostExecError> {
-    let after = match after {
-        Some(Value::String(after)) => after.as_str(),
-        _ => return Err(HostExecError::new(INVALID, "Invalid manifest cursor")),
-    };
     let start = items.partition_point(|(path, _)| path.as_str() <= after);
-    let mut entries = Map::new();
+    let mut entries = BTreeMap::new();
     let mut size = 0_usize;
     for (path, entry) in items.iter().skip(start).take(PAGE_ENTRIES) {
-        size += path.len() + sorted_json(entry).len() + 8;
+        let encoded = entry
+            .as_ref()
+            .map_or_else(|| "null".into(), manifest_entry_json);
+        size += path.len() + encoded.len() + 8;
         if !entries.is_empty() && size > PAGE_BYTES {
             break;
         }

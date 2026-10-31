@@ -23,11 +23,14 @@ async fn submission_snapshot_preserves_only_unmatched_complaint_events() {
     store.transaction_with_error(move |tx| -> Result<(), WorkerError> {
         let record = json!({"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"running","name":"lead","autoWake":true,"cwd":"/work","provider":"codex","accountKey":"default","threadId":"thread","turnId":"turn","inFlight":true,"events":0,"compactions":0});
         AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(record.clone()).unwrap())?;
-        tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('own',?1),('other',?2)", rusqlite::params![json!({"leadId":"lead","recipient":"user"}).to_string(), json!({"leadId":"other"}).to_string()])?;
+        let complaint = |id, lead| json!({"id":id,"author":"author","leadId":lead,"status":"open","text":"text","created":1,"readAt":null,"recipient":"user","responses":[],"updated":null,"version":null}).to_string();
+        tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('own',?1),('other',?2)", rusqlite::params![complaint("own", "lead"), complaint("other", "other")])?;
         let events = [("owned", r#"{"complaints":[{"complaint_id":"own"}]}"#), ("foreign", r#"{"complaints":[{"complaint_id":"other"}]}"#), ("malformed", "{}")].into_iter().map(|(id,text)| crate::scheduler::TurnEvent { id:id.into(), kind:"complaint".into(), text:text.into(), created:1.0, epoch:1, error:None, metadata:json!({}) }).collect();
         let intent = TurnIntent { agent_id:"lead".into(), epoch:1, attempt_id:"prepare".into(), account_key:"default".into(), provider:studio_runtime_providers::ProviderKind::Codex, thread_id:Some("thread".into()), cwd:Some("/work".into()), model:None, events, radio_authorized:false };
         let (_, events) = submission_snapshot(tx, &resources, &record, &intent)?;
         assert_eq!(events.iter().map(|event| event.preserve_complaint).collect::<Vec<_>>(), [false, true, true]);
+        tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('legacy',?1)", [r#"{"id":"legacy","leadId":"lead","recipient":"lead","status":"open","responses":[],"author":"lead","text":"question","created":1,"version":1}"#])?;
+        assert!(submission_snapshot(tx, &resources, &record, &intent).is_err());
         Ok(())
     }).await.unwrap();
 }
@@ -59,7 +62,7 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
             }
             for index in 0..30 {
                 let id = format!("worker-{index:02}");
-                AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({
+                AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,
                     "id":id,"rootId":"lead","parentId":"lead","isLead":false,"epoch":1,"status":"running",
                     "name":format!("Worker {index}"),"autoWake":true,"cwd":"/work","provider":provider,
                     "accountKey":"default"})).expect("worker fixture deserializes"))?;
@@ -71,7 +74,7 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
             tx.execute_batch("CREATE TABLE IF NOT EXISTS runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL, stream_pending INTEGER NOT NULL DEFAULT 0, monitor_status TEXT, monitor_error_candidate INTEGER NOT NULL DEFAULT 1, monitor_created REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS runtime_tasks(id TEXT PRIMARY KEY,record TEXT NOT NULL);")?;
             for (id, owner) in [("watch-lead","lead"),("watch-worker","monitor-owner"),("watch-other","other")] {
-                tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))", rusqlite::params![id,
+                tx.execute("INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)", rusqlite::params![id,
                     json!({"id":id,"agent":owner,"status":"running","command":"check"}).to_string()])?;
             }
             for (id, owner, status) in [("assignment","worker-00","running"),("pending-review","nested","review"),("closed","worker-01","accepted")] {
@@ -132,6 +135,11 @@ async fn post_compaction_roster_uses_live_store_and_stops_after_delivery() {
                 let (snapshot, events) = submission_snapshot(tx, &resources, &record, &intent)?;
                 assert!(snapshot.team_state.is_none());
                 assert!(!input_text(&turn::compile(&snapshot, &events).expect("turn after delivery compiles")).contains("[Studio team state after compaction]"));
+                if actor == "lead" {
+                    tx.execute("INSERT INTO runtime_context_manifests(agent,thread_id,compactions,sequence,event_id,record) VALUES('lead','duplicate',2,2,'duplicate',?1)", [r#"{"epoch":["thread",1],"versions":{},"sequence":1,"sequence":2}"#])?;
+                    assert!(submission_snapshot(tx, &resources, &record, &intent).is_err());
+                    tx.execute("DELETE FROM runtime_context_manifests WHERE agent='lead' AND thread_id='duplicate'", [])?;
+                }
             }
             Ok(())
         }).await.expect("compaction fixture transaction succeeds");

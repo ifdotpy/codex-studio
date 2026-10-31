@@ -66,7 +66,7 @@ fn trace_agent_rows(event: rusqlite::trace::TraceEvent<'_>) {
 
 #[tokio::test]
 async fn message_ignores_unrelated_invalid_agent() {
-    message_with_unrelated_invalid("runtime_agents", json!({"id":"unrelated-invalid","rootId":"unrelated-invalid", "provider":"codex", "epoch":"invalid", "status":"idle"})).await;
+    message_with_unrelated_invalid("runtime_agents", json!({"compactions":0,"id":"unrelated-invalid","rootId":"unrelated-invalid", "provider":"codex", "epoch":"invalid", "status":"idle"})).await;
 }
 
 #[tokio::test]

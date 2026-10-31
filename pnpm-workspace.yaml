@@ -22,9 +22,3 @@ supportedArchitectures:
     - x64
   libc:
     - glibc
-
-patchedDependencies:
-  # Weak event-bulk caching releases payloads; projection pulls retain 409
-  # conflicts for server-sequence comparison. The incremental-write queue fix
-  # is upstream in 17.6.0. Recheck the remaining patch on every RxDB upgrade.
-  rxdb@17.6.0: patches/rxdb@17.6.0.patch

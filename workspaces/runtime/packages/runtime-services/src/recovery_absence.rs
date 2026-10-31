@@ -98,16 +98,15 @@ pub const LOST_COMMAND: &str =
 /// Store must additionally verify the exact completed-turn receipt in its transaction.
 pub fn command_absence_source(
     agent: &RecoverySnapshot,
-    task: &Value,
+    task: &studio_runtime_store::TaskRecord,
     observation: &RecoveryObservation,
     completed_turn: bool,
 ) -> bool {
     let a = agent.record();
-    let process = &task["processId"];
-    if task["type"] != "commandExecution"
-        || !(process.as_str().is_some_and(|s| !s.is_empty())
-            || process.is_i64()
-            || process.is_u64())
+    if task.task_type() != studio_runtime_schema::task_record::TaskType::CommandExecution
+        || task
+            .process_id()
+            .is_none_or(|id| id.text().is_some_and(str::is_empty))
         || truthy(a.get("inFlight"))
         || truthy(a.get("turnId"))
         || truthy(a.get("activeTools"))
@@ -122,9 +121,7 @@ pub fn command_absence_source(
     {
         return false;
     }
-    let Some(created) = task["created"].as_f64() else {
-        return false;
-    };
+    let created = task.created();
     match a.get("accountHistory").filter(|v| !v.is_null()) {
         None => true,
         Some(Value::Array(moves)) => moves.iter().all(|m| {

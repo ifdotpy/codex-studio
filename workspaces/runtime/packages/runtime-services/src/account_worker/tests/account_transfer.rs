@@ -18,7 +18,7 @@ async fn bridge_startup_recovers_transfer_phases_before_exposing_workers() {
         .transaction(|tx| {
             for id in ["lead", "submitted", "lazy-submitted", "interrupting"] {
                 let row = AgentRecord::from_value(
-                    json!({"id":id,"rootId":"lead","epoch":1,"status":"idle",
+                    json!({"compactions":0,"id":id,"rootId":"lead","epoch":1,"status":"idle",
                 "provider":"codex","accountKey":"source","isLead":id=="lead"}),
                 )?;
                 AgentRepository::put(tx, &row)?;
@@ -34,6 +34,12 @@ async fn bridge_startup_recovers_transfer_phases_before_exposing_workers() {
     .expect("request");
     let saved = store.transaction(|tx| {
         let mut operation = studio_runtime_store::AccountTransferRepository::get(tx, TRANSFER)?.expect("operation");
+        // The request enrolls the chat only. Enroll the other agents as older records did.
+        for id in ["submitted", "lazy-submitted", "interrupting"] {
+            let mut agent = AgentRepository::get(tx, &AgentId::from(id))?.expect("agent").value();
+            operation["members"][id] = crate::account_transfer::enroll(&mut agent, TRANSFER, "target", "codex", false).expect("enroll");
+            AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+        }
         for (id, phase) in [("lead","reading"), ("submitted","submitted"), ("lazy-submitted","lazy_submitted"), ("interrupting","interrupting")] {
             operation["members"][id]["phase"] = json!(phase);
             if id == "lead" {

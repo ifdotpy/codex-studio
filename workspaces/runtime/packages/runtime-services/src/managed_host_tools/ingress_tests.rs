@@ -97,7 +97,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
                 crate::agents_create::publish_agent(tx, &record.value())?;
             }
             tx.execute(
-                "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
                 params![monitor["id"].as_str().unwrap(), monitor.to_string()],
             )?;
             Ok(())
@@ -1187,6 +1187,8 @@ fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)
             .join(",");
         let receipt_filter = if name == "runtime_outbox" {
             " WHERE kind!='provider_callback'"
+        } else if name == "sync_entity_meta" {
+            " WHERE key!='migration_catalog'"
         } else {
             ""
         };
@@ -2194,7 +2196,6 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
         &self,
         _: &RuntimeStore,
         _: &studio_runtime_store::AgentRecord,
-        _: &Value,
         _: &str,
     ) -> Result<
         Box<dyn crate::monitor_runtime::WorkspaceAdmission + Send + Sync>,
@@ -3029,7 +3030,7 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
             json!("missing-worker-folder"),
             "cwd must be an existing folder",
         ),
-        (json!(7), "cwd must be a folder path"),
+        (json!(7), "Invalid worker creation settings"),
         (json!("   "), "cwd must be a folder path"),
     ]
     .into_iter()
@@ -4034,7 +4035,9 @@ async fn ancestry_reads_only_the_checked_parent_chain() {
         assert!(
             super::is_descendant(
                 &tx,
-                &Actor::from_record(&template().value["agents"][0], &sender, 3).unwrap(),
+                &Actor::from_record(&template().value["agents"][0], &sender, 3)
+                    .unwrap()
+                    .id,
                 "chain-leaf"
             )
             .unwrap()

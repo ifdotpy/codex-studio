@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptWireItem } from "../types";
 // Cache reset fixtures omit message role/text when only item identity/status is exercised.
 import type { CachedTranscript } from "./transcriptCache";
-import type { RxDocumentData } from "rxdb";
 import type { EntityRow } from "./entityProjection";
 import type { ResourceChangeEvent } from "./subscriptions/events";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
@@ -18,12 +17,11 @@ const mocks = vi.hoisted(() => ({
       this.status = status;
     }
   },
-  createRxDatabase: vi.fn(),
+  createCache: vi.fn(),
   syncGet: vi.fn(),
   watchResourceChanges: vi.fn(),
   registerPersister: vi.fn(),
   deleteOtherCaches: vi.fn(),
-  holdProjectionDatabaseLock: vi.fn(async () => true),
   isApiSchemaMismatch: vi.fn(() => false),
   cachedWorkspace: "",
   schemaHash: "a".repeat(64),
@@ -47,19 +45,23 @@ vi.mock("../generated/apiSchema", () => ({
   API_SCHEMA_HASH_HEADER: "X-Studio-API-Schema",
 }));
 
-vi.mock("rxdb", () => ({
-  addRxPlugin: vi.fn(),
-  createRxDatabase: mocks.createRxDatabase,
+vi.mock("./thinCache", async (original) => ({
+  ...(await original<typeof import("./thinCache")>()),
+  createProjectionCache: (...args: unknown[]) => mocks.createCache(...args),
+  indexedDbKeyValue: () => ({
+    entries: async () => [],
+    put: async () => {},
+    remove: async () => {},
+  }),
+  pruneOtherSchemas: async (...args: unknown[]) => {
+    mocks.deleteOtherCaches(...args);
+  },
 }));
-vi.mock("rxdb/plugins/storage-dexie", () => ({
-  getRxStorageDexie: vi.fn(() => ({})),
-}));
-vi.mock("rxdb/plugins/leader-election", () => ({
-  RxDBLeaderElectionPlugin: {},
-}));
-vi.mock("rxdb/plugins/replication", () => ({
-  replicateRxCollection: vi.fn(),
-}));
+const cacheOf = (collection: unknown) => ({
+  collection,
+  flush: async () => {},
+  stop: () => {},
+});
 vi.mock("../api", () => ({
   ApiError: mocks.ApiError,
   isApiSchemaMismatch: mocks.isApiSchemaMismatch,
@@ -93,9 +95,6 @@ vi.mock("./subscriptions/events", () => ({
 }));
 vi.mock("./resume", () => ({ onResume: vi.fn(() => () => {}) }));
 vi.mock("./entityCacheStorage", () => ({
-  ENTITY_PROJECTION_CACHE_VERSION: 1,
-  deleteOtherEntityProjectionDatabases: mocks.deleteOtherCaches,
-  holdEntityProjectionDatabaseLock: mocks.holdProjectionDatabaseLock,
   entityProjectionDatabaseName: (workspace: string, hash: string) =>
     `studio-entity-projection-${workspace}-${hash}`,
   workspaceDatabaseName: (workspace: string, suffix = "") =>
@@ -109,13 +108,11 @@ describe("entity pull reset wiring", () => {
     vi.resetModules();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    mocks.createRxDatabase.mockReset();
+    mocks.createCache.mockReset();
     mocks.syncGet.mockReset();
     mocks.watchResourceChanges.mockReset();
     mocks.registerPersister.mockReset();
     mocks.deleteOtherCaches.mockReset();
-    mocks.holdProjectionDatabaseLock.mockReset();
-    mocks.holdProjectionDatabaseLock.mockResolvedValue(true);
     mocks.isApiSchemaMismatch.mockReset();
     mocks.isApiSchemaMismatch.mockReturnValue(false);
     mocks.cachedWorkspace = "";
@@ -151,7 +148,7 @@ describe("entity pull reset wiring", () => {
         seq: 1,
         payload: JSON.stringify(item),
       });
-    // RxDB delivers change events to collection subscribers during the write.
+    // The store delivers change events to collection subscribers during the write.
     const listeners: ((event: { documentData: unknown }) => void)[] = [];
     const storageInstance = {
       findDocumentsById: vi.fn(async (ids: string[]) =>
@@ -180,11 +177,7 @@ describe("entity pull reset wiring", () => {
         ),
       },
     };
-    mocks.createRxDatabase
-      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
-      .mockResolvedValueOnce({
-        addCollections: vi.fn(async () => ({ projections })),
-      });
+    mocks.createCache.mockReturnValueOnce(cacheOf(projections));
     mocks.syncGet.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", { addEventListener: vi.fn() });
     vi.stubGlobal("navigator", {
@@ -284,11 +277,7 @@ describe("entity pull reset wiring", () => {
       storageInstance: {},
       $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
     };
-    mocks.createRxDatabase
-      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
-      .mockResolvedValueOnce({
-        addCollections: vi.fn(async () => ({ projections })),
-      });
+    mocks.createCache.mockReturnValueOnce(cacheOf(projections));
     vi.stubGlobal("window", { addEventListener: vi.fn() });
     vi.stubGlobal("navigator", { onLine: true });
 
@@ -300,9 +289,9 @@ describe("entity pull reset wiring", () => {
     mocks.matchingSchemaListener?.();
     expect(mocks.deleteOtherCaches).toHaveBeenCalledOnce();
     expect(mocks.deleteOtherCaches).toHaveBeenCalledWith(
+      expect.anything(),
       workspaceId,
       expect.stringMatching(/^[a-f0-9]{64}$/),
-      "",
     );
   });
 
@@ -316,18 +305,14 @@ describe("entity pull reset wiring", () => {
       storageInstance: {},
       $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
     };
-    mocks.createRxDatabase
-      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
-      .mockResolvedValueOnce({
-        addCollections: vi.fn(async () => ({ projections })),
-      });
+    mocks.createCache.mockReturnValueOnce(cacheOf(projections));
     vi.stubGlobal("window", { addEventListener: vi.fn() });
     vi.stubGlobal("navigator", { onLine: true });
     const client = await import("./client");
 
     await expect(client.syncDatabase()).resolves.toMatchObject({ workspaceId });
     expect(mocks.deleteOtherCaches).not.toHaveBeenCalled();
-    expect(mocks.createRxDatabase).toHaveBeenCalledTimes(2);
+    expect(mocks.createCache).toHaveBeenCalledTimes(1);
   });
 
   it("refreshes after an epoch change, handles reset and persists the lower cursor", async () => {
@@ -395,15 +380,7 @@ describe("entity pull reset wiring", () => {
         $: { subscribe: vi.fn(() => subscription) },
       })),
     };
-    const stableDatabase = {
-      addCollections: vi.fn(async () => ({})),
-    };
-    const projectionDatabase = {
-      addCollections: vi.fn(async () => ({ projections })),
-    };
-    mocks.createRxDatabase
-      .mockResolvedValueOnce(stableDatabase)
-      .mockResolvedValueOnce(projectionDatabase);
+    mocks.createCache.mockReturnValueOnce(cacheOf(projections));
     const pulls: number[] = [];
     mocks.syncGet.mockImplementation(
       async (path: string, options?: { query?: { after?: number } }) => {
@@ -516,11 +493,7 @@ describe("entity pull reset wiring", () => {
         storageInstance,
         $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
       };
-      mocks.createRxDatabase
-        .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
-        .mockResolvedValueOnce({
-          addCollections: vi.fn(async () => ({ projections })),
-        });
+      mocks.createCache.mockReturnValueOnce(cacheOf(projections));
       mocks.syncGet.mockResolvedValue({ workspaceId });
       vi.stubGlobal("window", { addEventListener: vi.fn() });
       vi.stubGlobal("navigator", {
@@ -676,11 +649,7 @@ describe("entity pull reset wiring", () => {
       storageInstance,
       $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
     };
-    mocks.createRxDatabase
-      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
-      .mockResolvedValueOnce({
-        addCollections: vi.fn(async () => ({ projections })),
-      });
+    mocks.createCache.mockReturnValueOnce(cacheOf(projections));
     mocks.syncGet.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", { addEventListener: vi.fn() });
     vi.stubGlobal("navigator", {
@@ -805,11 +774,7 @@ describe("entity pull reset wiring", () => {
           };
         }),
       };
-      mocks.createRxDatabase
-        .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
-        .mockResolvedValueOnce({
-          addCollections: vi.fn(async () => ({ projections })),
-        });
+      mocks.createCache.mockReturnValueOnce(cacheOf(projections));
       let releaseFirstPull!: () => void;
       let firstPullStarted!: () => void;
       const firstPullGate = new Promise<void>((resolve) => {
@@ -1074,11 +1039,7 @@ describe("entity pull reset wiring", () => {
           $: { subscribe: vi.fn(() => subscription) },
         })),
       };
-      mocks.createRxDatabase
-        .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
-        .mockResolvedValueOnce({
-          addCollections: vi.fn(async () => ({ projections })),
-        });
+      mocks.createCache.mockReturnValueOnce(cacheOf(projections));
       const pullRead = vi.fn(async () => {
         throw new mocks.ApiError("Unavailable", 503);
       });
@@ -1184,49 +1145,43 @@ describe("entity pull reset wiring", () => {
         throw new Error(`unexpected syncGet path: ${path}`);
       },
     );
-    mocks.createRxDatabase.mockImplementation(
-      async ({ name }: { name: string }) => {
-        if (!name.startsWith("studio-entity-projection-"))
-          return { addCollections: vi.fn(async () => ({})) };
-        let rows = storedByDatabase.get(name);
-        if (!rows) {
-          rows = new Map();
-          storedByDatabase.set(name, rows);
-        }
-        const storageInstance = {
-          findDocumentsById: vi.fn(async (ids: string[]) =>
-            ids.flatMap((id) => (rows!.has(id) ? [rows!.get(id)!] : [])),
+    mocks.createCache.mockImplementation((name: string) => {
+      let rows = storedByDatabase.get(name);
+      if (!rows) {
+        rows = new Map();
+        storedByDatabase.set(name, rows);
+      }
+      const storageInstance = {
+        findDocumentsById: vi.fn(async (ids: string[]) =>
+          ids.flatMap((id) => (rows!.has(id) ? [rows!.get(id)!] : [])),
+        ),
+        bulkWrite: vi.fn(
+          async (writes: Array<{ document: Record<string, unknown> }>) => {
+            for (const { document } of writes)
+              rows!.set(String(document.id), document);
+            return { error: [] };
+          },
+        ),
+      };
+      const subscription = { unsubscribe: vi.fn() };
+      const projections = {
+        database: { name },
+        storageInstance,
+        $: { subscribe: vi.fn(() => subscription) },
+        find: vi.fn(() => ({
+          exec: vi.fn(async () =>
+            [...rows!.values()]
+              .filter((row) => String(row.id).startsWith("entity:"))
+              .map((row) => ({ toJSON: () => row })),
           ),
-          bulkWrite: vi.fn(
-            async (writes: Array<{ document: Record<string, unknown> }>) => {
-              for (const { document } of writes)
-                rows!.set(String(document.id), document);
-              return { error: [] };
-            },
-          ),
-        };
-        const subscription = { unsubscribe: vi.fn() };
-        const projections = {
-          database: { name },
-          storageInstance,
+        })),
+        findOne: vi.fn((id: string) => ({
+          exec: vi.fn(async () => rows!.get(id) ?? null),
           $: { subscribe: vi.fn(() => subscription) },
-          find: vi.fn(() => ({
-            exec: vi.fn(async () =>
-              [...rows!.values()]
-                .filter((row) => String(row.id).startsWith("entity:"))
-                .map((row) => ({ toJSON: () => row })),
-            ),
-          })),
-          findOne: vi.fn((id: string) => ({
-            exec: vi.fn(async () => rows!.get(id) ?? null),
-            $: { subscribe: vi.fn(() => subscription) },
-          })),
-        };
-        return {
-          addCollections: vi.fn(async () => ({ projections })),
-        };
-      },
-    );
+        })),
+      };
+      return cacheOf(projections);
+    });
     vi.stubGlobal("window", {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -1322,11 +1277,7 @@ describe("entity pull reset wiring", () => {
           }),
         ),
       };
-      mocks.createRxDatabase
-        .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
-        .mockResolvedValueOnce({
-          addCollections: vi.fn(async () => ({ projections })),
-        });
+      mocks.createCache.mockReturnValueOnce(cacheOf(projections));
       mocks.syncGet.mockResolvedValue({ workspaceId });
       vi.stubGlobal("window", { addEventListener: vi.fn() });
       vi.stubGlobal("navigator", {
@@ -1426,7 +1377,7 @@ describe("entity pull reset wiring", () => {
   );
   it("persists terminal records and cursor atomically, replays without duplicate output, and leaves the old cursor on failure", async () => {
     const workspaceId = "8".repeat(32);
-    const rows = new Map<string, RxDocumentData<EntityRow>>();
+    const rows = new Map<string, EntityRow>();
     let fail = false;
     const projections = {
       database: { name: "terminal-resume" },
@@ -1434,21 +1385,15 @@ describe("entity pull reset wiring", () => {
         findDocumentsById: vi.fn(async (ids: string[]) =>
           ids.flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])),
         ),
-        bulkWrite: vi.fn(
-          async (writes: { document: RxDocumentData<EntityRow> }[]) => {
-            if (fail) throw new Error("disk unavailable");
-            for (const { document } of writes) rows.set(document.id, document);
-            return { error: [] };
-          },
-        ),
+        bulkWrite: vi.fn(async (writes: { document: EntityRow }[]) => {
+          if (fail) throw new Error("disk unavailable");
+          for (const { document } of writes) rows.set(document.id, document);
+          return { error: [] };
+        }),
       },
       $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
     };
-    mocks.createRxDatabase
-      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
-      .mockResolvedValueOnce({
-        addCollections: vi.fn(async () => ({ projections })),
-      });
+    mocks.createCache.mockReturnValueOnce(cacheOf(projections));
     mocks.syncGet.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", { addEventListener: vi.fn() });
     vi.stubGlobal("navigator", {

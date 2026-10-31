@@ -1,4 +1,5 @@
 import { required } from "../teams/helpers.ts";
+import { standaloneCommand } from "../../src/commands.ts";
 import type { Page } from "@playwright/test";
 import type {
   ApiGetPath,
@@ -548,7 +549,10 @@ test("workspace ui", async ({ page: testPage }) => {
       .getByRole("button", { name: "Close", exact: true })
       .click();
     // Stop queued work before a checkpoint. The shared root remains read-only for restore.
-    await post("/api/stop", { id: lead.id, descendants: true });
+    await post(
+      "/api/commands",
+      standaloneCommand("stop", lead.id, { descendants: true }),
+    );
     await section("Checkpoints");
     await drawer
       .getByRole("textbox", { name: "Checkpoint name" })

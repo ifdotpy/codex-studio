@@ -1,4 +1,5 @@
 //! Family-typed outstanding obligations. Unknown is never a send selector.
+use crate::CachedSql;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::{Serialize, de::DeserializeOwned};
 use studio_runtime_schema::persistence::{OutboxKind, OutboxStatus, OwnerKind};
@@ -50,7 +51,7 @@ impl Outbox {
     }
 
     pub fn put<P: Serialize>(tx: &Transaction<'_>, row: &OutboxRow<P>) -> Result<()> {
-        let changed = tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,payload,created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT(id) DO UPDATE SET status=excluded.status,next_at=excluded.next_at,payload=excluded.payload WHERE kind=excluded.kind AND owner_kind=excluded.owner_kind AND owner_id=excluded.owner_id AND request_id IS excluded.request_id AND signature=excluded.signature AND account IS excluded.account AND stream_id IS excluded.stream_id AND generation IS excluded.generation AND ordinal IS excluded.ordinal AND created=excluded.created", params![row.id,row.kind,row.owner_kind,row.owner_id,row.request_id,row.signature,row.status,row.account,row.stream_id,row.generation,row.ordinal,row.next_at,serde_json::to_string(&row.payload)?,row.created])?;
+        let changed = tx.execute_cached("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,payload,created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) ON CONFLICT(id) DO UPDATE SET status=excluded.status,next_at=excluded.next_at,payload=excluded.payload WHERE kind=excluded.kind AND owner_kind=excluded.owner_kind AND owner_id=excluded.owner_id AND request_id IS excluded.request_id AND signature=excluded.signature AND account IS excluded.account AND stream_id IS excluded.stream_id AND generation IS excluded.generation AND ordinal IS excluded.ordinal AND created=excluded.created", params![row.id,row.kind,row.owner_kind,row.owner_id,row.request_id,row.signature,row.status,row.account,row.stream_id,row.generation,row.ordinal,row.next_at,serde_json::to_string(&row.payload)?,row.created])?;
         if changed == 0 {
             return Err(OutboxError::Conflict(row.id.clone()));
         }
@@ -106,9 +107,32 @@ impl Outbox {
         id: &str,
         kind: OutboxKind,
     ) -> Result<Vec<OutboxRow<P>>> {
-        let mut query = tx.prepare_cached("SELECT id,kind,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,payload,created FROM runtime_outbox WHERE owner_kind=?1 AND owner_id=?2 AND kind=?3 ORDER BY id")?;
+        Self::owned(tx, owner, id, kind, None)
+    }
+
+    /// Like `for_owner`, but only rows whose payload object has the `tag`
+    /// key. Several writers share one owner and kind, each with its own
+    /// payload shape; a reader decodes only the shape that carries its tag.
+    pub fn for_owner_tagged<P: DeserializeOwned>(
+        tx: &Connection,
+        owner: OwnerKind,
+        id: &str,
+        kind: OutboxKind,
+        tag: &str,
+    ) -> Result<Vec<OutboxRow<P>>> {
+        Self::owned(tx, owner, id, kind, Some(tag))
+    }
+
+    fn owned<P: DeserializeOwned>(
+        tx: &Connection,
+        owner: OwnerKind,
+        id: &str,
+        kind: OutboxKind,
+        tag: Option<&str>,
+    ) -> Result<Vec<OutboxRow<P>>> {
+        let mut query = tx.prepare_cached("SELECT id,kind,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,payload,created FROM runtime_outbox WHERE owner_kind=?1 AND owner_id=?2 AND kind=?3 AND (?4 IS NULL OR json_type(payload,'$.' || ?4) IS NOT NULL) ORDER BY id")?;
         query
-            .query_map(params![owner, id, kind], Self::decode)?
+            .query_map(params![owner, id, kind, tag], Self::decode)?
             .collect::<rusqlite::Result<_>>()
             .map_err(|error| {
                 if let rusqlite::Error::FromSqlConversionFailure(index, ty, source) = error {
@@ -217,6 +241,7 @@ mod tests {
             created: 1,
         };
         Outbox::put(&tx, &row).expect("admit");
+        Outbox::put(&tx, &row).expect("repeat exact write");
         assert_eq!(
             Outbox::get::<Input>(&tx, &row.id).expect("get"),
             Some(row.clone())
@@ -243,7 +268,7 @@ mod tests {
             Outbox::for_request::<Input>(&tx, "request").expect("request"),
             vec![row.clone()]
         );
-        tx.execute("INSERT INTO runtime_outbox SELECT id||'-other',?1,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,'5',created FROM runtime_outbox WHERE id=?2",params![OutboxKind::WorkVm,row.id]).expect("heterogeneous sibling effect");
+        tx.execute("INSERT INTO runtime_outbox(id,kind,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,payload,created) SELECT id||'-other',?1,owner_kind,owner_id,request_id,signature,status,account,stream_id,generation,ordinal,next_at,'5',created FROM runtime_outbox WHERE id=?2",params![OutboxKind::WorkVm,row.id]).expect("heterogeneous sibling effect");
         assert!(Outbox::for_request::<Input>(&tx, "request").is_err());
         assert_eq!(
             Outbox::for_request_kind::<Input>(&tx, "request", row.kind)

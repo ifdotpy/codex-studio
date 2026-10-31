@@ -10,6 +10,22 @@ use std::path::{Path, PathBuf};
 /// `runtime_item_fulltext`, and why. Paths are relative to `workspaces/runtime`.
 const FULLTEXT_MENTIONS: &[(&str, &str)] = &[
     (
+        "packages/runtime-http/src/error.rs",
+        "maps full-text errors without reading bodies",
+    ),
+    (
+        "packages/runtime-services/src/account_worker/agent_fault.rs",
+        "classifies full-text errors without reading bodies",
+    ),
+    (
+        "packages/runtime-services/src/studio_errors/causes.rs",
+        "reports full-text errors without reading bodies",
+    ),
+    (
+        "packages/runtime-store/src/records.rs",
+        "hydrates transcript writes through StoredText",
+    ),
+    (
         "packages/runtime-http/src/routes/workspace_views.rs",
         "test fixture inserts plain full text; the route reads through TranscriptRepository::full_text",
     ),
@@ -20,6 +36,14 @@ const FULLTEXT_MENTIONS: &[(&str, &str)] = &[
     (
         "packages/runtime-store/src/repositories/transcript.rs",
         "reader and writer of body: TranscriptRepository::full_text and put_*",
+    ),
+    (
+        "packages/runtime-store/src/migrations/m2026_10_30_text_blobs.rs",
+        "migration doc: moves the table's bodies to blobs",
+    ),
+    (
+        "packages/runtime-store/src/text_blobs.rs",
+        "reads bodies through StoredText to move them to blobs and to check the move",
     ),
     (
         "packages/runtime-store/src/stored_text_compaction.rs",

@@ -255,7 +255,7 @@ mod tests {
     ];
 
     fn agent() -> Value {
-        json!({"id":"agent","name":"Agent","rootId":"root","accountKey":"default",
+        json!({"compactions":0,"id":"agent","name":"Agent","rootId":"root","accountKey":"default",
             "accountHistory":[],"provider":"codex","threadId":"thread","turnId":"turn",
             "model":"gpt-5","effort":"high","fastMode":false,"daybreakEnabled":false,
             "cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,"epoch":0,"status":"running"})

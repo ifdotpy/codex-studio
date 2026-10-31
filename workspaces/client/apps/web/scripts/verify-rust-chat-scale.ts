@@ -16,6 +16,9 @@ import { runScaleVerifier } from "./scaleVerifierTeardown.ts";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { randomUUID as commandId } from "../src/uuid.ts";
+import { messageReceipt, standaloneCommand } from "../src/commands.ts";
+import type { CommandRequest, CommandResponse } from "../src/commands.ts";
 import {
   mkdir,
   lstat,
@@ -1461,10 +1464,11 @@ async function main({
         intentAt: new Date().toISOString(),
       };
       await saveJournal(journalPath, journal);
-      const leadStop = await client.request("POST", "/api/stop", {
-        id: leadId,
-        descendants: false,
-      });
+      const leadStop = await client.request(
+        "POST",
+        "/api/commands",
+        standaloneCommand("stop", leadId, { descendants: false }),
+      );
       const stoppedLead = await client.agentSnapshot(leadId);
       assert.ok(
         stoppedLead && !stoppedLead.inFlight && stoppedLead.autoWake === false,
@@ -1604,7 +1608,7 @@ async function main({
       stage.secondExchangeLatenciesMs = [];
       const secondExchanges = ids.map((agentId) => ({
         agentId,
-        messageId: randomUUID(),
+        messageId: commandId(),
       }));
       stage.secondExchangeIds = secondExchanges.map(
         ({ messageId }) => messageId,
@@ -1620,13 +1624,16 @@ async function main({
           );
           const sent = await client.write(
             "POST",
-            "/api/messages",
-            {
-              id: messageId,
-              room: agentId,
-              text: `Reply with only STUDIO_SCALE_SECOND_${runId.slice(0, 8)}_${workers}_${index}.`,
-              delivery: "queue",
-            },
+            "/api/commands",
+            standaloneCommand(
+              "send",
+              agentId,
+              {
+                text: `Reply with only STUDIO_SCALE_SECOND_${runId.slice(0, 8)}_${workers}_${index}.`,
+                delivery: "queue",
+              },
+              messageId,
+            ),
             { type: "message", id: messageId, agentId, stageWorkers: workers },
           );
           stage.secondExchangeLatenciesMs.push(sent.elapsedMs);
@@ -2170,7 +2177,7 @@ async function createClient(
   const write = async (
     method: string,
     path: string,
-    body: Schema["CreateAgentRequest"] | Schema["ManagedMessageBody"],
+    body: Schema["CreateAgentRequest"] | CommandRequest,
     identity: {
       type: "create" | "message";
       id: string;
@@ -2220,10 +2227,11 @@ async function createClient(
     await saveJournal(journalPath, journal);
     let result;
     try {
-      result = await request<
-        | Schema["AgentResponse"]
-        | Schema["studio_api__work__models__MessageReceipt"]
-      >(method, path, body);
+      result = await request<Schema["AgentResponse"] | CommandResponse>(
+        method,
+        path,
+        body,
+      );
     } catch (error) {
       intent.state = (error as RequestFailure)?.unknown ? "unknown" : "failed";
       intent.error = String((error as Error)?.message || error).slice(0, 500);
@@ -2234,7 +2242,9 @@ async function createClient(
     intent.responseAt = result.at;
     intent.elapsedMs = result.elapsedMs;
     intent.receipt =
-      (result.value as Partial<Pick<Intent, "status">>)?.status || null;
+      ("rows" in result.value
+        ? messageReceipt(result.value)?.status
+        : (result.value as Partial<Pick<Intent, "status">>)?.status) || null;
     await saveJournal(journalPath, journal);
     return { ...result, elapsedMs: result.elapsedMs };
   };
@@ -3047,9 +3057,9 @@ export function runEventEvidenceQuery(
         agentId,
         database
           .prepare(
-            "SELECT count(*) AS count FROM runtime_completed_turns WHERE id>=? AND id<?",
+            "SELECT count(*) AS count FROM turns WHERE chat=? AND state='completed'",
           )
-          .get(agentId + ":", agentId + ";")!.count as number,
+          .get(agentId)!.count as number,
       ]),
     );
     return {
@@ -4277,10 +4287,11 @@ export async function cleanupOwned(
         send.map(async (owner) => {
           const intent = owner.cleanup.stop!;
           try {
-            const stopped = await client.request("POST", "/api/stop", {
-              id: owner.id,
-              descendants: false,
-            });
+            const stopped = await client.request(
+              "POST",
+              "/api/commands",
+              standaloneCommand("stop", owner.id, { descendants: false }),
+            );
             intent.state = "confirmed";
             intent.status =
               (stopped.value as Partial<Pick<Intent, "status">>)?.status ||
@@ -4696,7 +4707,7 @@ function aggregateMetrics(journal: Journal) {
         samples: 0,
         p95Ms: null,
       }),
-      note: "One POST /api/stop result per completed worker; this measures post-workload cleanup, not active interrupt latency.",
+      note: "One stop command result per completed worker; this measures post-workload cleanup, not active interrupt latency.",
     })),
     providerErrorsAndUpstreamLimits: stages.map((stage) => ({
       workers: stage.workers,

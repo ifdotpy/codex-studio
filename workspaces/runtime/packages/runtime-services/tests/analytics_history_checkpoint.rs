@@ -688,7 +688,7 @@ async fn terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices() {
         store
             .analytics_transaction::<_, StoreError>(|tx, _| {
                 tx.execute(
-                    "DELETE FROM analytics_meta WHERE key='terminalErrorRepairV1'",
+                    "DELETE FROM analytics_meta WHERE key IN ('terminalErrorRepairV1','migration_catalog')",
                     [],
                 )?;
                 Ok(())

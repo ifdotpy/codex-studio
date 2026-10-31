@@ -82,11 +82,58 @@ impl QuestionsWriteRepository {
         )?;
         Ok(())
     }
+
+    pub fn put_typed_complaint(
+        transaction: &Transaction<'_>,
+        record: &crate::ComplaintRecord,
+    ) -> StoreResult<()> {
+        let encoded = serde_json::to_string(record)?;
+        transaction.execute(
+            "INSERT INTO runtime_complaints(id,record) VALUES (?1,?2) \
+             ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+            params![record.id(), encoded],
+        )?;
+        Ok(())
+    }
 }
 
 inventory::submit! {
     crate::repositories::SchemaRegistration {
         repository: "questions_write",
         requirements: &REQUIREMENTS,
+    }
+}
+
+#[cfg(test)]
+mod complaint_tests {
+    use super::QuestionsWriteRepository;
+    use crate::ComplaintRecord;
+    use rusqlite::Connection;
+
+    #[test]
+    fn typed_complaint_write_uses_native_json() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
+        )
+        .unwrap();
+        let raw = r#"{"id":"c","leadId":"l","author":"user","text":"é😀","recipient":"lead","version":1,"status":"open","created":1.0,"updated":1.0,"readAt":null,"responses":[]}"#;
+        let complaint: ComplaintRecord = serde_json::from_str(raw).unwrap();
+        let tx = db.transaction().unwrap();
+        QuestionsWriteRepository::put_typed_complaint(&tx, &complaint).unwrap();
+        let stored: String = tx
+            .query_row(
+                "SELECT record FROM runtime_complaints WHERE id='c'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(stored.contains("é😀"));
+        assert_eq!(
+            serde_json::from_str::<ComplaintRecord>(&stored)
+                .unwrap()
+                .id(),
+            "c"
+        );
     }
 }

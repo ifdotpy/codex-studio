@@ -3,6 +3,7 @@
     "id": "owner",
     "rootId": "owner",
     "epoch": 7,
+    "compactions": 0,
     "status": "idle",
     "autoWake": true,
     "isLead": true,

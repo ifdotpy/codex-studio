@@ -4,15 +4,19 @@ pub mod agent_volatile;
 pub mod blocking_pool;
 mod bootstrap;
 mod cached_sql;
+pub mod domain;
+pub mod durable_seq;
 pub mod entity_publication;
 pub mod error_incidents;
+pub mod item_seq_backfill;
 pub mod migrations;
+pub mod online_migration;
 pub use cached_sql::{CachedSql, STATEMENT_CACHE_CAPACITY};
 pub use entity_publication::{EntityPublisher, PendingEntities, StudioErrorSources};
 mod feature_schema;
 mod fresh_state;
 #[cfg(any(test, feature = "test-support"))]
-pub use fresh_state::test_canvas;
+pub use fresh_state::{TestStoreTemplate, test_canvas};
 
 /// Durable marker proving both view-scoped agent projections were seeded. Unit: metadata key.
 pub const AGENT_PROJECTIONS_SEED_MARKER: &str = "agent_projections_v1";
@@ -27,6 +31,7 @@ mod path;
 pub mod path_identity;
 pub mod receipt_migration_contract;
 pub mod receipt_schema;
+pub use studio_runtime_schema::raw_object;
 mod records;
 mod repositories;
 pub use repositories::multi_server_delivery;
@@ -34,7 +39,7 @@ pub use repositories::process_actions::{
     ProcessActionKind, ProcessActionPhase, ProcessActionRecord,
 };
 pub use repositories::terminals;
-pub use repositories::{outbox, request_results};
+pub use repositories::{command_watermarks, outbox, remote_outbox, request_results};
 mod schema;
 mod sqlite_actor;
 pub mod sqlite_durability;
@@ -44,7 +49,12 @@ pub mod stored_text;
 pub mod stored_text_compaction;
 pub mod stored_text_dictionary;
 pub mod supervisor_journal;
+pub mod terminal_output;
+pub mod text_blobs;
 pub mod vm_work_intent;
+pub mod wal_backup;
+mod write_alert;
+pub mod writer_lanes;
 pub use schema::{
     python_float_json, python_json, python_json_compact, python_json_utf8,
     python_json_with_separators, sha256_hex, truthy,
@@ -54,7 +64,8 @@ pub use state_check::{StateCheckFailure, StateCheckReport, StateCheckTable, chec
 
 pub use repositories::account_state;
 pub use repositories::account_transfer::{
-    AccountTransferRecord, AccountTransferRepository, MAX_TRANSFER_RECORD_BYTES,
+    AccountTransferRecord, AccountTransferRepository, MAX_INLINE_READ_REPLY_BYTES,
+    MAX_TRANSFER_RECORD_BYTES,
 };
 pub use repositories::agent_management;
 pub use repositories::analytics::{
@@ -95,9 +106,9 @@ use sqlite_actor::{ActorResponseDisposition, SqliteActor};
 
 pub use path::{NATIVE_LAYR_DIRECTORY, resolve_state_dir};
 pub use records::{
-    ActiveExecutionView, AgentExecutionMode, AgentId, AgentRecord, AgentRepository, AgentSandbox,
-    AgentStatus, AnnotationRecord, ChatMessage, ChatMessageId, CheckpointRecord, ComplaintRecord,
-    CredentialCopy, EventMetadataRecord, ExecutionRunRecord, GraphAgentRecord, InterruptOutcome,
+    ActiveExecutionView, AgentDraft, AgentExecutionMode, AgentId, AgentRecord, AgentRepository,
+    AgentSandbox, AgentStatus, AnnotationRecord, ChatMessage, ChatMessageId, CheckpointRecord,
+    ComplaintRecord, CredentialCopy, EventMetadataRecord, ExecutionRunRecord, InterruptOutcome,
     JsonRecord, LegacyWorkReply, MessageRepository, MonitorRecord, NativeRelease,
     NativeReleaseScope, NativeReviewThread, PlanRecord, QueueEvent, QueueEventId,
     QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate, RecordQueryShape,
@@ -153,7 +164,7 @@ pub use repositories::sync_documents::{
     ENTITY_TOMBSTONE_LIMIT, ENTITY_TOMBSTONE_PRUNE_BATCH, EntityPage, EntityRow, SyncDocument,
     SyncDocumentsRepository,
 };
-pub use repositories::terminals::{TerminalRow, TerminalsRepository};
+pub use repositories::terminals::{ArchiveAppend, TerminalRow, TerminalsRepository};
 pub use repositories::transcript::{
     TranscriptItem, TranscriptRepository, TranscriptSearchKind, TranscriptStoreError,
     TranscriptStoreResult,
@@ -259,7 +270,13 @@ pub enum ResourceChange {
 }
 
 // Entity projection tables whose rows are delivered by entity-backed sync refs.
-const ENTITY_RESOURCE_TABLES: [&str; 2] = ["sync_entities", "sync_entity_meta"];
+const ENTITY_RESOURCE_TABLES: [&str; 5] = [
+    "sync_entities",
+    "sync_entity_meta",
+    "durable_rows",
+    "durable_view_log",
+    "durable_floor",
+];
 
 type ResourceChangeObserver = Arc<dyn Fn(ResourceChange) + Send + Sync>;
 type TableChangeObserver = Arc<dyn for<'a> Fn(TableChange<'a>) + Send + Sync>;
@@ -823,6 +840,10 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("invalid stored object {table}/{id}")]
     InvalidStoredObject { table: &'static str, id: String },
+    #[error("full transcript text is unavailable for {id}")]
+    TranscriptFullTextUnavailable { id: String },
+    #[error("transcript inputs are incomplete for {id}")]
+    TranscriptInputsIncomplete { id: String },
     #[error("persisted JSON schema validation failed: {0}")]
     SchemaValidation(String),
     #[error("invalid JSON-record table contract: {0}")]
@@ -947,7 +968,11 @@ impl RuntimeLock {
 pub struct RuntimeStore {
     root: PathBuf,
     writer: SqliteActor,
+    /// Commands that wait for or hold the writer; background parts yield to them.
+    command_gate: Arc<writer_lanes::CommandGate>,
     analytics: Arc<Mutex<Connection>>,
+    /// Terminal output history; its own database and writer, never the Canvas writer.
+    terminal_output: terminal_output::SharedArchive,
     cost_reader: repositories::analytics::CostReader,
     analytics_commit_notifiers: Arc<Mutex<CommitNotifiers>>,
     version_reader: Mutex<Connection>,
@@ -976,6 +1001,9 @@ pub struct RuntimeStore {
     /// Flush policy of both databases; commits request, the server's
     /// maintenance owner runs [`RuntimeStore::checkpoint_wal_if_due`].
     wal_flush: Arc<sqlite_durability::WalFlushSchedule>,
+    write_alert: Arc<write_alert::WriteAlert>,
+    /// The WAL backup shipper; set once when the owner turns the backup on.
+    wal_backup: std::sync::OnceLock<Arc<wal_backup::WalBackup>>,
     /// The projection that each writer transaction runs before commit; see [`entity_publication`].
     entity_publisher: Arc<std::sync::OnceLock<Arc<dyn EntityPublisher>>>,
 }
@@ -1320,6 +1348,7 @@ impl RuntimeStore {
             }
         }
         migrations::run(&root, progress)?;
+        let terminal_output = terminal_output::open(&root, &canvas_path)?;
 
         let table_change_flags = Arc::new(AtomicU32::new(0));
         let resource_receipt_update_count = Arc::new(AtomicU64::new(0));
@@ -1383,7 +1412,9 @@ impl RuntimeStore {
         let store = Self {
             root,
             writer,
+            command_gate: Arc::new(writer_lanes::CommandGate::default()),
             analytics: Arc::new(Mutex::new(analytics)),
+            terminal_output,
             cost_reader,
             analytics_commit_notifiers: Arc::new(Mutex::new(CommitNotifiers::default())),
             version_reader: Mutex::new(version_reader),
@@ -1408,6 +1439,8 @@ impl RuntimeStore {
             last_entity_projection_state: Mutex::new(None),
             entity_projection_maintenance_lock: tokio::sync::Mutex::new(()),
             wal_flush: Arc::new(sqlite_durability::WalFlushSchedule::default()),
+            write_alert: Arc::new(write_alert::WriteAlert::default()),
+            wal_backup: std::sync::OnceLock::new(),
             entity_publisher: Arc::new(std::sync::OnceLock::new()),
         };
         let recovery_time = SystemTime::now()
@@ -1635,6 +1668,43 @@ impl RuntimeStore {
         Ok(())
     }
 
+    /// Turn the WAL backup on: from now on each Canvas checkpoint copies the new WAL
+    /// frames into the backup outbox (`wal_backup`). Repeated calls return the same shipper.
+    pub fn install_wal_backup(&self) -> StoreResult<Arc<wal_backup::WalBackup>> {
+        if let Some(backup) = self.wal_backup.get() {
+            return Ok(Arc::clone(backup));
+        }
+        let backup = wal_backup::WalBackup::open(&self.root).map_err(StoreError::from)?;
+        Ok(Arc::clone(self.wal_backup.get_or_init(|| backup)))
+    }
+
+    /// The WAL backup shipper, when the backup was ever turned on in this process.
+    pub fn wal_backup(&self) -> Option<Arc<wal_backup::WalBackup>> {
+        self.wal_backup.get().cloned()
+    }
+
+    /// Start a backup generation on the writer actor, the only thread that checkpoints.
+    /// The caller copies the database file, then calls [`wal_backup::WalBackup::end_snapshot`].
+    /// Checkpoints go on meanwhile.
+    pub async fn begin_backup_generation(&self) -> StoreResult<String> {
+        let backup = self.install_wal_backup()?;
+        self.writer
+            .call(move |writer| Ok::<_, rusqlite::Error>(backup.begin_generation(writer)))
+            .await
+            .map_err(StoreError::writer_actor_control)?
+            .map_err(StoreError::from)
+    }
+
+    /// Count of Canvas write transactions that reached `SQLITE_WRITE_TRANSACTION_ALERT_MS`.
+    pub fn write_alerts(&self) -> u64 {
+        self.write_alert.count()
+    }
+
+    /// Replace the alert duration; for tests with an injected slow transaction.
+    pub fn set_write_alert_threshold(&self, threshold: Duration) {
+        self.write_alert.set_threshold(threshold);
+    }
+
     /// Checkpoint both WAL files without waiting on active readers or truncating them.
     /// In WAL with `synchronous=NORMAL` this is the flush that makes commits durable.
     pub async fn checkpoint_wal_passive(&self) -> StoreResult<()> {
@@ -1644,19 +1714,31 @@ impl RuntimeStore {
 
     async fn checkpoint_both(&self, mode: sqlite_durability::CheckpointMode) -> StoreResult<()> {
         let canvas_wal_path = self.root.join("canvas.sqlite3-wal");
+        let backup = self.wal_backup.get().cloned();
         self.writer
             .call(move |writer| {
-                Self::checkpoint_connection(
+                // The backup copies the WAL first; it may defer the checkpoint (docs/backup.md).
+                if backup
+                    .as_ref()
+                    .is_some_and(|backup| !backup.before_checkpoint(mode))
+                {
+                    return Ok(());
+                }
+                let outcome = Self::checkpoint_connection(
                     writer,
                     StoreDatabaseKind::Canvas,
                     &canvas_wal_path,
                     mode,
-                )
-                .map(drop)
+                )?;
+                if let Some(backup) = &backup {
+                    backup.after_checkpoint(outcome.is_complete());
+                }
+                Ok(())
             })
             .await
             .map_err(StoreError::writer_actor_control)?;
         self.checkpoint_analytics(mode).await?;
+        self.checkpoint_terminal_output(mode).await?;
         Ok(())
     }
 
@@ -1781,6 +1863,43 @@ impl RuntimeStore {
         }
     }
 
+    /// Run `process` for every row of `rows` as a background batch. Rows are
+    /// written in parts, each one write transaction of at most
+    /// [`writer_lanes::BACKGROUND_PART_TIME_LIMIT_MS`] (plus one row). Before each
+    /// part the batch waits until no command waits for the writer. `process` must
+    /// not do I/O. A failed part rolls back and ends the batch with its error;
+    /// rows of earlier parts stay written.
+    pub async fn background_batch<I>(
+        &self,
+        rows: I,
+        process: impl Fn(&Transaction<'_>, I::Item) -> StoreResult<()> + Send + Sync + 'static,
+    ) -> StoreResult<()>
+    where
+        I: Iterator + Send + 'static,
+    {
+        let rows = Arc::new(Mutex::new(rows));
+        let process = Arc::new(process);
+        let clock = Arc::new(writer_lanes::MonotonicClock::new());
+        writer_lanes::run_parts(&self.command_gate, || {
+            let rows = Arc::clone(&rows);
+            let process = Arc::clone(&process);
+            let clock = Arc::clone(&clock);
+            writer_lanes::BACKGROUND_PART.scope(
+                true,
+                self.transaction(move |transaction| {
+                    let mut rows = rows.lock().map_err(|_| StoreError::WriterPoisoned)?;
+                    writer_lanes::run_part(
+                        &*clock,
+                        Duration::from_millis(writer_lanes::BACKGROUND_PART_TIME_LIMIT_MS),
+                        &mut *rows,
+                        |row| (*process)(transaction, row),
+                    )
+                }),
+            )
+        })
+        .await
+    }
+
     /// Run a write transaction and return its committed change generation.
     /// The generation unit is one committed transaction with row changes.
     #[track_caller]
@@ -1834,6 +1953,11 @@ impl RuntimeStore {
         T: Send + 'static,
         E: From<StoreError> + Send + 'static,
     {
+        // A command registers before it waits for admission, so background parts yield to it.
+        let in_background = writer_lanes::BACKGROUND_PART
+            .try_with(|part| *part)
+            .unwrap_or(false);
+        let _command = (!in_background).then(|| self.command_gate.enter());
         let diagnostics_enabled = DIAGNOSTICS_ENABLED.load(Ordering::Acquire);
         let waiting = diagnostics_enabled.then(Instant::now);
         let did_wait = self.writer.available_admissions() == 0;
@@ -1976,10 +2100,14 @@ impl RuntimeStore {
                     }
                 }
             };
+        let write_alert = Arc::clone(&self.write_alert);
         let operation = move |writer: &mut Connection| {
-            timed_writer_job(submitted, &job_timing, Instant::now, || {
+            let started = Instant::now();
+            let outcome = timed_writer_job(submitted, &job_timing, Instant::now, || {
                 transaction_job(writer)
-            })
+            });
+            write_alert.observe(origin, started.elapsed());
+            outcome
         };
         let abandoned_notifiers = Arc::clone(&self.commit_notifiers);
         let abandoned_checkpoint = Arc::clone(&self.wal_flush);

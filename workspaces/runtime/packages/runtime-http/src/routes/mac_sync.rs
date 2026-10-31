@@ -418,7 +418,7 @@ mod tests {
         let seed_id = id.clone();
         store.transaction_with_error(move |tx| {
             for agent_id in ["lead", "other"] {
-                let agent = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":agent_id,"rootId":agent_id,"epoch":0,"status":"waiting","accountKey":"default","autoWake":true,"cwd":cwd,"isLead":agent_id=="lead","layrProjectId":"p1","layrLine":"main"})).expect("valid lead fixture");
+                let agent = AgentRecord::from_value(json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":agent_id,"rootId":agent_id,"epoch":0,"status":"waiting","accountKey":"default","autoWake":true,"cwd":cwd,"isLead":agent_id=="lead","layrProjectId":"p1","layrLine":"main"})).expect("valid lead fixture");
                 AgentRepository::put(tx, &agent)?;
             }
             send_system_followup(tx, SystemFollowup { recipient_id:"lead", id:&seed_id, text:legacy, delivery:studio_runtime_schema::DeliveryMoment::NextTurn, now:123.0 }, &AllowAdmission)?;

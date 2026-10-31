@@ -119,6 +119,7 @@ impl NotificationDispatchRepository {
 
     pub fn agent_record(transaction: &Transaction<'_>, agent: &str) -> StoreResult<Option<Value>> {
         TranscriptRepository::agent(transaction, agent)
+            .map(|record| record.map(crate::AgentRecord::into_value))
             .map_err(|error| map_transcript_error(error, "runtime_agents", agent))
     }
 
@@ -363,6 +364,7 @@ impl NotificationDispatchRepository {
 
 fn validate_item(item: &TranscriptItem, agent: &str, include_notices: bool) -> StoreResult<()> {
     use studio_runtime_schema::queue_command::Field;
+    use studio_runtime_schema::transcript_record::TranscriptRole;
     let record = &item.record;
     let role = record.role();
     let valid_inputs = match record.inputs() {
@@ -370,26 +372,23 @@ fn validate_item(item: &TranscriptItem, agent: &str, include_notices: bool) -> S
         Field::Null => false,
         Field::Value(inputs) => inputs.iter().all(|input| {
             input.id().is_some()
-                && input
-                    .extra("at")
-                    .and_then(Value::as_f64)
-                    .is_some_and(f64::is_finite)
+                && input.at().is_some_and(f64::is_finite)
                 && input.kind().is_some()
                 && input.text().is_some()
                 && input.truncated().is_some()
-                && input.extra("assets").is_some_and(Value::is_array)
+                && matches!(input.assets(), Field::Value(_))
         }),
     };
-    if ["truncated", "streaming"]
-        .iter()
-        .any(|key| record.extra(key).is_some_and(|value| !value.is_boolean()))
+    if matches!(record.truncated_field(), Field::Null)
+        || matches!(record.streaming(), Field::Null)
         || record.id().as_ref() != item.id
-        || !(matches!(role, Some("assistant" | "user"))
-            || include_notices && matches!(role, Some("system" | "output")))
-        || matches!(record.text(), Field::Null)
-        || record
-            .extra("assets")
-            .is_some_and(|assets| !assets.is_array())
+        || !(matches!(role, TranscriptRole::Assistant | TranscriptRole::User)
+            || include_notices && matches!(role, TranscriptRole::System | TranscriptRole::Output))
+        || matches!(
+            record.text(),
+            studio_runtime_schema::transcript_record::TranscriptText::InFulltextNull
+        )
+        || matches!(record.assets(), Field::Null)
         || !valid_inputs
     {
         return Err(invalid_record("runtime_items", &item.id));
@@ -405,9 +404,7 @@ fn map_transcript_error(error: TranscriptStoreError, table: &'static str, id: &s
     match error {
         TranscriptStoreError::Store(error) => error,
         TranscriptStoreError::Sqlite(error) => StoreError::from(error),
-        TranscriptStoreError::InvalidStoredObject { .. } | TranscriptStoreError::ActiveTurn => {
-            invalid_record(table, id)
-        }
+        TranscriptStoreError::InvalidStoredObject { .. } => invalid_record(table, id),
     }
 }
 

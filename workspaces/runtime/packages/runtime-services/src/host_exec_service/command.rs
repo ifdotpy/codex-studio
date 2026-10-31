@@ -7,13 +7,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Map, json};
 use tokio::io::AsyncReadExt;
 
 use super::protocol::{self, Failure, HostExecError, INVALID, Manifest, Outcome, require};
 use super::{
     ChildHandle, ENV_ARTIFACTS, ENV_DERIVED_DATA, ENV_PACKAGE_CACHE, ENV_STATE, ENV_TREE,
-    HostService, Op, integer, now, number, string_list, text,
+    HostService, Op, RunParams, State, now,
 };
 
 /// Command output that the service keeps, in bytes; more stops the command.
@@ -254,60 +254,56 @@ impl HostService {
         op: Op,
         slot: PathBuf,
         mac_only: Vec<String>,
-        params: &Map<String, Value>,
+        params: &RunParams,
     ) -> Outcome<Op> {
         require(
-            text(&op, "state") == "leased",
+            op.state == State::Leased,
             "The command already started",
             "outcome_unknown",
         )?;
-        let argv: Vec<String> = match params.get("argv") {
-            Some(Value::Array(items))
-                if !items.is_empty()
-                    && items.len() <= MAX_ARGUMENTS
-                    && items
-                        .iter()
-                        .all(|item| item.as_str().is_some_and(|item| !item.contains('\0'))) =>
-            {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect()
-            }
-            _ => return Err(HostExecError::new(INVALID, "Invalid command arguments").into()),
-        };
-        let timeout = match params.get("timeoutSeconds") {
-            None => crate::host_exec::DEFAULT_TIMEOUT_SECONDS,
-            value => number(value)
-                .filter(|seconds| {
-                    *seconds > 0.0 && *seconds <= crate::host_exec::MAX_TIMEOUT_SECONDS
-                })
-                .ok_or_else(|| HostExecError::new(INVALID, "Invalid command timeout"))?,
-        };
+        require(
+            !params.argv.is_empty()
+                && params.argv.len() <= MAX_ARGUMENTS
+                && params.argv.iter().all(|item| !item.contains('\0')),
+            "Invalid command arguments",
+            INVALID,
+        )?;
+        let argv = params.argv.clone();
+        let timeout = params
+            .timeout_seconds
+            .unwrap_or(crate::host_exec::DEFAULT_TIMEOUT_SECONDS);
+        require(
+            timeout > 0.0 && timeout <= crate::host_exec::MAX_TIMEOUT_SECONDS,
+            "Invalid command timeout",
+            INVALID,
+        )?;
         // Cache folders of the line: the Mac receives them, and its changes there never return.
-        let caches = Self::cache_list(params.get("caches"))?;
+        let caches = Self::cache_paths(&params.caches)?;
         // The layr state that the guest wrote into the slot; an older guest sends none.
-        let layr_state = match params.get("layrState") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(state)) if layr_id(state, 7..=64) => Some(state.clone()),
-            Some(_) => return Err(HostExecError::new(INVALID, "Invalid layr state ID").into()),
-        };
+        let layr_state = params.layr_state.clone();
+        require(
+            layr_state
+                .as_ref()
+                .is_none_or(|state| layr_id(state, 7..=64)),
+            "Invalid layr state ID",
+            INVALID,
+        )?;
         // The git tree ID of that state; a guest whose layr cannot name it sends none.
-        let layr_tree = match params.get("layrTree") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(tree)) if layr_state.is_some() && layr_id(tree, 40..=40) => {
-                Some(tree.clone())
-            }
-            Some(_) => return Err(HostExecError::new(INVALID, "Invalid layr tree ID").into()),
-        };
+        let layr_tree = params.layr_tree.clone();
+        require(
+            layr_tree
+                .as_ref()
+                .is_none_or(|tree| layr_state.is_some() && layr_id(tree, 40..=40)),
+            "Invalid layr tree ID",
+            INVALID,
+        )?;
         let lock = self.lock_for(&format!("run\0{identity}"));
         let _held = lock.lock().await;
         let source = self.scan_slot_blocking(&slot, mac_only).await?;
         // The scan let other requests run: the operation must still be leased.
         let mut op = self.load(identity)?;
         require(
-            text(&op, "state") == "leased",
+            op.state == State::Leased,
             "The command already started",
             "outcome_unknown",
         )?;
@@ -319,8 +315,7 @@ impl HostService {
             "name_conflict",
         )?;
         require(
-            params.get("manifestSha256").and_then(Value::as_str)
-                == Some(protocol::manifest_digest(&source).as_str()),
+            params.manifest_sha256 == protocol::manifest_digest(&source),
             "The host sources differ from the layr slot",
             "sync_conflict",
         )?;
@@ -328,8 +323,8 @@ impl HostService {
             self.link_git_objects(&op, &slot.join("source"))?;
         }
         let mut cwd = slot.join("source");
-        if studio_runtime_store::truthy(params.get("cwd")) {
-            cwd = protocol::inside(&cwd, params.get("cwd"), true)?;
+        if let Some(path) = params.cwd.as_ref().filter(|path| !path.is_empty()) {
+            cwd = protocol::inside(&cwd, Some(&protocol::text_value(path)), true)?;
             require(cwd.is_dir(), "The command cwd is not a directory", INVALID)?;
         }
         self.evict(
@@ -338,14 +333,14 @@ impl HostService {
             0,
             Some(&slot),
         )?;
-        op.insert("state".into(), json!("running"));
-        op.insert("startedAt".into(), json!(now()));
-        op.insert("caches".into(), json!(caches));
+        op.state = State::Running;
+        op.started_at = Some(now());
+        op.caches = Some(caches);
         if let Some(state) = layr_state {
-            op.insert("layrState".into(), json!(state));
+            op.layr_state = Some(state);
         }
         if let Some(tree) = layr_tree {
-            op.insert("layrTree".into(), json!(tree));
+            op.layr_tree = Some(tree);
         }
         self.save(identity, &op)?;
         self.inner().commands.insert(identity.to_owned());
@@ -380,12 +375,9 @@ impl HostService {
                 Failure::Refused(error) => error.message,
                 Failure::Unexpected(message) => message,
             };
-            op.insert("state".into(), json!("unknown"));
-            op.insert("reason".into(), json!("host_command_failed"));
-            op.insert(
-                "error".into(),
-                json!(message.chars().take(super::ERROR_CHARS).collect::<String>()),
-            );
+            op.state = State::Unknown;
+            op.reason = Some("host_command_failed".into());
+            op.error = Some(message.chars().take(super::ERROR_CHARS).collect());
             if let Err(error) = self.save(&identity, &op) {
                 eprintln!("host_exec: the status of {identity} is not saved: {error:?}");
             }
@@ -408,27 +400,23 @@ impl HostService {
         mut before: Manifest,
     ) -> Outcome<()> {
         let reason: Reason = Arc::new(Mutex::new("exited"));
-        let mut code = Value::Null;
+        let mut code = None;
         let slot = self.slot(op)?;
-        if studio_runtime_store::truthy(self.load(identity)?.get("cancelRequested")) {
+        if self.load(identity)?.cancel_requested.unwrap_or(false) {
             set_reason(&reason, "cancelled");
         } else {
             let mut command = tokio::process::Command::new(&argv[0]);
             command
                 .args(&argv[1..])
                 .current_dir(cwd)
-                .env(ENV_DERIVED_DATA, text(op, "derivedData"))
-                .env(ENV_PACKAGE_CACHE, text(op, "packageCache"))
-                .env(ENV_ARTIFACTS, text(op, "artifactsPath"))
+                .env(ENV_DERIVED_DATA, op.derived_data.as_str())
+                .env(ENV_PACKAGE_CACHE, op.package_cache.as_str())
+                .env(ENV_ARTIFACTS, op.artifacts_path.as_str())
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .process_group(0);
-            if let Some(state) = op
-                .get("layrState")
-                .and_then(Value::as_str)
-                .filter(|state| !state.is_empty())
-            {
+            if let Some(state) = op.layr_state.as_deref().filter(|state| !state.is_empty()) {
                 command.env(ENV_STATE, state);
             }
             // A sign-in link of the command reaches the host bridge as its calling chat. The
@@ -446,7 +434,7 @@ impl HostService {
                             "STUDIO_BROWSER_SOCKET",
                             folder.join(crate::browser_environment::BROWSER_OPEN_SOCKET),
                         )
-                        .env("STUDIO_BROWSER_SESSION", text(op, "agentId"))
+                        .env("STUDIO_BROWSER_SESSION", op.agent_id.as_str())
                         // The launcher prefers a guest session name.
                         .env_remove("LAYR_SESSION");
                 }
@@ -457,11 +445,7 @@ impl HostService {
                         .env_remove("STUDIO_BROWSER_SESSION");
                 }
             }
-            match op
-                .get("layrTree")
-                .and_then(Value::as_str)
-                .filter(|tree| !tree.is_empty())
-            {
+            match op.layr_tree.as_deref().filter(|tree| !tree.is_empty()) {
                 Some(tree) => command.env(ENV_TREE, tree),
                 // The inherited environment must not name another tree.
                 None => command.env_remove(ENV_TREE),
@@ -489,10 +473,10 @@ impl HostService {
                 .children
                 .insert(identity.to_owned(), handle.clone());
             let saved = self.load(identity)?;
-            op.extend(saved);
-            op.insert("pid".into(), json!(pid));
+            *op = saved;
+            op.pid = Some(pid);
             self.save(identity, op)?;
-            if studio_runtime_store::truthy(op.get("cancelRequested")) {
+            if op.cancel_requested.unwrap_or(false) {
                 terminate(&handle).await;
             }
             let output = Arc::new(AtomicU64::new(0));
@@ -508,8 +492,8 @@ impl HostService {
                     service: Arc::clone(self),
                     identity: identity.to_owned(),
                     stream,
-                    slot_path: text(op, "slotPath").to_owned(),
-                    line_path: text(op, "linePath").to_owned(),
+                    slot_path: op.slot_path.as_str().to_owned(),
+                    line_path: op.line_path.as_str().to_owned(),
                     output: Arc::clone(&output),
                     reason: Arc::clone(&reason),
                     child: handle.clone(),
@@ -556,93 +540,83 @@ impl HostService {
                 .map_err(|_| Failure::Unexpected("The command exit is unknown".into()))??;
             use std::os::unix::process::ExitStatusExt;
             code = match (status.code(), status.signal()) {
-                (Some(code), _) => json!(code),
-                (None, Some(signal)) => json!(-signal),
-                (None, None) => Value::Null,
+                (Some(code), _) => Some(code),
+                (None, Some(signal)) => Some(-signal),
+                (None, None) => None,
             };
-            if studio_runtime_store::truthy(self.load(identity)?.get("cancelRequested")) {
+            if self.load(identity)?.cancel_requested.unwrap_or(false) {
                 set_reason(&reason, "cancelled");
             }
         }
         // Mac-only paths and cache folders never return to the line, so they are not compared.
-        let caches = string_list(op, "caches");
+        let caches = op.caches.clone().unwrap_or_default();
         let mut skip = Self::mac_only(op);
         skip.extend(caches.iter().cloned());
         let after = self.scan_slot_blocking(&slot, skip).await?;
         before.retain(|path, _| !protocol::under(path, &caches));
-        let mut changed = Map::new();
+        let mut changed = std::collections::BTreeMap::new();
         for path in before.keys().chain(after.keys()) {
             if before.get(path) != after.get(path) {
-                changed.insert(
-                    path.clone(),
-                    after.get(path).cloned().unwrap_or(Value::Null),
-                );
+                changed.insert(path.clone(), after.get(path).cloned());
             }
         }
         let result_dir = self.opdir(identity).join("changes");
         fs::create_dir(&result_dir)?;
         for (path, entry) in &changed {
-            let kind = entry
-                .get("kind")
-                .and_then(Value::as_str)
-                .unwrap_or("directory");
-            if kind == "directory" {
+            let Some(
+                entry @ (protocol::ManifestEntry::Link { .. }
+                | protocol::ManifestEntry::File { .. }),
+            ) = entry
+            else {
                 continue;
-            }
+            };
             let name = protocol::text_value(path);
             let source = protocol::inside(&slot.join("source"), Some(&name), false)?;
             let target = protocol::inside(&result_dir, Some(&name), false)?;
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
-            if kind == "link" {
-                std::os::unix::fs::symlink(text_of(entry, "target"), &target)?;
-            } else {
-                fs::copy(&source, &target)?;
-                let mode = integer(entry.get("mode"))
-                    .and_then(|mode| u32::try_from(mode).ok())
-                    .unwrap_or(0o600);
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&target, fs::Permissions::from_mode(mode))?;
+            match entry {
+                protocol::ManifestEntry::Link { target: link } => {
+                    std::os::unix::fs::symlink(link, &target)?
+                }
+                protocol::ManifestEntry::File { mode, .. } => {
+                    fs::copy(&source, &target)?;
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&target, fs::Permissions::from_mode(*mode))?;
+                }
+                protocol::ManifestEntry::Directory => continue,
             }
         }
         let artifacts = protocol::scan(&self.opdir(identity).join("artifacts"), &[], None)?;
-        protocol::atomic(
-            &self.opdir(identity).join("changes.json"),
-            &Value::Object(changed.clone()),
-        )?;
-        protocol::atomic(
-            &self.opdir(identity).join("artifacts.json"),
-            &protocol::manifest_value(&artifacts),
-        )?;
+        protocol::atomic(&self.opdir(identity).join("changes.json"), &changed)?;
+        protocol::atomic(&self.opdir(identity).join("artifacts.json"), &artifacts)?;
         // A cancel or a guest recovery saved its flag during the command.
         let latest = self.load(identity)?;
-        for field in ["cancelRequested", "orphaned"] {
-            if let Some(value) = latest
-                .get(field)
-                .filter(|value| studio_runtime_store::truthy(Some(value)))
-            {
-                op.insert(field.into(), value.clone());
-            }
+        if latest.cancel_requested == Some(true) {
+            op.cancel_requested = Some(true);
+        }
+        if latest.orphaned == Some(true) {
+            op.orphaned = Some(true);
         }
         let reason = get_reason(&reason);
-        op.insert("state".into(), json!("exited"));
-        op.insert("exitCode".into(), code.clone());
-        op.insert("reason".into(), json!(reason));
-        op.insert("exitedAt".into(), json!(now()));
-        op.insert("changedPaths".into(), json!(changed.len()));
-        op.insert("artifactFiles".into(), json!(artifacts.len()));
-        op.insert(
-            "nameConflicts".into(),
-            json!(protocol::conflicts(after.keys())),
-        );
+        op.state = State::Exited;
+        op.exit_code = match code {
+            Some(code) => studio_runtime_schema::queue_command::Field::Value(code),
+            None => studio_runtime_schema::queue_command::Field::Null,
+        };
+        op.reason = Some(reason.into());
+        op.exited_at = Some(now());
+        op.changed_paths = Some(changed.len());
+        op.artifact_files = Some(artifacts.len());
+        op.name_conflicts = Some(protocol::conflicts(after.keys()));
         self.save(identity, op)?;
         let mut event = Map::new();
         event.insert("state".into(), json!("exited"));
-        event.insert("exitCode".into(), code);
+        event.insert("exitCode".into(), json!(code));
         event.insert("reason".into(), json!(reason));
         self.event(identity, event)?;
-        if studio_runtime_store::truthy(op.get("orphaned"))
+        if op.orphaned.unwrap_or(false)
             && let Err(error) =
                 self.release_operation(identity, op, &slot, false, false, Some("guest_owner_lost"))
         {
@@ -654,25 +628,21 @@ impl HostService {
     pub(crate) async fn cancel(&self, identity: &str, op: &mut Op) -> Outcome<Op> {
         let child = self.inner().children.get(identity).cloned();
         if let Some(child) = child {
-            op.insert("cancelRequested".into(), json!(true));
+            op.cancel_requested = Some(true);
             self.save(identity, op)?;
             terminate(&child).await;
-        } else if text(op, "state") == "unknown" {
+        } else if op.state == State::Unknown {
             return Err(HostExecError::new(
                 "outcome_unknown",
                 "The old host owner is lost; inspect the slot before recovery",
             )
             .into());
         } else {
-            op.insert("cancelRequested".into(), json!(true));
+            op.cancel_requested = Some(true);
             self.save(identity, op)?;
         }
         self.load(identity)
     }
-}
-
-fn text_of<'a>(entry: &'a Value, field: &str) -> &'a str {
-    entry.get(field).and_then(Value::as_str).unwrap_or_default()
 }
 
 enum Pipe {

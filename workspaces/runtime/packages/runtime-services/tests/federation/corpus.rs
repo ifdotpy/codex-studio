@@ -53,7 +53,7 @@ impl Corpus {
         let agents: Vec<Value> = ["lead", "helper"]
             .iter()
             .map(|name| {
-                json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":name,"rootId":"lead","epoch":0,"status":"idle","name":name,
+                json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":name,"rootId":"lead","epoch":0,"status":"idle","name":name,
                 "autoWake":false,"isLead":*name == "lead"})
             })
             .collect();
@@ -214,9 +214,13 @@ impl Corpus {
 }
 fn rows(store: &RuntimeStore, table: &str) -> Vec<Value> {
     let db = store.test_reader().expect("fixture operation");
-    let mut stmt = db
-        .prepare(&format!("SELECT record FROM {table} ORDER BY rowid"))
-        .expect("fixture operation");
+    // Federation messages are rows of the shared outbox.
+    let sql = if table == "runtime_federation_outbox" {
+        "SELECT json_extract(payload,'$.record') FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='federation_message' ORDER BY rowid".to_owned()
+    } else {
+        format!("SELECT record FROM {table} ORDER BY rowid")
+    };
+    let mut stmt = db.prepare(&sql).expect("fixture operation");
     stmt.query_map([], |r| r.get::<_, String>(0))
         .expect("fixture operation")
         .map(|r| serde_json::from_str(&r.expect("fixture operation")).expect("fixture operation"))
@@ -227,12 +231,17 @@ fn counts(store: &RuntimeStore) -> Value {
     let tables = [
         "runtime_federation_inbox",
         "runtime_federation_outbox",
-        "runtime_federation_nonces",
+        "runtime_access_nonces",
         "runtime_chat_messages",
         "runtime_events",
     ];
     json!(tables.map(|t| {
-        db.query_row(&format!("SELECT count(*) FROM {t}"), [], |r| {
+        let sql = if t == "runtime_federation_outbox" {
+            "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(payload,'$.effect')='federation_message'".to_owned()
+        } else {
+            format!("SELECT count(*) FROM {t}")
+        };
+        db.query_row(&sql, [], |r| {
             r.get::<_, i64>(0)
         })
         .expect("fixture operation")
@@ -469,6 +478,7 @@ async fn authenticated_consumer() {
         nonce,
         signature: &signature,
         raw: &body,
+        unified: None,
     };
     let before = counts(&store);
     assert!(
@@ -516,6 +526,142 @@ async fn authenticated_consumer() {
     assert_eq!(counts(&store), before_replay, "reused nonce writes nothing");
 }
 
+/// The old federation signature stays accepted for one release (rolling update).
+/// `authenticated_consumer` above covers it; this test covers the unified scheme.
+#[tokio::test]
+async fn unified_signature_verifies_and_its_nonce_replay_is_refused_from_the_one_table() {
+    let corpus = &Corpus::new();
+    let (_, store) = corpus.store("unified-auth", false).await;
+    let identity = corpus.signing_identity();
+    let body =
+        serde_json::to_vec(&json!({"protocol":1,"envelope":corpus.data["cases"][0]["envelope"]}))
+            .expect("fixture operation");
+    let local_id = corpus.data["seed"]["local"]["stateId"]
+        .as_str()
+        .expect("fixture operation");
+    let action = effects::FederationAction::Message;
+    let timestamp = corpus.now() as i64;
+    let nonce = "unified-authenticated-nonce-1234";
+    let sign = |server_id: &str, nonce: &str| {
+        identity.sign(&transport::multi_server_signing_bytes(
+            transport::MultiServerSigningInput {
+                method: "POST",
+                target: action.path(),
+                server_id,
+                client_id: corpus.peer(),
+                timestamp: &timestamp.to_string(),
+                nonce,
+                request_id: "unified-request-1",
+                body: &body,
+            },
+        ))
+    };
+    let signature = sign(local_id, nonce);
+    fn request<'a>(
+        server_id: &'a str,
+        nonce: &'a str,
+        signature: &'a str,
+        peer_id: &'a str,
+        timestamp: i64,
+        body: &'a [u8],
+    ) -> effects::SignedRequest<'a> {
+        effects::SignedRequest {
+            action: effects::FederationAction::Message,
+            peer_id,
+            timestamp,
+            nonce,
+            signature,
+            raw: body,
+            unified: Some(effects::UnifiedFields {
+                server_id,
+                request_id: "unified-request-1",
+            }),
+        }
+    }
+    let wrong_server = sign("99999999-9999-4999-8999-999999999999", nonce);
+    let before = counts(&store);
+    assert!(
+        effects::handle(
+            std::sync::Arc::clone(&store),
+            request(
+                "99999999-9999-4999-8999-999999999999",
+                nonce,
+                &wrong_server,
+                corpus.peer(),
+                timestamp,
+                &body
+            ),
+            effects::OriginObservation::observed(None),
+            corpus.now(),
+        )
+        .await
+        .is_err(),
+        "a request addressed to another server is refused"
+    );
+    assert_eq!(counts(&store), before, "refusal writes nothing");
+
+    effects::handle(
+        std::sync::Arc::clone(&store),
+        request(local_id, nonce, &signature, corpus.peer(), timestamp, &body),
+        effects::OriginObservation::observed(None),
+        corpus.now(),
+    )
+    .await
+    .expect("a request signed with the unified scheme verifies");
+    let consumed = counts(&store);
+    let stored: i64 = store
+        .test_reader()
+        .expect("fixture operation")
+        .query_row(
+            "SELECT count(*) FROM runtime_access_nonces WHERE client=?1 AND nonce=?2",
+            [format!("federation:{}", corpus.peer()), nonce.to_owned()],
+            |row| row.get(0),
+        )
+        .expect("fixture operation");
+    assert_eq!(stored, 1, "the nonce is stored in the one nonce table");
+
+    assert!(
+        effects::handle(
+            std::sync::Arc::clone(&store),
+            request(local_id, nonce, &signature, corpus.peer(), timestamp, &body),
+            effects::OriginObservation::observed(None),
+            corpus.now(),
+        )
+        .await
+        .is_err(),
+        "a replayed nonce is refused"
+    );
+    assert_eq!(counts(&store), consumed, "replay writes nothing");
+
+    // The same nonce under the old scheme is a replay too: both schemes share the table.
+    let legacy = identity.sign(&transport::federation_signing_bytes(
+        "POST",
+        action.path(),
+        timestamp,
+        nonce,
+        &body,
+    ));
+    assert!(
+        effects::handle(
+            std::sync::Arc::clone(&store),
+            effects::SignedRequest {
+                action,
+                peer_id: corpus.peer(),
+                timestamp,
+                nonce,
+                signature: &legacy,
+                raw: &body,
+                unified: None,
+            },
+            effects::OriginObservation::observed(None),
+            corpus.now(),
+        )
+        .await
+        .is_err(),
+        "a nonce used under the unified scheme is a replay under the old scheme"
+    );
+}
+
 #[tokio::test]
 async fn federation_inbound_authentication_refusals() {
     // Freshness, trusted peer identity,
@@ -549,7 +695,8 @@ async fn federation_inbound_authentication_refusals() {
                 timestamp: corpus.now() as i64,
                 nonce: "bad-authenticated-nonce-12345",
                 signature: &bad_signature,
-                raw: &body
+                raw: &body,
+                unified: None,
             },
             effects::OriginObservation::observed(None),
             corpus.now(),
@@ -574,7 +721,8 @@ async fn federation_inbound_authentication_refusals() {
                 timestamp: stale,
                 nonce: stale_nonce,
                 signature: &stale_signature,
-                raw: &body
+                raw: &body,
+                unified: None,
             },
             effects::OriginObservation::observed(None),
             corpus.now(),
@@ -599,7 +747,8 @@ async fn federation_inbound_authentication_refusals() {
                 timestamp: corpus.now() as i64,
                 nonce: wrong_peer_nonce,
                 signature: &wrong_peer_signature,
-                raw: &body
+                raw: &body,
+                unified: None,
             },
             effects::OriginObservation::observed(None),
             corpus.now(),
@@ -633,7 +782,8 @@ async fn federation_inbound_authentication_refusals() {
                 timestamp: corpus.now() as i64,
                 nonce: whois_nonce,
                 signature: &whois_signature,
-                raw: &body
+                raw: &body,
+                unified: None,
             },
             effects::OriginObservation::observed(Some("other@example.test".into())),
             corpus.now(),
@@ -698,6 +848,7 @@ async fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() 
                     nonce,
                     signature: &signature,
                     raw: &raw,
+                    unified: None,
                 },
                 effects::OriginObservation::observed(Some("peer@example.test".into())),
                 corpus.now(),
@@ -761,7 +912,8 @@ async fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() 
                 timestamp: corpus.now() as i64,
                 nonce: other_nonce,
                 signature: &other_signature,
-                raw: &other_raw
+                raw: &other_raw,
+                unified: None,
             },
             effects::OriginObservation::observed(Some("peer@example.test".into())),
             corpus.now(),
@@ -828,7 +980,8 @@ async fn federation_pair_consumes_one_invitation_and_replays_by_peer_identity() 
                 timestamp: corpus.now() as i64,
                 nonce: expired_nonce,
                 signature: &expired_signature,
-                raw: &expired_raw
+                raw: &expired_raw,
+                unified: None,
             },
             effects::OriginObservation::observed(Some("peer@example.test".into())),
             corpus.now(),
@@ -1101,17 +1254,22 @@ impl delivery::FederationTransport for PeerTransport {
                     .1
                     .as_str()
             };
+            assert_eq!(header("X-Studio-Client"), self.sender);
             let response = effects::handle(
                 std::sync::Arc::clone(&self.receiver),
                 effects::SignedRequest {
                     action,
-                    peer_id: &self.sender,
-                    timestamp: header("X-Studio-Federation-Time")
+                    peer_id: header("X-Studio-Client"),
+                    timestamp: header("X-Studio-Timestamp")
                         .parse()
                         .expect("fixture operation"),
-                    nonce: header("X-Studio-Federation-Nonce"),
-                    signature: header("X-Studio-Federation-Signature"),
+                    nonce: header("X-Studio-Nonce"),
+                    signature: header("X-Studio-Signature"),
                     raw: &body,
+                    unified: Some(effects::UnifiedFields {
+                        server_id: header("X-Studio-Server"),
+                        request_id: header("X-Studio-Request-Id"),
+                    }),
                 },
                 effects::OriginObservation::observed(None),
                 self.now,
@@ -1476,6 +1634,7 @@ async fn spoofed_origin() {
         nonce: "spoofed-origin-nonce-12345",
         signature: "",
         raw: &raw,
+        unified: None,
     };
     assert!(
         effects::handle(
@@ -1608,7 +1767,10 @@ async fn oversized_batches() {
         let peer_id = corpus.peer().to_owned();
         store.transaction(move |tx| {
             match table {
-                Table::Outbox => tx.execute("INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES('large',?1,?2)",params![peer_id,raw])?,
+                Table::Outbox => {
+                    studio_runtime_store::remote_outbox::RemoteOutbox::put(tx,studio_runtime_store::remote_outbox::RemoteEffect::FederationMessage,&peer_id,"large","signature",studio_runtime_schema::persistence::OutboxStatus::Pending,Some(0),serde_json::from_str::<Value>(&raw).expect("record"),0)?;
+                    0
+                }
                 Table::Inbox => tx.execute("INSERT INTO runtime_federation_inbox(peer_id,message_id,record) VALUES(?1,'large',?2)",params![peer_id,raw])?,
                 Table::Settings | Table::Peer | Table::Room => unreachable!(),
             };

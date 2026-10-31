@@ -15,11 +15,13 @@
 //! backend start. [`absent_command_checks`] and [`close_absent_commands`] apply
 //! the second rule with a background terminal list that the account worker
 //! reads from the live provider.
-use rusqlite::{OptionalExtension, Transaction};
-use serde_json::{Value, json};
+use rusqlite::Transaction;
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, CachedSql, RuntimeStore, StoreError, StoreResult,
-    TaskId, TaskRecord, TaskRepository, truthy,
+    AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError, StoreResult, TaskId,
+    TaskRecord, TaskRepository, truthy,
 };
 
 /// The status of a task whose turn ended before the provider reported its end.
@@ -40,7 +42,8 @@ pub fn background_command(task: &Value) -> bool {
 }
 
 fn background_task(task: &TaskRecord) -> bool {
-    task.kind() == Some("command") && truthy(task.extra("processId"))
+    task.kind() == studio_runtime_schema::task_record::TaskKind::Command
+        && task.process_id().is_some_and(|id| id.truthy())
 }
 
 /// Whether `turn` of `agent` can still produce item reports. A completed turn
@@ -78,14 +81,7 @@ fn owner_settles(agent: &Value) -> bool {
 }
 
 fn completed_turn(tx: &rusqlite::Connection, agent: &str, turn: &str) -> StoreResult<bool> {
-    Ok(tx
-        .query_row_cached(
-            "SELECT 1 FROM runtime_completed_turns WHERE id=?1",
-            [format!("{agent}:{turn}")],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some())
+    studio_runtime_store::domain::turn_completed(tx, agent, turn)
 }
 
 fn stored_agent(tx: &rusqlite::Connection, id: &str) -> StoreResult<Option<Value>> {
@@ -138,26 +134,24 @@ pub fn settle_agent_tasks(tx: &Transaction<'_>, agent_id: &str, at: f64) -> Stor
         && crate::legacy_image_workspace::is_legacy(&agent);
     let mut closed = 0;
     for task in running_tasks(tx, agent_id)? {
-        let turn = task.turn_id().filter(|turn| !turn.is_empty());
-        if !legacy && (turn.is_none() || background_task(&task)) {
+        let turn = task.turn_id();
+        if !legacy && (turn.is_empty() || background_task(&task)) {
             continue;
         }
-        if let Some(turn) = turn
-            && turn_live(&agent, turn, completed_turn(tx, agent_id, turn)?)
-        {
+        if !turn.is_empty() && turn_live(&agent, turn, completed_turn(tx, agent_id, turn)?) {
             continue;
         }
         let mut settled = task;
         let lost = legacy && background_task(&settled);
         settled.set_status(if lost {
-            LOST_TASK_STATUS
+            studio_runtime_schema::task_record::TaskStatus::Lost
         } else {
-            SETTLED_TASK_STATUS
+            studio_runtime_schema::task_record::TaskStatus::Interrupted
         });
         if lost {
-            settled.set_error(json!(LOST_COMMAND));
+            settled.set_error(LOST_COMMAND.into());
         }
-        settled.set_finished(json!(at));
+        settled.set_finished(at);
         write_task(tx, &settled)?;
         closed += 1;
     }
@@ -272,21 +266,18 @@ fn checkable_command(
     task: &TaskRecord,
 ) -> StoreResult<bool> {
     let agent_id = agent["id"].as_str().unwrap_or_default();
-    let (Some(turn), Some(created)) = (
-        task.turn_id().filter(|turn| !turn.is_empty()),
-        task.created(),
-    ) else {
+    let turn = task.turn_id();
+    if turn.is_empty() {
         return Ok(false);
-    };
+    }
+    let created = task.created();
     if !background_task(task)
-        || task.agent() != agent["id"].as_str()
-        || task.id().as_ref() != format!("{agent_id}:{}", task.item_id().unwrap_or_default())
+        || Some(task.agent()) != agent["id"].as_str()
+        || task.id().as_ref() != format!("{agent_id}:{}", task.item_id())
+        || task.source_thread_id().is_some_and(|value| value != thread)
         || task
-            .extra("sourceThreadId")
-            .is_some_and(|v| !v.is_null() && v != thread)
-        || task
-            .extra("sourceAccountKey")
-            .is_some_and(|v| !v.is_null() && v != account)
+            .source_account_key()
+            .is_some_and(|value| value != account)
     {
         return Ok(false);
     }
@@ -341,15 +332,15 @@ pub fn close_absent_commands(
         };
         if &current != expected
             || !checkable_command(tx, &agent, account, &check.thread, &current)?
-            || listed(report, &current.value())
+            || listed(report, &current)
         {
             continue;
         }
-        current.set_status(LOST_TASK_STATUS);
-        current.set_finished(json!(at));
-        current.set_error(json!(LOST_COMMAND));
+        current.set_status(studio_runtime_schema::task_record::TaskStatus::Lost);
+        current.set_finished(at);
+        current.set_error(LOST_COMMAND.into());
         current.remove_recovery_hold();
-        let turn = current.turn_id().map(str::to_owned);
+        let turn = current.turn_id().to_owned();
         write_task(tx, &current)?;
         tx.execute(
             "UPDATE runtime_items SET record=json_set(record,'$.toolStatus','lost') \
@@ -368,13 +359,14 @@ fn process_text(value: &Value) -> Option<String> {
         .or_else(|| (value.is_i64() || value.is_u64()).then(|| value.to_string()))
 }
 
-fn listed(report: &TerminalReport, task: &Value) -> bool {
+fn listed(report: &TerminalReport, task: &TaskRecord) -> bool {
     match report {
         TerminalReport::NotLoaded => false,
         TerminalReport::Listed(terminals) => terminals.iter().any(|terminal| {
-            terminal["itemId"] == task["itemId"]
+            terminal["itemId"].as_str() == Some(task.item_id())
                 || process_text(&terminal["processId"]).is_some_and(|process| {
-                    process_text(&task["processId"]).as_deref() == Some(process.as_str())
+                    task.process_id()
+                        .is_some_and(|id| id.normalized() == process)
                 })
         }),
     }
@@ -431,7 +423,7 @@ mod tests {
     }
 
     fn agent(id: &str, fields: Value) -> Value {
-        let mut agent = json!({"id": id, "rootId": id, "epoch": 1, "status": "completed",
+        let mut agent = json!({"compactions":0,"id": id, "rootId": id, "epoch": 1, "status": "completed",
             "accountKey": "default", "provider": "codex", "threadId": format!("{id}-thread"),
             "inFlight": false, "turnId": null, "autoWake": true});
         for (key, value) in fields.as_object().expect("fields") {
@@ -468,7 +460,8 @@ mod tests {
                     )?;
                 }
                 for id in &completed {
-                    tx.execute("INSERT INTO runtime_completed_turns(id) VALUES(?1)", [id])?;
+                    let (chat, turn) = id.split_once(':').expect("<chat>:<turn>");
+                    studio_runtime_store::domain::complete_turn(tx, chat, turn)?;
                 }
                 Ok::<_, StoreError>(())
             })

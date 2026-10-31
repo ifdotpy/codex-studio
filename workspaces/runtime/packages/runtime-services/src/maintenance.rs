@@ -192,8 +192,7 @@ mod tests {
                     deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT,id TEXT,payload TEXT,
                     deleted INTEGER,UNIQUE(scope,id));
-                 CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT UNIQUE,hash TEXT,
-                    deleted INTEGER,updated REAL);
+                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                  CREATE TABLE runtime_agent_record_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL);
                  INSERT INTO runtime_agent_record_generation VALUES(1,0);
@@ -214,10 +213,10 @@ mod tests {
                 "INSERT INTO runtime_agents(id,record) VALUES (?1,?2), (?3,?4)",
                 (
                     "agent-a",
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-a","rootId":"agent-a","epoch":0,"status":"idle","reviewSchedules":[{"id":"retired"}],"extra":1})
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-a","rootId":"agent-a","epoch":0,"status":"idle","reviewSchedules":[{"id":"retired"}],"extra":1})
                         .to_string(),
                     "agent-b",
-                    json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-b","rootId":"agent-b","epoch":0,"status":"idle","extra":2}).to_string(),
+                    json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent-b","rootId":"agent-b","epoch":0,"status":"idle","extra":2}).to_string(),
                 ),
             )
             .expect("Python-shaped agent records insert");
@@ -316,21 +315,6 @@ mod tests {
             .expect("sync documents query runs")
             .map(|row| row.expect("sync document row reads"))
             .collect::<Vec<_>>();
-        let versions = connection
-            .prepare("SELECT seq,scope,hash,deleted,updated FROM sync_versions ORDER BY seq")
-            .expect("sync versions query prepares")
-            .query_map([], |row| {
-                Ok(json!({
-                    "seq": row.get::<_, i64>(0)?,
-                    "scope": row.get::<_, String>(1)?,
-                    "hash": row.get::<_, String>(2)?,
-                    "deleted": row.get::<_, i64>(3)?,
-                    "updated": row.get::<_, f64>(4)?,
-                }))
-            })
-            .expect("sync versions query runs")
-            .map(|row| row.expect("sync version row reads"))
-            .collect::<Vec<_>>();
         let agent_generation: i64 = connection
             .query_row(
                 "SELECT value FROM runtime_agent_record_generation WHERE id=1",
@@ -338,7 +322,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("agent generation reads");
-        json!({"agents":agents,"rooms":rooms,"events":events,"sync_entities":entities,"sync_documents":documents,"sync_versions":versions,"agent_generation":agent_generation})
+        json!({"agents":agents,"rooms":rooms,"events":events,"sync_entities":entities,"sync_documents":documents,"agent_generation":agent_generation})
     }
 
     #[test]
@@ -371,7 +355,6 @@ mod tests {
             "the store record writer advances the persistent agent generation trigger"
         );
         assert_eq!(after["sync_documents"], before["sync_documents"]);
-        assert_eq!(after["sync_versions"], before["sync_versions"]);
         let event = |snapshot: &Value, id: &str| {
             snapshot["events"]
                 .as_array()

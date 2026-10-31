@@ -1,4 +1,5 @@
 import type { components } from "../../src/generated/api.ts";
+import type { CommandRequest, CommandResponse } from "../../src/commands.ts";
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
 
@@ -99,7 +100,7 @@ async function runAccountsUi(
   let delayedCosts: (() => void) | undefined;
   let snapshotLimits: Record<string, AccountRateLimitsDto> = {};
   let notifyEntityResources: NotifyResources = () => {};
-  let claudeQueue: (Omit<components["schemas"]["QueueItem"], "kind"> & {
+  let claudeQueue: (components["schemas"]["QueueItem"] & {
     agentId?: string;
   })[] = [];
   let stateReads = 0;
@@ -216,6 +217,9 @@ async function runAccountsUi(
       },
     };
   };
+  snapshotLimits = Object.fromEntries(
+    accounts.map((account) => [account.id, limits(account.id)]),
+  );
   const syncWorkspaceId = syncIdentityFixture().workspaceId;
   const stateForEntities = fixtureSnapshot({
     stateDir: evidence,
@@ -230,6 +234,45 @@ async function runAccountsUi(
       tasks: [],
       work: [],
       rateLimitsByAccount: snapshotLimits,
+      modelsByAccount: Object.fromEntries(
+        accounts.map((account) => [
+          account.id,
+          [
+            {
+              accountKey: account.id,
+              catalogPosition: 0,
+              provider: "codex",
+              model: "gpt-6-astra",
+              displayName: "Astra 6",
+              isDefault: true,
+              supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
+            },
+          ],
+        ]),
+      ),
+      accountCostsByAccount: Object.fromEntries(
+        Object.entries({ default: 5, work: 12, other: 23 }).map(
+          ([key, amount]) => [
+            key,
+            {
+              accountKey: key,
+              at: Date.now() / 1000,
+              error: null,
+              refreshing: false,
+              stale: false,
+              data: { todayUSD: amount, last30DaysUSD: amount * 3 },
+            },
+          ],
+        ),
+      ),
+      accountsSummary: {
+        accounts,
+        archivedAccounts,
+        defaultAccountKey,
+        defaultAccountGroups: [],
+        supportsDelete: true,
+        supportsDisconnect: true,
+      },
     },
   });
   const server = createServer(async (req, res) => {
@@ -249,7 +292,19 @@ async function runAccountsUi(
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
-        versionedResources: mode === "benchmark",
+        subscriptionUpdate: fixtureRequest("/api/sync/subscriptions", rawBody)
+          .body,
+        progress: (resource) =>
+          resource.kind === "auth-progress"
+            ? {
+                resource,
+                value:
+                  logins.find(
+                    (login) => login.requestId === resource.requestId,
+                  ) ?? null,
+              }
+            : undefined,
+        versionedResources: true,
         epoch: mode === "benchmark" ? "accounts-ui-smoke" : undefined,
         onStreamReady(notify) {
           notifyEntityResources = notify;
@@ -314,7 +369,10 @@ async function runAccountsUi(
       const body = fixtureRequest("/api/agents/account", rawBody).body;
       const agent = agents.find((a) => a.id === body.id)!;
       agent.accountKey = body.account_key;
-      return json(entityMutationFixtureResponse(stateForEntities, agent));
+      notifyEntityResources([{ kind: "state" }]);
+      const response = entityMutationFixtureResponse(stateForEntities, agent);
+      json(response);
+      return;
     }
     if (url.pathname === "/api/limits") {
       const key = url.searchParams.get("account_key") || "default";
@@ -328,6 +386,18 @@ async function runAccountsUi(
       );
     }
     if (url.pathname === "/api/limits/reset") return json({ outcome: "reset" });
+    if (url.pathname === "/api/costs/interest") {
+      const key = fixtureRequest("/api/costs/interest", rawBody).body
+        .account_key;
+      const publish = () => {
+        const cost = stateForEntities.runtime.accountCostsByAccount?.[key];
+        if (cost) cost.at = Date.now() / 1000;
+        notifyEntityResources([{ kind: "costs" }]);
+      };
+      if (key === "work" && delayCostWork) delayedCosts = publish;
+      else publish();
+      return json({});
+    }
     if (url.pathname === "/api/costs") {
       const accountKey = url.searchParams.get("account_key") || "default";
       const todayUSD = { default: 5, work: 12, other: 23 }[accountKey]!;
@@ -393,10 +463,28 @@ async function runAccountsUi(
       res.writeHead(503);
       return res.end();
     }
+    if (url.pathname === "/api/commands") {
+      const command = rawBody as CommandRequest;
+      if (command.kind === "withdraw") {
+        claudeQueue = claudeQueue.filter(
+          (item) => item.id !== command.body.message,
+        );
+        if (stateForEntities.runtime.queuesByAgent?.["claude-chat"]) {
+          stateForEntities.runtime.queuesByAgent["claude-chat"]!.items =
+            claudeQueue;
+          notifyEntityResources([{ kind: "queue", agentId: "claude-chat" }]);
+        }
+      }
+      return json({
+        status: "applied",
+        ref_kind: "message",
+        ref_id: command.id,
+        rev: 1,
+        seq: 0,
+        rows: [],
+      } satisfies CommandResponse);
+    }
     if (url.pathname === "/api/queue") {
-      const body = fixtureRequest("/api/queue", rawBody).body;
-      if (req.method === "POST" && body.action === "cancel")
-        claudeQueue = claudeQueue.filter((item) => item.id !== body.id);
       return json({
         items: claudeQueue,
         revision: `claude-queue-${claudeQueue.length}`,
@@ -414,6 +502,7 @@ async function runAccountsUi(
       const previous = transferReceipts.get(body.request_id);
       if (previous) {
         assert.deepEqual(body, previous);
+        notifyEntityResources([{ kind: "state" }]);
         return json(
           entityMutationFixtureResponse(stateForEntities, {
             id: body.request_id,
@@ -427,11 +516,19 @@ async function runAccountsUi(
       agent.provider =
         accounts.find((account) => account.id === body.account_key)?.provider ||
         "codex";
+      agent.accountTransfer = {
+        id: body.request_id,
+        status: "completed",
+        scope: "team",
+        targetAccountKey: body.account_key,
+        updated: Date.now() / 1000,
+      };
       if (loseTransferResponse) {
         loseTransferResponse = false;
         res.statusCode = 503;
         return json({ error: "The transfer response was lost." });
       }
+      notifyEntityResources([{ kind: "state" }]);
       return json(
         entityMutationFixtureResponse(stateForEntities, {
           id: body.request_id,
@@ -647,6 +744,17 @@ async function runAccountsUi(
           .login_id,
         id,
       );
+      let accountReadsAfterReload = 0;
+      const countAccountReads = (
+        request: import("@playwright/test").Request,
+      ) => {
+        if (
+          request.method() === "GET" &&
+          new URL(request.url()).pathname === "/api/accounts"
+        )
+          accountReadsAfterReload++;
+      };
+      page.on("request", countAccountReads);
       await page.reload();
       await page
         .getByRole("button", { name: "Sign in to Codex", exact: true })
@@ -655,6 +763,12 @@ async function runAccountsUi(
         name: /Sign in to Codex.*personal@example\.com/,
       });
       await login.getByText("ABCD-1234", { exact: true }).waitFor();
+      page.off("request", countAccountReads);
+      assert.equal(
+        accountReadsAfterReload,
+        0,
+        "Reload restores the code from the request-scoped stream",
+      );
       assert.equal(logins.length, 1);
       assert.equal(
         await login
@@ -695,15 +809,11 @@ async function runAccountsUi(
       );
       await login.getByRole("button", { name: "Close", exact: true }).click();
       await login.waitFor({ state: "hidden" });
-      const mainAgentSettings = page
-        .getByRole("button", { name: "Main agent settings", exact: true })
-        .first();
-      if ((await mainAgentSettings.getAttribute("aria-expanded")) !== "true")
-        await mainAgentSettings.click();
+      await page.locator("#composer .execution-summary-trigger").click();
       await page
         .getByRole("group", { name: "Main agent account", exact: true })
         .waitFor();
-      await mainAgentSettings.click();
+      await page.keyboard.press("Escape");
       await page.getByRole("button", { name: "Studio settings" }).click();
       const studio = page.getByRole("dialog", {
         name: "Studio settings",
@@ -711,10 +821,14 @@ async function runAccountsUi(
       });
       await studio.getByRole("tab", { name: "Accounts", exact: true }).click();
       await studio
-        .locator(".server-account-row")
-        .filter({ hasText: "personal@example.com" })
         .getByRole("button", {
-          name: "✓ This computer",
+          name: "Actions for personal@example.com",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("menuitem", {
+          name: "Sign in again on This computer",
           exact: true,
         })
         .click();
@@ -1032,45 +1146,18 @@ async function runAccountsUi(
     });
     const picker = accountTileGroup(page, "Main agent account");
     const openSettings = async () => {
-      if (!(await settings.isVisible())) {
-        const direct = page.getByRole("button", {
-          name: "Chat settings",
-          exact: true,
-        });
-        if (await direct.isVisible()) await direct.click();
-        else {
-          await page.getByRole("button", { name: "Chat actions" }).click();
-          await page
-            .getByRole("menuitem", { name: "Chat settings", exact: true })
-            .click();
-        }
-      }
-      const agentSettings = settings.getByRole("button", {
-        name: "Main agent settings",
-        exact: true,
-      });
-      await agentSettings.waitFor();
-      if ((await agentSettings.getAttribute("aria-expanded")) !== "true")
-        await agentSettings.click();
+      if (!(await picker.isVisible()))
+        await page.locator("#composer .execution-summary-trigger").click();
       await picker.waitFor();
     };
     const closeSettings = async () => {
-      const agentSettings = settings.getByRole("button", {
-        name: "Main agent settings",
-        exact: true,
-      });
-      if (
-        (await agentSettings.count()) &&
-        (await agentSettings.getAttribute("aria-expanded")) === "true"
-      )
-        await agentSettings.click();
+      if (await picker.isVisible())
+        await page.locator("#composer .execution-summary-trigger").click();
+      await picker.waitFor({ state: "hidden" });
       if (await settings.isVisible())
         await settings
           .getByRole("button", { name: "Close", exact: true })
           .click();
-      if (await settings.isVisible())
-        await settings.waitFor({ state: "hidden" });
-      await picker.waitFor({ state: "hidden" });
     };
     const openStudioAccounts = async () => {
       await closeSettings();
@@ -1079,7 +1166,19 @@ async function runAccountsUi(
         exact: true,
       });
       if (!(await studio.isVisible())) {
-        await page.getByRole("button", { name: "Studio settings" }).click();
+        await page.locator("#message").waitFor();
+        const studioButton = page.getByRole("button", {
+          name: "Studio settings",
+        });
+        if (!(await studioButton.isVisible())) {
+          const toggle = page.getByRole("button", {
+            name: /^(Back to chats|Toggle conversations)$/,
+          });
+          await toggle.waitFor();
+          if ((await toggle.getAttribute("aria-expanded")) === "false")
+            await toggle.click();
+        }
+        await studioButton.click();
       }
       await studio.getByRole("tab", { name: "Accounts", exact: true }).click();
       return studio;
@@ -1168,6 +1267,9 @@ async function runAccountsUi(
     await quota.waitFor();
     wrongLimitsAccount = true;
     await choose("work@example.com");
+    await quota.click();
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await quota.click();
     for (let n = 0; n < 100 && !wrongAccountLimitsRead; n++)
       await page.waitForTimeout(20);
     assert.ok(wrongAccountLimitsRead, "the work limits refresh completed");
@@ -1189,9 +1291,11 @@ async function runAccountsUi(
     await waitCost("$5.00");
     delayCostWork = true;
     await choose("work@example.com");
+    await quota.click();
     for (let n = 0; n < 100 && !delayedCosts; n++)
       await page.waitForTimeout(20);
     assert.ok(delayedCosts);
+    await quota.click();
     await choose("another.long.account@example.com");
     await waitCost("$23.00");
     delayedCosts();
@@ -1331,7 +1435,12 @@ async function runAccountsUi(
     const accountRows = dialog.locator(".server-account-row");
     await accountRows.first().waitFor();
     assert.equal(await accountRows.count(), 3);
-    const workAccount = accountRows.filter({ hasText: "work@example.com" });
+    const workAccount = accountRows.filter({
+      has: page.getByRole("button", {
+        name: "Actions for work@example.com",
+        exact: true,
+      }),
+    });
     await expect(workAccount).toBeVisible();
     await workAccount
       .getByRole("button", {
@@ -1342,9 +1451,7 @@ async function runAccountsUi(
     await page
       .getByRole("menuitem", { name: "Make default", exact: true })
       .click();
-    await workAccount
-      .getByText("Default · This computer", { exact: true })
-      .waitFor();
+    await expect(workAccount).toContainText(/Default\s+This computer/);
     const discoverResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === "/api/accounts/discover",
@@ -1447,7 +1554,14 @@ async function runAccountsUi(
     await codexSignIn.getByText("ABCD-1234", { exact: true }).waitFor();
     assert.equal(logins.length, 2);
     assert.notEqual(logins[1]!.requestId, firstLogin);
-    accounts.find((a) => a.id === logins.at(-1)!.accountKey)!.status = "ready";
+    const completedLogin = logins.at(-1)!;
+    accounts.find((a) => a.id === completedLogin.accountKey)!.status = "ready";
+    completedLogin.status = "ready";
+    completedLogin.resolvedAccountKey = completedLogin.accountKey;
+    notifyEntityResources([
+      { kind: "state" },
+      { kind: "auth-progress", requestId: completedLogin.requestId },
+    ]);
     notifyEntityResources([{ kind: "accounts" }]);
     await codexSignIn
       .getByText("Account connected.", { exact: false })
@@ -1460,9 +1574,12 @@ async function runAccountsUi(
       const row = document.querySelector<HTMLElement>(".server-account-row");
       return row && getComputedStyle(row).display === "grid";
     });
-    const newAccountRow = dialog
-      .locator(".server-account-row")
-      .filter({ hasText: "smoke@example.test" });
+    const newAccountRow = dialog.locator(".server-account-row").filter({
+      has: page.getByRole("button", {
+        name: "Actions for smoke@example.test",
+        exact: true,
+      }),
+    });
     await expect(newAccountRow).toBeVisible();
     assert.ok(
       await page.evaluate(
@@ -1522,6 +1639,18 @@ async function runAccountsUi(
         accountId: "native-claude",
       }),
     );
+    stateForEntities.runtime.modelsByAccount!.claude = [
+      {
+        accountKey: "claude",
+        catalogPosition: 0,
+        provider: "claude",
+        model: "default",
+        displayName: "Claude",
+        isDefault: true,
+        supportedReasoningEfforts: [],
+      },
+    ];
+    stateForEntities.runtime.rateLimitsByAccount = { claude: limits("claude") };
     const claude: import("../../src/generated/api.ts").AgentEntityDto = {
       ...makeLead("claude-chat", "Claude conversation", "claude", false),
       provider: "claude",
@@ -1536,22 +1665,36 @@ async function runAccountsUi(
         id: "claude-queued",
         agentId: claude.id,
         text: "Change the Claude task",
-        // @ts-expect-error Historical queued status is deliberately invalid under the pending-only queue contract.
-        status: "queued",
+        kind: "user",
+        status: "pending",
         requestedDelivery: "next_turn",
         created: Date.now() / 1000,
       },
     ];
+    stateForEntities.runtime.queuesByAgent = {
+      [claude.id]: {
+        items: claudeQueue,
+        revision: "claude-queue-1",
+        capabilities: {
+          receipts: true,
+          reorder: true,
+        },
+      },
+    };
     await page.reload();
+    if (!(await page.locator("#sidebar").isVisible()))
+      await page.getByLabel("Back to chats").click();
     await page.locator(`[data-chat="${claude.id}"]`).click();
     await openSettings();
-    await (
-      await accountTile(accounts.find((account) => account.id === "claude")!)
-    ).waitFor();
+    await expect(picker).toContainText("Claude Code");
+    await expect(picker).toHaveAttribute("data-value", "claude");
     await closeSettings();
     await quota.click();
     await details.waitFor();
-    await details.getByText("89% left", { exact: true }).waitFor();
+    await details
+      .getByRole("region", { name: "Claude limits", exact: true })
+      .getByText("89% left", { exact: true })
+      .waitFor();
     await details.getByText("96% left", { exact: true }).waitFor();
     await details.getByText("93% left", { exact: true }).waitFor();
     assert.equal(
@@ -1572,18 +1715,21 @@ async function runAccountsUi(
           '[aria-label="Delete queued message 1"]',
         ),
     );
-    const cancellation = bodies.find(
-      (request): request is Extract<FixtureRequest, { path: "/api/queue" }> =>
-        request.path === "/api/queue" && request.body.action === "cancel",
-    );
-    assert.equal(cancellation?.body.id, "claude-queued");
-    assert.equal(cancellation?.body.expectedText, "Change the Claude task");
-    assert.ok(cancellation?.body.request_id);
+    const withdrawal = bodies.find(
+      (request) =>
+        request.path === "/api/commands" && request.body.kind === "withdraw",
+    )?.body as Extract<CommandRequest, { kind: "withdraw" }> | undefined;
+    assert.equal(withdrawal?.target, "claude-chat");
+    assert.equal(withdrawal?.body.message, "claude-queued");
+    assert.ok(withdrawal?.id);
     await openSettings();
     const manager = await openStudioAccounts();
-    const profileRow = manager.locator(
-      '[data-account-identity="claude:claude@example.com"]',
-    );
+    const profileRow = manager.locator(".server-account-row").filter({
+      has: page.getByRole("button", {
+        name: "Actions for claude@example.com",
+        exact: true,
+      }),
+    });
     await profileRow
       .getByRole("button", { name: "Actions for claude@example.com" })
       .click();
@@ -1685,6 +1831,8 @@ async function runAccountsUi(
     await closeSettings();
     Object.assign(claude, { status: "completed", inFlight: false });
     await page.reload();
+    if (!(await page.locator("#sidebar").isVisible()))
+      await page.getByLabel("Back to chats").click();
     await page.locator(`[data-chat="${claude.id}"]`).click();
     const reloadChatSettingsButton = page.getByRole("button", {
       name: "Chat settings",
@@ -1699,14 +1847,16 @@ async function runAccountsUi(
         .click();
     }
     await settings.waitFor({ state: "visible" });
-    const more = settings.locator(".chat-settings-more");
-    await more.waitFor();
-    if (!(await more.getAttribute("open")))
-      await more.locator(":scope > summary").click();
     const claudeSettings = settings.getByRole("region", {
       name: "Claude settings",
       exact: true,
     });
+    const more = claudeSettings.getByRole("button", {
+      name: "More settings and actions",
+      exact: true,
+    });
+    if ((await more.getAttribute("aria-expanded")) !== "true")
+      await more.click();
     const permissionModeSaved = page.waitForResponse(
       (response) =>
         response.url().endsWith("/api/claude/session") &&
@@ -1744,6 +1894,7 @@ async function runAccountsUi(
       permissionMode: "plan",
       thinking: false,
       autoCompactWindow: 250000,
+      mcpAutoBackground: true,
     });
     assert.ok(
       bodies
@@ -1793,6 +1944,8 @@ async function runAccountsUi(
       .waitFor();
     await closeSettings();
     await page.reload();
+    if (!(await page.locator("#sidebar").isVisible()))
+      await page.getByLabel("Back to chats").click();
     await page.locator(`[data-chat="${claude.id}"]`).click();
     const directChatSettings = page.getByRole("button", {
       name: "Chat settings",
@@ -1806,13 +1959,16 @@ async function runAccountsUi(
         .click();
     }
     await settings.waitFor({ state: "visible" });
-    const reloadMore = settings.locator(".chat-settings-more");
-    if (!(await reloadMore.getAttribute("open")))
-      await reloadMore.locator(":scope > summary").click();
     const reloadClaudeSettings = settings.getByRole("region", {
       name: "Claude settings",
       exact: true,
     });
+    const reloadMore = reloadClaudeSettings.getByRole("button", {
+      name: "More settings and actions",
+      exact: true,
+    });
+    if ((await reloadMore.getAttribute("aria-expanded")) !== "true")
+      await reloadMore.click();
     await reloadClaudeSettings
       .getByText("Claude Code 2.1.fixture", { exact: true })
       .waitFor();
@@ -1911,6 +2067,8 @@ async function runAccountsUi(
     );
 
     await closeSettings();
+    if (!(await page.locator('[data-chat="started"]').isVisible()))
+      await page.getByLabel("Back to chats").click();
     await page.locator('[data-chat="started"]').click();
     await openSettings();
     await (
@@ -1945,8 +2103,20 @@ async function runAccountsUi(
     assert.equal(forwardTransfers[0]!.body.id, "started");
     assert.equal(forwardTransfers[0]!.body.account_key, "claude");
     assert.match(forwardTransfers[0]!.body.request_id, /^[0-9a-f-]{36}$/);
+    const transferStatus = page.getByRole("dialog").filter({
+      has: page.getByRole("heading", {
+        name: "Account transfer",
+        exact: true,
+      }),
+    });
+    await expect(transferStatus).toContainText("Transfer completed.");
+    await transferStatus
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
     await closeSettings();
     await page.reload();
+    if (!(await page.locator('[data-chat="started"]').isVisible()))
+      await page.getByLabel("Back to chats").click();
     await page.locator('[data-chat="started"]').click();
     await openSettings();
     await (
@@ -1986,12 +2156,15 @@ async function runAccountsUi(
       deleted: true,
     });
     await page.reload();
+    if (!(await page.locator(`[data-chat="${claude.id}"]`).isVisible()))
+      await page.getByLabel("Back to chats").click();
     await page.locator(`[data-chat="${claude.id}"]`).click();
     await page
       .getByRole("button", { name: "Sign in to Claude", exact: true })
       .waitFor();
-    await openSettings();
-    await closeSettings();
+    await page.locator("#composer .execution-summary-trigger").click();
+    await expect(picker).toBeHidden();
+    await page.locator("#composer .execution-summary-trigger").click();
     await page
       .getByRole("button", { name: "Sign in to Claude", exact: true })
       .click();

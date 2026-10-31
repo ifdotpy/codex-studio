@@ -1,6 +1,7 @@
 import { required } from "../teams/helpers.ts";
+import { sendReply, sentMessage } from "../messages/send-command.ts";
+import type { SendMessageBody } from "../../src/commands.ts";
 import type { FixturePullResponse, FixtureResourceChange } from "./helpers.ts";
-import type { PostBody } from "../../src/apiTypes.ts";
 import type { components } from "../../src/generated/api.ts";
 import { fixturePostBody, fixtureResources } from "./helpers.ts";
 import type {} from "./sync-browser.fixture.tsx";
@@ -45,7 +46,7 @@ test("Sync Browser", async ({
     );
     let revision = 1,
       failSend = true,
-      sends: PostBody<"/api/messages">[] = [],
+      sends: SendMessageBody[] = [],
       content = "first",
       draftPushes: (components["schemas"]["DraftPushRow"] & {
         newForkState?: components["schemas"]["JsonValue"];
@@ -147,13 +148,15 @@ test("Sync Browser", async ({
       );
       return route.fulfill({ json: [] });
     });
-    await page.route("**/api/messages", (route) => {
-      sends.push(
-        fixturePostBody<"/api/messages">(route.request().postDataJSON()),
-      );
+    await page.route("**/api/commands", (route) => {
+      const sent = sentMessage(route.request());
+      if (!sent) return route.fallback();
+      sends.push(sent);
       return failSend
         ? route.abort("failed")
-        : route.fulfill({ json: { status: "queued", id: "intent-one" } });
+        : route.fulfill({
+            json: sendReply({ status: "queued", id: "intent-one" }),
+          });
     });
     const origin = fixtureOrigin(server);
     await page.goto(origin + "/sync-check");

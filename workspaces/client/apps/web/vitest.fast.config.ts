@@ -51,6 +51,8 @@ export default {
       "src/sync/drafts.publication.test.ts",
       "src/sync/transcriptCache.test.ts",
       "src/sync/entityProjectionObserver.test.ts",
+      "src/sync/thinCache.test.ts",
+      "src/sync/draftReplication.test.ts",
       "src/sync/client.draftServer.test.ts",
       "src/sync/client.entityServer.test.ts",
       "src/sync/client.terminalServer.test.ts",
@@ -169,6 +171,7 @@ export default {
       "src/sync/entityTransfer.test.ts",
       "src/sync/resourceEvents.test.ts",
       "src/servers/eventSource.test.ts",
+      "src/servers/routes.test.ts",
       // Prevent duplicate entity pulls and preserve server storage and API ownership.
       "src/servers/useUiPreferenceSync.test.ts",
       "src/servers/useServerDiscovery.test.ts",

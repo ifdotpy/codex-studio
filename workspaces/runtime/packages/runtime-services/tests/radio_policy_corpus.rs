@@ -35,7 +35,56 @@ fn cases() -> Vec<Value> {
 }
 
 fn decode_records(value: &Value) -> RadioAuthorizationRecords {
-    serde_json::from_value(value.clone()).expect("Python-written radio records")
+    let mut records: RadioAuthorizationRecords =
+        serde_json::from_value(value.clone()).expect("Python-written radio records");
+    let mut db = rusqlite::Connection::open_in_memory().expect("migrate radio fixture");
+    db.execute_batch("CREATE TABLE runtime_rooms(id TEXT PRIMARY KEY, record TEXT NOT NULL); CREATE TABLE runtime_projects(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+        .expect("migrate radio fixture");
+    let tx = db.transaction().expect("migrate radio fixture");
+    for (id, raw) in &records.rooms {
+        tx.execute(
+            "INSERT INTO runtime_rooms VALUES(?1,?2)",
+            rusqlite::params![id, raw],
+        )
+        .expect("migrate radio fixture");
+    }
+    studio_runtime_store::migrations::migrate_radio_room(&tx).expect("migrate radio fixture");
+    for (id, raw) in &records.projects {
+        tx.execute(
+            "INSERT INTO runtime_projects VALUES(?1,?2)",
+            rusqlite::params![id, raw],
+        )
+        .expect("project fixture");
+    }
+    studio_runtime_store::migrations::migrate_project_teams(&tx).expect("migrate project fixture");
+    for (id, raw) in &mut records.rooms {
+        *raw = tx
+            .query_row(
+                "SELECT record FROM runtime_rooms WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("migrate radio fixture");
+    }
+    for (id, raw) in &mut records.projects {
+        *raw = tx
+            .query_row(
+                "SELECT record FROM runtime_projects WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .expect("project fixture");
+    }
+    for raw in records.agents.values_mut() {
+        let mut agent: Value = serde_json::from_str(raw).expect("agent record");
+        agent
+            .as_object_mut()
+            .expect("agent object")
+            .entry("compactions")
+            .or_insert(json!(0));
+        *raw = agent.to_string();
+    }
+    records
 }
 
 fn python_denial(value: &str) -> RadioDenial {
@@ -158,4 +207,16 @@ fn radio_snapshot_refuses_malformed_consumed_records_with_locations() {
     );
     let error = RadioAuthorizationSnapshot::from_records(&input).expect_err("null autoWake");
     assert!(error.location.ends_with("/autoWake"), "{error}");
+}
+
+#[test]
+fn radio_snapshot_accepts_numeric_deletion_timestamp() {
+    let oracle = Oracle::new();
+    let expected = oracle.call(&json!({"name":"ready-peer-team"}));
+    let mut input = decode_records(&expected["records"]);
+    let (agent_id, raw) = input.agents.iter().next().expect("agent");
+    let mut agent: Value = serde_json::from_str(raw).expect("agent record");
+    agent["deletedAt"] = json!(1.0);
+    input.agents.insert(agent_id.clone(), agent.to_string());
+    RadioAuthorizationSnapshot::from_records(&input).expect("numeric deletion timestamp");
 }

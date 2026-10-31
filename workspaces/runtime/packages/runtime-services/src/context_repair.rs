@@ -793,7 +793,7 @@ pub fn capture(
             "runtime_event_meta",
             "runtime_items",
             "runtime_item_fulltext",
-            "runtime_completed_turns",
+            "turns",
         ],
     )?;
     let (agent, events) = ContextRepairRepository::capture(tx, agent, MAX_CAPTURE_BYTES)?
@@ -1180,7 +1180,7 @@ async fn repair_idle_with_broker_inner(
         {
             return Ok((agent, Vec::new(), Vec::new(), Vec::new(), None, String::new()));
         }
-        require_schema(tx, &["runtime_event_meta", "runtime_completed_turns"])?;
+        require_schema(tx, &["runtime_event_meta", "turns"])?;
         ensure_local_idle(tx, &agent)?;
         let tool_receipts = crate::provider_callbacks::revalidate_unresolved_context_tool_receipts(
             tx,
@@ -1944,7 +1944,7 @@ mod unbounded_batch_tests {
             .await
             .expect("store");
         let ids: Vec<_> = (0..1000).map(|index| format!("e{index}")).collect();
-        let agent = json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
+        let agent = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
             "provider":"codex","model":"fixture","yoloMode":true,"status":"waiting","autoWake":true,
             "startAttempt":{"id":"attempt","events":ids,"submitted":false}});
         store.transaction_with(move |tx| -> Result<_,RepairError> {
@@ -1973,7 +1973,7 @@ mod unbounded_batch_tests {
         };
         let mut ids: Vec<_> = (0..1000).map(|index| format!("event-{index}")).collect();
         ids.sort();
-        let agent = json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
+        let agent = json!({"compactions":0,"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
             "provider":"codex","status":"waiting","inFlight":false,"autoWake":true,"contextRepairWait":{},
             "startAttempt":{"id":"attempt","events":ids,"submitted":true},
             "restartRecovery":{"stage":"held","autoWake":true,"epoch":1,"accountKey":"default","threadId":"thread",

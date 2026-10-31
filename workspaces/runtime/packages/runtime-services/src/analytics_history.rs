@@ -5,7 +5,7 @@
 //! compare-and-swap prevents two readers from acknowledging the same batch.
 use crate::analytics_capture::{
     CaptureError, CaptureSnapshot, CaptureSource, PreparedCapture, ResponseRateAssociation,
-    check_identity, decide, text,
+    check_agent_identity, decide, text,
 };
 use crate::analytics_rollout::{RolloutAction, RolloutContext};
 use rusqlite::OptionalExtension;
@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
-use studio_runtime_store::{AnalyticsRepository, RuntimeStore, sha256_hex};
+use studio_runtime_store::{RuntimeStore, sha256_hex};
 use thiserror::Error;
 
 /// Read-failure target classes named in logs; each is a path or resource class.
@@ -120,6 +120,12 @@ fn watcher_cause(error: &notify::Error) -> String {
         notify::ErrorKind::WatchNotFound => "watch not found".to_owned(),
         notify::ErrorKind::InvalidConfig(_) => "invalid configuration".to_owned(),
         notify::ErrorKind::MaxFilesWatch => "watch limit reached".to_owned(),
+    }
+}
+
+impl From<studio_runtime_store::analytics::AnalyticsStoreError> for HistoryError {
+    fn from(_: studio_runtime_store::analytics::AnalyticsStoreError) -> Self {
+        Self::read(ANALYTICS_DATABASE)
     }
 }
 
@@ -305,9 +311,9 @@ impl HistoryBatch {
             .await
             .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
         }
+        check_agent_identity(store, vec![(*self.agent).clone()]).await?;
         store
-            .analytics_transaction(move |tx, canvas| {
-                check_identity(canvas, &self.agent)?;
+            .analytics_projection_transaction(move |tx| {
                 let current = Repo::read(tx, CaptureTable::History, text(&self.state["id"]))?;
                 if current != self.previous {
                     return Err(HistoryError::StaleCheckpoint);
@@ -418,15 +424,11 @@ async fn read_history_checkpoint(
     key: &str,
     agent: &Value,
 ) -> Result<Option<Value>, HistoryError> {
-    let root = store.root().to_owned();
     let key_owned = key.to_owned();
     let agent = agent.clone();
-    let (previous, repair) = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/analytics_history_checkpoint",
-        move || read_history_checkpoint_stage(&root, &key_owned, &agent),
-    )
-    .await
-    .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
+    let (previous, repair) = store
+        .with_cost_reader_async(move |db| read_history_checkpoint_stage(db, &key_owned, &agent))
+        .await?;
     if let Some((key, previous_raw, replacement)) = repair {
         quarantine_history_checkpoint(store, key, previous_raw, replacement.clone()).await?;
         return Ok(Some(replacement));
@@ -438,13 +440,10 @@ type HistoryCheckpointRepair = (String, String, Value);
 type HistoryCheckpointRead = (Option<Value>, Option<HistoryCheckpointRepair>);
 
 fn read_history_checkpoint_stage(
-    root: &Path,
+    read: &rusqlite::Connection,
     key: &str,
     agent: &Value,
 ) -> Result<HistoryCheckpointRead, HistoryError> {
-    let read = AnalyticsRepository::new(root)
-        .open_read_only()
-        .map_err(|_| HistoryError::read(ANALYTICS_DATABASE))?;
     let raw = read
         .query_row(
             "SELECT record FROM analytics_history WHERE id=?1",
@@ -453,7 +452,6 @@ fn read_history_checkpoint_stage(
         )
         .optional()
         .map_err(studio_runtime_store::StoreError::from)?;
-    drop(read);
     let Some(raw) = raw else {
         return Ok((None, None));
     };
@@ -594,7 +592,7 @@ async fn quarantine_history_checkpoint(
     replacement: Value,
 ) -> Result<(), HistoryError> {
     store
-        .analytics_transaction(move |tx, _| {
+        .analytics_projection_transaction(move |tx| {
             let current: Option<String> = tx
                 .query_row(
                     "SELECT record FROM analytics_history WHERE id=?1",
@@ -1470,19 +1468,12 @@ impl HistoryCollector {
         .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
         let advanced = batch.advanced();
         batch.commit(store, clock.observed_at).await?;
-        let root = store.root().to_owned();
         let checkpoint_key = key;
-        let checkpoint = studio_runtime_process::blocking_pool::spawn_blocking(
-            "runtime-services/analytics_history_checkpoint",
-            move || {
-                let db = AnalyticsRepository::new(&root)
-                    .open_read_only()
-                    .map_err(|_| HistoryError::read(ANALYTICS_DATABASE))?;
-                Repo::read(&db, CaptureTable::History, &checkpoint_key).map_err(HistoryError::from)
-            },
-        )
-        .await
-        .map_err(|_| HistoryError::read(BLOCKING_TASK))??;
+        let checkpoint = store
+            .with_cost_reader_async(move |db| {
+                Repo::read(db, CaptureTable::History, &checkpoint_key).map_err(HistoryError::from)
+            })
+            .await?;
         if let Some(checkpoint) = checkpoint {
             self.schedule
                 .completed(&agent, &checkpoint, clock.monotonic)?;
@@ -1494,6 +1485,48 @@ impl HistoryCollector {
 #[cfg(test)]
 mod invalid_record_tests {
     use super::*;
+
+    thread_local! { static CHECKPOINT_READER_QUERIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+    #[tokio::test]
+    async fn history_checkpoint_reads_reuse_the_retained_reader() {
+        let root = tempfile::tempdir().expect("temporary runtime");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store
+            .with_cost_reader(
+                |db| -> Result<(), studio_runtime_store::analytics::AnalyticsStoreError> {
+                    CHECKPOINT_READER_QUERIES.set(0);
+                    db.trace_v2(
+                        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+                        Some(|event| {
+                            if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+                                && sql.contains("FROM analytics_history WHERE id")
+                            {
+                                CHECKPOINT_READER_QUERIES.update(|count| count + 1);
+                            }
+                        }),
+                    );
+                    Ok(())
+                },
+            )
+            .expect("trace retained reader");
+        let agent = json!({"id":"agent","accountKey":"default","threadId":"thread"});
+        assert!(
+            read_history_checkpoint(&store, "agent:default:thread", &agent)
+                .await
+                .expect("checkpoint")
+                .is_none()
+        );
+        let reads = store
+            .with_cost_reader(
+                |db| -> Result<usize, studio_runtime_store::analytics::AnalyticsStoreError> {
+                    db.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+                    Ok(CHECKPOINT_READER_QUERIES.take())
+                },
+            )
+            .expect("trace result");
+        assert_eq!(reads, 1, "checkpoint query must use retained reader");
+    }
 
     #[test]
     fn session_header_projection_preserves_partial_and_presence_rules() {

@@ -244,7 +244,7 @@ async fn manual_start_authorization(
     let target_id = state.agent.clone();
     let epoch = state.epoch;
     state.bridge.store.transaction(move |tx| {
-        let lead = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead-00000000","rootId":"lead-00000000","parentId":null,"epoch":1,"status":"running","isLead":true,"autoWake":true,"accountKey":"default","threadId":"lead-thread","turnId":"lead-turn"});
+        let lead = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead-00000000","rootId":"lead-00000000","parentId":null,"epoch":1,"status":"running","isLead":true,"autoWake":true,"accountKey":"default","threadId":"lead-thread","turnId":"lead-turn"});
         AgentRepository::put(tx, &AgentRecord::from_value(lead.clone())?)?;
         let mut target = AgentRepository::get(tx, &AgentId::from(target_id.as_str()))?.expect("worker").value();
         target["rootId"] = lead["rootId"].clone();
@@ -1664,10 +1664,10 @@ async fn seed_restart_input(state: &State, fail_terminal_settlement: bool) {
                 agent.auto_wake = Some(true);
                 agent.in_flight = Some(false);
                 agent.extra.insert("error".into(), json!("Context repair waits for a confirmed input receipt: annotation:input"));
-                agent.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":attempt}));
+                agent.restart_recovery = Some(Box::new(studio_runtime_schema::recovery_record::RecoveryFields { stage: Some("held".into()), start_attempt: Some(Box::new(serde::Deserialize::deserialize(attempt).expect("typed fixture"))), ..Default::default() }));
                 agent.extra.insert("contextRepairWait".into(), json!({"error":"Context repair waits for a confirmed input receipt: annotation:input","scope":"native","events":[event],"nextCheckAt":0,"source":{"id":agent_id,"epoch":epoch,"accountKey":"default","threadId":"fake-thread-0","attemptId":null}}));
-                agent.extra.remove("startAttempt");
-                agent.extra.remove("disconnectRecovery");
+                agent.start_attempt.take();
+                agent.disconnect_recovery.take();
                 AgentRepository::put(tx, &agent)?;
                 tx.execute("UPDATE runtime_events SET status='uncertain',error='Server restarted before delivery acknowledgement' WHERE id=?1", [event])?;
                 if fail_terminal_settlement {
@@ -1903,8 +1903,7 @@ async fn connection_completion_failure(case: ConnectionCompletionFailure) {
     state.bridge.run(move |store| async move {
         store.transaction_with(move |tx| {
             let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
-            let attempt = agent.extra["disconnectRecovery"]["startAttempt"].clone();
-            agent.extra.insert("startAttempt".into(), attempt);
+            agent.start_attempt = agent.disconnect_recovery.as_ref().unwrap().start_attempt.clone();
             AgentRepository::put(tx, &agent)?;
             if matches!(case, ConnectionCompletionFailure::Store) {
                 tx.execute("CREATE TRIGGER fail_connection_transcript BEFORE INSERT ON runtime_items BEGIN SELECT RAISE(ABORT,'connection settlement failpoint'); END", [])?;
@@ -1995,8 +1994,8 @@ async fn restart_isolation_case(refusal: RestartRefusal) {
             let mut later = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
             later.id = AgentId::from("z-later");
             later.root_id = later.id.clone();
-            later.extra.get_mut("restartRecovery").unwrap()["startAttempt"]["id"] = json!("later-attempt");
-            later.extra.get_mut("restartRecovery").unwrap()["startAttempt"]["events"] = json!(["annotation:later"]);
+            later.restart_recovery.as_mut().unwrap().start_attempt.as_mut().unwrap().id = Some("later-attempt".into());
+            later.restart_recovery.as_mut().unwrap().start_attempt.as_mut().unwrap().events = Some(vec!["annotation:later".into()]);
             later.extra.get_mut("contextRepairWait").unwrap()["events"] = json!(["annotation:later"]);
             later.extra.get_mut("contextRepairWait").unwrap()["source"]["id"] = json!("z-later");
             AgentRepository::put(tx, &later)?;
@@ -2194,13 +2193,8 @@ async fn seed_transport_turn(state: &State) {
             agent.in_flight = Some(true);
             agent.auto_wake = Some(true);
             agent.extra.remove("contextRepairWait");
-            agent.extra.remove("restartRecovery");
-            agent.extra.insert("startAttempt".into(), json!({
-                "id":"old-attempt","accountKey":"default","epoch":agent.epoch,
-                "threadId":"fake-thread-0","turnId":"old-turn","submitted":true,
-                "connectionGeneration":1,"events":["annotation:input"],
-                "activeAtReservation":false,"settingsFixed":true
-            }));
+            agent.restart_recovery.take();
+            agent.start_attempt = Some(Box::new(studio_runtime_store::StartAttemptView { id: Some("old-attempt".into()), account_key: Some("default".into()), epoch: Some(agent.epoch), thread_id: Some("fake-thread-0".into()), turn_id: Some("old-turn".into()), submitted: Some(true), connection_generation: Some(1), events: Some(vec!["annotation:input".into()]), active_at_reservation: Some(false), settings_fixed: Some(true), ..Default::default() }));
             AgentRepository::put(tx, &agent)?;
             tx.execute("UPDATE runtime_events SET status='delivered',turn_id='old-turn' WHERE id='annotation:input'", [])?;
             let interrupted = studio_runtime_store::SchedulerRepository::disconnect_account(tx, "default", 1, 1.0, false)?;
@@ -2246,9 +2240,9 @@ async fn seed_restart_turn(state: &State) {
                         "error".into(),
                         json!(studio_runtime_store::BACKEND_RESTARTED_TURN_ERROR),
                     );
-                    agent.extra.insert("disconnectRecovery".into(), disconnect);
-                    agent.extra.insert("restartRecovery".into(), marker);
-                    agent.extra.remove("startAttempt");
+                    agent.disconnect_recovery = Some(Box::new(serde::Deserialize::deserialize(disconnect).expect("typed fixture")));
+                    agent.restart_recovery = Some(Box::new(serde::Deserialize::deserialize(marker).expect("typed fixture")));
+                    agent.start_attempt.take();
                     AgentRepository::put(tx, &agent)?;
                     // The earlier input reached the old turn.
                     tx.execute(
@@ -2364,12 +2358,7 @@ async fn automatic_recovery_case(restart: bool, child: bool, stopped: bool) {
             agent.status = studio_runtime_store::AgentStatus::Running;
             agent.turn_id = Some("old-turn".to_string());
             agent.in_flight = Some(true);
-            agent.extra.insert("startAttempt".into(), json!({
-                "id":"old-attempt", "accountKey":"default", "epoch":agent.epoch,
-                "threadId":"fake-thread-0", "turnId":"old-turn", "submitted":true,
-                "connectionGeneration":1, "events":["annotation:input"],
-                "activeAtReservation":false, "settingsFixed":true
-            }));
+            agent.start_attempt = Some(Box::new(studio_runtime_store::StartAttemptView { id: Some("old-attempt".into()), account_key: Some("default".into()), epoch: Some(agent.epoch), thread_id: Some("fake-thread-0".into()), turn_id: Some("old-turn".into()), submitted: Some(true), connection_generation: Some(1), events: Some(vec!["annotation:input".into()]), active_at_reservation: Some(false), settings_fixed: Some(true), ..Default::default() }));
             AgentRepository::put(tx, &agent)?;
             tx.execute("UPDATE runtime_events SET status='delivered',turn_id='old-turn' WHERE id='annotation:input'", [])?;
             let interrupted = studio_runtime_store::SchedulerRepository::disconnect_account(tx, "default", 1, 1.0, restart)?;
@@ -2570,9 +2559,9 @@ async fn seed_adopted_turn_checked_while_running(state: &State) {
                     agent.auto_wake = Some(true);
                     agent.in_flight = Some(false);
                     agent.extra.insert("error".into(), Value::Null);
-                    agent.extra.insert("startAttempt".into(), attempt);
-                    agent.extra.insert("disconnectRecovery".into(), disconnect);
-                    agent.extra.insert("restartRecovery".into(), marker);
+                    agent.start_attempt = Some(serde::Deserialize::deserialize(attempt).expect("typed fixture"));
+                    agent.disconnect_recovery = Some(Box::new(serde::Deserialize::deserialize(disconnect).expect("typed fixture")));
+                    agent.restart_recovery = Some(Box::new(serde::Deserialize::deserialize(marker).expect("typed fixture")));
                     let mut value = agent.value();
                     let check = crate::recovery_policy::connection_recovery_id(&value);
                     value["restartRecovery"]["automaticCheck"] = json!(check);
@@ -2662,12 +2651,12 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
                 agent.auto_wake = Some(true);
                 agent.in_flight = Some(false);
                 agent.extra.insert("error".into(), json!("held"));
-                agent.extra.insert("restartRecovery".into(), json!({"stage":"held","startAttempt":attempt}));
+                agent.restart_recovery = Some(Box::new(studio_runtime_schema::recovery_record::RecoveryFields { stage: Some("held".into()), start_attempt: Some(Box::new(serde::Deserialize::deserialize(attempt).expect("typed fixture"))), ..Default::default() }));
                 agent.extra.insert("contextRepairWait".into(), json!({
                     "error":"held","scope":"native","events":["annotation:input"],"nextCheckAt":0,
                     "source":{"id":agent_id,"epoch":epoch,"accountKey":"default","threadId":"fake-thread-0","attemptId":null}
                 }));
-                agent.extra.remove("startAttempt");
+                agent.start_attempt.take();
                 AgentRepository::put(tx, &agent)?;
                 tx.execute("UPDATE runtime_events SET status='uncertain',error='Server restarted before delivery acknowledgement' WHERE id='annotation:input'", [])?;
                 Ok::<(), WorkerError>(())
@@ -2970,7 +2959,7 @@ async fn config_read_fixture(state: &State, port: &RetainedSessionPort) -> Sessi
             store
                 .transaction_with::<_, StoreError>(move |tx| {
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('config-watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                        "INSERT INTO runtime_monitors(id,record) VALUES('config-watch',?1)",
                         [json!({"id":"config-watch","agent":agent,"epoch":epoch,
                     "cwd":saved_cwd,"status":"starting","command":"true"})
                         .to_string()],
@@ -3184,7 +3173,7 @@ async fn tool_monitor_on_a_non_default_account_reaches_its_provider() {
                         ),
                     ] {
                         tx.execute(
-                            "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                            "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
                             (record["id"].as_str().unwrap(), record.to_string()),
                         )?;
                     }
@@ -3282,7 +3271,7 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
     state.bridge.run(move |store| async move {
         let log=crate::monitor_output::log_root(store.root()).join("transfer-watch.log");
         store.transaction_with(move |tx| {
-            tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('transfer-watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('transfer-watch',?1)",
                 [crate::monitor_policy::complete_test_monitor(json!({"id":"transfer-watch","agent":actor,"epoch":epoch,"status":"running",
                     "cwd":seed_cwd,"command":"true","interactive":true,"log":log,"operation":saved_operation})).to_string()])?;
             Ok(())
@@ -4679,7 +4668,7 @@ async fn malformed_monitor_keeps_proof_without_blocking_other_agent(case: Malfor
         let mut other=AgentRepository::get(tx,&AgentId::from(actor.as_str()))?.unwrap().value();
         other["id"]=json!("other-ack-agent");other["threadId"]=json!("other-ack-thread");
         AgentRepository::put(tx,&studio_runtime_store::AgentRecord::from_value(other)?)?;
-        tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES('held-proof',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",[json!({"id":"held-proof","agent":actor,"epoch":epoch,"cwd":cwd,"command":"true","status":"running","operation":{"agent":actor,"epoch":epoch,"accountKey":scope.account,"connectionId":scope.connection,"providerGeneration":scope.generation,"rootRequestId":root}}).to_string()])?;
+        tx.execute("INSERT INTO runtime_monitors(id,record) VALUES('held-proof',?1)",[json!({"id":"held-proof","agent":actor,"epoch":epoch,"cwd":cwd,"command":"true","status":"running","operation":{"agent":actor,"epoch":epoch,"accountKey":scope.account,"connectionId":scope.connection,"providerGeneration":scope.generation,"rootRequestId":root}}).to_string()])?;
         Ok(())
     }).await.unwrap();
     let sender = port.clone();

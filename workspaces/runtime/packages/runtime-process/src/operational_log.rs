@@ -227,6 +227,30 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn rotation_keeps_the_file_count_and_size_limits_under_a_flood() {
+        const MAX_BYTES: usize = 64;
+        const BACKUPS: usize = 3;
+        let directory = tempdir().expect("isolated test directory");
+        let path = directory.path().join("provider-frames.log");
+        let writer = OperationalLog::open(path, MAX_BYTES, BACKUPS, 4096).expect("log");
+        for index in 0..500 {
+            writer.write_line(format!("frame {index} {}\n", "x".repeat(40)).as_bytes());
+        }
+        writer.flush().expect("flush");
+        let names = fs::read_dir(directory.path())
+            .expect("log directory")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), BACKUPS + 1, "files beyond the count limit");
+        for name in names {
+            let size = fs::metadata(directory.path().join(name))
+                .expect("size")
+                .len();
+            assert!(size <= MAX_BYTES as u64, "file above the size limit");
+        }
+    }
+
+    #[test]
     fn counted_rotation_keeps_the_exact_bound_and_newest_backup_first() {
         let directory = tempdir().expect("isolated test directory");
         let path = directory.path().join("app-server.log");

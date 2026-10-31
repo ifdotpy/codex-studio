@@ -32,7 +32,7 @@ fn publication_effect(cursor: u64) -> NotificationPostCommit {
 }
 
 fn rate_agent() -> Value {
-    json!({"id":"agent","name":"Agent","rootId":"root","accountKey":"default",
+    json!({"compactions":0,"id":"agent","name":"Agent","rootId":"root","accountKey":"default",
         "accountHistory":[],"provider":"codex","threadId":"thread","turnId":"turn",
         "model":"gpt-5","effort":"high","fastMode":false,"daybreakEnabled":false,
         "cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,"epoch":0,"status":"running"})
@@ -188,6 +188,44 @@ async fn test_store() -> (PathBuf, Arc<RuntimeStore>) {
     let root = root();
     let store = seed_fixture_root(&root).await;
     (root, Arc::new(store))
+}
+
+#[tokio::test]
+async fn typed_publication_keeps_exact_receipt_bytes_and_replay() {
+    let (_root, store) = test_store().await;
+    let effect = publication_effect(7);
+    let raw = serde_json::value::to_raw_value(&effect).unwrap();
+    let expected = serde_json::to_string(&studio_runtime_store::outbox::Publication {
+        account: "default".into(),
+        sequence: 1,
+        index: 0,
+        class: studio_runtime_store::outbox::PublicationClass::TokenRate,
+        effect: Some(raw),
+        ..Default::default()
+    })
+    .unwrap();
+    let result = store
+        .transaction_with(move |tx| {
+            let id = store::publication_operation("default", 1, 0);
+            let publication = || studio_runtime_store::outbox::Publication {
+                account: "default".into(),
+                sequence: 1,
+                index: 0,
+                class: studio_runtime_store::outbox::PublicationClass::TokenRate,
+                effect: Some(&effect),
+                ..Default::default()
+            };
+            store::save_publication(tx, &id, publication())?;
+            let actual: String = tx.query_row(
+                "SELECT payload FROM runtime_outbox WHERE id=?1",
+                [&id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(actual.as_bytes(), expected.as_bytes());
+            store::save_publication(tx, &id, publication())
+        })
+        .await;
+    result.expect("typed publication and exact replay");
 }
 
 #[tokio::test]

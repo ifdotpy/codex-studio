@@ -11,6 +11,7 @@ pub(crate) mod checkpoints;
 pub(crate) mod claude_controls;
 pub(crate) mod claude_records;
 pub(crate) mod claude_retry;
+pub mod command_watermarks;
 pub(crate) mod context_repair;
 pub(crate) mod continuation;
 pub(crate) mod coordination;
@@ -36,6 +37,7 @@ pub(crate) mod projects;
 pub(crate) mod questions_reads;
 pub(crate) mod questions_write;
 pub(crate) mod queue_write;
+pub mod remote_outbox;
 pub(crate) mod remote_transport;
 pub mod request_results;
 pub(crate) mod reviewer_archive;
@@ -193,7 +195,7 @@ mod tests {
     #[test]
     fn repository_sql_uses_only_declared_tables() {
         let db = database_with(&agents::REQUIREMENTS);
-        let agent = AgentRecord::from_value(json!({"accountKey":"default",
+        let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
             "id":"a", "provider":"codex", "rootId":"a", "epoch":0, "status":"idle"
         }))
         .expect("agent JSON has a string id");
@@ -201,10 +203,10 @@ mod tests {
         AgentRepository::get(&db, agent.id()).expect("agent read uses declared objects");
 
         let db = database_with(&tasks::REQUIREMENTS);
-        let task = TaskRecord::from_value(json!({
+        let task: TaskRecord = serde_json::from_str(&json!({
             "id":"t", "agent":"a", "kind":"command", "status":"completed",
-            "created":0, "interactive":false, "exitCode":0
-        }))
+            "created":0, "itemId":"i", "turnId":"turn", "type":"commandExecution", "name":"commandExecution", "interactive":false, "exitCode":0
+        }).to_string())
         .expect("task JSON has a string id");
         TaskRepository::put(&db, &task).expect("task write uses declared objects");
         TaskRepository::get(&db, task.id()).expect("task read uses declared objects");
@@ -263,6 +265,9 @@ mod tests {
         db.execute_batch(
             "CREATE TABLE sync_identity (id TEXT PRIMARY KEY);
              CREATE TABLE sync_generation (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);
+             CREATE TABLE durable_rows (
+                 tbl TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
+                 deleted INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(tbl,id));
              CREATE TABLE sync_documents (
                  seq INTEGER PRIMARY KEY, scope TEXT NOT NULL, id TEXT NOT NULL,
                  payload TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
@@ -272,9 +277,6 @@ mod tests {
                  hash TEXT NOT NULL, payload TEXT, deleted INTEGER NOT NULL DEFAULT 0,
                  PRIMARY KEY(collection,id));
              CREATE TABLE sync_entity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-             CREATE TABLE sync_versions (
-                 seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
-                 hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL);
              INSERT INTO sync_identity(id) VALUES ('workspace-a');
              INSERT INTO sync_entity_meta(key,value) VALUES ('entity_tombstone_floor','0');",
         )

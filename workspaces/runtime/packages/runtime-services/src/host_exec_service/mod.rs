@@ -17,11 +17,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use rusqlite::OptionalExtension;
+use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
 
 mod clone_ffi;
 mod command;
 pub mod lifecycle;
+mod operation;
 mod protocol;
 mod slots;
 mod transfer;
@@ -101,7 +103,276 @@ const READ_METHODS: [&str; 6] = [
 ];
 
 /// One operation record (`host-operations/<key>/status.json`).
-pub(crate) type Op = Map<String, Value>;
+use operation::{Op, State};
+
+#[derive(serde::Deserialize)]
+struct IncomingFrame {
+    id: Option<Box<serde_json::value::RawValue>>,
+    token: Option<Box<serde_json::value::RawValue>>,
+    method: Option<Box<serde_json::value::RawValue>>,
+    params: Option<Box<serde_json::value::RawValue>>,
+}
+
+#[derive(serde::Serialize)]
+struct Response<'a, T: serde::Serialize> {
+    id: &'a str,
+    result: T,
+}
+
+#[derive(serde::Serialize)]
+struct ErrorResponse<'a, I: serde::Serialize> {
+    id: I,
+    error: &'a HostExecError,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetireParams {
+    build_id: String,
+    pid: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct HealthParams {}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SettingsFile {
+    slots: Option<i64>,
+    disk_budget_gi_b: Option<serde_json::Number>,
+    mac_only: Option<Vec<String>>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListParams {
+    agent_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RecoverParams {
+    owner: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AcquireParams {
+    operation_id: String,
+    project_id: String,
+    agent_id: String,
+    line_path: String,
+    owner: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RunParams {
+    operation_id: String,
+    agent_id: String,
+    argv: Vec<String>,
+    manifest_sha256: String,
+    #[serde(default)]
+    timeout_seconds: Option<f64>,
+    #[serde(default)]
+    caches: Vec<String>,
+    #[serde(default)]
+    layr_state: Option<String>,
+    #[serde(default)]
+    layr_tree: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManifestParams {
+    operation_id: String,
+    agent_id: String,
+    #[serde(default)]
+    after: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrimeParams {
+    operation_id: String,
+    agent_id: String,
+    #[serde(default)]
+    caches: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncModeParams {
+    operation_id: String,
+    agent_id: String,
+    items: Vec<SyncModeItem>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+pub(crate) struct SyncModeItem {
+    path: String,
+    entry: protocol::ManifestEntry,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SyncCloneParams {
+    operation_id: String,
+    agent_id: String,
+    path: String,
+    entry: protocol::ManifestEntry,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TransferCommon {
+    operation_id: String,
+    agent_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    #[serde(default)]
+    after_seq: i64,
+    #[serde(default)]
+    wait_seconds: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct ReadParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    area: ResultArea,
+    path: String,
+    #[serde(default)]
+    offset: u64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReleaseParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    pre_run_error: Option<HostExecError>,
+    #[serde(default)]
+    abandon: bool,
+    #[serde(default)]
+    collected: bool,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct SyncPathParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    path: String,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct SyncEntryParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    path: String,
+    entry: protocol::ManifestEntry,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct SyncChunkParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    path: String,
+    offset: u64,
+    data: String,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct SyncBatchParams {
+    #[serde(flatten)]
+    common: TransferCommon,
+    items: Vec<SyncBatchItem>,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct SyncBatchItem {
+    path: String,
+    entry: protocol::ManifestEntry,
+    data: Option<String>,
+}
+
+pub(crate) enum SyncOperation {
+    Delete(SyncPathParams),
+    Entry(SyncEntryParams),
+    Chunk(SyncChunkParams),
+    Commit(SyncPathParams),
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResultManifestParams {
+    operation_id: String,
+    agent_id: String,
+    area: ResultArea,
+    #[serde(default)]
+    after: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ResultArea {
+    Changes,
+    Artifacts,
+}
+
+impl ResultArea {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Changes => "changes",
+            Self::Artifacts => "artifacts",
+        }
+    }
+}
+
+enum FrameParams {
+    Health,
+    Retire(RetireParams),
+    Run(RunParams),
+    Manifest(ManifestParams),
+    Prime(PrimeParams),
+    SyncMode(SyncModeParams),
+    SyncClone(SyncCloneParams),
+    Sync(SyncOperation),
+    SyncBatch(SyncBatchParams),
+    Status(TransferCommon),
+    Cancel(TransferCommon),
+    Attach(AttachParams),
+    Read(ReadParams),
+    List(ListParams),
+    Recover(RecoverParams),
+    Acquire(AcquireParams),
+    Release(ReleaseParams),
+    ResultManifest(ResultManifestParams),
+}
+
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum DispatchResult {
+    Operation(Op),
+    Attach(AttachResult),
+    Other(Value),
+}
+
+#[derive(serde::Serialize)]
+struct AttachResult {
+    events: Vec<Value>,
+    status: Op,
+}
+
+fn receipt_digest(method: &str, params: &str) -> String {
+    protocol::key(&format!("{method}\0{params}"))
+}
 
 /// A command process: its process group and its exit.
 #[derive(Clone)]
@@ -115,15 +386,15 @@ pub(crate) struct ChildHandle {
 
 #[derive(Default)]
 pub(crate) struct Inner {
-    active: HashMap<String, tokio::sync::watch::Receiver<Option<Value>>>,
+    active: HashMap<String, tokio::sync::watch::Receiver<Option<String>>>,
     pub(crate) commands: HashSet<String>,
     pub(crate) children: HashMap<String, ChildHandle>,
     /// Per project folder: the bytes of the last walk plus the files written since then.
     pub(crate) usage: HashMap<PathBuf, u64>,
     /// Sorted manifests during paging, by operation and area.
-    pages: HashMap<String, Vec<(String, Value)>>,
+    pages: HashMap<String, protocol::ManifestPageItems>,
     /// Hashes of files cloned into a slot, for its next scan, by slot folder.
-    pub(crate) cloned: HashMap<PathBuf, Map<String, Value>>,
+    pub(crate) cloned: HashMap<PathBuf, protocol::HashCache>,
     clients: usize,
     reading: usize,
     retiring: bool,
@@ -197,23 +468,6 @@ pub(crate) fn remove_entry(path: &Path) -> std::io::Result<()> {
     }
 }
 
-pub(crate) fn text<'a>(op: &'a Op, field: &str) -> &'a str {
-    op.get(field).and_then(Value::as_str).unwrap_or_default()
-}
-
-pub(crate) fn string_list(op: &Op, field: &str) -> Vec<String> {
-    op.get(field)
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// A JSON integer: not a boolean and not a fraction.
 pub(crate) fn integer(value: Option<&Value>) -> Option<i64> {
     match value {
@@ -223,13 +477,6 @@ pub(crate) fn integer(value: Option<&Value>) -> Option<i64> {
 }
 
 /// A JSON number that is not a boolean.
-pub(crate) fn number(value: Option<&Value>) -> Option<f64> {
-    match value {
-        Some(Value::Number(number)) => number.as_f64(),
-        _ => None,
-    }
-}
-
 impl HostService {
     pub(crate) fn open(state: &Path, build_id: String) -> std::io::Result<Self> {
         Self::with_limits(state, build_id, DEFAULT_SLOTS, DEFAULT_BUDGET)
@@ -345,25 +592,18 @@ impl HostService {
             "The host command does not exist",
             "not_found",
         )?;
-        let Value::Object(mut value) = protocol::read_json(&path)? else {
-            return Err(Failure::Unexpected(
-                "The host command status is not an object".into(),
-            ));
-        };
-        if value.get("state").and_then(Value::as_str) == Some("running")
-            && !self.inner().commands.contains(identity)
-        {
-            value.insert("state".into(), json!("unknown"));
-            value.insert("reason".into(), json!("host_owner_lost"));
+        let mut value: Op = serde_json::from_str(&fs::read_to_string(path)?).map_err(|_| {
+            HostExecError::new("invalid_status", "The host command status is invalid")
+        })?;
+        if value.state == State::Running && !self.inner().commands.contains(identity) {
+            value.state = State::Unknown;
+            value.reason = Some("host_owner_lost".into());
         }
         Ok(value)
     }
 
     pub(crate) fn save(&self, identity: &str, op: &Op) -> Outcome<()> {
-        protocol::atomic(
-            &self.opdir(identity).join("status.json"),
-            &Value::Object(op.clone()),
-        )?;
+        protocol::atomic(&self.opdir(identity).join("status.json"), op)?;
         Ok(())
     }
 
@@ -417,11 +657,11 @@ impl HostService {
             .join(SETTINGS_FILE);
         let shown = path.display().to_string();
         let invalid = |message: String| HostExecError::new("invalid_config", message);
-        let mut value = Value::Object(Map::new());
+        let mut fields = SettingsFile::default();
         if slots::project_folder_name(project_id) {
             match fs::read_to_string(&path) {
                 Ok(text) => {
-                    value = serde_json::from_str(&text).map_err(|error| {
+                    fields = serde_json::from_str(&text).map_err(|error| {
                         invalid(format!("{shown} is not readable JSON: {error}"))
                     })?;
                 }
@@ -431,71 +671,46 @@ impl HostService {
                 }
             }
         }
-        let fields = match &value {
-            Value::Object(fields)
-                if fields
-                    .keys()
-                    .all(|key| ["slots", "diskBudgetGiB", "macOnly"].contains(&key.as_str())) =>
-            {
-                fields
-            }
-            Value::Null
-            | Value::Bool(_)
-            | Value::Number(_)
-            | Value::String(_)
-            | Value::Array(_)
-            | Value::Object(_) => {
+        let slots = match fields.slots {
+            None => self.default_slots,
+            Some(value) if (1..=MAX_SLOTS).contains(&value) => value,
+            Some(_) => {
                 return Err(invalid(format!(
-                    "{shown} accepts only slots, diskBudgetGiB and macOnly"
+                    "{shown}: slots must be an integer from 1 to {MAX_SLOTS}"
                 )));
             }
         };
-        let slots = match fields.get("slots") {
-            None => self.default_slots,
-            Some(value) => integer(Some(value))
-                .filter(|slots| (1..=MAX_SLOTS).contains(slots))
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "{shown}: slots must be an integer from 1 to {MAX_SLOTS}"
-                    ))
-                })?,
-        };
-        let disk_budget = match fields.get("diskBudgetGiB") {
+        let disk_budget = match fields.disk_budget_gi_b {
             None => self.default_budget,
             Some(value) => {
                 let refusal =
                     || invalid(format!("{shown}: diskBudgetGiB must be a number above 0"));
                 match value {
-                    Value::Number(size) if !size.is_f64() => {
+                    size if !size.is_f64() => {
                         let size = size
                             .as_i64()
                             .filter(|size| *size > 0 && (*size as f64) <= MAX_BUDGET_GIB)
                             .ok_or_else(refusal)?;
                         (size as u64) * 1024 * 1024 * 1024
                     }
-                    Value::Number(size) => {
+                    size => {
                         let size = size
                             .as_f64()
                             .filter(|size| *size > 0.0 && *size <= MAX_BUDGET_GIB)
                             .ok_or_else(refusal)?;
                         (size * 1024.0 * 1024.0 * 1024.0) as u64
                     }
-                    Value::Null
-                    | Value::Bool(_)
-                    | Value::String(_)
-                    | Value::Array(_)
-                    | Value::Object(_) => return Err(refusal()),
                 }
             }
         };
-        let mac_only = match fields.get("macOnly") {
+        let mac_only = match fields.mac_only {
             None => Vec::new(),
-            Some(Value::Array(items)) if items.len() <= MAX_MAC_ONLY => {
+            Some(items) if items.len() <= MAX_MAC_ONLY => {
                 let mut paths = Vec::new();
                 for item in items {
-                    let path = protocol::relative(Some(item)).map_err(|error| {
-                        invalid(format!("{shown}: macOnly {item}: {}", error.message))
-                    })?;
+                    let path = protocol::relative(Some(&protocol::text_value(&item))).map_err(
+                        |error| invalid(format!("{shown}: macOnly {item}: {}", error.message)),
+                    )?;
                     paths.push(path);
                 }
                 paths
@@ -510,9 +725,7 @@ impl HostService {
     }
 
     pub(crate) fn budget_of(&self, op: &Op) -> u64 {
-        op.get("diskBudget")
-            .and_then(Value::as_u64)
-            .unwrap_or(self.default_budget)
+        op.disk_budget
     }
 
     /// A page of a saved manifest. The sorted entries stay in memory until the last page.
@@ -520,25 +733,20 @@ impl HostService {
         &self,
         name: &str,
         path: &Path,
-        after: Option<&Value>,
+        after: &str,
         entries: Option<&protocol::Manifest>,
     ) -> Outcome<Value> {
         let saved = self.inner().pages.get(name).cloned();
         let items = match (entries, saved) {
             (Some(entries), _) => entries
                 .iter()
-                .map(|(path, entry)| (path.clone(), entry.clone()))
+                .map(|(path, entry)| (path.clone(), Some(entry.clone())))
                 .collect(),
             (None, Some(items)) => items,
             (None, None) => {
-                let Value::Object(map) = protocol::read_json(path)? else {
-                    return Err(Failure::Unexpected(
-                        "The saved manifest is not an object".into(),
-                    ));
-                };
-                let mut items: Vec<(String, Value)> = map.into_iter().collect();
-                items.sort_by(|left, right| left.0.cmp(&right.0));
-                items
+                let map: std::collections::BTreeMap<String, Option<protocol::ManifestEntry>> =
+                    serde_json::from_str(&fs::read_to_string(path)?)?;
+                map.into_iter().collect()
             }
         };
         let result = protocol::page(&items, after)?;
@@ -562,94 +770,191 @@ impl HostService {
             || inner.reading > 0
     }
 
-    async fn dispatch(
-        self: &Arc<Self>,
-        method: &str,
-        params: &Map<String, Value>,
-    ) -> Outcome<Value> {
-        match method {
-            "acquire" => return self.acquire(params).await.map(Value::Object),
-            "list" => return self.operations(params.get("agentId")),
-            "recover" => return self.recover(params.get("owner")),
-            _ => {}
-        }
-        let identity = params
-            .get("operationId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Failure::Unexpected("'operationId'".into()))?
-            .to_owned();
-        let mut op = self.load(&identity)?;
-        // The broker sets these fields; the host never accepts a slot path from the caller.
-        require(
-            params.get("agentId") == op.get("agentId"),
-            "The command belongs to another agent",
-            "forbidden",
-        )?;
-        match method {
-            "status" => return Ok(Value::Object(op)),
-            "attach" => return self.attach(&identity, params).await,
-            "result.manifest" => {
-                let area = params
-                    .get("area")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
+    async fn dispatch_frame(self: &Arc<Self>, params: &FrameParams) -> Outcome<DispatchResult> {
+        let result = match params {
+            FrameParams::Release(params) => {
+                let op = self.load(&params.common.operation_id)?;
                 require(
-                    ["changes", "artifacts"].contains(&area),
-                    "Invalid result file area",
-                    INVALID,
+                    op.agent_id.as_str() == params.common.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
                 )?;
+                let slot = self.slot(&op)?;
+                return self
+                    .release(&params.common.operation_id, op, &slot, params)
+                    .map(DispatchResult::Operation);
+            }
+            FrameParams::Acquire(params) => {
+                return self.acquire(params).await.map(DispatchResult::Operation);
+            }
+            FrameParams::List(params) => self.operations(&params.agent_id),
+            FrameParams::Recover(params) => self.recover(&params.owner),
+            FrameParams::Run(params) => {
+                let op = self.load(&params.operation_id)?;
                 require(
-                    ["exited", "released"].contains(&text(&op, "state")),
+                    op.agent_id.as_str() == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                let mac_only = op.mac_only.clone();
+                return self
+                    .run(&params.operation_id, op, slot, mac_only, params)
+                    .await
+                    .map(DispatchResult::Operation);
+            }
+            FrameParams::Manifest(params) => {
+                let op = self.load(&params.operation_id)?;
+                require(
+                    op.agent_id.as_str() == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                self.held_manifest(
+                    &params.operation_id,
+                    &slot,
+                    op.mac_only.clone(),
+                    &params.after,
+                )
+                .await
+            }
+            FrameParams::Prime(params) => {
+                let op = self.load(&params.operation_id)?;
+                require(
+                    op.agent_id.as_str() == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                self.prime_request(&params.operation_id, &op, &slot, &params.caches)
+                    .await
+            }
+            FrameParams::SyncMode(params) => {
+                let op = self.load(&params.operation_id)?;
+                require(
+                    op.agent_id.as_str() == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                self.sync_mode(&op, &slot, op.mac_only.clone(), &params.items)
+                    .await
+            }
+            FrameParams::SyncClone(params) => {
+                let op = self.load(&params.operation_id)?;
+                require(
+                    op.agent_id.as_str() == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                self.sync_clone(&op, &slot, &params.path, &params.entry)
+                    .await
+            }
+            FrameParams::Sync(params) => {
+                let common = match params {
+                    SyncOperation::Delete(params) | SyncOperation::Commit(params) => &params.common,
+                    SyncOperation::Entry(params) => &params.common,
+                    SyncOperation::Chunk(params) => &params.common,
+                };
+                let op = self.load(&common.operation_id)?;
+                require(
+                    op.agent_id.as_str() == common.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                let mac_only = op.mac_only.clone();
+                self.sync_operation(&common.operation_id, &op, &slot, &mac_only, params)
+            }
+            FrameParams::SyncBatch(params) => {
+                let op = self.load(&params.common.operation_id)?;
+                require(
+                    op.agent_id.as_str() == params.common.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let slot = self.slot(&op)?;
+                self.sync_batch(&op, &slot, &params.items)
+            }
+            FrameParams::Status(params) => {
+                let op = self.load(&params.operation_id)?;
+                require(
+                    op.agent_id.as_str() == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                return Ok(DispatchResult::Operation(op));
+            }
+            FrameParams::Cancel(params) => {
+                let mut op = self.load(&params.operation_id)?;
+                require(
+                    op.agent_id.as_str() == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                return self
+                    .cancel(&params.operation_id, &mut op)
+                    .await
+                    .map(DispatchResult::Operation);
+            }
+            FrameParams::Attach(params) => {
+                let op = self.load(&params.common.operation_id)?;
+                require(
+                    op.agent_id.as_str() == params.common.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                return self
+                    .attach(
+                        &params.common.operation_id,
+                        params.after_seq,
+                        params.wait_seconds,
+                    )
+                    .await
+                    .map(DispatchResult::Attach);
+            }
+            FrameParams::Read(params) => {
+                let op = self.load(&params.common.operation_id)?;
+                require(
+                    op.agent_id.as_str() == params.common.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                self.read_result(&params.common.operation_id, &op, params)
+            }
+            FrameParams::ResultManifest(params) => {
+                let op = self.load(&params.operation_id)?;
+                require(
+                    op.agent_id.as_str() == params.agent_id,
+                    "The command belongs to another agent",
+                    "forbidden",
+                )?;
+                let area = params.area.as_str();
+                require(
+                    matches!(op.state, State::Exited | State::Released),
                     "The command has no final files",
                     "outcome_unknown",
                 )?;
-                let empty = Value::String(String::new());
-                return self.listing(
-                    &format!("{identity}\0{area}"),
-                    &self.opdir(&identity).join(format!("{area}.json")),
-                    Some(params.get("after").unwrap_or(&empty)),
+                self.listing(
+                    &format!("{}\0{area}", params.operation_id),
+                    &self
+                        .opdir(&params.operation_id)
+                        .join(format!("{area}.json")),
+                    &params.after,
                     None,
-                );
+                )
             }
-            "read" => return self.read_result(&identity, &op, params),
-            _ => {}
-        }
-        let slot = self.slot(&op)?;
-        let mac_only = string_list(&op, "macOnly");
-        match method {
-            "manifest" => self.held_manifest(&identity, &slot, mac_only, params).await,
-            "prime" => self.prime_request(&identity, &op, &slot, params).await,
-            "sync.clone" => self.sync_clone(&op, &slot, params).await,
-            "sync.mode" => self.sync_mode(&op, &slot, mac_only, params).await,
-            "sync.batch" => self.sync_batch(&op, &slot, params),
-            method if method.starts_with("sync.") => {
-                self.sync_entry(method, &identity, &op, &slot, &mac_only, params)
+            FrameParams::Health | FrameParams::Retire(_) => {
+                Err(HostExecError::new(INVALID, "Invalid request").into())
             }
-            "run" => self
-                .run(&identity, op, slot, mac_only, params)
-                .await
-                .map(Value::Object),
-            "cancel" => self.cancel(&identity, &mut op).await.map(Value::Object),
-            "release" => self
-                .release(&identity, op, &slot, params)
-                .map(Value::Object),
-            _ => Err(HostExecError::new(INVALID, "Unknown host method").into()),
-        }
+        }?;
+        Ok(DispatchResult::Other(result))
     }
 
-    async fn attach(&self, identity: &str, params: &Map<String, Value>) -> Outcome<Value> {
-        let after = match params.get("afterSeq") {
-            None => 0,
-            Some(value) => integer(Some(value))
-                .filter(|after| *after >= 0)
-                .ok_or_else(|| HostExecError::new(INVALID, "Invalid event cursor"))?,
-        };
-        let wait = match params.get("waitSeconds") {
-            None => 0.0,
-            Some(value) => {
-                number(Some(value)).ok_or_else(|| Failure::Unexpected("Invalid wait".into()))?
-            }
-        };
+    async fn attach(&self, identity: &str, after: i64, wait: f64) -> Outcome<AttachResult> {
+        require(after >= 0, "Invalid event cursor", INVALID)?;
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs_f64(wait.clamp(0.0, ATTACH_MAX_SECONDS));
         while tokio::time::Instant::now() < deadline && self.inner().commands.contains(identity) {
@@ -659,34 +964,26 @@ impl HostService {
             tokio::time::sleep(std::time::Duration::from_millis(ATTACH_POLL_MS)).await;
         }
         let events = self.events_after(identity, after)?;
-        Ok(json!({"events": events, "status": self.load(identity)?}))
+        Ok(AttachResult {
+            events,
+            status: self.load(identity)?,
+        })
     }
 
-    fn read_result(&self, identity: &str, op: &Op, params: &Map<String, Value>) -> Outcome<Value> {
+    fn read_result(&self, identity: &str, op: &Op, params: &ReadParams) -> Outcome<Value> {
         use std::io::{Read, Seek, SeekFrom};
         require(
-            ["exited", "released"].contains(&text(op, "state")),
+            matches!(op.state, State::Exited | State::Released),
             "The command has no final files",
             "outcome_unknown",
         )?;
-        let area = params
-            .get("area")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        require(
-            ["changes", "artifacts"].contains(&area),
-            "Invalid result file area",
-            INVALID,
+        let path = protocol::inside(
+            &self.opdir(identity).join(params.area.as_str()),
+            Some(&protocol::text_value(&params.path)),
+            true,
         )?;
-        let path = protocol::inside(&self.opdir(identity).join(area), params.get("path"), true)?;
-        let offset = match params.get("offset") {
-            None => 0,
-            Some(value) => integer(Some(value))
-                .and_then(|offset| u64::try_from(offset).ok())
-                .ok_or_else(|| HostExecError::new(INVALID, "Invalid file offset"))?,
-        };
         let mut file = fs::File::open(&path)?;
-        file.seek(SeekFrom::Start(offset))?;
+        file.seek(SeekFrom::Start(params.offset))?;
         let mut data = Vec::with_capacity(protocol::CHUNK);
         file.take(protocol::CHUNK as u64).read_to_end(&mut data)?;
         use base64::Engine;
@@ -696,68 +993,166 @@ impl HostService {
     }
 
     /// One request frame: its answer, or `None` when the frame is not an object.
+    #[cfg(test)]
     pub(crate) async fn request(self: &Arc<Self>, request: &Value) -> Option<Value> {
-        let request = request.as_object()?;
-        let identity = request.get("id").cloned().unwrap_or(Value::Null);
-        Some(match self.answer(&identity, request).await {
-            Ok(value) => value,
-            Err(Failure::Refused(error)) => json!({"id": identity, "error": error.object()}),
-            Err(Failure::Unexpected(_)) => {
-                json!({"id": identity, "error": {"code": "invalid_request", "message": "Invalid host request"}})
-            }
-        })
+        let response = self
+            .request_frame(&serde_json::to_vec(request).ok()?)
+            .await?;
+        serde_json::from_str(&response).ok()
     }
 
-    async fn answer(
-        self: &Arc<Self>,
-        identity: &Value,
-        request: &Map<String, Value>,
-    ) -> Outcome<Value> {
-        let id = identity
-            .as_str()
+    async fn request_frame(self: &Arc<Self>, bytes: &[u8]) -> Option<String> {
+        let request: IncomingFrame = serde_json::from_slice(bytes).ok()?;
+        let identity = request.id.clone();
+        match self.answer(request).await {
+            Ok(value) => Some(value),
+            Err(Failure::Refused(error)) => serde_json::to_string(&ErrorResponse {
+                id: identity,
+                error: &error,
+            })
+            .ok(),
+            Err(Failure::Unexpected(_)) => serde_json::to_string(&ErrorResponse {
+                id: identity,
+                error: &HostExecError::new("invalid_request", "Invalid host request"),
+            })
+            .ok(),
+        }
+    }
+
+    async fn answer(self: &Arc<Self>, request: IncomingFrame) -> Outcome<String> {
+        let id = request
+            .id
+            .as_ref()
+            .and_then(|id| serde_json::from_str::<String>(id.get()).ok())
             .filter(|id| !id.is_empty() && id.chars().count() <= 128)
-            .ok_or_else(|| HostExecError::new(INVALID, "Invalid request ID"))?
-            .to_owned();
+            .ok_or_else(|| HostExecError::new(INVALID, "Invalid request ID"))?;
         let token = request
-            .get("token")
-            .cloned()
-            .unwrap_or(Value::String(String::new()));
-        let matches = token.as_str().is_some_and(|token| {
+            .token
+            .as_ref()
+            .and_then(|token| serde_json::from_str::<String>(token.get()).ok());
+        let matches = token.as_deref().is_some_and(|token| {
             use subtle::ConstantTimeEq;
             bool::from(token.as_bytes().ct_eq(self.token.as_bytes()))
         });
         require(matches, "The guest host token differs", "forbidden")?;
         let method = request
-            .get("method")
-            .ok_or_else(|| Failure::Unexpected("'method'".into()))?;
-        let params = request
-            .get("params")
-            .cloned()
-            .unwrap_or_else(|| Value::Object(Map::new()));
-        let (Some(method), Value::Object(params)) = (method.as_str(), params) else {
-            return Err(HostExecError::new(INVALID, "Invalid request").into());
+            .method
+            .as_ref()
+            .and_then(|method| serde_json::from_str::<String>(method.get()).ok())
+            .ok_or_else(|| HostExecError::new(INVALID, "Invalid request"))?;
+        let raw = request
+            .params
+            .as_deref()
+            .map_or("{}", serde_json::value::RawValue::get);
+        let digest = receipt_digest(&method, raw);
+        let params = match method.as_str() {
+            "health" => {
+                let _: HealthParams = serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?;
+                FrameParams::Health
+            }
+            "service.retire" => FrameParams::Retire(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "run" => FrameParams::Run(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "manifest" => FrameParams::Manifest(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "prime" => FrameParams::Prime(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "sync.mode" => FrameParams::SyncMode(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "sync.clone" => FrameParams::SyncClone(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "sync.delete" => FrameParams::Sync(SyncOperation::Delete(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            )),
+            "sync.entry" => FrameParams::Sync(SyncOperation::Entry(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            )),
+            "sync.chunk" => FrameParams::Sync(SyncOperation::Chunk(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            )),
+            "sync.commit" => FrameParams::Sync(SyncOperation::Commit(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            )),
+            "sync.batch" => FrameParams::SyncBatch(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "result.manifest" => FrameParams::ResultManifest(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "status" => FrameParams::Status(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "list" => FrameParams::List(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "acquire" => FrameParams::Acquire(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "release" => FrameParams::Release(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "recover" => FrameParams::Recover(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "cancel" => FrameParams::Cancel(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "attach" => FrameParams::Attach(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            "read" => FrameParams::Read(
+                serde_json::from_str(raw)
+                    .map_err(|_| HostExecError::new(INVALID, "Invalid request"))?,
+            ),
+            _ => return Err(HostExecError::new(INVALID, "Unknown host method").into()),
         };
-        let method = method.to_owned();
-        let digest = protocol::key(&protocol::sorted_json(&json!([method, params])));
         if method == "health" {
             let (commands, active) = {
                 let inner = self.inner();
                 (inner.commands.len(), inner.active.len())
             };
-            return Ok(json!({"id": id, "result": {
+            return Ok(serde_json::to_string(&Response {
+                id: &id,
+                result: json!({
                 "protocol": PROTOCOL, "buildId": self.build_id, "pid": std::process::id(),
-                "activeCommands": commands, "activeRequests": active, "busy": self.busy()}}));
+                "activeCommands": commands, "activeRequests": active, "busy": self.busy()}),
+            })?);
         }
         require(
             !self.inner().retiring,
             "The host_exec service is retiring",
             "busy",
         )?;
-        if method == "service.retire" {
+        if let FrameParams::Retire(params) = &params {
             require(
-                params.get("buildId").and_then(Value::as_str) == Some(self.build_id.as_str())
-                    && params.get("pid").and_then(Value::as_u64)
-                        == Some(u64::from(std::process::id())),
+                params.build_id == self.build_id && params.pid == u64::from(std::process::id()),
                 "The service build or process differs",
                 "id_conflict",
             )?;
@@ -767,14 +1162,20 @@ impl HostService {
                 "busy",
             )?;
             self.inner().retiring = true;
-            return Ok(json!({"id": id, "result": {
-                "state": "retiring", "buildId": self.build_id, "pid": std::process::id()}}));
+            return Ok(serde_json::to_string(&Response {
+                id: &id,
+                result: json!({
+                "state": "retiring", "buildId": self.build_id, "pid": std::process::id()}),
+            })?);
         }
         if READ_METHODS.contains(&method.as_str()) {
             self.inner().reading += 1;
-            let result = self.dispatch(&method, &params).await;
+            let result = self.dispatch_frame(&params).await;
             self.inner().reading -= 1;
-            return Ok(json!({"id": id, "result": result?}));
+            return Ok(serde_json::to_string(&Response {
+                id: &id,
+                result: result?,
+            })?);
         }
         let saved = {
             let db = self.db();
@@ -802,7 +1203,9 @@ impl HostService {
             let running = self.inner().active.get(&id).cloned();
             if let Some(mut running) = running {
                 return match running.wait_for(Option::is_some).await {
-                    Ok(value) => Ok(value.clone().unwrap_or(Value::Null)),
+                    Ok(value) => value.clone().ok_or_else(|| {
+                        Failure::Unexpected("The request has no proven result".into())
+                    }),
                     Err(_) => Err(HostExecError::new(
                         "outcome_unknown",
                         "The request has no proven result; inspect its operation",
@@ -816,32 +1219,47 @@ impl HostService {
                     "The request has no proven result; inspect its operation",
                 )
             })?;
-            return Ok(serde_json::from_str(&response)?);
+            serde_json::from_str::<&RawValue>(&response)?;
+            return Ok(response);
         }
         let (sender, mut receiver) = tokio::sync::watch::channel(None);
         self.inner().active.insert(id.clone(), receiver.clone());
         let service = Arc::clone(self);
         let task_id = id.clone();
         tokio::spawn(async move {
-            let result = match service.dispatch(&method, &params).await {
-                Ok(value) => json!({"id": task_id, "result": value}),
-                Err(Failure::Refused(error)) => json!({"id": task_id, "error": error.object()}),
-                Err(Failure::Unexpected(message)) => {
-                    json!({"id": task_id, "error": {"code": "outcome_unknown", "message": truncate(&message)}})
-                }
+            let result = match service.dispatch_frame(&params).await {
+                Ok(value) => serde_json::to_string(&Response {
+                    id: &task_id,
+                    result: value,
+                }),
+                Err(Failure::Refused(error)) => serde_json::to_string(&ErrorResponse {
+                    id: &task_id,
+                    error: &error,
+                }),
+                Err(Failure::Unexpected(message)) => serde_json::to_string(&ErrorResponse {
+                    id: &task_id,
+                    error: &HostExecError::new("outcome_unknown", truncate(&message)),
+                }),
             };
-            let saved = service.db().execute(
-                "UPDATE receipts SET response=?1 WHERE id=?2",
-                rusqlite::params![result.to_string(), task_id],
-            );
-            if saved.is_ok() {
+            let saved = result.as_ref().ok().is_some_and(|result| {
+                service
+                    .db()
+                    .execute(
+                        "UPDATE receipts SET response=?1 WHERE id=?2",
+                        rusqlite::params![result, task_id],
+                    )
+                    .is_ok()
+            });
+            if let (true, Ok(result)) = (saved, result) {
                 sender.send_replace(Some(result));
             }
             // A failed save keeps the receipt without an answer: an unknown outcome.
             service.inner().active.remove(&task_id);
         });
         match receiver.wait_for(Option::is_some).await {
-            Ok(value) => Ok(value.clone().unwrap_or(Value::Null)),
+            Ok(value) => value
+                .clone()
+                .ok_or_else(|| Failure::Unexpected("The request has no proven result".into())),
             Err(_) => Err(HostExecError::new(
                 "outcome_unknown",
                 "The request has no proven result; inspect its operation",
@@ -885,8 +1303,7 @@ impl HostService {
             if line.len() > protocol::FRAME_LIMIT {
                 return None;
             }
-            let request: Value = serde_json::from_slice(&line).ok()?;
-            let response = self.request(&request).await?;
+            let response = self.request_frame(&line).await?;
             let mut data = response.to_string().into_bytes();
             data.push(b'\n');
             if data.len() > protocol::FRAME_LIMIT {

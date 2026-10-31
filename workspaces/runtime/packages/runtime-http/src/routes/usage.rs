@@ -105,6 +105,8 @@ async fn cost_interest(
             | error @ studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
             | error @ studio_runtime_store::StoreError::Json(_)
             | error @ studio_runtime_store::StoreError::InvalidStoredObject { .. }
+            | error @ studio_runtime_store::StoreError::TranscriptFullTextUnavailable { .. }
+            | error @ studio_runtime_store::StoreError::TranscriptInputsIncomplete { .. }
             | error @ studio_runtime_store::StoreError::SchemaValidation(_)
             | error @ studio_runtime_store::StoreError::RecordContract(_)
             | error @ studio_runtime_store::StoreError::WriterPoisoned
@@ -461,7 +463,7 @@ mod tests {
                 let retry = json!({"id":id,"accountKey":"default","threadId":"thread","epoch":1,
                     "turnId":"turn","cause":"serverOverloaded","status":"scheduled","dueAt":990.0,
                     "attempt":1,"maxAttempts":4,"cwd":"/fixture","settings":{},"taskClaims":[],"updatedAt":800.0});
-                let agent = json!({"provider":"codex","id":id,"rootId":id,"epoch":1,"status":"running",
+                let agent = json!({"compactions":0,"provider":"codex","id":id,"rootId":id,"epoch":1,"status":"running",
                     "accountKey":"default","threadId":"thread","turnId":"turn","capacityRetry":retry});
                 tx.execute("INSERT INTO runtime_agents(id,record) VALUES (?1,?2)", rusqlite::params![id, agent.to_string()])?;
                 tx.execute("INSERT INTO runtime_capacity_retries(id,agent,record) VALUES (?1,?1,?2)", rusqlite::params![id, retry.to_string()])?;
@@ -508,7 +510,7 @@ mod tests {
             let resume = json!({"id":"resume","accountKey":"default","threadId":"thread","epoch":1,
                 "turnId":"turn","cause":"usage_limit","status":"scheduled","failedAt":900.0,"authAttempt":0,
                 "dueAt":990.0,"taskClaims":[],"updatedAt":800.0});
-            let agent = json!({"provider":"codex","id":"a","rootId":"a","epoch":1,"status":"failed",
+            let agent = json!({"compactions":0,"provider":"codex","id":"a","rootId":"a","epoch":1,"status":"failed",
                 "accountKey":"default","threadId":"thread","usageResume":resume});
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES ('a',?1)", [agent.to_string()])?;
             tx.execute("INSERT INTO runtime_usage_resumes(id,agent,record) VALUES ('resume','a',?1)", [resume.to_string()])?;

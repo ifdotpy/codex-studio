@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_store::cost_aggregate::{
-    CostGroup, CostMember, CostReceipt, CostTokens, DEFAULT_ACCOUNT, JournalReceiptCache,
+    CostGroup, CostMember, CostTokens, DEFAULT_ACCOUNT, JournalReceiptCache,
     journal_partition_and_adjustments_cached,
 };
 use studio_runtime_store::{AnalyticsStoreError, RuntimeStore, StoreError, analytics};
@@ -320,9 +320,40 @@ pub enum CostsError {
     AccountProfilesRequired,
 }
 
+/// A priced session estimate, serialized directly at the HTTP boundary.
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCost {
+    breakdown: SessionCostBreakdown,
+    cache_age_seconds: u8,
+    claude_history_incomplete: bool,
+    estimated: bool,
+    generation: i64,
+    method: String,
+    priced_samples: u64,
+    pricing_state: SessionPricingState,
+    refreshing: bool,
+    root_id: String,
+    #[serde(rename = "totalUSD")]
+    total_usd: Option<f64>,
+    unknown_models: BTreeSet<String>,
+}
+
+#[derive(Debug, PartialEq, serde::Serialize)]
+struct SessionCostBreakdown {
+    models: BTreeMap<String, f64>,
+    providers: BTreeMap<&'static str, f64>,
+}
+
+#[derive(Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum SessionPricingState {
+    Ready,
+}
+
 /// Return a current estimate without account snapshots; a tree with Claude
 /// history needs them ([`session_cost_with_account_profiles`]).
-pub fn session_cost(store: &RuntimeStore, agent_id: &str) -> Result<Value, CostsError> {
+pub fn session_cost(store: &RuntimeStore, agent_id: &str) -> Result<SessionCost, CostsError> {
     session_cost_inner(store, agent_id, &BTreeMap::new(), false)
 }
 
@@ -331,7 +362,7 @@ pub fn session_cost_with_account_profiles(
     store: &RuntimeStore,
     agent_id: &str,
     accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
-) -> Result<Value, CostsError> {
+) -> Result<SessionCost, CostsError> {
     session_cost_inner(store, agent_id, accounts, true)
 }
 
@@ -340,7 +371,7 @@ fn session_cost_inner(
     agent_id: &str,
     accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
     has_account_profiles: bool,
-) -> Result<Value, CostsError> {
+) -> Result<SessionCost, CostsError> {
     let root = store.root().to_path_buf();
     let agent_id = agent_id.to_owned();
     let accounts = accounts.clone();
@@ -355,7 +386,7 @@ fn session_cost_on_reader(
     agent_id: &str,
     accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
     has_account_profiles: bool,
-) -> Result<Value, CostsError> {
+) -> Result<SessionCost, CostsError> {
     let tx = db.transaction()?;
     let root = analytics::cost_root(&tx, agent_id)?;
     let generation = analytics::usage_generation(&tx, &root)?;
@@ -379,35 +410,46 @@ fn session_cost_on_reader(
         return Err(CostsError::AccountProfilesRequired);
     }
     let mut local_claude = read_local_claude_usage(state_root, &members, accounts)?;
-    let receipts = local_claude
-        .iter()
-        .map(|row| {
-            (
-                row.account_key.clone(),
-                row.thread_id.clone(),
-                row.usage.id.clone(),
-            )
-        })
-        .collect::<BTreeSet<CostReceipt>>();
-    let (partition, adjustments) = RECEIPT_CACHES.with_borrow_mut(|caches| {
+    let adjustments = RECEIPT_CACHES.with_borrow_mut(|caches| {
+        let receipts = local_claude
+            .iter()
+            .map(|row| {
+                (
+                    row.account_key.as_str(),
+                    row.thread_id.as_str(),
+                    row.usage.id.as_str(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
         if caches.len() >= RECEIPT_CACHE_ROOTS && !caches.contains_key(&root) {
             caches.clear();
         }
-        journal_partition_and_adjustments_cached(
+        let (partition, adjustments) = journal_partition_and_adjustments_cached(
             &tx,
             &root,
             &receipts,
             &members,
             caches.entry(root.clone()).or_default(),
-        )
+        )?;
+        drop(receipts);
+        let mut accepted = partition.accepted.iter().peekable();
+        local_claude.retain(|row| {
+            let key = (
+                row.account_key.as_str(),
+                row.thread_id.as_str(),
+                row.usage.id.as_str(),
+            );
+            while accepted.peek().is_some_and(|(account, thread, id)| {
+                (account.as_str(), thread.as_str(), id.as_str()) < key
+            }) {
+                accepted.next();
+            }
+            accepted.peek().is_some_and(|(account, thread, id)| {
+                (account.as_str(), thread.as_str(), id.as_str()) == key
+            })
+        });
+        Ok::<_, CostsError>(adjustments)
     })?;
-    local_claude.retain(|row| {
-        partition.accepted.contains(&(
-            row.account_key.clone(),
-            row.thread_id.clone(),
-            row.usage.id.clone(),
-        ))
-    });
     let loaded = crate::pricing::load_pricing(state_root)
         .ok_or(CostsError::Dependency("costs/pricing-refresh"))?;
     let catalog = loaded.catalog.as_ref().ok_or(CostsError::InvalidPricing)?;
@@ -445,23 +487,35 @@ fn session_cost_on_reader(
     if !summary.total.is_finite() {
         return Err(CostsError::Computation);
     }
-    Ok(json!({
-        "rootId": root,
-        "generation": generation,
-        "totalUSD": if summary.priced_count == 0 { Value::Null } else { json!(summary.total) },
-        "pricedSamples": summary.priced_count,
-        "breakdown": {"providers": summary.providers, "models": summary.models},
-        "unknownModels": summary.unknown,
-        "estimated": true,
-        "pricingState": "ready",
-        "cacheAgeSeconds": 0,
-        "refreshing": false,
-        "claudeHistoryIncomplete": has_claude_history,
-        "method": format!("API prices from models.dev; cached input rates are applied when reported.{}{}",
-            if has_claude_history { " Earlier Claude totals can be incomplete because earlier responses may not have separate saved usage rows." } else { "" },
-            if summary.tier { " Published context tier applied where request size matched its threshold." }
-            else { " Base rates used when request size was unavailable or below the published threshold." }),
-    }))
+    Ok(SessionCost {
+        root_id: root,
+        generation,
+        total_usd: (summary.priced_count != 0).then_some(summary.total),
+        priced_samples: summary.priced_count,
+        breakdown: SessionCostBreakdown {
+            providers: summary.providers,
+            models: summary.models,
+        },
+        unknown_models: summary.unknown,
+        estimated: true,
+        pricing_state: SessionPricingState::Ready,
+        cache_age_seconds: 0,
+        refreshing: false,
+        claude_history_incomplete: has_claude_history,
+        method: format!(
+            "API prices from models.dev; cached input rates are applied when reported.{}{}",
+            if has_claude_history {
+                " Earlier Claude totals can be incomplete because earlier responses may not have separate saved usage rows."
+            } else {
+                ""
+            },
+            if summary.tier {
+                " Published context tier applied where request size matched its threshold."
+            } else {
+                " Base rates used when request size was unavailable or below the published threshold."
+            }
+        ),
+    })
 }
 
 struct ReconciliationUsageSnapshot {
@@ -1427,6 +1481,7 @@ fn read_local_claude_usage_inner(
     }
 
     let mut rows = BTreeMap::new();
+    let mut logs = Vec::new();
     for (account_key, thread_id) in sessions {
         if let Some(budget) = budget.as_deref_mut()
             && !budget.visit()
@@ -1541,6 +1596,10 @@ fn read_local_claude_usage_inner(
                     };
                     log
                 };
+                if budget.is_none() {
+                    logs.push((account_key.clone(), thread_id.clone(), log));
+                    continue;
+                }
                 for usage in log.iter() {
                     if rows.len() >= MAX_RECONCILIATION_RESPONSES && budget.is_some() {
                         if let Some(budget) = budget.as_deref_mut() {
@@ -1563,7 +1622,36 @@ fn read_local_claude_usage_inner(
             }
         }
     }
-    Ok(rows.into_values().collect())
+    if budget.is_some() {
+        return Ok(rows.into_values().collect());
+    }
+    // Borrow cached log rows while ordering and merging duplicate receipts; only
+    // the final distinct rows need owned identities and usage values.
+    let mut borrowed = logs
+        .iter()
+        .flat_map(|(account, thread, log)| {
+            log.iter()
+                .map(move |usage| (account.as_str(), thread.as_str(), usage))
+        })
+        .collect::<Vec<_>>();
+    borrowed.sort_by(|a, b| (a.0, a.1, a.2.id.as_str()).cmp(&(b.0, b.1, b.2.id.as_str())));
+    let mut result: Vec<LocalClaudeUsage> = Vec::new();
+    for (account, thread, usage) in borrowed {
+        if let Some(first) = result.last_mut().filter(|first| {
+            first.account_key == account && first.thread_id == thread && first.usage.id == usage.id
+        }) {
+            first.usage.conflicting_usage |= usage.conflicting_usage
+                || first.usage.tokens != usage.tokens
+                || first.usage.model != usage.model;
+        } else {
+            result.push(LocalClaudeUsage {
+                account_key: account.to_owned(),
+                thread_id: thread.to_owned(),
+                usage: usage.clone(),
+            });
+        }
+    }
+    Ok(result)
 }
 
 fn account_claude_config(
@@ -1916,9 +2004,7 @@ fn pricing_provider(provider: ProviderKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CostsError, read_local_claude_usage, session_cost, session_cost_with_account_profiles,
-    };
+    use super::{CostsError, read_local_claude_usage, session_cost};
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use std::fs;
@@ -1926,6 +2012,17 @@ mod tests {
     use studio_runtime_store::cost_aggregate::{CostMember, CostTokens};
     use studio_runtime_store::{RuntimeStore, StoreError};
     use tempfile::tempdir;
+
+    fn session_cost_with_account_profiles(
+        store: &RuntimeStore,
+        agent: &str,
+        accounts: &BTreeMap<String, crate::account_policy::PublicAccount>,
+    ) -> Result<Value, CostsError> {
+        super::session_cost_with_account_profiles(store, agent, accounts).map(|cost| {
+            serde_json::from_slice(&serde_json::to_vec(&cost).expect("serialize cost"))
+                .expect("cost JSON")
+        })
+    }
 
     #[tokio::test]
     async fn reconciliation_budget_conflicts_preserve_partial_and_duplicate_inputs() {
@@ -2878,6 +2975,54 @@ mod tests {
         assert!(
             rows[0].conflicting_usage,
             "a later different usage must remain visible"
+        );
+    }
+
+    #[test]
+    fn borrowed_local_usage_matches_bounded_dedup_with_conflicting_journals() {
+        let temp = tempdir().expect("state");
+        let state = temp.path();
+        let profile = state.join("profile");
+        let project = profile.join("projects/project");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(state.join("account-servers/claude/sessions")).unwrap();
+        fs::write(
+            state.join("account-servers/claude/sessions/thread.json"),
+            json!({"nativeId":"native"}).to_string(),
+        )
+        .unwrap();
+        let row = json!({"type":"assistant","timestamp":"2026-09-01T12:00:00Z","message":{"id":"response","model":"m","usage":{"input_tokens":10,"output_tokens":2}}});
+        let mut changed = row.clone();
+        changed["message"]["usage"]["output_tokens"] = json!(7);
+        fs::write(project.join("native.jsonl"), format!("{row}\n")).unwrap();
+        fs::write(project.join("thread.jsonl"), format!("{changed}\n")).unwrap();
+        let accounts = BTreeMap::from([(
+            "claude".into(),
+            <crate::account_policy::PublicAccount as serde::Deserialize>::deserialize(
+                json!({"provider":"claude","claudeOptions":{"configDir":profile}}),
+            )
+            .unwrap(),
+        )]);
+        let members = vec![(
+            "agent".into(),
+            member(json!({"provider":"claude","accountKey":"claude","threadId":"thread"})),
+        )];
+        let fast = super::read_local_claude_usage_inner(state, &members, &accounts, None).unwrap();
+        let mut budget = super::EvidenceBudget::default();
+        let bounded =
+            super::read_local_claude_usage_inner(state, &members, &accounts, Some(&mut budget))
+                .unwrap();
+        assert_eq!(fast.len(), 1);
+        assert_eq!(bounded.len(), 1);
+        assert!(fast[0].usage.conflicting_usage);
+        assert_eq!(fast[0].account_key, bounded[0].account_key);
+        assert_eq!(fast[0].thread_id, bounded[0].thread_id);
+        assert_eq!(fast[0].usage.id, bounded[0].usage.id);
+        assert_eq!(fast[0].usage.model, bounded[0].usage.model);
+        assert_eq!(fast[0].usage.tokens, bounded[0].usage.tokens);
+        assert_eq!(
+            fast[0].usage.conflicting_usage,
+            bounded[0].usage.conflicting_usage
         );
     }
 

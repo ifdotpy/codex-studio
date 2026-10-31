@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base64::Engine;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use super::protocol::{self, Failure, HostExecError, INVALID, Manifest, Outcome, require};
-use super::{HostService, Op, clone_ffi, integer, slots, text};
+use super::{HostService, Op, State, SyncBatchItem, SyncModeItem, SyncOperation, clone_ffi, slots};
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 /// Largest hash cache of a project folder before it starts again.
@@ -25,10 +25,9 @@ const MAX_BATCH_ITEMS: usize = 1024;
 /// Longest clone failure text in a `prime` or `sync.clone` answer, in characters.
 const CLONE_ERROR_CHARS: usize = 300;
 
-fn file_mode(entry: &Value) -> Option<u32> {
-    integer(entry.get("mode"))
-        .filter(|mode| (0..=0o777).contains(mode))
-        .and_then(|mode| u32::try_from(mode).ok())
+#[derive(serde::Deserialize)]
+struct ProjectSource {
+    source: String,
 }
 
 fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
@@ -89,7 +88,7 @@ impl HostService {
     pub(crate) fn scan_slot(
         slot: &Path,
         skip: &[String],
-        cloned: Option<Map<String, Value>>,
+        cloned: Option<protocol::HashCache>,
     ) -> Outcome<Manifest> {
         let cache = slot.join("hash-cache.json");
         let mut hashes = protocol::load_hashes(&cache);
@@ -97,7 +96,7 @@ impl HostService {
             hashes.extend(cloned);
         }
         let entries = protocol::scan(&slot.join("source"), skip, Some(&mut hashes))?;
-        protocol::atomic(&cache, &Value::Object(hashes))?;
+        protocol::atomic(&cache, &hashes)?;
         Ok(entries)
     }
 
@@ -117,15 +116,11 @@ impl HostService {
         .map_err(|error| Failure::Unexpected(error.to_string()))?
     }
 
-    pub(crate) fn cache_list(value: Option<&Value>) -> Result<Vec<String>, HostExecError> {
-        let items = match value {
-            None => return Ok(Vec::new()),
-            Some(Value::Array(items)) if items.len() <= MAX_CACHES => items,
-            Some(_) => return Err(HostExecError::new(INVALID, "Invalid cache folders")),
-        };
+    pub(crate) fn cache_paths(items: &[String]) -> Result<Vec<String>, HostExecError> {
+        require(items.len() <= MAX_CACHES, "Invalid cache folders", INVALID)?;
         items
             .iter()
-            .map(|item| protocol::relative(Some(item)))
+            .map(|item| protocol::relative(Some(&protocol::text_value(item))))
             .collect()
     }
 
@@ -134,18 +129,16 @@ impl HostService {
         if !slots::project_folder_name(project_id) {
             return None;
         }
-        let value = protocol::read_json(
-            &self
-                .state
-                .join("layr-projects")
-                .join(project_id)
-                .join("project.json"),
-        )
-        .ok()?;
-        let source = value
-            .get("source")
-            .and_then(Value::as_str)
-            .filter(|source| source.starts_with('/'))?;
+        let path = self
+            .state
+            .join("layr-projects")
+            .join(project_id)
+            .join("project.json");
+        let studio_runtime_schema::json_object::JsonObject(project): studio_runtime_schema::json_object::JsonObject<ProjectSource> = serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+        let source = project.source;
+        if !source.starts_with('/') {
+            return None;
+        }
         let path = PathBuf::from(source);
         (path.is_dir() && !protocol::is_symlink(&path)).then_some(path)
     }
@@ -155,7 +148,7 @@ impl HostService {
     /// project objects through alternates and writes new objects into the slot.
     pub(crate) fn link_git_objects(&self, op: &Op, source: &Path) -> Outcome<()> {
         let git = source.join(".git");
-        let Some(project) = self.project_folder(text(op, "projectId")) else {
+        let Some(project) = self.project_folder(op.project_id.as_str()) else {
             return Ok(());
         };
         let objects = project.join(".git").join("objects");
@@ -227,7 +220,7 @@ impl HostService {
         {
             return skipped("the slot has the folder");
         }
-        let Some(folder) = self.project_folder(text(op, "projectId")) else {
+        let Some(folder) = self.project_folder(op.project_id.as_str()) else {
             return skipped("no project folder on this host");
         };
         let Ok(origin) = protocol::inside(&folder, Some(&protocol::text_value(cache)), true) else {
@@ -301,14 +294,14 @@ impl HostService {
         identity: &str,
         op: &Op,
         slot: &Path,
-        params: &Map<String, Value>,
+        caches: &[String],
     ) -> Outcome<Value> {
         require(
-            text(op, "state") == "leased",
+            op.state == State::Leased,
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
-        let caches = Self::cache_list(params.get("caches"))?;
+        let caches = Self::cache_paths(caches)?;
         let lock = self.lock_for(&format!("run\0{identity}"));
         let _held = lock.lock().await;
         let mut primed = Vec::new();
@@ -324,16 +317,16 @@ impl HostService {
         identity: &str,
         slot: &Path,
         mac_only: Vec<String>,
-        params: &Map<String, Value>,
+        after: &str,
     ) -> Outcome<Value> {
         let path = self.opdir(identity).join("held-manifest.json");
         let name = format!("{identity}\0held");
-        if studio_runtime_store::truthy(params.get("after")) {
-            return self.listing(&name, &path, params.get("after"), None);
+        if !after.is_empty() {
+            return self.listing(&name, &path, after, None);
         }
         let held = self.scan_slot_blocking(slot, mac_only).await?;
-        protocol::atomic(&path, &protocol::manifest_value(&held))?;
-        self.listing(&name, &path, Some(&protocol::text_value("")), Some(&held))
+        protocol::atomic(&path, &held)?;
+        self.listing(&name, &path, "", Some(&held))
     }
 
     /// Clone one file from the same path in the project folder on this Mac when
@@ -343,18 +336,19 @@ impl HostService {
         &self,
         op: &Op,
         slot: &Path,
-        name: Option<&Value>,
-        entry: Option<&Value>,
+        name: &str,
+        entry: &protocol::ManifestEntry,
     ) -> Outcome<Value> {
-        let entry = entry.filter(|entry| {
-            entry.get("kind").and_then(Value::as_str) == Some("file")
-                && integer(entry.get("bytes")).is_some()
-                && entry.get("sha256").is_some_and(Value::is_string)
-        });
-        let entry = entry.ok_or_else(|| HostExecError::new(INVALID, "Invalid source entry"))?;
-        let mode = file_mode(entry)
-            .ok_or_else(|| HostExecError::new(INVALID, "Invalid source file mode"))?;
-        let name = protocol::relative(name)?;
+        let protocol::ManifestEntry::File {
+            bytes,
+            mode,
+            sha256,
+        } = entry
+        else {
+            return Err(HostExecError::new(INVALID, "Invalid source entry").into());
+        };
+        require(*mode <= 0o777, "Invalid source file mode", INVALID)?;
+        let name = protocol::relative(Some(&protocol::text_value(name)))?;
         require(
             !protocol::under(&name, &Self::mac_only(op)),
             "The path stays on the host (macOnly)",
@@ -366,7 +360,7 @@ impl HostService {
             false,
         )?;
         let skipped = |reason: &str| Ok(json!({"cloned": false, "reason": reason}));
-        let Some(folder) = self.project_folder(text(op, "projectId")) else {
+        let Some(folder) = self.project_folder(op.project_id.as_str()) else {
             return skipped("no project folder on this host");
         };
         let Ok(origin) = protocol::inside(&folder, Some(&protocol::text_value(&name)), true) else {
@@ -375,26 +369,25 @@ impl HostService {
         let Ok(info) = fs::symlink_metadata(&origin) else {
             return skipped("the project folder has no such file");
         };
-        let bytes = integer(entry.get("bytes")).and_then(|bytes| u64::try_from(bytes).ok());
-        if !info.is_file() || Some(info.size()) != bytes {
+        if !info.is_file() || info.size() != *bytes {
             return skipped("the project file differs");
         }
         let cache = self
             .state
             .join("layr-projects")
-            .join(text(op, "projectId"))
+            .join(op.project_id.as_str())
             .join("host-exec-hashes.json");
         let mut hashes = protocol::load_hashes(&cache);
         if hashes.len() > PROJECT_HASHES_LIMIT {
-            hashes = Map::new();
+            hashes.clear();
         }
         let Ok((checksum, known)) =
             protocol::file_hash(&origin, &info, &name, Some(&mut hashes), protocol::now_ns())
         else {
             return skipped("the project file cannot be read");
         };
-        protocol::atomic(&cache, &Value::Object(hashes))?;
-        if entry.get("sha256").and_then(Value::as_str) != Some(checksum.as_str()) {
+        protocol::atomic(&cache, &hashes)?;
+        if sha256 != &checksum {
             return skipped("the project file differs");
         }
         self.reserve(
@@ -410,38 +403,38 @@ impl HostService {
         if let Err(error) = clone_ffi::clone_file(&origin, &path) {
             return Ok(json!({"cloned": false, "reason": clone_error(&error)}));
         }
-        set_mode(&path, mode)?;
+        set_mode(&path, *mode)?;
         let after = fs::symlink_metadata(&origin)?;
         if known && protocol::stamp(&after) == protocol::stamp(&info) {
             // The origin did not change since its known hash: the run check need not read the clone.
             let mine = fs::symlink_metadata(&path)?;
-            let mut row = protocol::stamp(&mine).to_vec();
-            row.push(Value::String(checksum));
+            let row = protocol::HashRow::new(protocol::stamp(&mine), checksum);
             self.inner()
                 .cloned
                 .entry(slot.to_path_buf())
                 .or_default()
-                .insert(name, Value::Array(row));
+                .insert(name, row);
         }
-        Ok(json!({"cloned": true, "bytes": entry.get("bytes").cloned().unwrap_or(Value::Null)}))
+        Ok(json!({"cloned": true, "bytes": bytes}))
     }
 
     pub(crate) async fn sync_clone(
         self: &Arc<Self>,
         op: &Op,
         slot: &Path,
-        params: &Map<String, Value>,
+        name: &str,
+        entry: &protocol::ManifestEntry,
     ) -> Outcome<Value> {
         require(
-            text(op, "state") == "leased",
+            op.state == State::Leased,
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
         let (service, op, slot) = (Arc::clone(self), op.clone(), slot.to_path_buf());
-        let (name, entry) = (params.get("path").cloned(), params.get("entry").cloned());
+        let (name, entry) = (name.to_owned(), entry.clone());
         studio_runtime_store::blocking_pool::spawn_blocking(
             "runtime-services/host-exec-clone",
-            move || service.clone_source(&op, &slot, name.as_ref(), entry.as_ref()),
+            move || service.clone_source(&op, &slot, &name, &entry),
         )
         .await
         .map_err(|error| Failure::Unexpected(error.to_string()))?
@@ -449,18 +442,20 @@ impl HostService {
 
     /// Change only the mode of slot files whose content the guest's entry already
     /// has. The hash cache keeps each known hash with the new change time.
-    fn set_modes(slot: &Path, mac_only: &[String], items: &[Value]) -> Outcome<()> {
+    fn set_modes(slot: &Path, mac_only: &[String], items: &[SyncModeItem]) -> Outcome<()> {
         let cache = slot.join("hash-cache.json");
         let mut hashes = protocol::load_hashes(&cache);
         for item in items {
-            let entry = item
-                .get("entry")
-                .filter(|entry| entry.is_object())
-                .ok_or_else(|| HostExecError::new(INVALID, "Invalid mode change"))?;
-            let mode = file_mode(entry)
-                .filter(|_| entry.get("kind").and_then(Value::as_str) == Some("file"))
-                .ok_or_else(|| HostExecError::new(INVALID, "Invalid mode change"))?;
-            let name = protocol::relative(item.get("path"))?;
+            let protocol::ManifestEntry::File {
+                bytes,
+                mode,
+                sha256,
+            } = &item.entry
+            else {
+                return Err(HostExecError::new(INVALID, "Invalid mode change").into());
+            };
+            require(*mode <= 0o777, "Invalid mode change", INVALID)?;
+            let name = protocol::relative(Some(&protocol::text_value(&item.path)))?;
             require(
                 !protocol::under(&name, mac_only),
                 "The path stays on the host (macOnly)",
@@ -482,40 +477,37 @@ impl HostService {
                 }
                 Err(error) => return Err(error.into()),
             };
-            let bytes = integer(entry.get("bytes")).and_then(|bytes| u64::try_from(bytes).ok());
             require(
-                info.is_file() && Some(info.size()) == bytes,
+                info.is_file() && info.size() == *bytes,
                 "The slot file differs",
                 "sync_conflict",
             )?;
             let stamp = protocol::stamp(&info);
-            let known = match hashes.get(&name) {
-                Some(Value::Array(cached)) if cached.len() == 5 && cached[..4] == stamp => {
-                    cached[4].as_str().map(str::to_owned)
-                }
-                _ => None,
-            };
+            let known = hashes
+                .get(&name)
+                .filter(|cached| cached.stamp() == stamp)
+                .map(|cached| cached.4.clone());
             let checksum = match &known {
                 Some(checksum) => checksum.clone(),
                 None => protocol::digest_file(&path)?.0,
             };
             require(
-                entry.get("sha256").and_then(Value::as_str) == Some(checksum.as_str()),
+                *sha256 == checksum,
                 "The slot file differs",
                 "sync_conflict",
             )?;
-            set_mode(&path, mode)?;
+            set_mode(&path, *mode)?;
             let after = fs::symlink_metadata(&path)?;
             let after_stamp = protocol::stamp(&after);
-            if known.is_some() && after_stamp[..3] == stamp[..3] {
-                let mut row = after_stamp.to_vec();
-                row.push(Value::String(checksum));
-                hashes.insert(name, Value::Array(row));
+            if known.is_some()
+                && (after_stamp.0, after_stamp.1, after_stamp.2) == (stamp.0, stamp.1, stamp.2)
+            {
+                hashes.insert(name, protocol::HashRow::new(after_stamp, checksum));
             } else {
                 hashes.remove(&name);
             }
         }
-        protocol::atomic(&cache, &Value::Object(hashes))?;
+        protocol::atomic(&cache, &hashes)?;
         Ok(())
     }
 
@@ -524,19 +516,19 @@ impl HostService {
         op: &Op,
         slot: &Path,
         mac_only: Vec<String>,
-        params: &Map<String, Value>,
+        items: &[SyncModeItem],
     ) -> Outcome<Value> {
         require(
-            text(op, "state") == "leased",
+            op.state == State::Leased,
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
-        let items = match params.get("items") {
-            Some(Value::Array(items)) if !items.is_empty() && items.len() <= MAX_MODE_ITEMS => {
-                items.clone()
-            }
-            _ => return Err(HostExecError::new(INVALID, "Invalid mode changes").into()),
-        };
+        require(
+            !items.is_empty() && items.len() <= MAX_MODE_ITEMS,
+            "Invalid mode changes",
+            INVALID,
+        )?;
+        let items = items.to_vec();
         let count = items.len();
         let slot = slot.to_path_buf();
         studio_runtime_store::blocking_pool::spawn_blocking(
@@ -554,27 +546,16 @@ impl HostService {
         &self,
         op: &Op,
         slot: &Path,
-        name: Option<&Value>,
-        entry: Option<&Value>,
+        name: &str,
+        entry: &protocol::ManifestEntry,
         data: Option<&[u8]>,
     ) -> Outcome<()> {
-        let path = protocol::inside(&slot.join("source"), name, false)?;
-        let name = protocol::relative(name)?;
+        let name_value = protocol::text_value(name);
+        let path = protocol::inside(&slot.join("source"), Some(&name_value), false)?;
+        let name = protocol::relative(Some(&name_value))?;
         require(
             !protocol::under(&name, &Self::mac_only(op)),
             "The path stays on the host (macOnly)",
-            INVALID,
-        )?;
-        let entry = entry
-            .filter(|entry| entry.is_object())
-            .unwrap_or(&Value::Null);
-        let kind = entry
-            .get("kind")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        require(
-            ["directory", "link", "file"].contains(&kind),
-            "Invalid source entry",
             INVALID,
         )?;
         if let Some(parent) = path.parent() {
@@ -582,33 +563,35 @@ impl HostService {
         }
         match fs::symlink_metadata(&path) {
             Ok(meta) if !meta.is_dir() => fs::remove_file(&path)?,
-            Ok(_) if kind != "directory" => fs::remove_dir_all(&path)?,
+            Ok(_) if !matches!(entry, protocol::ManifestEntry::Directory) => {
+                fs::remove_dir_all(&path)?
+            }
             _ => {}
         }
-        if kind == "directory" {
-            if !path.is_dir() {
-                fs::create_dir(&path)?;
+        let (length, mode, checksum) = match entry {
+            protocol::ManifestEntry::Directory => {
+                if !path.is_dir() {
+                    fs::create_dir(&path)?;
+                }
+                return Ok(());
             }
-            return Ok(());
-        }
-        if kind == "link" {
-            let target = entry
-                .get("target")
-                .and_then(Value::as_str)
-                .filter(|target| !target.contains('\0'))
-                .ok_or_else(|| HostExecError::new(INVALID, "Invalid link target"))?;
-            std::os::unix::fs::symlink(target, &path)?;
-            return Ok(());
-        }
+            protocol::ManifestEntry::Link { target } => {
+                require(!target.contains('\0'), "Invalid link target", INVALID)?;
+                std::os::unix::fs::symlink(target, &path)?;
+                return Ok(());
+            }
+            protocol::ManifestEntry::File {
+                bytes,
+                mode,
+                sha256,
+            } => (*bytes, *mode, sha256),
+        };
         let budget = self.budget_of(op);
-        let length = integer(entry.get("bytes"))
-            .and_then(|length| u64::try_from(length).ok())
-            .filter(|length| *length <= budget)
-            .ok_or_else(|| HostExecError::new(INVALID, "Invalid file size"))?;
+        require(length <= budget, "Invalid file size", INVALID)?;
         self.reserve(slot.parent().unwrap_or(slot), budget, length, slot)?;
         let Some(data) = data else {
             fs::File::create(&path)?;
-            let entries = self.opdir(text(op, "operationId")).join("entries");
+            let entries = self.opdir(op.operation_id.as_str()).join("entries");
             if !entries.is_dir() {
                 fs::create_dir(&entries)?;
             }
@@ -619,15 +602,13 @@ impl HostService {
             return Ok(());
         };
         use sha2::Digest;
-        let checksum = protocol::hex(sha2::Sha256::digest(data).as_slice());
+        let actual_checksum = protocol::hex(sha2::Sha256::digest(data).as_slice());
         require(
-            data.len() as u64 == length
-                && entry.get("sha256").and_then(Value::as_str) == Some(checksum.as_str()),
+            data.len() as u64 == length && *checksum == actual_checksum,
             "The source checksum differs",
             INVALID,
         )?;
-        let mode = file_mode(entry)
-            .ok_or_else(|| HostExecError::new(INVALID, "Invalid source file mode"))?;
+        require(mode <= 0o777, "Invalid source file mode", INVALID)?;
         // No fsync: the next command hashes the slot again and sends a file that a crash broke.
         fs::write(&path, data)?;
         set_mode(&path, mode)?;
@@ -638,28 +619,20 @@ impl HostService {
         &self,
         op: &Op,
         slot: &Path,
-        params: &Map<String, Value>,
+        items: &[SyncBatchItem],
     ) -> Outcome<Value> {
         require(
-            text(op, "state") == "leased",
+            op.state == State::Leased,
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
-        let items = match params.get("items") {
-            Some(Value::Array(items)) if !items.is_empty() && items.len() <= MAX_BATCH_ITEMS => {
-                items
-            }
-            _ => return Err(HostExecError::new(INVALID, "Invalid source batch").into()),
-        };
+        require(
+            !items.is_empty() && items.len() <= MAX_BATCH_ITEMS,
+            "Invalid source batch",
+            INVALID,
+        )?;
         for item in items {
-            require(
-                item.is_object() && item.get("data").is_none_or(Value::is_string),
-                "Invalid source batch",
-                INVALID,
-            )?;
-        }
-        for item in items {
-            let content = match item.get("data").and_then(Value::as_str) {
+            let content = match item.data.as_deref() {
                 Some(data) => Some(
                     BASE64
                         .decode(data)
@@ -667,33 +640,32 @@ impl HostService {
                 ),
                 None => None,
             };
-            self.place(
-                op,
-                slot,
-                item.get("path"),
-                item.get("entry"),
-                content.as_deref(),
-            )?;
+            self.place(op, slot, &item.path, &item.entry, content.as_deref())?;
         }
         Ok(json!({"entries": items.len()}))
     }
 
-    pub(crate) fn sync_entry(
+    pub(crate) fn sync_operation(
         &self,
-        method: &str,
         identity: &str,
         op: &Op,
         slot: &Path,
         mac_only: &[String],
-        params: &Map<String, Value>,
+        operation: &SyncOperation,
     ) -> Outcome<Value> {
         require(
-            text(op, "state") == "leased",
+            op.state == State::Leased,
             "The slot is no longer open for source transfer",
             INVALID,
         )?;
-        let path = protocol::inside(&slot.join("source"), params.get("path"), false)?;
-        let name = protocol::relative(params.get("path"))?;
+        let name = match operation {
+            SyncOperation::Delete(params) | SyncOperation::Commit(params) => &params.path,
+            SyncOperation::Entry(params) => &params.path,
+            SyncOperation::Chunk(params) => &params.path,
+        };
+        let name_value = protocol::text_value(name);
+        let path = protocol::inside(&slot.join("source"), Some(&name_value), false)?;
+        let name = protocol::relative(Some(&name_value))?;
         require(
             !protocol::under(&name, mac_only),
             "The path stays on the host (macOnly)",
@@ -703,8 +675,8 @@ impl HostService {
             .opdir(identity)
             .join("entries")
             .join(format!("{}.json", protocol::key(&name)));
-        match method {
-            "sync.delete" => match fs::symlink_metadata(&path) {
+        match operation {
+            SyncOperation::Delete(_) => match fs::symlink_metadata(&path) {
                 Ok(meta) if !meta.is_dir() => fs::remove_file(&path)?,
                 Ok(_)
                     if !mac_only
@@ -716,19 +688,17 @@ impl HostService {
                 }
                 _ => {}
             },
-            "sync.entry" => self.place(op, slot, params.get("path"), params.get("entry"), None)?,
-            "sync.chunk" => {
+            SyncOperation::Entry(params) => {
+                self.place(op, slot, &params.path, &params.entry, None)?
+            }
+            SyncOperation::Chunk(params) => {
                 require(
                     path.is_file() && !protocol::is_symlink(&path),
                     "The source file is not open",
                     INVALID,
                 )?;
-                let data = params
-                    .get("data")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| Failure::Unexpected("'data'".into()))?;
                 let data = BASE64
-                    .decode(data)
+                    .decode(&params.data)
                     .map_err(|error| Failure::Unexpected(error.to_string()))?;
                 require(
                     data.len() <= protocol::CHUNK,
@@ -737,12 +707,18 @@ impl HostService {
                 )?;
                 let size = fs::metadata(&path)?.len();
                 require(
-                    params.get("offset").and_then(Value::as_u64) == Some(size),
+                    params.offset == size,
                     "The source chunk offset differs",
                     INVALID,
                 )?;
-                let entry = protocol::read_json(&entry_file)?;
-                let declared = entry.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+                let entry: protocol::ManifestEntry =
+                    serde_json::from_str(&fs::read_to_string(&entry_file)?)?;
+                let protocol::ManifestEntry::File {
+                    bytes: declared, ..
+                } = entry
+                else {
+                    return Err(HostExecError::new(INVALID, "Invalid source entry").into());
+                };
                 require(
                     size + data.len() as u64 <= declared,
                     "The source exceeds its declared size",
@@ -753,26 +729,32 @@ impl HostService {
                 file.flush()?;
                 file.sync_all()?;
             }
-            "sync.commit" => {
+            SyncOperation::Commit(_) => {
                 require(
                     !protocol::is_symlink(&path),
                     "The source file is a symbolic link",
                     INVALID,
                 )?;
-                let entry = protocol::read_json(&entry_file)?;
+                let entry: protocol::ManifestEntry =
+                    serde_json::from_str(&fs::read_to_string(&entry_file)?)?;
+                let protocol::ManifestEntry::File {
+                    bytes,
+                    mode,
+                    sha256,
+                } = entry
+                else {
+                    return Err(HostExecError::new(INVALID, "Invalid source entry").into());
+                };
                 let (checksum, meta) = protocol::digest_file(&path)?;
                 require(
-                    entry.get("bytes").and_then(Value::as_u64) == Some(meta.len())
-                        && entry.get("sha256").and_then(Value::as_str) == Some(checksum.as_str()),
+                    bytes == meta.len() && sha256 == checksum,
                     "The source checksum differs",
                     INVALID,
                 )?;
-                let mode = file_mode(&entry)
-                    .ok_or_else(|| HostExecError::new(INVALID, "Invalid source file mode"))?;
+                require(mode <= 0o777, "Invalid source file mode", INVALID)?;
                 set_mode(&path, mode)?;
             }
-            _ => return Err(HostExecError::new(INVALID, "Unknown source transfer method").into()),
         }
-        Ok(json!({"path": params.get("path").cloned().unwrap_or(Value::Null)}))
+        Ok(json!({"path": name}))
     }
 }

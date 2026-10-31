@@ -1,5 +1,6 @@
 import { required } from "./helpers.ts";
 import { requestBody } from "./helpers.ts";
+import { sendReply, sentMessage } from "./send-command.ts";
 import type { Route } from "@playwright/test";
 import type { PostBody } from "../../src/api.ts";
 import type { MessageRequest } from "./helpers.ts";
@@ -69,15 +70,16 @@ test("Send session token browser", async ({
         });
       return undefined;
     });
-    await page.route("**/api/messages", (route) => {
-      const body = requestBody<import("./helpers.ts").MessageRequest>(route);
+    await page.route("**/api/commands", (route) => {
+      const body = sentMessage(route.request());
+      if (!body) return route.fallback();
       const headers = route.request().headers();
       posts.push({ body, headers });
       const current = headers["x-canvas-token"] === "new-token";
       return route.fulfill({
         status: current ? 200 : 403,
         json: current
-          ? { id: body.id, status: "delivered" }
+          ? sendReply({ id: body.id, status: "delivered" })
           : { error: "Old session token" },
       });
     });

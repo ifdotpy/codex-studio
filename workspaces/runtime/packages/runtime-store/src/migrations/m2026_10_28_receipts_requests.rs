@@ -1092,6 +1092,19 @@ fn schema(name: &str, reply: &Value) -> bool {
     studio_runtime_schema::validate(name, reply).unwrap_or(false)
 }
 
+// Frozen 2026-10-28 complaint reply schema: only id is required and the
+// four known fields may be strings or null. Unknown fields were accepted.
+fn historical_complaint_reply(reply: &Value) -> bool {
+    reply.as_object().is_some_and(|object| {
+        object.get("id").is_some_and(Value::is_string)
+            && ["author", "leadId", "status", "text"].iter().all(|field| {
+                object
+                    .get(*field)
+                    .is_none_or(|value| value.is_null() || value.is_string())
+            })
+    })
+}
+
 fn exact_reply(row: &SourceReceipt, reply: &Value) -> bool {
     if row.id.starts_with("plan-request:") || row.id.starts_with("plan:") {
         return schema("PersistedPlanRecord", reply);
@@ -1102,7 +1115,7 @@ fn exact_reply(row: &SourceReceipt, reply: &Value) -> bool {
             && reply["capabilities"].is_object();
     }
     if row.id.starts_with("user:") {
-        return schema("PersistedComplaintRecord", reply);
+        return historical_complaint_reply(reply);
     }
     if row.id.starts_with("park-request:") {
         return reply["event"].is_string() && reply["count"].is_u64() && reply["woken"].is_array();
@@ -1481,6 +1494,16 @@ mod tests {
     use rusqlite::Connection;
     const CUTOVER: i64 = 1_000_000;
     const SIGNATURE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn historical_complaint_reply_does_not_follow_current_row_schema() {
+        assert!(historical_complaint_reply(
+            &json!({"id":"c","status":"future","extra":[1]})
+        ));
+        assert!(historical_complaint_reply(&json!({"id":"c","text":null})));
+        assert!(!historical_complaint_reply(&json!({"id":"c","text":true})));
+        assert!(!historical_complaint_reply(&json!({"status":"open"})));
+    }
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct TestWorkspaceAdmission {

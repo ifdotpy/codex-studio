@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 use studio_runtime_schema::queue_command::Field;
 
 use super::protocol::{self, Failure, HostExecError, INVALID, Outcome, require};
-use super::{FEATURES, GENERATION_COUNTER, HostService, LIST_LIMIT, Op, now, string_list, text};
+use super::{FEATURES, GENERATION_COUNTER, HostService, LIST_LIMIT, Op, State, now};
 
 /// The folder names of `layr-projects/`: a letter or digit, then up to 99
 /// letters, digits, `_` or `-`.
@@ -38,6 +38,18 @@ fn folders(path: &Path) -> Outcome<Vec<PathBuf>> {
 
 fn leased(slot: &Path) -> bool {
     slot.join("lease.json").exists()
+}
+
+fn operation_path(path: &Path) -> Outcome<String> {
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| Failure::Unexpected("The host command path is not valid UTF-8".into()))
+}
+
+#[test]
+fn operation_paths_reject_non_utf8() {
+    use std::os::unix::ffi::OsStrExt;
+    assert!(operation_path(Path::new(std::ffi::OsStr::from_bytes(b"bad\xff"))).is_err());
 }
 
 // The identity fields remain opaque because lease receipts copy their exact JSON.
@@ -83,14 +95,6 @@ fn projection<T: Default + for<'de> Deserialize<'de>>(value: Value) -> T {
         T::deserialize(value).unwrap_or_default()
     } else {
         T::default()
-    }
-}
-
-fn field_value(field: Field<Value>) -> Option<Value> {
-    match field {
-        Field::Missing => None,
-        Field::Null => Some(Value::Null),
-        Field::Value(value) => Some(value),
     }
 }
 
@@ -450,58 +454,60 @@ impl HostService {
     }
 
     pub(crate) fn slot(&self, op: &Op) -> Outcome<PathBuf> {
-        let slot_id = match op.get("slotId") {
-            Some(Value::String(slot)) => slot.clone(),
-            Some(other) => other.to_string(),
-            None => return Err(Failure::Unexpected("'slotId'".into())),
-        };
+        let slot_id = &op.slot_id;
         let path = self
             .pool
-            .join(protocol::key(text(op, "projectId")))
+            .join(protocol::key(op.project_id.as_str()))
             .join(slot_id);
         let lease = path.join("lease.json");
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Lease {
+            operation_id: String,
+        }
         let owned = lease.is_file()
-            && protocol::read_json(&lease)?.get("operationId") == op.get("operationId");
+            && serde_json::from_str::<Lease>(&fs::read_to_string(lease)?)?.operation_id
+                == op.operation_id;
         require(owned, "The operation no longer owns its slot", "lease_lost")?;
         Ok(path)
     }
 
-    pub(crate) async fn acquire(self: &Arc<Self>, params: &Map<String, Value>) -> Outcome<Op> {
-        let identity = params
-            .get("operationId")
-            .ok_or_else(|| Failure::Unexpected("'operationId'".into()))?;
-        let identity = identity
-            .as_str()
-            .filter(|identity| !identity.is_empty() && identity.chars().count() <= 128)
-            .ok_or_else(|| HostExecError::new(INVALID, "Invalid operation ID"))?
-            .to_owned();
-        for field in ["projectId", "agentId", "linePath"] {
+    pub(crate) async fn acquire(self: &Arc<Self>, params: &super::AcquireParams) -> Outcome<Op> {
+        let identity = &params.operation_id;
+        require(
+            !identity.is_empty() && identity.chars().count() <= 128,
+            "Invalid operation ID",
+            INVALID,
+        )?;
+        for (field, value) in [
+            ("projectId", &params.project_id),
+            ("agentId", &params.agent_id),
+            ("linePath", &params.line_path),
+        ] {
             require(
-                params
-                    .get(field)
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| !value.is_empty() && value.chars().count() <= 4096),
+                !value.is_empty() && value.chars().count() <= 4096,
                 &format!("Missing host command context: {field}"),
                 INVALID,
             )?;
         }
-        let owner = match params.get("owner") {
-            None | Some(Value::Null) => None,
-            Some(Value::String(owner)) if !owner.is_empty() && owner.chars().count() <= 128 => {
-                Some(owner.clone())
-            }
-            Some(_) => return Err(HostExecError::new(INVALID, "Invalid guest owner").into()),
-        };
-        let project_id = text(params, "projectId").to_owned();
-        let settings = self.settings(&project_id)?;
-        let project = self.pool.join(protocol::key(&project_id));
+        require(
+            params
+                .owner
+                .as_ref()
+                .is_none_or(|owner| !owner.is_empty() && owner.chars().count() <= 128),
+            "Invalid guest owner",
+            INVALID,
+        )?;
+        let project_id = &params.project_id;
+        let settings = self.settings(project_id)?;
+        let project = self.pool.join(protocol::key(project_id));
         let lock = self.lock_for(&project.display().to_string());
         let _held = lock.lock().await;
         if !project.is_dir() {
             super::private_dir(&project)?;
         }
         require(
-            !self.opdir(&identity).exists(),
+            !self.opdir(identity).exists(),
             "The operation already exists",
             "outcome_unknown",
         )?;
@@ -551,47 +557,67 @@ impl HostService {
                 super::private_dir(&folder)?;
             }
         }
-        let directory = self.opdir(&identity);
+        let directory = self.opdir(identity);
         super::private_dirs(directory.parent().unwrap_or(&self.state))?;
         super::private_dir(&directory)?;
-        let artifact_dir = slot.join("artifacts").join(protocol::key(&identity));
+        let artifact_dir = slot.join("artifacts").join(protocol::key(identity));
         super::private_dirs(&artifact_dir)?;
         std::os::unix::fs::symlink(&artifact_dir, directory.join("artifacts"))?;
-        let meta: SlotMetadata = projection(protocol::read_json(&slot.join("slot.json"))?);
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Generation {
+            #[serde(default)]
+            generation: Field<String>,
+            #[serde(default)]
+            generation_number: Field<u64>,
+        }
+        let meta: Generation = serde_json::from_str(&fs::read_to_string(slot.join("slot.json"))?)?;
         let slot_name = slot
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default()
             .to_owned();
-        let mut op = Op::new();
-        op.insert("operationId".into(), json!(identity));
-        for field in ["projectId", "agentId", "linePath"] {
-            op.insert(
-                field.into(),
-                params.get(field).cloned().unwrap_or(Value::Null),
-            );
-        }
-        op.insert("slotId".into(), json!(slot_name));
-        op.insert(
-            "generation".into(),
-            field_value(meta.generation).unwrap_or(Value::Null),
-        );
-        if let Some(number) = field_value(meta.generation_number) {
-            op.insert("generationNumber".into(), number);
-        }
-        op.insert("state".into(), json!("leased"));
-        op.insert("createdAt".into(), json!(now()));
-        op.insert("slotPath".into(), json!(slot.join("source")));
-        op.insert("derivedData".into(), json!(slot.join("DerivedData")));
-        op.insert("packageCache".into(), json!(slot.join("packages")));
-        op.insert("artifactsPath".into(), json!(directory.join("artifacts")));
-        op.insert("diskBudget".into(), json!(settings.disk_budget));
-        op.insert("macOnly".into(), json!(settings.mac_only));
-        op.insert("features".into(), json!(FEATURES));
-        if let Some(owner) = owner {
-            op.insert("owner".into(), json!(owner));
-        }
-        self.save(&identity, &op)?;
+        let op = Op {
+            operation_id: identity.clone(),
+            project_id: params.project_id.clone(),
+            agent_id: params.agent_id.clone(),
+            line_path: params.line_path.clone(),
+            slot_id: slot_name,
+            generation: match meta.generation {
+                Field::Missing => Field::Null,
+                other @ (Field::Null | Field::Value(_)) => other,
+            },
+            generation_number: meta.generation_number,
+            state: State::Leased,
+            created_at: now(),
+            slot_path: operation_path(&slot.join("source"))?,
+            derived_data: operation_path(&slot.join("DerivedData"))?,
+            package_cache: operation_path(&slot.join("packages"))?,
+            artifacts_path: operation_path(&directory.join("artifacts"))?,
+            disk_budget: settings.disk_budget,
+            mac_only: settings.mac_only,
+            features: FEATURES.iter().map(|item| (*item).to_owned()).collect(),
+            owner: params.owner.clone(),
+            reason: None,
+            error: None,
+            pre_run_error: None,
+            abandoned: None,
+            collected: None,
+            finished_at: None,
+            started_at: None,
+            exited_at: None,
+            caches: None,
+            layr_state: None,
+            layr_tree: None,
+            pid: None,
+            cancel_requested: None,
+            orphaned: None,
+            exit_code: Field::Missing,
+            changed_paths: None,
+            artifact_files: None,
+            name_conflicts: None,
+        };
+        self.save(identity, &op)?;
         protocol::atomic(&slot.join("lease.json"), &json!({"operationId": identity}))?;
         Ok(op)
     }
@@ -601,31 +627,29 @@ impl HostService {
         identity: &str,
         mut op: Op,
         slot: &Path,
-        params: &Map<String, Value>,
+        params: &super::ReleaseParams,
     ) -> Outcome<Op> {
-        let state = text(&op, "state");
+        let state = op.state;
         require(
-            state == "leased" || state == "exited",
+            matches!(state, State::Leased | State::Exited),
             "A running or unknown command retains its lease",
             INVALID,
         )?;
-        let failure = params
-            .get("preRunError")
-            .filter(|failure| !failure.is_null());
+        let failure = params.pre_run_error.as_ref();
         if let Some(failure) = failure {
             require(
-                text(&op, "state") == "leased" && failure.is_object(),
+                op.state == State::Leased,
                 "Only a failed transfer can release an unstarted command",
                 INVALID,
             )?;
-            op.insert("reason".into(), json!("sync_failed"));
-            op.insert("preRunError".into(), failure.clone());
+            op.reason = Some("sync_failed".into());
+            op.pre_run_error = Some(failure.clone());
         }
         let mut abandoned = None;
-        if studio_runtime_store::truthy(params.get("abandon")) {
+        if params.abandon {
             // The agent gives up an operation that no guest request owns any more.
             require(
-                !(text(&op, "state") == "leased" && self.is_locked(&format!("run\0{identity}"))),
+                !(op.state == State::Leased && self.is_locked(&format!("run\0{identity}"))),
                 "The command is starting; release it after it exits",
                 "busy",
             )?;
@@ -635,7 +659,7 @@ impl HostService {
             identity,
             &mut op,
             slot,
-            studio_runtime_store::truthy(params.get("collected")),
+            params.collected,
             failure.is_some(),
             abandoned,
         )?;
@@ -655,22 +679,26 @@ impl HostService {
         abandoned: Option<&str>,
     ) -> Outcome<()> {
         if let Some(abandoned) = abandoned {
-            op.insert("abandoned".into(), json!(abandoned));
+            op.abandoned = Some(abandoned.into());
             new_generation = true;
         }
-        op.insert("state".into(), json!("released"));
-        op.insert("collected".into(), json!(collected));
-        op.insert("finishedAt".into(), json!(now()));
+        op.state = State::Released;
+        op.collected = Some(collected);
+        op.finished_at = Some(now());
         self.save(identity, op)?;
         let project = slot.parent().unwrap_or(slot);
         // Failed guest staging can stay active after a lost broker response. Never reuse it.
         let mut generation = if new_generation {
             Self::new_generation(project)?
         } else {
-            ["generation", "generationNumber"]
-                .into_iter()
-                .filter_map(|field| op.get(field).map(|value| (field.to_owned(), value.clone())))
-                .collect()
+            let mut generation = Map::new();
+            if !op.generation.is_missing() {
+                generation.insert("generation".into(), json!(op.generation));
+            }
+            if !op.generation_number.is_missing() {
+                generation.insert("generationNumber".into(), json!(op.generation_number));
+            }
+            generation
         };
         generation.insert("usedAt".into(), json!(now()));
         protocol::atomic(&slot.join("slot.json"), &Value::Object(generation))?;
@@ -698,7 +726,7 @@ impl HostService {
             let cache = slot.join("hash-cache.json");
             let mut hashes = protocol::load_hashes(&cache);
             hashes.extend(pending);
-            protocol::atomic(&cache, &Value::Object(hashes))?;
+            protocol::atomic(&cache, &hashes)?;
         }
         self.evict(project, self.budget_of(op), 0, None)?;
         Ok(())
@@ -707,7 +735,7 @@ impl HostService {
     /// A command whose guest owner is gone never starts: nobody would collect its result.
     pub(crate) fn refuse_orphan(&self, identity: &str) -> Outcome<()> {
         let mut op = self.load(identity)?;
-        if studio_runtime_store::truthy(op.get("orphaned")) && text(&op, "state") == "leased" {
+        if op.orphaned.unwrap_or(false) && op.state == State::Leased {
             let slot = self.slot(&op)?;
             self.release_operation(
                 identity,
@@ -762,11 +790,12 @@ impl HostService {
 
     /// The newest operations of one agent, the ones that hold a Mac slot first.
     /// The agent finds an operation here when it lost the result that named it.
-    pub(crate) fn operations(&self, agent: Option<&Value>) -> Outcome<Value> {
-        let agent = agent
-            .and_then(Value::as_str)
-            .filter(|agent| !agent.is_empty())
-            .ok_or_else(|| HostExecError::new(INVALID, "Missing host command context: agentId"))?;
+    pub(crate) fn operations(&self, agent: &str) -> Outcome<Value> {
+        require(
+            !agent.is_empty(),
+            "Missing host command context: agentId",
+            INVALID,
+        )?;
         let leased: std::collections::HashSet<String> = self
             .leases()
             .into_iter()
@@ -780,37 +809,38 @@ impl HostService {
         for entry in listing {
             let Some(value) = fs::read_to_string(entry.path().join("status.json"))
                 .ok()
-                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .and_then(|text| serde_json::from_str::<Op>(&text).ok())
             else {
                 continue;
             };
-            let Some(identity) = value.get("operationId").and_then(Value::as_str) else {
-                continue;
-            };
-            if value.get("agentId").and_then(Value::as_str) != Some(agent) {
+            let identity = &value.operation_id;
+            if value.agent_id != agent {
                 continue;
             }
             let op = self.load(identity)?;
             let mut row = Map::new();
             row.insert("operationId".into(), json!(identity));
             row.insert("leased".into(), json!(leased.contains(identity)));
-            for field in [
-                "state",
-                "reason",
-                "exitCode",
-                "createdAt",
-                "startedAt",
-                "exitedAt",
-                "finishedAt",
-                "slotId",
-                "collected",
-                "abandoned",
-                "orphaned",
-            ] {
-                if let Some(value) = op.get(field) {
-                    row.insert(field.into(), value.clone());
-                }
+            row.insert("state".into(), json!(op.state));
+            row.insert("createdAt".into(), json!(op.created_at));
+            row.insert("slotId".into(), json!(op.slot_id));
+            macro_rules! optional {
+                ($name:literal, $value:expr) => {
+                    if let Some(value) = $value {
+                        row.insert($name.into(), json!(value));
+                    }
+                };
             }
+            optional!("reason", op.reason);
+            if !op.exit_code.is_missing() {
+                row.insert("exitCode".into(), json!(op.exit_code));
+            }
+            optional!("startedAt", op.started_at);
+            optional!("exitedAt", op.exited_at);
+            optional!("finishedAt", op.finished_at);
+            optional!("collected", op.collected);
+            optional!("abandoned", op.abandoned);
+            optional!("orphaned", op.orphaned);
             rows.push(row);
         }
         rows.sort_by(|left, right| {
@@ -831,11 +861,12 @@ impl HostService {
     /// service at a time, and its requests die with its process. Exited operations
     /// of an earlier owner free their slots now. A running command keeps its slot
     /// until it exits. An unknown outcome of a lost host owner keeps its slot.
-    pub(crate) fn recover(&self, owner: Option<&Value>) -> Outcome<Value> {
-        let owner = owner
-            .and_then(Value::as_str)
-            .filter(|owner| !owner.is_empty() && owner.chars().count() <= 128)
-            .ok_or_else(|| HostExecError::new(INVALID, "Invalid guest owner"))?;
+    pub(crate) fn recover(&self, owner: &str) -> Outcome<Value> {
+        require(
+            !owner.is_empty() && owner.chars().count() <= 128,
+            "Invalid guest owner",
+            INVALID,
+        )?;
         let (mut released, mut orphaned, mut kept, mut released_slots) =
             (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for (identity, slot) in self.leases() {
@@ -847,12 +878,12 @@ impl HostService {
                 }
                 Err(error) => return Err(error),
             };
-            if op.get("owner").and_then(Value::as_str) == Some(owner) {
+            if op.owner.as_deref() == Some(owner) {
                 continue;
             }
-            let state = text(&op, "state").to_owned();
+            let state = op.state;
             let starting = self.is_locked(&format!("run\0{identity}"));
-            if state == "exited" || (state == "leased" && !starting) {
+            if state == State::Exited || (state == State::Leased && !starting) {
                 self.release_operation(
                     &identity,
                     &mut op,
@@ -863,20 +894,20 @@ impl HostService {
                 )?;
                 released.push(identity);
                 // The guest forgets the guest slot lease of the old staging (host_exec.py, recover).
-                let fields: Map<String, Value> = [
-                    "operationId",
-                    "agentId",
-                    "slotId",
-                    "generation",
-                    "generationNumber",
-                ]
-                .into_iter()
-                .filter_map(|field| op.get(field).map(|value| (field.to_owned(), value.clone())))
-                .collect();
+                let mut fields = Map::new();
+                fields.insert("operationId".into(), json!(op.operation_id));
+                fields.insert("agentId".into(), json!(op.agent_id));
+                fields.insert("slotId".into(), json!(op.slot_id));
+                if !op.generation.is_missing() {
+                    fields.insert("generation".into(), json!(op.generation));
+                }
+                if !op.generation_number.is_missing() {
+                    fields.insert("generationNumber".into(), json!(op.generation_number));
+                }
                 released_slots.push(Value::Object(fields));
-            } else if state == "running" || state == "leased" {
+            } else if matches!(state, State::Running | State::Leased) {
                 // The command or its start finishes first; then the slot is free.
-                op.insert("orphaned".into(), json!(true));
+                op.orphaned = Some(true);
                 self.save(&identity, &op)?;
                 orphaned.push(identity);
             } else {
@@ -889,6 +920,6 @@ impl HostService {
     }
 
     pub(crate) fn mac_only(op: &Op) -> Vec<String> {
-        string_list(op, "macOnly")
+        op.mac_only.clone()
     }
 }

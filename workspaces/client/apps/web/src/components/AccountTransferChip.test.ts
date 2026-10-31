@@ -39,12 +39,11 @@ test("shows one short line for a blocked team move and keeps the reason for the 
   expect(markup).not.toContain("History transfer in progress");
 });
 
-test("shows the remaining count while a move runs and nothing after it ends", () => {
-  expect(
-    render({ id: "t-2", status: "pending", total: 3, completed: 1 }),
-  ).toContain("Moving account · 2 left");
-  expect(
-    render({ id: "t-3", status: "completed", total: 3, completed: 3 }),
-  ).not.toContain("account-transfer-chip");
-  expect(render(undefined)).not.toContain("account-transfer-chip");
+test("shows nothing while a move runs or after it ends", () => {
+  for (const transfer of [
+    { id: "t-2", status: "pending", total: 3, completed: 1 },
+    { id: "t-3", status: "completed", total: 3, completed: 3 },
+    undefined,
+  ] as const)
+    expect(render(transfer)).not.toContain("account-transfer-chip");
 });

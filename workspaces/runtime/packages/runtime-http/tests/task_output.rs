@@ -42,8 +42,8 @@ async fn authorized_task_output_read_and_projection() {
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
     let cwd = workspace.path().to_string_lossy().into_owned();
     store.transaction_with(move |tx| {
-        let owner = json!({"accountKey":"default","id":"owner","rootId":"owner","epoch":1,"status":"idle","provider":"claude","cwd":cwd});
-        let task = json!({"id":"task","agent":"owner","itemId":"task:native","kind":"tool","status":"running","created":1,"outputFile":"out.txt"});
+        let owner = json!({"compactions":0,"accountKey":"default","id":"owner","rootId":"owner","epoch":1,"status":"idle","provider":"claude","cwd":cwd});
+        let task = json!({"id":"task","agent":"owner","itemId":"task:native","kind":"tool","type":"mcpToolCall","name":"tool","turnId":"turn","status":"running","created":1,"outputFile":"out.txt"});
         tx.execute("INSERT INTO runtime_agents(id,record) VALUES('owner',?)",[owner.to_string()])?;
         tx.execute("INSERT INTO runtime_tasks(id,record) VALUES('task',?)",[task.to_string()])?;
         Ok::<_, StoreError>(())

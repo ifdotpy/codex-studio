@@ -502,7 +502,7 @@
       "title": "Worktreeready"
     }
   },
-  "required": ["id", "rootId", "epoch", "status"],
+  "required": ["id", "rootId", "epoch", "status", "compactions"],
   "title": "PersistedAgentRecord",
   "type": "object"
 }

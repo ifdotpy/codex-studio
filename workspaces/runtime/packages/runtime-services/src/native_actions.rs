@@ -523,14 +523,7 @@ pub fn reserve(
     Ok(Snapshot { agent, ..checked })
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct NativeRequest {
-    pub root_request_id: String,
-    pub admitted_request: Option<AdmittedRequest>,
-    pub ticket: ProviderTicket,
-    pub method: String,
-    pub params: Value,
-}
+pub use studio_runtime_schema::start_attempt::NativeRequest;
 /// Reserve the exact provider obligation in the transaction changing its owner.
 /// A saved final token is reused without admitting another provider attempt.
 pub fn reserve_provider_intent(
@@ -1632,7 +1625,7 @@ impl CommandSnapshot {
         Ok(format!(
             "Use your native write_stdin tool for session {}. Send exactly this JSON string as chars: {}.",
             self.process,
-            crate::event_write::python_json(&json!(text))
+            serde_json::to_string(text)?
         ))
     }
     pub fn listed(&self, page: &Value) -> Result<bool> {
@@ -1699,9 +1692,10 @@ pub fn replay_command(
     action: CommandAction<'_>,
 ) -> Result<Option<CommandReply>> {
     use studio_runtime_store::{AgentId, TaskId, TaskRepository};
-    if TaskRepository::get(connection, &TaskId::from(task_id))?
-        .is_none_or(|task| task.agent() != Some(agent_id) || task.kind() != Some("command"))
-        || AgentRepository::get(connection, &AgentId::from(agent_id))?.is_none()
+    if TaskRepository::get(connection, &TaskId::from(task_id))?.is_none_or(|task| {
+        task.agent() != agent_id
+            || task.kind() != studio_runtime_schema::task_record::TaskKind::Command
+    }) || AgentRepository::get(connection, &AgentId::from(agent_id))?.is_none()
     {
         return Err(NativeError::Changed);
     }

@@ -91,45 +91,41 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
                 .ok_or(crate::managed_host_tools::Error::Invalid(
                     "Message must have text",
                 ))?;
-            let result = crate::coordination::send_followup(
-                tx,
-                crate::coordination::AgentFollowup {
-                    sender_id: snapshot.context().agent.as_str(),
-                    sender_epoch: self.context.epoch as i64,
-                    recipient_id: target,
-                    id: request_id,
-                    text,
-                    delivery: studio_runtime_schema::delivery::DeliveryMoment::for_event(
-                        "followup",
-                        text,
-                        Some(args),
-                    )
-                    .map_err(|_| {
-                        crate::managed_host_tools::Error::Invalid("Invalid delivery moment")
-                    })?,
-                    now,
+            let request = crate::commands::agent_request(
+                snapshot.context().agent.as_str(),
+                request_id,
+                studio_runtime_schema::command::Command::Send {
+                    target: target.to_owned(),
+                    body: studio_runtime_schema::command::SendBody {
+                        text: text.to_owned(),
+                        assets: Vec::new(),
+                        delivery: Some(
+                            studio_runtime_schema::delivery::DeliveryMoment::for_event(
+                                "followup",
+                                text,
+                                Some(args),
+                            )
+                            .map_err(|_| {
+                                crate::managed_host_tools::Error::Invalid("Invalid delivery moment")
+                            })?,
+                        ),
+                    },
                 },
+            );
+            let principal = crate::principal::Principal::Agent {
+                id: snapshot.context().agent.as_str().to_owned(),
+                epoch: self.context.epoch,
+            };
+            let now_ms = (now * 1000.0) as i64;
+            let (_, result) = crate::commands::execute_agent_send(
+                tx,
+                &principal,
+                &request,
+                now_ms,
+                now,
                 &self.admission,
             )
-            .map_err(|error| match error {
-                crate::coordination::CoordinationError::RequestResult(error) => {
-                    crate::managed_host_tools::Error::Store(
-                        studio_runtime_store::StoreError::RequestResult(error),
-                    )
-                }
-                crate::coordination::CoordinationError::Store(error) => {
-                    crate::managed_host_tools::Error::Store(error)
-                }
-                crate::coordination::CoordinationError::RequiresDependency(name) => {
-                    crate::managed_host_tools::Error::Unavailable(name)
-                }
-                crate::coordination::CoordinationError::InvalidRequest(_)
-                | crate::coordination::CoordinationError::Conflict(_)
-                | crate::coordination::CoordinationError::InvalidStored { .. }
-                | crate::coordination::CoordinationError::AdmissionDenied(_) => {
-                    crate::managed_host_tools::Error::Invalid("Agent input was refused")
-                }
-            })?;
+            .map_err(followup_error)?;
             return Ok(crate::managed_host_tools::OperationResult {
                 signals: if result.event_inserted {
                     vec![crate::managed_host_tools::WakeSignal::new(
@@ -147,6 +143,30 @@ impl crate::managed_host_tools::SendPort for ProductionPorts {
         let value =
             messages::send(tx, &snapshot, &chat_args, request_id, now).map_err(callback_refusal)?;
         Ok(crate::managed_host_tools::OperationResult::raw(value))
+    }
+}
+
+fn followup_error(error: crate::commands::CommandError) -> crate::managed_host_tools::Error {
+    use crate::commands::CommandError;
+    use crate::coordination::CoordinationError;
+    use crate::managed_host_tools::Error;
+    match error {
+        CommandError::Coordination(CoordinationError::RequestResult(error))
+        | CommandError::RequestResult(error) => {
+            Error::Store(studio_runtime_store::StoreError::RequestResult(error))
+        }
+        CommandError::Coordination(CoordinationError::Store(error))
+        | CommandError::Store(error) => Error::Store(error),
+        CommandError::Coordination(CoordinationError::RequiresDependency(name)) => {
+            Error::Unavailable(name)
+        }
+        CommandError::Forbidden
+        | CommandError::TooOld
+        | CommandError::Invalid(_)
+        | CommandError::Conflict(_)
+        | CommandError::NotFound
+        | CommandError::Lifecycle(_)
+        | CommandError::Coordination(_) => Error::Invalid("Agent input was refused"),
     }
 }
 
@@ -186,18 +206,7 @@ fn callback_refusal(error: CallbackError) -> crate::managed_host_tools::Error {
     }
 }
 
-fn is_descendant(
-    tx: &Transaction<'_>,
-    sender_id: &str,
-    target_id: &str,
-) -> Result<bool, crate::managed_host_tools::Error> {
-    use crate::managed_host_tools::{AgentAncestry, agent_ancestry};
-    match agent_ancestry(tx, sender_id, target_id)? {
-        AgentAncestry::Descendant => Ok(true),
-        AgentAncestry::Unrelated => Ok(false),
-        AgentAncestry::Cycle => Err(crate::managed_host_tools::Error::Stale),
-    }
-}
+use crate::managed_host_tools::is_descendant;
 
 impl crate::managed_host_tools::ChildCreationPort for ProductionPorts {
     type Prepared = ();
@@ -567,7 +576,7 @@ impl crate::native_review::ReviewCreator for UnavailableReviewCreator {
         &self,
         _: &Transaction<'_>,
         _: &Value,
-        _: &Value,
+        _: &studio_runtime_schema::creation_intent::CreationIntent,
     ) -> crate::native_actions::Result<Value> {
         Err(crate::native_actions::NativeError::Unavailable(
             "agent-create/worker-driver",

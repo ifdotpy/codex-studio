@@ -1,6 +1,6 @@
 import type { FixtureResourceChange } from "./helpers.ts";
-import type { PostBody } from "../../src/apiTypes.ts";
-import { fixturePostBody } from "./helpers.ts";
+import { sendReply, sentMessage } from "../messages/send-command.ts";
+import type { SendMessageBody } from "../../src/commands.ts";
 import type {} from "./sync-recovery-browser.fixture.tsx";
 import { fixtureOrigin } from "./helpers.ts";
 import {
@@ -39,7 +39,7 @@ test("Sync recovery browser", async ({
       streamRevision = 0,
       badReceipt = true;
     let workspaceId = "c".repeat(32);
-    const sends: PostBody<"/api/messages">[] = [];
+    const sends: SendMessageBody[] = [];
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -111,16 +111,15 @@ test("Sync recovery browser", async ({
             },
       });
     });
-    await page.route("**/api/messages", (route) => {
-      const body = fixturePostBody<"/api/messages">(
-        route.request().postDataJSON(),
-      );
+    await page.route("**/api/commands", (route) => {
+      const body = sentMessage(route.request());
+      if (!body) return route.fallback();
       sends.push(body);
       return route.fulfill({
-        json: {
+        json: sendReply({
           id: badReceipt ? "wrong-message" : body.id,
           status: "accepted",
-        },
+        }),
       });
     });
     await page.route("**/hang", () => {});

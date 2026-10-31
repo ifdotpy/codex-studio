@@ -83,6 +83,30 @@ fn read_record_for_receipt(receipt: &SessionReceipt) -> (Value, Option<Value>) {
     )
 }
 
+/// Keep a large provider reply out of the transfer record. The record keeps
+/// the receipt and the reply's digest; the caller stores the returned bytes as
+/// a payload blob under that digest.
+fn spill_reply(record: &mut Value) -> Option<(String, Vec<u8>)> {
+    let bytes = serde_json::to_vec(record.pointer("/result/value")?).ok()?;
+    if bytes.len() <= studio_runtime_store::MAX_INLINE_READ_REPLY_BYTES {
+        return None;
+    }
+    let sha256 = studio_runtime_store::sha256_hex(&bytes);
+    let result = record["result"].as_object_mut()?;
+    result.remove("value");
+    result.insert(
+        "valueBlob".into(),
+        json!({"sha256":sha256,"size":bytes.len()}),
+    );
+    Some((sha256, bytes))
+}
+
+/// The reply body that `provider_read_receipt` leaves out of the record.
+pub(crate) fn spilled_reply(receipt: &SessionReceipt) -> Option<(String, Vec<u8>)> {
+    let (raw, result) = read_record_for_receipt(receipt);
+    spill_reply(&mut json!({"receipt":raw,"result":result}))
+}
+
 fn receipt_ticket(receipt: &SessionReceipt) -> Option<Value> {
     receipt.ticket().map(|ticket| json!({"generation":ticket.generation,"id":ticket.id,"method":ticket.method.as_str()}))
 }
@@ -802,7 +826,8 @@ impl Snapshot {
             || serde_json::from_value::<studio_runtime_providers::RequestId>(ticket["id"].clone())
                 .is_err()
             || result["result"]["kind"] != "reply"
-            || result["result"].get("value").is_none()
+            || (result["result"].get("value").is_none()
+                && result["result"].get("valueBlob").is_none())
         {
             return Err(TransferError::Refused(
                 "The Written read receipt does not match its original intent",
@@ -914,7 +939,9 @@ impl Snapshot {
         let scope = serde_json::to_value(&receipt.scope)
             .map_err(|_| TransferError::Refused("Invalid provider scope"))?;
         let (raw_receipt, result) = read_record_for_receipt(receipt);
-        let record = json!({"receipt":raw_receipt,"result":result,"certainty":certainty.as_str()});
+        let mut record =
+            json!({"receipt":raw_receipt,"result":result,"certainty":certainty.as_str()});
+        spill_reply(&mut record);
         if existing == Some(&record) {
             return Ok(self.decision(self.operation.clone(), self.agents.clone(), vec![]));
         }
@@ -1433,20 +1460,6 @@ pub(crate) fn enroll(
             ],
         )?;
     }
-    let mut defaults = value
-        .get("workerDefaults")
-        .and_then(Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    if provider != target_provider {
-        defaults.insert("model".into(), Value::Null);
-        defaults.insert("effort".into(), json!("medium"));
-        defaults.insert("fastMode".into(), json!(false));
-        defaults.insert("daybreakEnabled".into(), json!(false));
-        defaults.insert("cyberAccessProgram".into(), json!("standard"));
-    }
-    defaults.insert("accountKey".into(), json!(target));
-    value["workerDefaults"] = Value::Object(defaults);
     value["pendingSettingsAccountKey"] = if value
         .get("pendingSettings")
         .is_some_and(|settings| !settings.is_null())
@@ -1920,7 +1933,7 @@ mod provider_receipt_tests {
             "members":{"agent":{"phase":"lazy", "sourceAccountKey":"source",
                 "sourceThreadId":"source-thread", "lazy":true}}
         });
-        let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+        let agent = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"agent", "rootId":"agent", "epoch":7, "status":"idle",
             "accountKey":"target", "accountTransferId":"transfer",
             "lazyAccountTransfer":{"id":"transfer"}, "model":"model-a"
@@ -2000,7 +2013,7 @@ mod provider_receipt_tests {
             "targetProvider":"claude", "status":"pending", "created":1.0, "scope":"team",
             "members":{"agent":member}
         });
-        let agent = json!({
+        let agent = json!({"compactions":0,
             "id":"agent", "rootId":"agent", "epoch":7, "status":"queued", "provider":"claude",
             "accountKey":"target", "accountTransferId":"transfer", "threadId":"source-thread",
             "executionSettingsAccountKey":"source", "model":"model-a",
@@ -2215,6 +2228,53 @@ mod provider_receipt_tests {
                 .is_none()
         );
         assert!(recorded.adopt_receipt("agent").is_err());
+    }
+
+    #[test]
+    fn history_pages_beyond_the_record_limit_are_kept_out_of_the_record() {
+        let mut current = after(
+            snapshot()
+                .begin_read("agent")
+                .expect("test fixture operation succeeds"),
+        );
+        let scope = json!({"account":"source","connection":"conn","generation":4});
+        let page = json!({"data":["x".repeat(1024 * 1024)],"nextCursor":"next"});
+        for n in 0..10 {
+            let op_id = format!("account-transfer:transfer:agent:turns:{n}");
+            current = after(
+                current
+                    .provider_read_intent(
+                        "agent",
+                        &op_id,
+                        "source",
+                        scope.clone(),
+                        "thread/turns/list",
+                        json!({"threadId":"t","limit":20}),
+                    )
+                    .expect("page intent"),
+            );
+            let receipt = json!({"operation":op_id,"scope":scope,
+                "certainty":"written","ticket":{"generation":4,"id":format!("codex:{n}"),"method":"thread/turns/list"}});
+            let decision = current
+                .provider_read_receipt(
+                    "agent",
+                    &op_id,
+                    &test_session(receipt, Some(page.clone()), RequestCertainty::Written),
+                )
+                .expect("page receipt");
+            let encoded = decision.encoded().expect("record stays under the limit");
+            assert!(encoded.len() < MAX_RECORD_BYTES);
+            current = after(decision);
+        }
+        let replay = current
+            .written_read_replay(
+                "agent",
+                &json!({"operation":"account-transfer:transfer:agent:turns:3","account":"source",
+                    "scope":scope,"method":"thread/turns/list","params":{"threadId":"t","limit":20}}),
+            )
+            .expect("exact replay")
+            .expect("written page replays");
+        assert!(replay["result"]["valueBlob"]["size"].as_u64().unwrap() > 1024 * 1024);
     }
 
     #[test]

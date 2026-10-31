@@ -2804,7 +2804,7 @@ mod voice_composition_tests {
         store.transaction(move |tx| {
             let cutover = RequestResults::expired_before_ms(tx).map_err(studio_runtime_store::StoreError::from)?;
             assert!(cutover > identity.issued_ms(), "migration installs the admission watermark");
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('expired-agent',?1)", [json!({"id":"expired-agent","rootId":"expired-agent","epoch":3,"status":"idle","isLead":true,"provider":"codex","threadId":"voice-thread","accountKey":"voice-account"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('expired-agent',?1)", [json!({"compactions":0,"id":"expired-agent","rootId":"expired-agent","epoch":3,"status":"idle","isLead":true,"provider":"codex","threadId":"voice-thread","accountKey":"voice-account"}).to_string()])?;
             // A saved row with a different signature must not mask the expiry refusal.
             tx.execute("INSERT INTO request_results(id,signature,result,created) VALUES(?1,'original-import-signature','{}',?2)", rusqlite::params![identity.id(),cutover])?;
             Ok(())
@@ -3143,7 +3143,7 @@ mod voice_composition_tests {
     async fn composed_runtime_server_routes_voice_through_the_shared_account_session() {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
-        let agent_record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+        let agent_record = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"voice-composed-agent", "rootId":"voice-composed-agent", "epoch":3,
             "status":"idle", "isLead":true, "threadId":"voice-thread", "accountKey":"voice-account"
         })

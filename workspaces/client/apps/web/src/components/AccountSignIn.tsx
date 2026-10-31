@@ -1,5 +1,8 @@
 import { randomUUID } from "../uuid";
-import { useServerApi } from "../servers/ServerServicesContext";
+import {
+  useServerApi,
+  useServerResources,
+} from "../servers/ServerServicesContext";
 import ErrorDescription from "./ErrorDescription";
 import { Button } from "@mantine/core";
 import { Check, Copy, ExternalLink, Plus, RefreshCw, X } from "lucide-react";
@@ -7,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { errorText, type PostResult } from "../api";
 import type { Account, useAccounts } from "./Accounts";
 import { copyText } from "../clipboard/clipboard";
+import { subscribeProgress } from "../sync/subscriptions/progress";
 
 export type LoginReceipt = PostResult<"/api/accounts/login">;
 const active = (status?: string) =>
@@ -40,6 +44,7 @@ export default function AccountSignIn({
 }) {
   const { clearStableRequestId, post, save, saved, stableRequestId } =
     useServerApi();
+  const resources = useServerResources();
 
   const storageKey = `account-sign-in:${state.scope || "local"}${targetAccount ? `:${targetAccount.id}` : ""}`;
   const [requestId, setRequestId] = useState(() =>
@@ -61,6 +66,33 @@ export default function AccountSignIn({
   const account = state.data.accounts.find(
     (a) => a.id === receipt?.resolvedAccountKey,
   );
+  useEffect(() => {
+    if (!requestId) return;
+    return subscribeProgress(
+      resources,
+      { kind: "auth-progress", requestId },
+      (progress) => {
+        if (
+          !progress.value ||
+          progress.value.requestId !== requestId ||
+          (targetAccount && progress.value.accountKey !== targetAccount.id)
+        )
+          return;
+        const result = progress.value;
+        state.setData((old) => ({
+          ...old,
+          logins: [
+            ...(old.logins || []).filter(
+              (item) => item.requestId !== requestId,
+            ),
+            result,
+          ],
+        }));
+      },
+      async () => {},
+      (failure) => setError(errorText(failure)),
+    );
+  }, [requestId, resources, state.setData, targetAccount?.id]);
   useEffect(() => {
     if (
       account &&

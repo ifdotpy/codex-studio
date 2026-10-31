@@ -29,7 +29,7 @@ pub fn corpus(root: &Path) -> Vec<Value> {
         "outputEventCount":0,"outputEventIds":[],"status":"running","created":2000.0,
         "tail":"","bytes":0,"interactive":false,"log":log,
         "operation":operation,"cancelRequested":false});
-    let actor = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":2,"autoWake":true,"status":"idle",
+    let actor = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":2,"autoWake":true,"status":"idle",
         "cwd":cwd,"accountKey":"default"});
     let events = json!([{"id":format!("monitor:{id}"),"agent":"agent","kind":"monitor_exit",
         "text":{"id":id,"command":"printf marker","status":"completed","exitCode":0,"error":null,
@@ -68,7 +68,9 @@ pub async fn seed(store: &RuntimeStore, case: &Value, monitor: MonitorRecord) {
                     tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id,error) VALUES(?,?,?,?,?,?,?,?,?)", rusqlite::params![e["id"].as_str(),e["agent"].as_str(),e["kind"].as_str(),serde_json::to_string(&e["text"]).expect("event"),e["status"].as_str(),e["created"].as_f64(),e["epoch"].as_i64(),e["turn_id"].as_str(),e["error"].as_str()])?;
                 }
             }
-            AgentRepository::put(tx, &AgentRecord::from_value(case["actor"].clone())?)?;
+            let mut actor = case["actor"].clone();
+            actor.as_object_mut().expect("actor fixture").entry("compactions").or_insert(json!(0));
+            AgentRepository::put(tx, &AgentRecord::from_value(actor)?)?;
             Table::new(tx).put(&monitor)
         })
         .await

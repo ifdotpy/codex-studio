@@ -15,12 +15,85 @@ struct InputIdentity {
 }
 
 #[derive(serde::Deserialize)]
-struct ClaimResult {
-    agent: AgentRecord,
+struct ClaimResult<T> {
+    agent: T,
     metadata: BTreeMap<String, Value>,
 }
 
-fn claim_result(saved: &crate::ExecutionAttempt) -> StoreResult<ClaimResult> {
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ThreadPreparationScope {
+    agent: String,
+    epoch: i64,
+    account: String,
+    previous_thread: Option<String>,
+    thread: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoricalReplayAgent {
+    id: AgentId,
+    epoch: i64,
+    #[serde(flatten)]
+    agent: ClaimedAgent,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HistoricalAgentSnapshot {
+    account_key: String,
+    #[serde(default = "missing_historical_field")]
+    provider: HistoricalField<studio_runtime_schema::provider_kind::ProviderKind>,
+    thread_id: Option<String>,
+    cwd: Option<String>,
+    id: AgentId,
+    root_id: AgentId,
+    epoch: i64,
+    execution_mode: Option<crate::AgentExecutionMode>,
+    is_lead: Option<bool>,
+    workspace_mode: Option<WorkspaceMode>,
+    parent_id: Option<String>,
+    #[serde(default = "missing_historical_field")]
+    role: HistoricalField<String>,
+    #[serde(default = "missing_historical_field")]
+    real_cwd: HistoricalField<String>,
+    start_attempt: Option<Box<serde_json::value::RawValue>>,
+}
+
+enum HistoricalField<T> {
+    Missing,
+    Null,
+    Present(T),
+}
+
+fn missing_historical_field<T>() -> HistoricalField<T> {
+    HistoricalField::Missing
+}
+
+impl<'de, T: serde::Deserialize<'de>> serde::Deserialize<'de> for HistoricalField<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match <Option<T> as serde::Deserialize>::deserialize(d)? {
+            Some(value) => Self::Present(value),
+            None => Self::Null,
+        })
+    }
+}
+
+fn historical_text<T>(
+    value: &HistoricalField<T>,
+    text: impl FnOnce(&T) -> String,
+) -> Option<Value> {
+    match value {
+        HistoricalField::Missing => None,
+        HistoricalField::Null => Some(Value::Null),
+        HistoricalField::Present(value) => Some(Value::String(text(value))),
+    }
+}
+
+fn claim_result<T: serde::de::DeserializeOwned>(
+    saved: &crate::ExecutionAttempt,
+) -> StoreResult<ClaimResult<T>> {
     let invalid = || {
         ExecutionHistoryRepository::invalid(
             "runtime_execution_attempts",
@@ -44,7 +117,7 @@ fn saved_identity(saved: &crate::ExecutionAttempt) -> StoreResult<Vec<InputIdent
 
 /// `_v5` removes the obsolete capacity-start predicate. The 2026-10-21
 /// migration drops v4 before removing its generated column.
-const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v5";
+const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v6";
 
 /// Owns the agent-only superset of all rows the account wake page may return.
 /// Event existence and invalid-agent hold receipts are checked after this
@@ -56,7 +129,7 @@ fn account_wake_candidate_predicate(a: &str) -> String {
         "({} OR {} OR {})",
         account_wake_queued_candidate(a),
         account_wake_steer_candidate(a),
-        account_wake_recovery(a)
+        account_wake_recovery(a, false)
     )
 }
 
@@ -167,11 +240,21 @@ fn account_wake_pending(a: &str, held_after: &str) -> String {
     )
 }
 
-fn account_wake_recovery(a: &str) -> String {
+/// `exact` adds the start attempt facts that live on the owner turn row. An
+/// index predicate cannot read another table, so the index uses the broader
+/// form and the query adds the exact one.
+fn account_wake_recovery(a: &str, exact: bool) -> String {
+    let attempt = if exact {
+        format!(
+            "AND EXISTS(SELECT 1 FROM turns t WHERE t.chat={a}id AND t.attempt_submitted=1 \
+             AND t.attempt_connection_generation IS NOT NULL) "
+        )
+    } else {
+        String::new()
+    };
     format!(
         "(({a}provider='codex' \
-           AND {a}start_attempt_submitted=1 \
-           AND {a}start_attempt_connection_generation IS NOT NULL \
+           {attempt}\
            AND {a}status IN ('starting','running','waiting','paused','interrupted')) \
          OR ({a}has_disconnect_recovery=1 AND ( \
            COALESCE({a}status,'') NOT IN ('completed','waiting','paused','parked') \
@@ -186,7 +269,7 @@ fn account_wake_recovery(a: &str) -> String {
 fn account_wake_target_filter(a: &str, held_after: &str) -> String {
     let eligibility = account_wake_index_eligibility(a);
     let pending = account_wake_pending(a, held_after);
-    let recovery = account_wake_recovery(a);
+    let recovery = account_wake_recovery(a, true);
     format!(
         "{eligibility} \
          AND {a}hold_status=?1 \
@@ -222,29 +305,25 @@ fn wake_candidate(
     let raw: rusqlite::types::Value = row.get(2)?;
     let mode = match raw {
         rusqlite::types::Value::Null => Some(None),
-        rusqlite::types::Value::Text(value) => {
-            serde_json::from_value::<WorkspaceMode>(Value::String(value))
-                .ok()
-                .map(Some)
-        }
+        rusqlite::types::Value::Text(value) => serde::Deserialize::deserialize(
+            serde::de::value::StrDeserializer::<serde_json::Error>::new(&value),
+        )
+        .ok()
+        .map(Some),
         rusqlite::types::Value::Integer(_)
         | rusqlite::types::Value::Real(_)
         | rusqlite::types::Value::Blob(_) => None,
     };
-    let workspace_mode = match mode {
-        Some(mode) => Ok(mode),
-        None => {
-            // The actual agent reader owns the located diagnostic, including
-            // its safe shape facts. It runs only for a malformed projection.
-            let error = match AgentRepository::get(connection, &AgentId::from(agent_id.as_str())) {
-                Err(error) => error,
-                Ok(_) => StoreError::RecordContract(
-                    "workspaceMode projection disagrees with its generated owner",
-                ),
-            };
-            Err(std::sync::Arc::new(error))
-        }
-    };
+    let workspace_mode = mode.ok_or_else(|| {
+        // The agent reader owns the located diagnostic for malformed projections.
+        let error = match AgentRepository::get(connection, &AgentId::from(agent_id.as_str())) {
+            Err(error) => error,
+            Ok(_) => StoreError::RecordContract(
+                "workspaceMode projection disagrees with its generated owner",
+            ),
+        };
+        std::sync::Arc::new(error)
+    });
     Ok(WakeCandidate {
         agent_id,
         epoch,
@@ -320,12 +399,18 @@ impl SchedulerRepository {
             || agent.turn_id.is_some()
             || agent.native_safety_buffering.is_some()
             || agent.start_wait.is_some()
+            || agent
+                .restart_recovery
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+            || agent
+                .disconnect_recovery
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
             || [
                 "capacityRetry",
                 "usageResume",
                 "manualRecoveryDeliveryHold",
-                "restartRecovery",
-                "disconnectRecovery",
                 "remoteWorker",
                 "remoteAnchor",
             ]
@@ -378,11 +463,7 @@ impl SchedulerRepository {
         {
             return Ok(false);
         }
-        let current = match agent.start_attempt() {
-            Ok(value) => value,
-            Err(_) => return Ok(false),
-        };
-        if let Some(current) = current
+        if let Some(current) = agent.start_attempt.as_ref()
             && (current.id != attempt.id
                 || current.epoch != attempt.epoch
                 || current.account_key != attempt.account_key
@@ -405,23 +486,26 @@ impl SchedulerRepository {
         else {
             return Ok(false);
         };
-        let original = claim_result(&saved)?.agent;
+        let original = claim_result::<HistoricalAgentSnapshot>(&saved)?.agent;
         if original.id != agent.id
             || original.root_id != agent.root_id
             || original.epoch != agent.epoch
-            || !same_native_scope(&original, agent)
+            || original.account_key != agent.account_key
+            || original.thread_id != agent.thread_id
             || original.execution_mode != agent.execution_mode
             || original.is_lead != agent.is_lead
             || original.workspace_mode != agent.workspace_mode
             || original.cwd != agent.cwd
             || original.parent_id != agent.parent_id
-            || ["provider", "role", "realCwd"]
-                .iter()
-                .any(|key| original.extra.get(*key) != agent.extra.get(*key))
+            || historical_text(&original.provider, |provider| provider.key().to_owned()).as_ref()
+                != agent.extra.get("provider")
+            || historical_text(&original.role, Clone::clone).as_ref() != agent.extra.get("role")
+            || historical_text(&original.real_cwd, Clone::clone).as_ref()
+                != agent.extra.get("realCwd")
             || original
-                .start_attempt()
-                .ok()
-                .flatten()
+                .start_attempt
+                .as_ref()
+                .and_then(|raw| serde_json::from_str::<crate::StartAttemptView>(raw.get()).ok())
                 .is_none_or(|original| {
                     original.id.as_deref() != Some(id)
                         || original.events != attempt.events
@@ -1094,18 +1178,16 @@ impl SchedulerRepository {
         agent.in_flight = Some(true);
         agent.turn_id = None;
         agent.turn_epoch = Some(epoch);
-        agent.extra.insert(
-            "startAttempt".to_owned(),
-            json!({
-                "id": attempt_id,
-                "epoch": epoch,
-                "activeAtReservation": false,
-                "accountKey":Value::String(agent.account_key.clone()),
-                "events": event_ids,
-                "submitted": false,
-                "created": attempt_created
-            }),
-        );
+        agent.start_attempt = Some(Box::new(crate::StartAttemptView {
+            id: Some(attempt_id.to_owned()),
+            epoch: Some(epoch),
+            active_at_reservation: Some(false),
+            account_key: Some(agent.account_key.clone()),
+            events: Some(event_ids),
+            submitted: Some(false),
+            created: Some(attempt_created),
+            ..Default::default()
+        }));
         publish_agent(transaction, &agent)?;
         let identity = input_identity(&events, &metadata);
         crate::ExecutionHistoryRepository::save_claim(
@@ -1115,7 +1197,7 @@ impl SchedulerRepository {
             &json!({"agent":agent,"metadata":metadata}),
         )?;
         Ok(Some(ClaimedEvents {
-            agent,
+            agent: ClaimedAgent::from(&agent),
             events,
             metadata,
             refusal_reason: None,
@@ -1136,7 +1218,7 @@ impl SchedulerRepository {
         if agent.deleted_at.is_some() {
             return Err(invalid_agent(agent_id));
         }
-        let Some(attempt) = agent.start_attempt().map_err(|_| invalid_agent(agent_id))? else {
+        let Some(attempt) = agent.start_attempt.clone() else {
             return Ok(false);
         };
         if attempt.id.as_deref() != Some(attempt_id)
@@ -1270,34 +1352,26 @@ pub(super) fn replay_claim(
             saved.start.id.as_deref().unwrap_or("unknown"),
         )
     };
-    let claim = claim_result(saved)?;
+    let claim = claim_result::<HistoricalReplayAgent>(saved)?;
     let original = claim.agent;
-    let preparation = crate::ExecutionHistoryRepository::receipt::<serde_json::Value>(
+    let preparation = crate::ExecutionHistoryRepository::receipt::<ThreadPreparationScope>(
         tx,
         saved.start.id.as_deref().ok_or_else(receipt_error)?,
         ExecutionReceiptKind::ThreadPrepared,
     )?;
     let prepared_scope = preparation.as_ref().is_some_and(|preparation| {
         preparation.result == true
-            && preparation.input["agent"] == agent.id.0
-            && preparation.input["epoch"] == epoch
-            && preparation.input["account"] == Value::String(agent.account_key.clone())
-            && preparation.input["previousThread"]
-                == original
-                    .thread_id
-                    .clone()
-                    .map(Value::String)
-                    .unwrap_or(Value::Null)
-            && preparation.input["thread"]
-                == agent
-                    .thread_id
-                    .clone()
-                    .map(Value::String)
-                    .unwrap_or(Value::Null)
+            && preparation.input.agent == agent.id.0
+            && preparation.input.epoch == epoch
+            && preparation.input.account == agent.account_key
+            && preparation.input.previous_thread == original.agent.thread_id
+            && preparation.input.thread == agent.thread_id
     });
     if original.id != agent.id
         || original.epoch != epoch
-        || !(same_native_scope(&original, &agent) || prepared_scope)
+        || !((original.agent.account_key == agent.account_key
+            && original.agent.thread_id == agent.thread_id)
+            || prepared_scope)
     {
         return Err(invalid_agent(&agent.id.0));
     }
@@ -1340,7 +1414,8 @@ pub(super) fn replay_claim(
     }
     let metadata = claim.metadata;
     Ok(ClaimedEvents {
-        agent: original,
+        // Historical receipt bytes stay untouched; only the fields consumed by scheduling are projected.
+        agent: original.agent,
         events,
         metadata,
         refusal_reason: None,
@@ -1357,7 +1432,7 @@ pub(super) struct PreparedBatch {
 
 pub(super) fn refused(agent: &AgentRecord, reason: String) -> ClaimedEvents {
     ClaimedEvents {
-        agent: agent.clone(),
+        agent: ClaimedAgent::from(agent),
         events: Vec::new(),
         metadata: BTreeMap::new(),
         refusal_reason: Some(reason),
@@ -1898,6 +1973,25 @@ mod account_wake_index_tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn thread_preparation_receipt_requires_typed_scope() {
+        let valid = r#"{"agent":"a","epoch":2,"account":"account","previousThread":null,"thread":"thread"}"#;
+        let scope: super::ThreadPreparationScope = serde_json::from_str(valid).unwrap();
+        assert_eq!(scope.agent, "a");
+        assert!(
+            serde_json::from_str::<super::ThreadPreparationScope>(
+                &valid.replace("\"epoch\":2", "\"epoch\":\"2\"")
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<super::ThreadPreparationScope>(
+                &valid.replace("\"agent\":\"a\"", "\"agent\":\"a\",\"unknown\":true")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn stored_wake_boundary_mode_projection_matches_openapi_owner() {
         let openapi: serde_json::Value =
             serde_json::from_str(include_str!("../../../../runtime-http/openapi.json"))
@@ -1977,7 +2071,7 @@ mod account_wake_index_tests {
             "queued-retry",
             json!({
                 "provider":"codex", "epoch":1, "status":"queued", "autoWake":true,
-                "capacityRetry":{"id":"retry", "status":"due"}
+                "capacityRetry":{"id":"retry", "status":"due"}, "workspaceMode":"layr-native"
             }),
         );
         connection
@@ -1993,6 +2087,10 @@ mod account_wake_index_tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].agent_id, "queued-retry");
         assert_eq!(agents[0].epoch, 1);
+        assert_eq!(
+            agents[0].workspace_mode.as_ref().unwrap(),
+            &Some(super::WorkspaceMode::LayrNative)
+        );
     }
 
     #[test]

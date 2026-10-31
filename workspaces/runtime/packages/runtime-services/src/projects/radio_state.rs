@@ -30,6 +30,8 @@ pub(super) struct Radio {
     pub(super) status: Status,
     pub(super) speaker: Option<String>,
     pub(super) next: Vec<String>,
+    pub(super) direct: bool,
+    #[serde(deserialize_with = "present_active")]
     pub(super) active: Option<Active>,
     pub(super) error: Option<String>,
     pub(super) seen: BTreeMap<String, Value>,
@@ -37,19 +39,23 @@ pub(super) struct Radio {
     pub(super) extra: Map<String, Value>,
 }
 impl Radio {
-    pub(super) fn new(team_id: String, extra: Map<String, Value>) -> Self {
+    pub(super) fn new(team_id: String, direct: bool) -> Self {
         Self {
             team_id,
             revision: 0,
             status: Status::Idle,
             speaker: None,
             next: Vec::new(),
+            direct,
             active: None,
             error: None,
             seen: BTreeMap::new(),
-            extra,
+            extra: Map::new(),
         }
     }
+}
+fn present_active<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Active>, D::Error> {
+    Option::<Active>::deserialize(d)
 }
 #[derive(Deserialize, Serialize)]
 pub(super) struct Room {
@@ -332,10 +338,8 @@ pub(super) fn turn(agent: &Value, active: &Active, event: Option<&QueueEvent>) -
     None
 }
 pub(super) fn completed(db: &Connection, agent: &str, turn: &str) -> Result<bool, ProjectsError> {
-    Ok(db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM runtime_completed_turns WHERE id=?1)",
-        [format!("{agent}:{turn}")],
-        |r| r.get(0),
+    Ok(studio_runtime_store::domain::turn_completed(
+        db, agent, turn,
     )?)
 }
 pub(super) fn pending_question(
@@ -370,6 +374,31 @@ pub(super) fn cancel_pending(db: &Transaction<'_>, active: &Active) -> Result<bo
 #[cfg(test)]
 mod projection_tests {
     use super::*;
+
+    #[test]
+    fn radio_requires_canonical_direct_and_active_fields() {
+        let canonical = r#"{"teamId":"t","revision":0,"status":"idle","speaker":null,"next":[],"active":null,"error":null,"seen":{},"direct":false}"#;
+        assert!(serde_json::from_str::<Radio>(canonical).is_ok());
+        assert!(
+            serde_json::from_str::<Radio>(&canonical.replace(",\"direct\":false", "")).is_err()
+        );
+        assert!(serde_json::from_str::<Radio>(&canonical.replace("\"active\":null,", "")).is_err());
+        for (radio, valid) in [
+            (canonical.to_owned(), true),
+            (canonical.replace(",\"direct\":false", ""), false),
+            (canonical.replace("\"active\":null,", ""), false),
+        ] {
+            let room: Value = serde_json::from_str(&format!(
+                r#"{{"id":"radio:t","kind":"private","radio":{radio}}}"#
+            ))
+            .expect("radio schema fixture");
+            assert_eq!(
+                studio_runtime_schema::validate("PersistedRoomRecord", &room)
+                    .expect("radio schema fixture"),
+                valid
+            );
+        }
+    }
 
     #[test]
     fn projection_rows_match_typed_decoding_and_reject_invalid_fields() {

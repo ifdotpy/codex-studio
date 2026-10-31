@@ -56,7 +56,6 @@ impl From<TranscriptStoreError> for TranscriptError {
             TranscriptStoreError::InvalidStoredObject { table, id } => {
                 Self::InvalidStoredObject { table, id }
             }
-            TranscriptStoreError::ActiveTurn => Self::RequiresDependency("transcript/event-driver"),
             TranscriptStoreError::Store(StoreError::Sqlite(rusqlite::Error::SqliteFailure(
                 error,
                 _,
@@ -73,6 +72,14 @@ impl From<StoreError> for TranscriptError {
             StoreError::InvalidStoredObject { table, id } => {
                 Self::InvalidStoredObject { table, id }
             }
+            StoreError::TranscriptFullTextUnavailable { id } => Self::InvalidStoredObject {
+                table: "runtime_item_fulltext",
+                id,
+            },
+            StoreError::TranscriptInputsIncomplete { id } => Self::InvalidStoredObject {
+                table: "runtime_items",
+                id,
+            },
             StoreError::InvalidSyncObject { scope, id }
             | StoreError::InvalidSyncObjectField { scope, id, .. } => {
                 Self::InvalidStoredState { table: scope, id }
@@ -135,6 +142,11 @@ impl From<rusqlite::Error> for TranscriptError {
     }
 }
 
+/// The sync document of one conversation. After the migration that retired the copies
+/// the page is built from `runtime_items` at read time and nothing is written: a delta
+/// when the page at `after` was sent before, otherwise the full page. Without the
+/// migration check the cached copy in `sync_entities` is kept (see
+/// `retire_transcript_copies`).
 pub async fn pull_scope(
     store: Arc<RuntimeStore>,
     scope: &str,
@@ -148,12 +160,34 @@ pub async fn pull_scope(
     let read_agent = agent.clone();
     let cached = store
         .read_async("runtime-services/transcript_scope", move |transaction| {
-            pull_scope_cached_in(transaction, &read_scope, &read_agent, after)
+            if studio_runtime_store::durable_seq::transcript_copies_retired(transaction)? {
+                return read_time_cursor(transaction, &read_scope, &read_agent, after)
+                    .map(ReadStep::Cursor);
+            }
+            pull_scope_cached_in(transaction, &read_scope, &read_agent, after).map(ReadStep::Copy)
         })
         .await;
     match cached {
-        Ok(Some(result)) => return Ok(result),
-        Ok(None) | Err(TranscriptError::ReadOnlyRepair) => {}
+        Ok(ReadStep::Cursor(ReadTimeCursor::Done(result))) => return Ok(result),
+        Ok(ReadStep::Cursor(ReadTimeCursor::Page {
+            through,
+            workspace_id,
+        })) => {
+            let payload =
+                crate::transcript_runtime::page_at(&store, agent.clone(), Default::default(), now)
+                    .await?;
+            return read_time_documents(
+                store.root(),
+                &scope,
+                &agent,
+                after.max(0),
+                through,
+                workspace_id,
+                &payload,
+            );
+        }
+        Ok(ReadStep::Copy(Some(result))) => return Ok(result),
+        Ok(ReadStep::Copy(None)) | Err(TranscriptError::ReadOnlyRepair) => {}
         Err(error) => return Err(error),
     }
 
@@ -174,6 +208,217 @@ pub async fn pull_scope(
         .await
 }
 
+/// Ids of the most recently changed conversations that have items, newest first,
+/// without those in `exclude`.
+pub async fn recent_chats(
+    store: &RuntimeStore,
+    limit: usize,
+    exclude: Vec<String>,
+) -> Result<Vec<String>, TranscriptError> {
+    store
+        .read_async("runtime-services/transcript_recent", move |transaction| {
+            let wanted = (limit + exclude.len()) as i64;
+            let ids = transaction
+                .prepare_cached(
+                    "SELECT a.id FROM runtime_agents a
+                     JOIN durable_rows d ON d.tbl='runtime_agents' AND d.id=a.id
+                     WHERE json_extract(a.record,'$.deletedAt') IS NULL
+                       AND EXISTS(SELECT 1 FROM runtime_items i WHERE i.agent=a.id)
+                     ORDER BY d.seq DESC LIMIT ?1",
+                )?
+                .query_map([wanted], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, TranscriptError>(
+                ids.into_iter()
+                    .filter(|id| !exclude.contains(id))
+                    .take(limit)
+                    .collect(),
+            )
+        })
+        .await
+}
+
+/// How a page looked at a change number, to answer a cursor with a delta instead of a
+/// full page. It lives in memory only and is not a copy of the conversation: a lost
+/// entry costs one full page. Entries are keyed by state directory and agent.
+struct PageIndex {
+    items: std::collections::BTreeMap<String, String>,
+    order: Vec<String>,
+    meta: String,
+}
+
+impl PageIndex {
+    fn of(payload: &Value) -> Result<(Self, Vec<&Value>), TranscriptError> {
+        let items = payload
+            .get("items")
+            .and_then(Value::as_array)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let mut index = PageIndex {
+            items: Default::default(),
+            order: Vec::with_capacity(items.len()),
+            meta: String::new(),
+        };
+        for item in items {
+            let id = item
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_stored("runtime_items", "pull"))?;
+            index.order.push(id.to_owned());
+            index.items.insert(
+                id.to_owned(),
+                studio_runtime_store::sha256_hex(item.to_string().as_bytes()),
+            );
+        }
+        let meta = payload
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(key, _)| key.as_str() != "items")
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<serde_json::Map<_, _>>();
+        index.meta = studio_runtime_store::sha256_hex(Value::Object(meta).to_string().as_bytes());
+        Ok((index, items.iter().collect()))
+    }
+}
+
+/// Largest number of remembered pages, in pages. Each holds one hash for each item.
+const PAGE_HISTORY_ENTRIES: usize = 256;
+type PageHistory = Vec<(std::path::PathBuf, String, i64, Arc<PageIndex>)>;
+static PAGE_HISTORY: std::sync::Mutex<PageHistory> = std::sync::Mutex::new(Vec::new());
+
+fn page_history() -> std::sync::MutexGuard<'static, PageHistory> {
+    PAGE_HISTORY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The sync documents for a page built at read time: a delta when the page at `after`
+/// is remembered, a full page otherwise, and none when the page did not change.
+fn read_time_documents(
+    root: &std::path::Path,
+    scope: &str,
+    agent: &str,
+    after: i64,
+    through: i64,
+    workspace_id: String,
+    payload: &Value,
+) -> Result<Value, TranscriptError> {
+    let (index, items) = PageIndex::of(payload)?;
+    let index = Arc::new(index);
+    let prior = if after > 0 {
+        page_history()
+            .iter()
+            .find(|(path, id, seq, _)| path == root && id == agent && *seq == after)
+            .map(|entry| Arc::clone(&entry.3))
+    } else {
+        None
+    };
+    {
+        let mut history = page_history();
+        history.retain(|(path, id, seq, _)| !(path == root && id == agent && *seq == through));
+        history.push((
+            root.to_path_buf(),
+            agent.to_owned(),
+            through,
+            Arc::clone(&index),
+        ));
+        if history.len() > PAGE_HISTORY_ENTRIES {
+            history.remove(0);
+        }
+    }
+    let encode = |value: &Value| serde_json::to_string(value).map_err(|_| TranscriptError::Store);
+    let Some(prior) = prior else {
+        let document =
+            json!({"id": scope, "payload": encode(payload)?, "seq": through, "_deleted": false});
+        return Ok(json!({
+            "workspaceId": workspace_id,
+            "documents": [document],
+            "checkpoint": {"seq": through}
+        }));
+    };
+    let changed = items
+        .into_iter()
+        .filter(|item| {
+            item["id"]
+                .as_str()
+                .is_some_and(|id| prior.items.get(id) != index.items.get(id))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed = prior
+        .items
+        .keys()
+        .filter(|id| !index.items.contains_key(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let order_changed = prior.order != index.order;
+    if changed.is_empty() && removed.is_empty() && !order_changed && prior.meta == index.meta {
+        return Ok(json!({
+            "workspaceId": workspace_id,
+            "documents": [],
+            "checkpoint": {"seq": after}
+        }));
+    }
+    let mut delta = payload.as_object().cloned().unwrap_or_default();
+    delta.insert("delta".to_owned(), Value::Bool(true));
+    delta.insert("items".to_owned(), Value::Array(changed));
+    delta.insert("removed".to_owned(), json!(removed));
+    if order_changed {
+        delta.insert("order".to_owned(), json!(index.order));
+    }
+    let document = json!({"id": scope, "payload": encode(&Value::Object(delta))?, "seq": through, "_deleted": false});
+    Ok(json!({
+        "workspaceId": workspace_id,
+        "documents": [document],
+        "checkpoint": {"seq": through}
+    }))
+}
+
+enum ReadStep {
+    Cursor(ReadTimeCursor),
+    Copy(Option<Value>),
+}
+
+enum ReadTimeCursor {
+    /// Nothing newer than the cursor, or a deleted conversation.
+    Done(Value),
+    /// The conversation changed; build its page.
+    Page { through: i64, workspace_id: String },
+}
+
+/// Decide from the change number alone whether a page must be built.
+fn read_time_cursor(
+    transaction: &Transaction<'_>,
+    scope: &str,
+    agent: &str,
+    after: i64,
+) -> Result<ReadTimeCursor, TranscriptError> {
+    let after = after.max(0);
+    let actor = TranscriptRepository::agent(transaction, agent)?;
+    let deleted = actor.as_ref().is_none_or(|a| a.is_deleted());
+    let through = studio_runtime_store::durable_seq::transcript_change_cursor(transaction, agent)?;
+    let workspace_id = studio_runtime_store::SyncDocumentsRepository::workspace_id(transaction)?;
+    if after > 0 && after >= through {
+        return Ok(ReadTimeCursor::Done(json!({
+            "workspaceId": workspace_id,
+            "documents": [],
+            "checkpoint": {"seq": through}
+        })));
+    }
+    if deleted {
+        return Ok(ReadTimeCursor::Done(json!({
+            "workspaceId": workspace_id,
+            "documents": [{"id": scope, "payload": "{}", "seq": through, "_deleted": true}],
+            "checkpoint": {"seq": through}
+        })));
+    }
+    Ok(ReadTimeCursor::Page {
+        through,
+        workspace_id,
+    })
+}
+
 /// Read-only pulls stay cheap when the requested revision is already cached.
 /// A missing or stale payload returns `None` so it can be built with the
 /// current revision inside the writer transaction.
@@ -184,7 +429,9 @@ fn pull_scope_cached_in(
     after: i64,
 ) -> Result<Option<Value>, TranscriptError> {
     let actor = TranscriptRepository::agent(transaction, agent)?;
-    let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
+    let deleted = actor
+        .as_ref()
+        .is_none_or(studio_runtime_store::AgentRecord::is_deleted);
     let revision = TranscriptRepository::revision(transaction, agent)?;
     let high = transaction.query_row(
         "SELECT coalesce(max(seq),0) FROM sync_entities WHERE collection=?1",
@@ -247,7 +494,9 @@ fn pull_scope_in(
         return Ok(result);
     }
     let actor = TranscriptRepository::agent(transaction, agent)?;
-    let deleted = actor.as_ref().is_none_or(|a| truthy(a.get("deletedAt")));
+    let deleted = actor
+        .as_ref()
+        .is_none_or(studio_runtime_store::AgentRecord::is_deleted);
     let revision = TranscriptRepository::revision(transaction, agent)?;
     let payload = if deleted {
         json!({})
@@ -288,11 +537,9 @@ fn validate_cached_payload(scope: &str, payload: &Value) -> Result<(), Transcrip
         return Err(invalid_stored("sync_entities", &cache_id));
     }
     for item in items {
-        let id = item["id"]
+        item["id"]
             .as_str()
             .ok_or_else(|| invalid_stored("sync_entities", &cache_id))?;
-        studio_runtime_store::system_reads::validate("runtime_items", id, item.clone())
-            .map_err(|_| invalid_stored("sync_entities", &cache_id))?;
     }
     Ok(())
 }
@@ -312,7 +559,7 @@ pub async fn item(
 fn item_in(connection: &Connection, agent: &str, identity: &str) -> Result<Value, TranscriptError> {
     let actor =
         TranscriptRepository::agent(connection, agent)?.ok_or(TranscriptError::UnknownMessage)?;
-    if truthy(actor.get("deletedAt")) {
+    if actor.is_deleted() {
         return Err(TranscriptError::DeletedConversation);
     }
     let row = TranscriptRepository::resolve_item(connection, agent, identity)?
@@ -362,7 +609,7 @@ fn search_in(
     let limit = limit.clamp(1, 500) as usize;
     let actor =
         TranscriptRepository::agent(connection, agent)?.ok_or(TranscriptError::UnknownMessage)?;
-    if truthy(actor.get("deletedAt")) {
+    if actor.is_deleted() {
         return Err(TranscriptError::DeletedConversation);
     }
     if query.is_empty() {
@@ -448,7 +695,10 @@ fn search_item_in(
             .find(|agent| agent.id.as_ref() == Some(&row.agent))
             .ok_or(TranscriptError::SearchResultUnavailable)?;
         if actor.deleted_at.as_ref().is_some_and(Deletion::is_deleted)
-            || truthy(row.record.extra("afterRestore"))
+            || row
+                .record
+                .after_restore()
+                .is_some_and(|value| !value.is_empty())
         {
             return Err(TranscriptError::SearchResultUnavailable);
         }
@@ -756,11 +1006,13 @@ fn searchable_text(
     let mut full = TranscriptRepository::full_text(connection, row)?;
     if full.as_deref() == Some("") && row.record.inputs().value().is_some_and(|v| !v.is_empty()) {
         // The repository's fallback may be the empty legacy parent, not a body.
-        let persisted = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM runtime_item_fulltext WHERE id=?1 AND body IS NOT NULL)",
-            [&row.id],
-            |r| r.get::<_, bool>(0),
-        )?;
+        let persisted = studio_runtime_store::text_blobs::reference(connection, &row.id)?
+            .is_some()
+            || connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runtime_item_fulltext WHERE id=?1 AND body IS NOT NULL)",
+                [&row.id],
+                |r| r.get::<_, bool>(0),
+            )?;
         if !persisted {
             full = None;
         }
@@ -826,17 +1078,13 @@ fn project(
     complete: bool,
 ) -> Result<Value, TranscriptError> {
     validate_parent(row)?;
-    let input_is_user = input.and_then(|value| value.kind()) == Some("user");
     let parent_role = row.record.role();
-    let role = if input_is_user {
-        Value::String("user".to_owned())
-    } else {
-        Value::String(
-            parent_role
-                .ok_or_else(|| invalid_stored("runtime_items", &row.id))?
-                .to_owned(),
-        )
-    };
+    let role = Value::String(
+        input
+            .map_or(parent_role, |input| input.projected_role(parent_role))
+            .as_str()
+            .to_owned(),
+    );
     let mut projected = row
         .record
         .value()
@@ -849,20 +1097,6 @@ fn project(
             .as_object()
             .ok_or_else(|| invalid_stored("runtime_items", &row.id))?;
         projected.extend(fields.clone());
-    }
-    optional_extra_string(
-        row.record.extra("clientMessageId"),
-        "runtime_items",
-        &row.id,
-    )?;
-    let turn_id = input
-        .and_then(|value| value.extra("turnId"))
-        .or_else(|| row.record.extra("turnId"));
-    if let Some(turn_id) = turn_id
-        && !turn_id.is_null()
-        && !turn_id.is_string()
-    {
-        return Err(invalid_stored("runtime_items", &row.id));
     }
     projected.insert("id".to_owned(), Value::String(identity.to_owned()));
     projected.insert("sourceId".to_owned(), Value::String(source_id.to_owned()));
@@ -884,7 +1118,7 @@ fn hydrate_input<F>(
 where
     F: FnOnce(&str) -> Result<Option<String>, TranscriptError>,
 {
-    let truncated = validate_input(input, &row.id)?;
+    let truncated = input.effective_truncated();
     let input_id = input.id();
     let identity = input_id.map_or_else(
         || format!("{}:{index}", row.id),
@@ -898,9 +1132,7 @@ where
         return Err(TranscriptError::MissingContent);
     }
     let complete = !truncated || event.is_some();
-    let text = event
-        .or(input.text().map(str::to_owned))
-        .unwrap_or_default();
+    let text = input.projected_text(event);
     project(row, Some(input), &row.id, &identity, agent, text, complete).map(Some)
 }
 
@@ -919,13 +1151,12 @@ where
     {
         let mut pieces = Vec::new();
         for input in inputs {
-            validate_input(input, &row.id)?;
             let input_id = input.id();
             let event = input_id.map(&mut event_lookup).transpose()?.flatten();
             if let Some(event) = event {
                 pieces.push(event);
             } else if input_id.is_none()
-                && !input.truncated().unwrap_or(false)
+                && !input.effective_truncated()
                 && let Some(text) = input.text()
             {
                 pieces.push(text.to_owned());
@@ -949,39 +1180,7 @@ fn validate_parent(row: &TranscriptItem) -> Result<bool, TranscriptError> {
     if row.record.id().as_ref() != row.id {
         return Err(invalid_stored("runtime_items", &row.id));
     }
-    optional_extra_bool(row.record.extra("truncated"), "runtime_items", &row.id)
-        .map(|value| value.unwrap_or(false))
-}
-
-fn optional_extra_string<'a>(
-    value: Option<&'a Value>,
-    table: &'static str,
-    id: &str,
-) -> Result<Option<&'a str>, TranscriptError> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) => Ok(Some(value)),
-        _ => Err(invalid_stored(table, id)),
-    }
-}
-fn validate_input(
-    input: &studio_runtime_schema::transcript_record::TranscriptInput,
-    id: &str,
-) -> Result<bool, TranscriptError> {
-    optional_extra_string(input.extra("turnId"), "runtime_items", id)?;
-    optional_extra_string(input.extra("clientMessageId"), "runtime_items", id)?;
-    Ok(input.truncated().unwrap_or(false))
-}
-fn optional_extra_bool(
-    value: Option<&Value>,
-    table: &'static str,
-    id: &str,
-) -> Result<Option<bool>, TranscriptError> {
-    match value {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Bool(value)) => Ok(Some(*value)),
-        _ => Err(invalid_stored(table, id)),
-    }
+    Ok(row.record.truncated().unwrap_or(false))
 }
 
 fn invalid_stored(table: &'static str, id: &str) -> TranscriptError {
@@ -1054,7 +1253,7 @@ mod tests {
             if let Some(text) = text {
                 stored["text"] = text;
             }
-            let record = TranscriptItemRecord::from_value(stored)
+            let record: TranscriptItemRecord = serde_json::from_str(&stored.to_string())
                 .expect("persisted transcript permits absent or null parent text");
             let row = TranscriptItem {
                 id: record.id().as_ref().to_owned(),
@@ -1080,10 +1279,13 @@ mod tests {
             json!({"id":"input-1"}),
             json!({"id":"input-1","kind":null,"text":null,"truncated":null}),
         ] {
-            let record = TranscriptItemRecord::from_value(json!({
-                "id":"item-1", "role":"assistant", "text":null,
-                "inputs":[input]
-            }))
+            let record: TranscriptItemRecord = serde_json::from_str(
+                &json!({
+                    "id":"item-1", "role":"assistant", "text":null,
+                    "inputs":[input]
+                })
+                .to_string(),
+            )
             .expect("persisted transcript permits absent or null optional input fields");
             let row = TranscriptItem {
                 id: record.id().as_ref().to_owned(),
@@ -1117,7 +1319,7 @@ mod tests {
             .transaction(|transaction| {
                 AgentRepository::put(
                     transaction,
-                    &AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                    &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"agent", "rootId":"agent", "epoch":0, "status":"idle"
                     }))?,
                 )?;
@@ -1201,6 +1403,211 @@ mod tests {
             sync_state(),
             committed_sync_state,
             "replay must not add ledger writes"
+        );
+    }
+
+    /// A state with `count` items for the chat `agent`. `retired` selects the writer that
+    /// keeps no transcript copy (read-time pages) or the one that keeps them.
+    async fn chat(retired: bool, count: usize) -> (tempfile::TempDir, Arc<RuntimeStore>) {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store"),
+        );
+        store
+            .transaction(move |transaction| {
+                if !retired {
+                    transaction.execute(
+                        "DELETE FROM sync_entity_meta WHERE key='transcript_copies'",
+                        [],
+                    )?;
+                }
+                AgentRepository::put(
+                    transaction,
+                    &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                        "id":"agent", "rootId":"agent", "epoch":0, "status":"idle"
+                    }))?,
+                )?;
+                for index in 0..count {
+                    transaction.execute(
+                        "INSERT INTO runtime_items(id,agent,created,record) VALUES (?1,'agent',?2,?3)",
+                        rusqlite::params![
+                            format!("agent:{index:03}"),
+                            index as f64,
+                            json!({"id":format!("agent:{index:03}"),"role":"assistant","text":format!("text {index}")}).to_string()
+                        ],
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("seed transcript");
+        (root, store)
+    }
+
+    fn payload(pulled: &Value) -> Value {
+        let document = &pulled["documents"][0];
+        serde_json::from_str(document["payload"].as_str().expect("payload")).expect("JSON")
+    }
+
+    fn transcript_rows(store: &RuntimeStore) -> i64 {
+        store
+            .test_reader()
+            .expect("reader")
+            .query_row(
+                "SELECT COUNT(*) FROM sync_entities WHERE collection LIKE 'transcript:%'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count")
+    }
+
+    #[tokio::test]
+    async fn a_page_built_from_the_items_equals_the_old_cached_page() {
+        let (_old_root, old) = chat(false, 5).await;
+        let (_new_root, new) = chat(true, 5).await;
+        let cached = super::pull_scope(Arc::clone(&old), "transcript:agent", "agent", 0)
+            .await
+            .expect("cached page");
+        let read_time = super::pull_scope(Arc::clone(&new), "transcript:agent", "agent", 0)
+            .await
+            .expect("read-time page");
+        assert_eq!(
+            cached["documents"][0]["payload"], read_time["documents"][0]["payload"],
+            "the same items give the same page"
+        );
+        assert_eq!(
+            payload(&read_time)["items"].as_array().map(Vec::len),
+            Some(5)
+        );
+
+        // The same change gives the same delta in both writers.
+        let change = |transaction: &rusqlite::Transaction<'_>| {
+            transaction.execute(
+                "UPDATE runtime_items SET record=json_set(record,'$.text','after') WHERE id='agent:002'",
+                [],
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(())
+        };
+        old.transaction(move |transaction| change(transaction))
+            .await
+            .expect("old change");
+        new.transaction(move |transaction| change(transaction))
+            .await
+            .expect("new change");
+        let old_after = cached["checkpoint"]["seq"].as_i64().expect("cursor");
+        let new_after = read_time["checkpoint"]["seq"].as_i64().expect("cursor");
+        let old_delta = super::pull_scope(Arc::clone(&old), "transcript:agent", "agent", old_after)
+            .await
+            .expect("cached delta");
+        let new_delta = super::pull_scope(Arc::clone(&new), "transcript:agent", "agent", new_after)
+            .await
+            .expect("read-time delta");
+        assert_eq!(
+            old_delta["documents"][0]["payload"], new_delta["documents"][0]["payload"],
+            "the delta has the same items, removals and order"
+        );
+        assert_eq!(payload(&new_delta)["delta"], true);
+        assert_eq!(payload(&new_delta)["items"][0]["text"], "after");
+        assert_eq!(
+            payload(&new_delta)["items"].as_array().map(Vec::len),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reader_writes_no_transcript_copy_and_replays_a_cursor() {
+        let (_root, store) = chat(true, 3).await;
+        let first = super::pull_scope(Arc::clone(&store), "transcript:agent", "agent", 0)
+            .await
+            .expect("page");
+        let cursor = first["checkpoint"]["seq"].as_i64().expect("cursor");
+        let unchanged = super::pull_scope(Arc::clone(&store), "transcript:agent", "agent", cursor)
+            .await
+            .expect("unchanged");
+        assert_eq!(unchanged["documents"], json!([]));
+        assert_eq!(unchanged["checkpoint"]["seq"], cursor);
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO runtime_items(id,agent,created,record) VALUES ('agent:new','agent',9,?1)",
+                    [json!({"id":"agent:new","role":"assistant","text":"new"}).to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("new item");
+        let delta = super::pull_scope(Arc::clone(&store), "transcript:agent", "agent", cursor)
+            .await
+            .expect("delta");
+        let delta_payload = payload(&delta);
+        assert_eq!(delta_payload["items"][0]["id"], "agent:new");
+        assert_eq!(delta_payload["order"][3], "agent:new");
+        assert_eq!(
+            transcript_rows(&store),
+            0,
+            "no transcript copy is written for a page, a repeat or a delta"
+        );
+    }
+
+    #[tokio::test]
+    async fn older_items_come_with_a_scroll_request() {
+        let (_root, store) = chat(true, 130).await;
+        let first = super::pull_scope(Arc::clone(&store), "transcript:agent", "agent", 0)
+            .await
+            .expect("page");
+        let page = payload(&first);
+        assert_eq!(page["items"].as_array().map(Vec::len), Some(120));
+        assert_eq!(page["truncated"], true);
+        assert_eq!(page["items"][0]["id"], "agent:010");
+        let older = crate::transcript_runtime::page(
+            &store,
+            "agent".to_owned(),
+            crate::transcript_runtime::PageRequest {
+                before: page["nextCursor"].as_str().map(str::to_owned),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("older page");
+        let ids = older["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .map(|item| item["id"].as_str().expect("id").to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 10);
+        assert_eq!(ids[0], "agent:000");
+        assert_eq!(ids[9], "agent:009");
+    }
+
+    #[tokio::test]
+    async fn the_migration_keeps_the_copies_when_an_item_is_missing() {
+        let (_root, store) = chat(false, 2).await;
+        store
+            .transaction(|transaction| {
+                transaction.execute(
+                    "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES ('transcript:agent','item:gone',1,'h',NULL,0)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("copy row without its item");
+        let missing = store
+            .transaction(|transaction| {
+                studio_runtime_store::durable_seq::retire_transcript_copies(transaction)
+            })
+            .await
+            .expect("check");
+        assert_eq!(missing, vec![("agent".to_owned(), "gone".to_owned())]);
+        super::pull_scope(Arc::clone(&store), "transcript:agent", "agent", 0)
+            .await
+            .expect("page");
+        assert!(
+            transcript_rows(&store) > 1,
+            "the writer still writes the copies, and the old row stays"
         );
     }
 }

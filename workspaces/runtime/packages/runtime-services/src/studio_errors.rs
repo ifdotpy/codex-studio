@@ -1205,7 +1205,7 @@ mod tests {
             .expect("valid group publication fixture");
         let now = crate::event_write::unix_time().expect("valid group publication fixture");
         store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"owner","rootId":"owner","epoch":0,"status":"idle","provider":"codex"}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"owner","rootId":"owner","epoch":0,"status":"idle","provider":"codex"}))?)?;
             let raw = format!(r#"{{"id":"failed","agent":"owner","ruleId":"rule","epoch":0,"status":"failed","requestId":"fixture","created":{},"finished":{},"activityAt":0,"activityGeneration":0,"bytes":0,"command":"check","cwd":"/fixture","interactive":false,"livenessCommand":"","log":"/fixture/watch.log","stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit","error":"No live provider session","exitCode":null}}"#, now - 10., now - 9.);
             Table::new(tx).put(&serde_json::from_str::<MonitorRecord>(&raw)?)?;
             Ok::<_, StoreError>(())
@@ -1386,7 +1386,7 @@ mod tests {
                     ("owner", json!({"name":"Fixture worker"})),
                     ("gone", json!({"name":"Deleted worker","deletedAt":now})),
                 ] {
-                    let mut agent = json!({"id":id,"rootId":id,"epoch":0,"status":"waiting",
+                    let mut agent = json!({"compactions":0,"id":id,"rootId":id,"epoch":0,"status":"waiting",
                         "autoWake":true,"cwd":std::env::temp_dir().to_string_lossy(),
                         "accountKey":"default","provider":"codex"});
                     agent.as_object_mut().expect("object").extend(
@@ -1423,14 +1423,8 @@ mod tests {
                         fields.as_object().expect("object").clone(),
                     );
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record,monitor_status,monitor_error_candidate,monitor_created) VALUES(?1,?2,?3,?4,?5)",
-                        rusqlite::params![
-                            id,
-                            record.to_string(),
-                            record["status"].as_str().unwrap_or("lost"),
-                            record["status"] == "lost" || (record["status"] == "failed" && record["exitCode"].as_i64().is_none()),
-                            record["created"].as_f64().unwrap_or(0.0)
-                        ],
+                        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
+                        rusqlite::params![id, record.to_string()],
                     )?;
                 }
 

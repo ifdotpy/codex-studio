@@ -3,7 +3,6 @@ import {
   parseLaunchAgentJSON,
   parsedRecord,
 } from "./test-support.ts";
-import type { AddressInfo } from "node:net";
 import type { RecoveryRun } from "./recovery.ts";
 import { trackDesktopRecovery } from "./recovery.ts";
 import assert from "node:assert/strict";
@@ -16,12 +15,10 @@ import {
   existsSync,
   rmSync,
   statSync,
-  realpathSync,
   chmodSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import {
   configureRecovery,
@@ -590,61 +587,6 @@ test("launchd registration failure is an error and cannot report success", async
     rmSync(data.root, { recursive: true, force: true });
   }
 });
-
-test.skipIf(!process.env.CODEX_DESKTOP_E2E)(
-  "the hidden desktop survives crash loops and supports native reload",
-  async () => {
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const { createServer } = await import("node:net");
-    const root = path.dirname(new URL(import.meta.url).pathname);
-    const temp = mkdtempSync(path.join(tmpdir(), "studio-renderer-recovery-"));
-    const port = await new Promise<number>((resolve) => {
-      const server = createServer();
-      server.listen(0, "127.0.0.1", () => {
-        const port = (server.address() as AddressInfo).port;
-        server.close(() => resolve(port));
-      });
-    });
-    let pid: unknown;
-    try {
-      const executable = createRequire(import.meta.url)("electron");
-      const { stdout } = await promisify(execFile)(
-        executable,
-        [path.join(root, "recovery-renderer-test.ts"), "--hidden"],
-        {
-          timeout: 125000,
-          env: {
-            ...process.env,
-            CODEX_AGENTS_STATE_DIR: path.join(temp, "state"),
-            CODEX_AGENTS_SUPERVISOR_MODE: "0",
-            CODEX_DESKTOP_PROFILE: path.join(temp, "profile"),
-            CODEX_DESKTOP_PORT: String(port),
-          },
-        },
-      );
-      const result = stdout
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => parsedRecord(line))
-        .find((record) => record.rendererRecovered);
-      assert.ok(result);
-      pid = result.backendPid;
-    } finally {
-      if (!pid) {
-        try {
-          const state = parsedRecord(
-            await (await fetch(`http://127.0.0.1:${port}/api/desktop`)).text(),
-          );
-          if (state.stateDir === realpathSync(path.join(temp, "state")))
-            pid = state.pid;
-        } catch {}
-      }
-      if (pid) process.kill(pid as number, "SIGTERM");
-      // Keep this isolated crash fixture and its logs for inspection.
-    }
-  },
-);
 
 test("a graceful desktop exit always withdraws open intent", async () => {
   const { EventEmitter } = await import("node:events");

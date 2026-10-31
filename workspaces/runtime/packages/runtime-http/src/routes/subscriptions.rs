@@ -10,6 +10,33 @@ use crate::router::HttpState;
 use serde_json::Value;
 use studio_runtime_schema::shared_values::SYNC_STREAM_EVENT_MAX_BYTES;
 
+pub(super) async fn auth_progress(state: &HttpState, request_id: &str) -> Option<Value> {
+    if let Some(driver) = state.account_driver.clone() {
+        let id = request_id.to_owned();
+        let receipt = studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-http/auth-progress",
+            move || {
+                driver.snapshot().map(|snapshot| {
+                    snapshot
+                        .logins
+                        .into_iter()
+                        .find(|value| value.get("requestId").and_then(Value::as_str) == Some(&id))
+                })
+            },
+        )
+        .await
+        .ok()?
+        .ok()?;
+        if let Some(receipt) = receipt {
+            return Some(receipt);
+        }
+    }
+    match &state.claude_login {
+        Some(login) => Some(login.progress(request_id).await.unwrap_or(Value::Null)),
+        None => Some(Value::Null),
+    }
+}
+
 /// Each generated resource kind has exactly one registered handler. A handler
 /// reads its records and durable cursor in one database snapshot. The byte bound
 /// includes its encoded payload; oversized data uses scoped recovery.
@@ -489,7 +516,7 @@ async fn content_fingerprint(state: HttpState, resource: ResourceRef) -> Option<
             // A scoped stream hint may precede the next stored transcript flush.
             let publication = state
                 .resource_notifications
-                .published_revision(&serde_json::to_value(&resource).ok()?)
+                .published_revision(&resource)
                 .ok()?;
             let store = state.store?;
             store
@@ -520,14 +547,9 @@ async fn content_fingerprint(state: HttpState, resource: ResourceRef) -> Option<
             })
             .await
             .ok(),
-        ResourceRef::AuthProgressResource(resource) => serde_json::to_vec(
-            &state
-                .claude_login?
-                .progress(&resource.request_id)
-                .await
-                .ok()?,
-        )
-        .ok(),
+        ResourceRef::AuthProgressResource(resource) => {
+            serde_json::to_vec(&auth_progress(&state, &resource.request_id).await?).ok()
+        }
         ResourceRef::VaultJobProgressResource(resource) => serde_json::to_vec(
             &super::host_secrets::job_progress(&state, resource.job, &resource.request_id).await,
         )
@@ -708,7 +730,7 @@ mod tests {
                 .expect("store"),
         );
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('lead',?1)", [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"idle","name":"Lead","threadId":"thread"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('lead',?1)", [json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"idle","name":"Lead","threadId":"thread"}).to_string()])?;
             tx.execute("INSERT INTO runtime_rooms(id,record) VALUES('room',?1)", [json!({"id":"room","kind":"broadcast","rootId":"lead","members":["lead"],"name":"Team"}).to_string()])?;
             for i in 0..40 {
                 tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,'room','lead',?2,?3,'{}')", rusqlite::params![format!("message-{i}"), "x".repeat(10_000), i])?;
@@ -766,9 +788,9 @@ mod tests {
             .await
             .expect("install production entity publisher");
         store.transaction_with(|tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"idle","name":"Lead","threadId":"thread"}))?)?;
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"idle","name":"Lead","threadId":"thread"}))?)?;
             tx.execute("INSERT INTO runtime_work(id,record) VALUES('assignment',?1)",[json!({"id":"assignment","rootId":"lead","title":"Published assignment","status":"running","created":1,"updated":1,"version":1,"results":[{"id":"evidence","agent":"lead","text":"Existing evidence","checks":"fixture","revision":"abc","files":[],"created":1}]}).to_string()])?;
-            tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('message',?1)", [json!({"id":"message","leadId":"lead","recipient":"lead","status":"open","responses":[],"author":"lead","text":"Initial complaint","created":1,"version":1}).to_string()])?;
+            tx.execute("INSERT INTO runtime_complaints(id,record) VALUES('message',?1)", [json!({"id":"message","leadId":"lead","recipient":"lead","status":"open","responses":[],"author":"lead","text":"Initial complaint","created":1,"updated":1,"readAt":null,"version":1}).to_string()])?;
             tx.execute("INSERT INTO runtime_rooms(id,record) VALUES('broadcast:lead',?1)", [json!({"id":"broadcast:lead","kind":"broadcast","rootId":"lead","members":["lead"],"name":"Team"}).to_string()])?;
             tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES('first','broadcast:lead','lead','First message',1,'{}')", [])?;
             tx.execute("INSERT INTO user_terminals(id,record,output,offset) VALUES('shell',?1,'a🙂',0)", [json!({"id":"shell","agent":"lead","title":"Shell","cwd":"/","created":1,"status":"running"}).to_string()])?;

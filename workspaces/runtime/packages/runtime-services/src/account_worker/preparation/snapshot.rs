@@ -177,18 +177,12 @@ impl PreparationResources {
             thread_config: Map<String, Value>,
             tools: Vec<thread::ToolDefinition>,
         }
-        let mut data: Bundled = decode(
-            serde_json::from_str(include_str!("../preparation-resources.json"))
-                .map_err(|_| invalid("preparation resources"))?,
-            "preparation resources",
-        )?;
-        let mut legacy_tools: Vec<thread::ToolDefinition> = decode(
-            serde_json::from_str(include_str!(
-                "../../../../../../../.agents/skills/codex-workspace/references/native-tools.json"
-            ))
-            .map_err(|_| invalid("legacy tools"))?,
-            "legacy tools",
-        )?;
+        let mut data: Bundled = serde_json::from_str(include_str!("../preparation-resources.json"))
+            .map_err(|_| invalid("preparation resources"))?;
+        let mut legacy_tools: Vec<thread::ToolDefinition> = serde_json::from_str(include_str!(
+            "../../../../../../../.agents/skills/codex-workspace/references/native-tools.json"
+        ))
+        .map_err(|_| invalid("legacy tools"))?;
         for tool in data.tools.iter_mut().chain(legacy_tools.iter_mut()) {
             studio_runtime_schema::task_results::apply_tool_contract(
                 &tool.name,
@@ -1179,8 +1173,9 @@ fn preserve_complaint(
         let Some(raw) = raw else {
             return Ok(true);
         };
-        let complaint: Value = serde_json::from_str(&raw).map_err(|_| invalid("complaint"))?;
-        if complaint["leadId"] != agent {
+        let complaint: studio_runtime_schema::complaint_record::ComplaintRecord =
+            serde_json::from_str(&raw).map_err(|_| invalid("complaint"))?;
+        if complaint.lead_id() != Some(agent) {
             return Ok(true);
         }
     }
@@ -1435,43 +1430,57 @@ pub(super) fn submission_snapshot(
     let plan=record_by_id(tx, "runtime_plans", root_id)?.map(|s|serde_json::from_str::<Value>(&s).map_err(|_|invalid("plan"))).transpose()?.filter(|v|v["native"].is_object()).map(|v|decode(json!({"id":v["id"],"rootId":v["rootId"],"steps":v["native"].get("plan").cloned().unwrap_or_else(||json!([])),"explanation":v["native"].get("explanation").filter(|v|!v.is_null()).cloned().unwrap_or(json!(""))}),"plan")).transpose()?;
     let mut complaints = Vec::new();
     for raw in lead_complaints(tx, &intent.agent_id)? {
-        let v: Value = serde_json::from_str(&raw).map_err(|_| invalid("complaint"))?;
-        // Python only projects unanswered lead-addressed complaints into context.
-        // Unrelated and closed records need no body projection.
-        if v["leadId"] != intent.agent_id
-            || v["recipient"] != "lead"
-            || matches!(v["status"].as_str(), Some("resolved" | "declined"))
+        use studio_runtime_schema::complaint_record::{
+            ComplaintRecipient, ComplaintRecord, ComplaintSource, ComplaintStatus,
+        };
+        let complaint: ComplaintRecord =
+            serde_json::from_str(&raw).map_err(|_| invalid("complaint"))?;
+        if complaint.lead_id() != Some(intent.agent_id.as_str())
+            || complaint.recipient != ComplaintRecipient::Lead
         {
             continue;
         }
-        let authors = v["responses"]
-            .as_array()
-            .ok_or_else(|| invalid("complaint/responses"))?
-            .iter()
-            .map(|r| decode(r["author"].clone(), "response/author"))
-            .collect::<Result<Vec<String>, _>>()?;
-        if !(v["sourceType"] == "user_task" && v["status"] == "open")
+        let status = match complaint.status {
+            ComplaintStatus::Open => turn::ComplaintStatus::Open,
+            ComplaintStatus::InProgress => turn::ComplaintStatus::InProgress,
+            ComplaintStatus::Resolved | ComplaintStatus::Declined => continue,
+        };
+        let authors: Vec<String> = complaint
+            .responses
+            .into_iter()
+            .map(|response| response.author)
+            .collect();
+        let legacy_user_task = complaint.source_type == Some(ComplaintSource::UserTask);
+        if !(legacy_user_task && complaint.status == ComplaintStatus::Open)
             && authors.contains(&intent.agent_id)
         {
             continue;
         }
-        let author: String = decode(v["author"].clone(), "complaint/author")?;
+        let author = complaint
+            .author
+            .ok_or_else(|| invalid("complaint/author"))?;
         let author_name = AgentRepository::get(tx, &AgentId::from(author.as_str()))?
             .map(|a| text(&a.value(), "name"))
             .transpose()?
             .flatten();
         complaints.push(turn::Complaint {
-            id: decode(v["id"].clone(), "complaint/id")?,
+            id: complaint.id,
             lead_id: intent.agent_id.clone(),
-            recipient: decode(v["recipient"].clone(), "complaint/recipient")?,
-            status: decode(v["status"].clone(), "complaint/status")?,
-            legacy_user_task: v["sourceType"] == "user_task",
+            recipient: turn::Recipient::Lead,
+            status,
+            legacy_user_task,
             response_authors: authors,
             author,
             author_name,
-            text: decode(v["text"].clone(), "complaint/text")?,
-            version: optional(&v, "version")?,
-            created: decode(v["created"].clone(), "complaint/created")?,
+            text: complaint.text.ok_or_else(|| invalid("complaint/text"))?,
+            version: complaint
+                .version
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_| invalid("complaint/version"))?,
+            created: complaint
+                .created
+                .ok_or_else(|| invalid("complaint/created"))?,
         });
     }
     ensure_context_tables(tx)?;
@@ -1482,10 +1491,7 @@ pub(super) fn submission_snapshot(
         .query_map([&intent.agent_id], |r| r.get::<_, String>(0))?
         .map(|r| {
             let r = r?;
-            decode(
-                serde_json::from_str(&r).map_err(|_| invalid("manifest"))?,
-                "manifest",
-            )
+            serde_json::from_str(&r).map_err(|_| invalid("manifest"))
         })
         .collect::<Result<Vec<_>, WorkerError>>()?;
     let epoch = turn::Epoch(
@@ -1715,6 +1721,18 @@ mod resource_tests {
         };
         event.text = r#"{"complaints":[{"complaint_id":"bad"},{}]}"#.into();
         assert!(super::preserve_complaint(&tx, "lead", &event).is_err());
+        event.text = r#"{"complaints":[{"complaint_id":"ok"}]}"#.into();
+        assert!(super::preserve_complaint(&tx, "lead", &event).is_err());
+        for (id, lead) in [("ok", "lead"), ("foreign", "other")] {
+            let record = format!(
+                r#"{{"id":"{id}","author":"a","leadId":"{lead}","status":"open","text":"t","created":1,"readAt":null,"recipient":"lead","responses":[],"updated":null,"version":null}}"#
+            );
+            tx.execute(
+                "UPDATE runtime_complaints SET record=?1 WHERE id=?2",
+                [&record, id],
+            )
+            .unwrap();
+        }
         for (text, expected) in [
             (r#"{"complaints":[{}, {"complaint_id":"bad"}]}"#, true),
             (r#"{"complaints":[{"complaint_id":"ok"}]}"#, false),
@@ -1852,7 +1870,7 @@ mod resource_tests {
             for (error, context_wait) in [(Value::Null, Value::Null), (json!("plain error"), Value::Null),
                 (json!({"message":"Claude Code process exited with code 143"}), Value::Null),
                 (json!({"message":"context error","codexErrorInfo":"misalignmentPolicyViolation"}), json!("repair"))] {
-                let record = json!({"id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                let record = json!({"compactions":0,"id":"lead","rootId":"lead","epoch":1,"status":"queued",
                     "isLead":true,"autoWake":true,"provider":"claude","accountKey":"default",
                     "cwd":"/project","threadId":"existing-thread","error":error,
                     "lastCompletedTurn":"old-turn","lastCompletedTurnStatus":"interrupted",
@@ -1885,7 +1903,7 @@ mod resource_tests {
             .expect("resources");
         store.transaction_with(move |tx| {
             for error in [json!(false), json!(42), json!([])] {
-                let record = json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"queued",
+                let record = json!({"compactions":0,"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"queued",
                     "isLead":true,"provider":"claude","cwd":"/project","threadId":"existing-thread","error":error});
                 AgentRepository::put(tx, &AgentRecord::from_value(record.clone()).expect("agent"))?;
                 assert!(matches!(thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"), None),
@@ -2056,7 +2074,7 @@ mod resource_tests {
             .expect("runtime resources");
         store
             .transaction_with(move |tx| {
-                let root = json!({"id":"root","rootId":"root","epoch":1,"status":"completed",
+                let root = json!({"compactions":0,"id":"root","rootId":"root","epoch":1,"status":"completed",
                     "isLead":true,"name":"Lead","provider":"codex","accountKey":"default"});
                 AgentRepository::put(tx, &AgentRecord::from_value(root).expect("root"))?;
                 let review = json!({"id":"review","rootId":"root","parentId":"root",
@@ -2086,7 +2104,7 @@ mod resource_tests {
         let alias = directory.path().join("alias");
         std::os::unix::fs::symlink(&root, &alias).expect("store alias");
         let stored_cwd = alias.join("projects/project/lines/main");
-        let record = json!({"id":"worker", "rootId":"worker", "epoch":1,
+        let record = json!({"compactions":0,"id":"worker", "rootId":"worker", "epoch":1,
             "status":"paused", "isLead":true, "role":"implementer", "provider":"codex",
             "model":"fake-model",
             "accountKey":"default", "cwd":stored_cwd, "workspaceMode":"layr-native",
@@ -2151,7 +2169,7 @@ mod resource_tests {
             (Value::Null, false, canonical_custom),
             (Value::Null, true, default_root.clone()),
         ] {
-            let record = json!({"accountKey":"default","id":"reviewer", "rootId":"reviewer", "epoch":1,
+            let record = json!({"compactions":0,"accountKey":"default","id":"reviewer", "rootId":"reviewer", "epoch":1,
                 "isLead":true, "role":"reviewer", "provider":"claude", "status":"queued",
                 "cwd":"/scratch", "workspaceMode":"layr-native", "layrReady":ready,
                 "layrReadCwd":default_root.join("projects/project/lines/main"),
@@ -2300,7 +2318,7 @@ mod resource_tests {
                     // of an agent whose saved source is legacy.
                     for (thread_id, source) in [(Some("thread-old"), None), (None, Some("legacy"))]
                     {
-                        let mut record = json!({"id":mode, "rootId":mode, "epoch":1,
+                        let mut record = json!({"compactions":0,"id":mode, "rootId":mode, "epoch":1,
                             "status":"running", "isLead":true, "name":"Lead", "provider":"codex",
                             "accountKey":"default", "executionMode":mode, "cwd":"/line",
                             "workspaceMode":if vm { "layr" } else { "layr-native" }});
@@ -2395,7 +2413,7 @@ mod resource_tests {
                         (Some("thread-old"), Some("legacy")),
                         (None, None),
                     ] {
-                        let mut record = json!({"id":"claude", "rootId":"claude", "epoch":1,
+                        let mut record = json!({"compactions":0,"id":"claude", "rootId":"claude", "epoch":1,
                             "status":"running", "isLead":true, "name":"Lead", "provider":"claude",
                             "accountKey":"default", "executionMode":mode, "cwd":"/line"});
                         if let Some(thread_id) = thread_id {
@@ -2749,7 +2767,7 @@ mod workspace_fence_tests {
     async fn receipt_store_and_scratch_changes_are_isolatable() {
         let state = tempfile::tempdir().expect("state");
         let store = RuntimeStore::open(Some(state.path())).await.expect("store");
-        let record = json!({"accountKey":"default","id":"reviewer", "rootId":"reviewer", "epoch":1,
+        let record = json!({"compactions":0,"accountKey":"default","id":"reviewer", "rootId":"reviewer", "epoch":1,
             "status":"running", "isLead":true, "provider":"claude", "cwd":"/scratch",
             "workspaceMode":"layr-native", "role":"reviewer", "layrStoreRoot":"/store-a", "layrScratch":"/scratch"});
         let saved = record.clone();
@@ -2880,11 +2898,11 @@ mod workspace_fence_tests {
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
             .expect("resources");
         store.transaction_with(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"lead","rootId":"lead","epoch":1,
                 "status":"running","isLead":true,"cwd":"/project","provider":studio_runtime_schema::ProviderKind::Claude})).expect("lead"))?;
             for mode in crate::claude_controls::PERMISSION_MODES {
                 for resumed in [false, true] {
-                    let mut record = json!({"accountKey":"default","id":"worker","rootId":"lead","parentId":"lead","epoch":1,
+                    let mut record = json!({"compactions":0,"accountKey":"default","id":"worker","rootId":"lead","parentId":"lead","epoch":1,
                         "status":"queued","isLead":false,"role":"implementer","provider":"claude","cwd":"/project",
                         "workspaceMode":"shared","yoloMode":*mode == "bypassPermissions","claudeOptions":{"permissionMode": mode}});
                     if resumed {
@@ -2921,7 +2939,7 @@ mod workspace_fence_tests {
         }).collect();
         store
             .transaction_with(move |tx| {
-                let root = json!({"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"running",
+                let root = json!({"compactions":0,"accountKey":"default","id":"lead","rootId":"lead","epoch":1,"status":"running",
                 "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout","provider":studio_runtime_schema::ProviderKind::Claude});
                 AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
                 for (mode, provider, role, ready, fenced, expected_sandbox) in [
@@ -2983,7 +3001,7 @@ mod workspace_fence_tests {
                         "danger-full-access",
                     ),
                 ] {
-                    let record = json!({"accountKey":"default","id":"worker","rootId":"lead","parentId":"lead",
+                    let record = json!({"compactions":0,"accountKey":"default","id":"worker","rootId":"lead","parentId":"lead",
                     "epoch":1,"status":"queued","isLead":false,"role":role,"provider":provider,
                     "cwd":"/worker copy:quoted\"path","hostProjectPath":"/parent copy",
                     "workspaceMode":mode,"worktree":mode == "worktree","worktreeReady":ready,

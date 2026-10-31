@@ -97,16 +97,27 @@ async fn send_now_recovers_unsent_batch_after_result_gc() {
                 )?
             );
             let mut changed = current;
-            changed.extra.get_mut("startAttempt").expect("attempt")["observedTurnId"] =
-                json!("other-turn");
+            changed
+                .start_attempt
+                .as_mut()
+                .expect("attempt")
+                .observed_turn_id = Some("other-turn".into());
             assert!(
                 !studio_runtime_store::SchedulerRepository::proven_unsent_pending_batch(
                     tx, &changed, &target
                 )?
             );
-            changed.extra.get_mut("startAttempt").expect("attempt")["observedTurnId"] = Value::Null;
-            changed.extra.get_mut("startAttempt").expect("attempt")["executionOutcome"] =
-                json!("unknown");
+            changed
+                .start_attempt
+                .as_mut()
+                .expect("attempt")
+                .observed_turn_id = None;
+            changed
+                .start_attempt
+                .as_mut()
+                .expect("attempt")
+                .execution_outcome =
+                Some(studio_runtime_schema::persistence::ExecutionStatus::Unknown);
             assert!(
                 !studio_runtime_store::SchedulerRepository::proven_unsent_pending_batch(
                     tx, &changed, &target
@@ -267,7 +278,7 @@ fn rust_policy_snapshot(store: &RuntimeStore, agent: &str) -> Value {
             row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,i64>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?,row.get::<_,i64>(5)?,
         ))).expect("sync snapshot queries").collect::<Result<Vec<_>,_>>().expect("sync snapshot reads");
     let completed = reader
-        .prepare("SELECT id FROM runtime_completed_turns ORDER BY id")
+        .prepare("SELECT chat||':'||provider_turn FROM turns WHERE state='completed' ORDER BY 1")
         .expect("completed-turn snapshot prepares")
         .query_map([], |row| row.get::<_, String>(0))
         .expect("completed-turn snapshot queries")
@@ -280,15 +291,8 @@ fn rust_policy_snapshot(store: &RuntimeStore, agent: &str) -> Value {
         .expect("sync-document snapshot queries")
         .collect::<Result<Vec<_>, _>>()
         .expect("sync-document snapshot reads");
-    let sync_versions = reader
-        .prepare("SELECT seq FROM sync_versions ORDER BY seq")
-        .expect("sync-version snapshot prepares")
-        .query_map([], |row| row.get::<_, i64>(0))
-        .expect("sync-version snapshot queries")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("sync-version snapshot reads");
     json!({"agent":raw_agent,"events":events,"metadata":metadata,"sync":sync,
-        "completed":completed,"syncDocuments":sync_documents,"syncVersions":sync_versions})
+        "completed":completed,"syncDocuments":sync_documents})
 }
 
 #[tokio::test]
@@ -313,7 +317,10 @@ async fn submitted_marker_survives_settlement_write_failure() {
     let record = AgentRepository::get(&reader, &AgentId::from(agent.as_str()))
         .expect("agent")
         .expect("present");
-    assert_eq!(record.extra["startAttempt"]["submitted"], true);
+    assert_eq!(
+        record.start_attempt.as_ref().expect("attempt").submitted,
+        Some(true)
+    );
     let dispatching: i64 = reader
         .query_row(
             "SELECT COUNT(*) FROM runtime_events WHERE agent=?1 AND status='dispatching'",
@@ -338,7 +345,15 @@ async fn submitted_marker_survives_settlement_write_failure() {
     // Python restart recovery restores an accepted submission to the queue
     // until native history confirms its outcome (codex_restart_recovery.py).
     assert_eq!(record.status, AgentStatus::Queued);
-    assert_eq!(record.extra["restartRecovery"]["stage"], "held");
+    assert_eq!(
+        record
+            .restart_recovery
+            .as_ref()
+            .expect("restart")
+            .stage
+            .as_deref(),
+        Some("held")
+    );
 }
 #[tokio::test]
 async fn restart_keeps_a_scoped_receipt_without_replaying_events() {
@@ -366,7 +381,15 @@ async fn restart_keeps_a_scoped_receipt_without_replaying_events() {
         .expect("agent")
         .expect("present");
     assert_eq!(record.status, AgentStatus::Interrupted);
-    assert_eq!(record.extra["restartRecovery"]["turnId"], "known");
+    assert_eq!(
+        record
+            .restart_recovery
+            .as_ref()
+            .expect("restart")
+            .turn_id
+            .as_deref(),
+        Some("known")
+    );
     assert_eq!(record.in_flight, Some(false));
     assert_eq!(record.auto_wake, Some(false));
     let counts:(i64,i64)=reader.query_row("SELECT SUM(status='delivered'),SUM(status='pending') FROM runtime_events WHERE agent=?1",[&agent],|r|Ok((r.get(0)?,r.get(1)?))).expect("events");
@@ -386,7 +409,7 @@ async fn startup_recovers_valid_submitted_agent_while_skipping_malformed_neighbo
             .expect("persist submitted attempt")
     );
 
-    let malformed = json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+    let malformed = json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
         "id": "malformed-submitted",
         "rootId": "malformed-submitted",
         "epoch": "invalid",
@@ -418,7 +441,14 @@ async fn startup_recovers_valid_submitted_agent_while_skipping_malformed_neighbo
         .expect("read healthy agent")
         .expect("healthy agent remains");
     assert_eq!(good.status, AgentStatus::Queued);
-    assert_eq!(good.extra["restartRecovery"]["stage"], "held");
+    assert_eq!(
+        good.restart_recovery
+            .as_ref()
+            .expect("restart")
+            .stage
+            .as_deref(),
+        Some("held")
+    );
     let malformed_after: String = reader
         .query_row(
             "SELECT record FROM runtime_agents WHERE id='malformed-submitted'",

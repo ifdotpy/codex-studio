@@ -133,10 +133,6 @@ pub fn action(
         QueueCommand::Reorder(reorder_body) => {
             reorder(transaction, &agent, &reorder_body.ordered_ids, rows)?
         }
-        QueueCommand::Cancel(_) => {
-            let (target_id, _) = target_row(body, rows)?;
-            QueueWriteRepository::update_status(transaction, target_id, "cancelled")?;
-        }
         QueueCommand::Edit(edit) => {
             let (target_id, row) = target_row(body, rows)?;
             let text = event_write::python_strip(edit.text.as_str());
@@ -153,9 +149,12 @@ pub fn action(
             QueueWriteRepository::update_text(transaction, target_id, text)?;
             if row.get("text").and_then(Value::as_str) != Some(text) {
                 let mut metadata = read_metadata(transaction, target_id)?;
-                metadata
-                    .extensions
-                    .insert("acceptedAt".into(), json!(unix_time()?));
+                metadata.extensions.insert(
+                    "acceptedAt".into(),
+                    studio_runtime_schema::raw_json::RawJson(serde_json::value::to_raw_value(
+                        &unix_time()?,
+                    )?),
+                );
                 QueueWriteRepository::put_typed_metadata(transaction, target_id, &metadata)?;
             }
         }
@@ -195,7 +194,13 @@ pub fn action(
             if matches!(body, QueueCommand::SendNow(_)) {
                 let mut metadata = read_metadata(transaction, target_id)?;
                 if metadata.requested_delivery.is_missing()
-                    && !event_write::truthy(metadata.extensions.get("sendNow"))
+                    && !event_write::truthy(
+                        metadata
+                            .extensions
+                            .get("sendNow")
+                            .and_then(|raw| serde_json::from_str(raw.0.get()).ok())
+                            .as_ref(),
+                    )
                 {
                     let original = metadata.delivery.value().cloned().unwrap_or_else(|| {
                         studio_runtime_schema::event_metadata::StoredDelivery::canonical(
@@ -210,7 +215,12 @@ pub fn action(
                         studio_runtime_schema::DeliveryMoment::CurrentTurn,
                     ),
                 );
-                metadata.extensions.insert("sendNow".into(), json!(true));
+                metadata.extensions.insert(
+                    "sendNow".into(),
+                    studio_runtime_schema::raw_json::RawJson(serde_json::value::to_raw_value(
+                        &true,
+                    )?),
+                );
                 QueueWriteRepository::put_typed_metadata(transaction, target_id, &metadata)?;
             }
         }
@@ -221,7 +231,7 @@ pub fn action(
     if recover_failed {
         agent.status = AgentStatus::Queued;
         agent.extra.insert("error".into(), Value::Null);
-        agent.extra.remove("startAttempt");
+        agent.start_attempt = None;
     }
     if updated.items != current.items || recover_failed {
         let revision = match agent.extra.get("queueMutationRevision") {

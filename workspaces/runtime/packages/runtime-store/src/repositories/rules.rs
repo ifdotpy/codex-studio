@@ -145,7 +145,7 @@ mod tests {
              CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
              INSERT INTO runtime_rules VALUES('r2','{\"id\":\"r2\",\"agent\":\"a1\",\"epoch\":0,\"name\":\"Rule\",\"kind\":\"interval\",\"status\":\"active\",\"intervalSeconds\":60,\"nextAt\":1,\"created\":1,\"command\":\"\",\"text\":\"\",\"checks\":0,\"wakes\":0,\"inFlight\":false,\"fileGeneration\":0,\"stallTimeoutSeconds\":1800,\"stallWakeGeneration\":-1,\"livenessCommand\":\"\",\"event\":\"\"}');
              INSERT INTO runtime_rules VALUES('r1','{\"id\":\"r1\",\"agent\":\"a1\",\"epoch\":0,\"name\":\"Rule\",\"kind\":\"interval\",\"status\":\"active\",\"intervalSeconds\":60,\"nextAt\":1,\"created\":1,\"command\":\"\",\"text\":\"\",\"checks\":0,\"wakes\":0,\"inFlight\":false,\"fileGeneration\":0,\"stallTimeoutSeconds\":1800,\"stallWakeGeneration\":-1,\"livenessCommand\":\"\",\"event\":\"\"}');
-             INSERT INTO runtime_agents(id,record) VALUES('a1','{\"id\":\"a1\",\"provider\":\"codex\",\"accountKey\":\"default\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\"}');"),
+             INSERT INTO runtime_agents(id,record) VALUES('a1','{\"id\":\"a1\",\"provider\":\"codex\",\"accountKey\":\"default\",\"rootId\":\"a1\",\"epoch\":0,\"status\":\"idle\",\"compactions\":0}');"),
         )
         .expect("declared tables create");
         db.execute_batch(crate::agent_volatile::agent_volatile_table_sql())
@@ -185,7 +185,7 @@ mod tests {
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                  PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-             CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);",
+             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);",
         )
         .expect("rule and sync tables create");
         {
@@ -245,7 +245,7 @@ mod tests {
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                  PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER PRIMARY KEY,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-             CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);
+             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);
              CREATE TRIGGER fail_rule_insert BEFORE INSERT ON runtime_rules
                  BEGIN SELECT RAISE(ABORT,'injected'); END;",
         )

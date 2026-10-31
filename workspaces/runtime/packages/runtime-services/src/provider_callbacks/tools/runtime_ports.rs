@@ -354,7 +354,7 @@ impl MonitorCreatePort for ManagedMonitorCreateAdapter {
                 .map_err(monitor_error)?;
             let workspace = self
                 .environment
-                .prepare_workspace(store, actor.record(), args, &request_id)
+                .prepare_workspace(store, actor.record(), &request_id)
                 .map_err(|error| match error {
                     crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(
                         message,
@@ -548,29 +548,73 @@ struct ManagedInterruptAdapter {
 }
 
 impl super::runtime_dispatch::InterruptPort for ManagedInterruptAdapter {
+    /// The interrupt of a descendant is a `stop` command of the one command path. The tool
+    /// call id is the command id, so a repeated call returns the first reference.
     fn stop_by_agent<'a>(
         &'a self,
         store: Arc<RuntimeStore>,
         actor: &'a Actor,
         target_id: &'a str,
-        _request_id: &'a str,
+        request_id: &'a str,
         now: f64,
     ) -> BoxFuture<'a, Result<DispatchedOperation, Error>> {
         Box::pin(async move {
-            match crate::agent_lifecycle_runtime::stop_by_agent(
-                store,
-                actor.record().id.0.as_str(),
-                actor.record().epoch,
-                target_id,
-                false,
-                now,
-                Arc::clone(&self.lifecycle),
-            )
-            .await
-            {
-                Ok(value) => Ok(DispatchedOperation::Applied(OperationResult::reply(&value))),
-                Err(error) => Err(management_error(error)),
+            use crate::commands::{self, CommandError};
+            use studio_runtime_schema::command::{Command, StopBody};
+            let record = actor.record();
+            let principal = crate::principal::Principal::Agent {
+                id: record.id.0.clone(),
+                epoch: u64::try_from(record.epoch).unwrap_or_default(),
+            };
+            let request = commands::agent_request(
+                &record.id.0,
+                request_id,
+                Command::Stop {
+                    target: target_id.to_owned(),
+                    body: StopBody { descendants: false },
+                },
+            );
+            let now_ms = (now * 1000.0) as i64;
+            let lifecycle = Arc::clone(&self.lifecycle);
+            let for_transaction = Arc::clone(&lifecycle);
+            let executed = store
+                .transaction_with_error(move |tx| {
+                    commands::execute_sync(
+                        tx,
+                        &principal,
+                        &request,
+                        now_ms,
+                        now,
+                        Some(&*for_transaction),
+                    )
+                })
+                .await
+                .map_err(|error| match error {
+                    CommandError::Forbidden => {
+                        Error::Invalid("You can interrupt only your descendants")
+                    }
+                    CommandError::Lifecycle(error) => management_error(error),
+                    CommandError::Store(error) => Error::Store(error),
+                    CommandError::RequestResult(error) => {
+                        Error::Store(studio_runtime_store::StoreError::RequestResult(error))
+                    }
+                    CommandError::Invalid(message) | CommandError::Conflict(message) => {
+                        Error::Invalid(message)
+                    }
+                    CommandError::NotFound
+                    | CommandError::TooOld
+                    | CommandError::Coordination(_) => Error::Invalid("Agent stop was refused"),
+                })?;
+            if !executed.replayed {
+                // A failed wake cannot roll back the committed stop. The effect owner
+                // retries the staged effects.
+                if let Err(error) = lifecycle.committed().await {
+                    eprintln!("Lifecycle committed; effect delivery remains pending: {error}");
+                }
             }
+            Ok(DispatchedOperation::Applied(OperationResult::reply(
+                &executed.reply,
+            )))
         })
     }
 }

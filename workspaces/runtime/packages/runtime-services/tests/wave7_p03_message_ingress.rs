@@ -472,10 +472,6 @@ fn logical_state(store: &RuntimeStore) -> BTreeMap<String, Value> {
             "SELECT json_object('seq',seq,'scope',scope,'id',id,'payload',json(payload),'deleted',deleted) FROM sync_documents ORDER BY rowid",
         ),
         (
-            "sync_versions",
-            "SELECT json_object('seq',seq,'scope',scope,'hash',hash,'deleted',deleted,'updated',updated) FROM sync_versions ORDER BY rowid",
-        ),
-        (
             "runtime_capacity_retries",
             "SELECT json_object('id',id,'agent',agent,'record',json(CASE WHEN json_extract(record,'$.status')='finished' THEN json_set(record,'$.updatedAt','generated timestamp') ELSE record END)) FROM runtime_capacity_retries ORDER BY rowid",
         ),
@@ -489,6 +485,9 @@ fn assert_json(actual: &Value, expected: &Value, path: &str) {
     match (actual, expected) {
         (Value::Object(a), Value::Object(b)) => {
             let mut b = b.clone();
+            if !a.contains_key("sync_versions") {
+                b.remove("sync_versions");
+            }
             if a.contains_key("rootId") && a.contains_key("epoch") {
                 for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
                     .into_iter()
@@ -540,12 +539,13 @@ fn snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)> {
         .expect("names")
         .map(|name| {
             let name = name.expect("name");
-            let mut query = connection
-                .prepare(
-                    &studio_runtime_store::agent_columns::select_declared_sql(&connection, &name)
-                        .expect("columns"),
-                )
-                .expect("table");
+            let mut sql =
+                studio_runtime_store::agent_columns::select_declared_sql(&connection, &name)
+                    .expect("columns");
+            if name == "sync_entity_meta" {
+                sql.push_str(" WHERE key != 'migration_catalog'");
+            }
+            let mut query = connection.prepare(&sql).expect("table");
             let count = query.column_count();
             let mut rows: Vec<String> = query
                 .query_map([], |row| {

@@ -1,6 +1,5 @@
 import { randomUUID } from "../uuid";
-import type { RxDocument } from "rxdb";
-import type { SyncDocument } from "./client";
+import type { Doc } from "./localCollection";
 import { isRemoteServerView } from "../servers/environment";
 import { hasNativeClient } from "../native/client";
 import { useNativeDrafts } from "../native/useNativeDrafts";
@@ -179,7 +178,7 @@ export function createBrowserDrafts(options: {
     const versions = useRef<DraftVersion[]>([]);
     const decoded = useRef(new WeakMap<object, DraftVersion>());
     const decodeDrafts = useCallback(
-      (docs: RxDocument<SyncDocument>[]): DraftVersion[] =>
+      (docs: Doc[]): DraftVersion[] =>
         docs.map((doc) => {
           const latest = doc.getLatest();
           let version = decoded.current.get(latest);
@@ -551,7 +550,7 @@ export function createBrowserDrafts(options: {
       let stopped = false,
         unsubscribe = () => {},
         cancel = () => {};
-      let pendingDocuments: RxDocument<SyncDocument>[] | undefined;
+      let pendingDocuments: Doc[] | undefined;
       const publication = createFrameBatch(() => {
         const docs = pendingDocuments;
         pendingDocuments = undefined;

@@ -26,7 +26,7 @@ pub fn tables() -> Value {
 }
 
 pub fn agent() -> Value {
-    json!({"id":"a","name":"Agent","rootId":"a","parentId":null,"accountKey":"default","accountHistory":[],"provider":"codex","threadId":"thread","turnId":"turn","model":"gpt-5","effort":"high","fastMode":false,"daybreakEnabled":false,"cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,"epoch":0,"status":"running"})
+    json!({"compactions":0,"id":"a","name":"Agent","rootId":"a","parentId":null,"accountKey":"default","accountHistory":[],"provider":"codex","threadId":"thread","turnId":"turn","model":"gpt-5","effort":"high","fastMode":false,"daybreakEnabled":false,"cyberAccessProgram":false,"cwd":"/disposable","deletedAt":null,"epoch":0,"status":"running"})
 }
 
 /// Creates the schema with the Rust store, then seeds the agent in both databases.
@@ -93,8 +93,13 @@ pub fn analytics(root: &Path) -> Connection {
 pub fn actual(db: &Connection, expected: &Value) -> Value {
     let mut result = json!({});
     for (table, _) in expected.as_object().expect("tables") {
+        let filter = if table == "analytics_meta" {
+            " WHERE key != 'migration_catalog'"
+        } else {
+            ""
+        };
         let mut stmt = db
-            .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+            .prepare(&format!("SELECT * FROM {table}{filter} ORDER BY rowid"))
             .expect("read");
         let cols = stmt
             .column_names()

@@ -1,3 +1,11 @@
+fn typed_question(value: &serde_json::Value) -> studio_runtime_store::RequestRecord {
+    let mut fixture = value.clone();
+    fixture["status"] = serde_json::json!("pending");
+    fixture["createdAt"] = serde_json::json!(0.0);
+    fixture["params"] = serde_json::json!({});
+    serde_json::from_str(&fixture.to_string()).expect("typed question fixture")
+}
+
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Value, json};
 use std::{fs, path::Path};
@@ -63,9 +71,34 @@ struct LegacyRule {
     epoch: Option<i64>,
     error: Option<String>,
 }
-fn corpus() -> RadioCorpus {
+async fn corpus() -> RadioCorpus {
     let bytes =
         crate::media_auth_fixtures::state_bytes(include_str!("wave7_p19/initial-state.json"));
+    let template = tempfile::tempdir().expect("radio template");
+    for (name, bytes) in ["canvas.sqlite3", "analytics.sqlite3"]
+        .into_iter()
+        .zip(bytes)
+    {
+        tokio::fs::write(template.path().join(name), bytes)
+            .await
+            .expect("template database");
+    }
+    let store = RuntimeStore::open(Some(template.path()))
+        .await
+        .expect("migrate template");
+    store
+        .checkpoint_wal_passive()
+        .await
+        .expect("checkpoint template");
+    drop(store);
+    let bytes = [
+        tokio::fs::read(template.path().join("canvas.sqlite3"))
+            .await
+            .expect("canvas template"),
+        tokio::fs::read(template.path().join("analytics.sqlite3"))
+            .await
+            .expect("analytics template"),
+    ];
     let expected = if std::env::var("STUDIO_RUNTIME_CORPUS_FULL").as_deref() == Ok("1") {
         include_str!("wave7_p19/expected-full.json")
     } else {
@@ -75,6 +108,52 @@ fn corpus() -> RadioCorpus {
     let mut cases: Vec<Value> = serde_json::from_str(expected).expect("frozen radio corpus");
     for case in &mut cases {
         for side in ["before", "after"] {
+            if let Some(rows) = case[side]["complaints"].as_array_mut() {
+                for row in rows {
+                    let mut record: Value =
+                        serde_json::from_str(row["record"].as_str().expect("complaint record"))
+                            .expect("complaint JSON");
+                    for (field, value) in [
+                        ("recipient", json!("lead")),
+                        ("version", Value::Null),
+                        ("created", Value::Null),
+                        ("updated", Value::Null),
+                        ("readAt", Value::Null),
+                        ("responses", json!([])),
+                    ] {
+                        record
+                            .as_object_mut()
+                            .expect("complaint object")
+                            .entry(field)
+                            .or_insert(value);
+                    }
+                    row["record"] = json!(record.to_string());
+                }
+            }
+            if let Some(rows) = case[side]["sync_entities"].as_array_mut() {
+                for row in rows {
+                    if row["collection"] == "agent" && row["deleted"] == 0 {
+                        let mut payload: Value =
+                            serde_json::from_str(row["payload"].as_str().expect("agent payload"))
+                                .expect("agent payload JSON");
+                        payload["value"]["compactions"] = json!(0);
+                        row["payload"] = json!(payload.to_string());
+                    }
+                }
+            }
+            if let Some(rows) = case[side]["agents"].as_array_mut() {
+                for row in rows {
+                    let mut record: Value =
+                        serde_json::from_str(row["record"].as_str().expect("agent record"))
+                            .expect("agent JSON");
+                    record
+                        .as_object_mut()
+                        .expect("agent object")
+                        .entry("compactions")
+                        .or_insert(json!(0));
+                    row["record"] = json!(record.to_string());
+                }
+            }
             if let Some(rows) = case[side]["rules"].as_array_mut() {
                 for row in rows {
                     let saved: LegacyRule =
@@ -187,6 +266,8 @@ fn copy_template(corpus: &RadioCorpus, root: &Path) {
     for (name, contents) in &corpus.databases {
         fs::write(root.join(name), contents).expect("copy template database");
     }
+    let db = rusqlite::Connection::open(root.join("canvas.sqlite3")).expect("template identity");
+    db.execute_batch("DELETE FROM sync_identity; INSERT INTO sync_identity(id) VALUES(lower(hex(randomblob(16))))").expect("fresh identity");
 }
 async fn seed(store: &RuntimeStore, snapshot: &Value) {
     let snapshot = snapshot.clone();
@@ -213,7 +294,16 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
 
     store
         .transaction(move |db| {
+            let mut completed_turns = Vec::new();
             for (table, rows) in snapshot.as_object().expect("snapshot") {
+                if table == "completed_turns" {
+                    // A completed turn is a row of the `turns` table; the old table is a
+                    // read-only view. Record them after the chats exist.
+                    for row in rows.as_array().expect("rows") {
+                        completed_turns.push(row["id"].as_str().expect("turn id").to_owned());
+                    }
+                    continue;
+                }
                 if table == "operation_receipts" {
                     db.execute("DELETE FROM request_results", [])?;
                     let receipts: Vec<LegacyReceipt> = serde_json::from_value(rows.clone()).expect("receipts");
@@ -260,6 +350,12 @@ async fn seed(store: &RuntimeStore, snapshot: &Value) {
                 }
             }
             db.execute("INSERT OR IGNORE INTO runtime_agent_volatile(id) SELECT id FROM runtime_agents", [])?;
+            studio_runtime_store::migrations::migrate_radio_room(db)?;
+            studio_runtime_store::migrations::migrate_project_teams(db)?;
+            for id in completed_turns {
+                let (chat, turn) = id.split_once(':').expect("completed turn id");
+                studio_runtime_store::domain::complete_turn(db, chat, turn)?;
+            }
             Ok(())
         })
         .await
@@ -273,6 +369,23 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
         if table == "operation_receipts" {
             // Replay and conflict checks below exercise the current request_results owner.
             result.insert(table.clone(), json!([]));
+            continue;
+        }
+        if table == "completed_turns" {
+            // Completed turns are rows of the `turns` table; the old table is frozen.
+            let ids = db
+                .prepare(
+                    "SELECT chat||':'||provider_turn FROM turns WHERE state='completed' ORDER BY 1",
+                )
+                .expect("completed turns")
+                .query_map([], |row| row.get::<_, String>(0))
+                .expect("rows")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("rows read");
+            result.insert(
+                table.clone(),
+                json!(ids.iter().map(|id| json!({"id":id})).collect::<Vec<_>>()),
+            );
             continue;
         }
         let order = if table == "chat_messages" {
@@ -334,6 +447,12 @@ fn state(store: &RuntimeStore, tables: &Value) -> Value {
 fn normalize(value: &mut Value) {
     match value {
         Value::Object(map) => {
+            if map.contains_key("path") && map.get("peerTeams") == Some(&json!([])) {
+                map.remove("peerTeams");
+            }
+            if map.contains_key("teamId") && map.get("direct") == Some(&json!(false)) {
+                map.remove("direct");
+            }
             if map.contains_key("rootId") && map.contains_key("epoch") && map.contains_key("status")
             {
                 for key in studio_runtime_store::agent_volatile::AGENT_VOLATILE_FIELDS
@@ -439,7 +558,11 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
                 let [first, second] = case["drafts"].as_array().expect("Python drafts").as_slice() else {
                     panic!("expected two Python drafts");
                 };
-                let drafts = [first, second].map(|value| AgentRecord::from_value(value.clone()).expect("checked Python agent draft"));
+                let drafts = [first, second].map(|value| {
+                    let mut value = value.clone();
+                    value["compactions"] = json!(0);
+                    AgentRecord::from_value(value).expect("checked Python agent draft")
+                });
                 radio_runtime::create_with(std::sync::Arc::clone(&store), &case["body"], Box::new(Creation(drafts))).await.map(|reply| serde_json::from_str(&serde_json::to_string(&reply).expect("reply encodes")).expect("reply decodes"))
             }
         },
@@ -458,7 +581,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
             radio_runtime::route_question_answer(
                 db,
                 &prepared,
-                &case["body"]["question"],
+                &typed_question(&case["body"]["question"]),
                 case["body"]["text"].as_str().unwrap_or("answer"),
                 None,
                 1000.0,
@@ -480,7 +603,7 @@ async fn run(store: std::sync::Arc<RuntimeStore>, case: &Value) -> Result<Value,
 }
 #[tokio::test]
 async fn provider_identity_radio_rejects_unknown_participant_before_enqueue() {
-    let corpus = corpus();
+    let corpus = corpus().await;
     let case = corpus
         .cases
         .iter()
@@ -514,7 +637,8 @@ async fn provider_identity_radio_rejects_unknown_participant_before_enqueue() {
 
 #[tokio::test]
 async fn python_written_radio_corpus_and_restart_replay() {
-    let corpus = corpus();
+    let corpus = corpus().await;
+    let mut checked_room_context = false;
     for original_case in &corpus.cases {
         let root = tempfile::tempdir().expect("radio state directory");
         copy_template(&corpus, root.path());
@@ -559,6 +683,30 @@ async fn python_written_radio_corpus_and_restart_replay() {
             continue;
         }
         let mut actual = state(&store, &original_case["before"]);
+        if original_case["mode"] == "tick" {
+            for event in actual["events"].as_array().into_iter().flatten() {
+                if original_case["before"]["events"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|old| old["id"] == event["id"])
+                {
+                    continue;
+                }
+                if let Some((_, tail)) = event["text"]
+                    .as_str()
+                    .and_then(|text| text.split_once("Shared room (JSON):\n"))
+                {
+                    let context = tail
+                        .split_once("\nShared messages since your last successful reply (JSON):\n")
+                        .expect("messages")
+                        .0;
+                    let parsed: Value = serde_json::from_str(context).expect("context");
+                    assert_eq!(context, parsed.to_string());
+                    checked_room_context = true;
+                }
+            }
+        }
         let mut expected = original_case["after"].clone();
         expected["operation_receipts"] = json!([]);
         normalize(&mut actual);
@@ -624,13 +772,14 @@ async fn python_written_radio_corpus_and_restart_replay() {
             );
         }
     }
+    assert!(checked_room_context);
 }
 
 // AFTER failures include the attempted write. BEFORE failures exercise the same
 // SQLite rollback contract with less work performed. Reuse the rolled-back store
 // across tables, then cross each operation's restart boundary once.
 async fn failpoints_rollback_then_restart(name: &str, tables: &[&str]) {
-    let corpus = corpus();
+    let corpus = corpus().await;
     let mut case = corpus
         .cases
         .iter()
@@ -725,12 +874,12 @@ fn database_rows(store: &RuntimeStore) -> Vec<(String, Vec<Vec<SqlValue>>)> {
     tables
         .into_iter()
         .map(|name| {
-            let mut query = db
-                .prepare(
-                    &studio_runtime_store::agent_columns::select_declared_sql(&db, &name)
-                        .expect("columns"),
-                )
-                .expect("snapshot table");
+            let mut sql = studio_runtime_store::agent_columns::select_declared_sql(&db, &name)
+                .expect("columns");
+            if name == "sync_entity_meta" {
+                sql.push_str(" WHERE key != 'migration_catalog'");
+            }
+            let mut query = db.prepare(&sql).expect("snapshot table");
             let count = query.column_count();
             let rows = query
                 .query_map([], |r| {
@@ -748,7 +897,7 @@ fn database_rows(store: &RuntimeStore) -> Vec<(String, Vec<Vec<SqlValue>>)> {
 
 #[tokio::test]
 async fn answered_question_releases_one_continuation_and_malformed_rows_write_nothing() {
-    let corpus = corpus();
+    let corpus = corpus().await;
     let case = corpus
         .cases
         .iter()
@@ -760,7 +909,7 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
     seed(&store, &case["before"]).await;
     assert!(radio_runtime::holds_floor(&store.test_reader().expect("read"), "a").expect("floor"));
     let prepared = std::sync::Arc::new(PreparedHost::load(&store).await.expect("prepare"));
-    let question = case["body"]["question"].clone();
+    let question = typed_question(&case["body"]["question"]);
     store.transaction_with(move |db|->Result<(),ProjectsError> {
         assert_eq!(radio_runtime::route_question_answer(db,&prepared,&question,"answer",None,1000.0)?, radio_runtime::QuestionAnswerRoute::ConsumedByRadio);
         db.execute("UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id='q'",[])?;
@@ -820,7 +969,7 @@ async fn answered_question_releases_one_continuation_and_malformed_rows_write_no
 
 #[tokio::test]
 async fn pending_interrupt_recovers_before_claim_and_unknown_is_never_resent() {
-    let corpus = corpus();
+    let corpus = corpus().await;
     let case = corpus
         .cases
         .iter()
@@ -1009,7 +1158,7 @@ fn input(id: &str, kind: &str) -> QueueEvent {
 /// ordinary row, tagged answers included, is deliverable.
 #[tokio::test]
 async fn live_radio_turn_admits_only_its_tagged_answer_and_releases_the_rest() {
-    let corpus = corpus();
+    let corpus = corpus().await;
     let case = corpus
         .cases
         .iter()

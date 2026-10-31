@@ -6,6 +6,12 @@ use crate::{error::ApiError, generated, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde_json::Value;
 use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::{
+    claude_permissions::PermissionMode,
+    creation_intent::{AgentRole, CreationIntent, ReviewDefaults, WorkerDefaults},
+    queue_command::Field,
+    records::WorkspaceMode,
+};
 use studio_runtime_services::agents_create::{
     self, Context, CreateError, Creation, OperationError,
 };
@@ -13,6 +19,114 @@ use studio_runtime_services::host_worker_create::{
     AccountIdentity, CreationCatalog, ExecutionSettings,
 };
 use studio_runtime_services::provider_adapter::model_provider;
+
+macro_rules! nullable_field {
+    ($value:expr) => {
+        match $value {
+            None => Field::Missing,
+            Some(None) => Field::Null,
+            Some(Some(value)) => Field::Value(value),
+        }
+    };
+}
+
+fn worker_defaults(value: &generated::WorkerDefaults) -> WorkerDefaults {
+    WorkerDefaults {
+        model: value.model.clone(),
+        effort: value.effort.clone(),
+        fast_mode: value.fast_mode,
+        daybreak_enabled: nullable_field!(value.daybreak_enabled),
+        account_key: nullable_field!(value.account_key.clone()),
+        delegation_depth: value.delegation_depth,
+    }
+}
+
+fn review_defaults(value: &generated::ReviewDefaults) -> ReviewDefaults {
+    ReviewDefaults {
+        model: value.model.clone().map_or(Field::Null, Field::Value),
+        effort: value.effort.clone().map_or(Field::Null, Field::Value),
+        fast_mode: value.fast_mode,
+    }
+}
+
+fn lead_intent(body: &generated::CreateLeadRequest) -> CreationIntent {
+    CreationIntent {
+        account_key: body.account_key.clone(),
+        cwd: body.cwd.clone(),
+        daybreak_enabled: nullable_field!(body.daybreak_enabled),
+        effort: nullable_field!(body.effort.clone()),
+        fast_mode: nullable_field!(body.fast_mode),
+        id: nullable_field!(body.id.clone()),
+        model: nullable_field!(body.model.clone()),
+        previous: nullable_field!(body.previous.clone()),
+        project_folder: nullable_field!(body.project_folder.clone()),
+        project_id: nullable_field!(body.project_id.clone()),
+        project_server_id: nullable_field!(body.project_server_id.clone()),
+        reuse_empty: body.reuse_empty,
+        review_defaults: nullable_field!(
+            body.review_defaults
+                .as_ref()
+                .map(|value| value.as_ref().map(review_defaults))
+        ),
+        worker_defaults: nullable_field!(
+            body.worker_defaults
+                .as_ref()
+                .map(|value| value.as_ref().map(worker_defaults))
+        ),
+        workspace_mode: body.workspace_mode.as_ref().map(|mode| match mode {
+            generated::CreateLeadRequestWorkspaceMode::LayrNative => WorkspaceMode::LayrNative,
+            generated::CreateLeadRequestWorkspaceMode::Layr => WorkspaceMode::Layr,
+            generated::CreateLeadRequestWorkspaceMode::Worktree => WorkspaceMode::Worktree,
+        }),
+        yolo_mode: body.yolo_mode,
+        ..CreationIntent::default()
+    }
+}
+
+fn agent_intent(body: &generated::CreateAgentRequest) -> CreationIntent {
+    CreationIntent {
+        account_key: body.account_key.clone(),
+        concurrency: body.concurrency,
+        cwd: body.cwd.clone(),
+        daybreak_enabled: nullable_field!(body.daybreak_enabled),
+        effort: nullable_field!(body.effort.clone()),
+        fast_mode: nullable_field!(body.fast_mode),
+        id: nullable_field!(body.id.clone()),
+        max_agents: body.max_agents,
+        model: nullable_field!(body.model.clone()),
+        name: body.name.clone(),
+        parent: nullable_field!(body.parent.clone()),
+        permission_mode: body.permission_mode.as_ref().map(|mode| match mode {
+            generated::CreateAgentRequestPermissionMode::Default => PermissionMode::Default,
+            generated::CreateAgentRequestPermissionMode::AcceptEdits => PermissionMode::AcceptEdits,
+            generated::CreateAgentRequestPermissionMode::Auto => PermissionMode::Auto,
+            generated::CreateAgentRequestPermissionMode::Plan => PermissionMode::Plan,
+            generated::CreateAgentRequestPermissionMode::BypassPermissions => {
+                PermissionMode::BypassPermissions
+            }
+        }),
+        profile_id: nullable_field!(body.profile_id.clone()),
+        prompt: Some(body.prompt.clone()),
+        role: body.role.as_ref().map(|role| match role {
+            generated::AgentRoleInput::Orchestrator => AgentRole::Orchestrator,
+            generated::AgentRoleInput::Implementer => AgentRole::Implementer,
+            generated::AgentRoleInput::Reviewer => AgentRole::Reviewer,
+        }),
+        worker_defaults: nullable_field!(
+            body.worker_defaults
+                .as_ref()
+                .map(|value| value.as_ref().map(worker_defaults))
+        ),
+        workspace_mode: body.workspace_mode.as_ref().map(|mode| match mode {
+            generated::CreateAgentRequestWorkspaceMode::LayrNative => WorkspaceMode::LayrNative,
+            generated::CreateAgentRequestWorkspaceMode::Layr => WorkspaceMode::Layr,
+            generated::CreateAgentRequestWorkspaceMode::Worktree => WorkspaceMode::Worktree,
+            generated::CreateAgentRequestWorkspaceMode::Shared => WorkspaceMode::Shared,
+        }),
+        yolo_mode: body.yolo_mode,
+        ..CreationIntent::default()
+    }
+}
 
 /// Compose the same fresh model admission and P02 host snapshot used by agent
 /// creation for managed Spawn, Review, and monitor admission.
@@ -149,7 +263,6 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
         &self,
         _store: &studio_runtime_store::RuntimeStore,
         actor: &studio_runtime_store::AgentRecord,
-        _args: &Value,
         _request_id: &str,
     ) -> Result<
         Box<dyn studio_runtime_services::monitor_runtime::WorkspaceAdmission + Send + Sync>,
@@ -231,7 +344,7 @@ mod workspace_admission_tests {
     #[test]
     fn native_parent_admits_native_layr_without_image_metadata() {
         let native = studio_runtime_store::AgentRecord::from_value(
-            serde_json::json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+            serde_json::json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"native-parent","rootId":"native-parent","epoch":1,"status":"queued",
                 "workspaceMode":"layr-native","cwd":"/fake/project"
             }),
@@ -250,7 +363,7 @@ mod workspace_admission_tests {
             .expect("runtime store opens");
         let record = |id: &str, epoch: i64, status: &str| {
             studio_runtime_store::AgentRecord::from_value(
-                serde_json::json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
+                serde_json::json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,
                     "id":id,"rootId":"lead","epoch":epoch,"status":status,
                     "workspaceMode":"shared","cwd":"/fake/project"
                 }),
@@ -326,7 +439,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationAccountRead
             .collect();
         Ok(ManagedCreationAccountListing {
             accounts,
-            default_account_groups: snapshot.default_account_groups.clone(),
+            default_account_groups: snapshot.default_account_groups,
         })
     }
 
@@ -806,7 +919,7 @@ async fn create_lead_with_model(
         || body.review_defaults.is_some();
     let requested_model = body.model.as_ref().and_then(Option::as_deref);
     let request = Creation {
-        intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
+        intent: lead_intent(&body),
         catalog: body.effort.is_some()
             || body.fast_mode.is_some()
             || body.daybreak_enabled.is_some()
@@ -912,7 +1025,7 @@ async fn create_agent(
         return Err(ApiError::internal());
     }
     let mut request = Creation {
-        intent: serde_json::to_value(&body).map_err(|_| ApiError::internal())?,
+        intent: agent_intent(&body),
         catalog: body.model.as_ref().is_some_and(Option::is_some)
             || body.effort.is_some()
             || body.fast_mode.is_some()
@@ -1407,15 +1520,13 @@ async fn conversation(
         worker_defaults: body
             .worker_defaults
             .as_ref()
-            .map(serde_json::to_value)
-            .transpose()
-            .map_err(|_| ApiError::internal())?,
+            .and_then(Option::as_ref)
+            .map(worker_defaults),
         review_defaults: body
             .review_defaults
             .as_ref()
-            .map(serde_json::to_value)
-            .transpose()
-            .map_err(|_| ApiError::internal())?,
+            .and_then(Option::as_ref)
+            .map(review_defaults),
         id: body.id.clone(),
         expected_account: body.expected_account_key.clone(),
         excluded: body.excluded_account_keys.clone().map(|mut keys| {
@@ -1467,7 +1578,7 @@ async fn conversation(
     if let Some(defaults) = request.worker_defaults.as_ref() {
         // Python resolves worker_defaults against settings_catalog after the
         // target account is known (`codex_runtime.py:5484-5486`).
-        let worker_model = defaults.get("model").and_then(Value::as_str);
+        let worker_model = defaults.model.as_deref();
         let worker_account = worker_settings_catalog_account(defaults);
         if worker_model.is_some() || worker_account.is_some() {
             wait_for_agent_catalog(
@@ -1506,8 +1617,8 @@ async fn conversation(
         let review_model = request
             .review_defaults
             .as_ref()
-            .and_then(|defaults| defaults.get("model"))
-            .and_then(Value::as_str);
+            .and_then(|defaults| defaults.model.value())
+            .map(String::as_str);
         wait_for_agent_catalog(
             &state,
             AgentCatalogWaitRequest {
@@ -1790,7 +1901,7 @@ mod title_http_tests {
                 .await
                 .expect("runtime store opens"),
         );
-        let agent = AgentRecord::from_value(json!({
+        let agent = AgentRecord::from_value(json!({"compactions":0,
             "id":"title-http-agent",
             "rootId":"title-http-agent",
             "epoch":1,
@@ -1998,15 +2109,12 @@ mod creation_catalog_flow_tests {
     }
 }
 
-fn worker_settings_catalog_account(defaults: &Value) -> Option<String> {
-    defaults
-        .get("account_key")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+fn worker_settings_catalog_account(defaults: &WorkerDefaults) -> Option<String> {
+    defaults.account_key.value().cloned()
 }
 
 fn review_settings_catalog_account(
-    request_worker_defaults: Option<&Value>,
+    request_worker_defaults: Option<&WorkerDefaults>,
     stored_worker_account: Option<&str>,
 ) -> Option<String> {
     request_worker_defaults.map_or_else(
@@ -2042,10 +2150,41 @@ mod conversation_catalog_admission_tests {
         worker_settings_catalog_account,
     };
     use serde_json::json;
+    use studio_runtime_schema::{creation_intent::WorkerDefaults, queue_command::Field};
+
+    fn typed_defaults(account_key: Field<String>) -> WorkerDefaults {
+        WorkerDefaults {
+            account_key,
+            model: None,
+            effort: None,
+            fast_mode: false,
+            daybreak_enabled: Field::Missing,
+            delegation_depth: None,
+        }
+    }
 
     fn parse_request(mut value: serde_json::Value) -> crate::generated::ConversationRequest {
         value["id"] = json!("agent");
         serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn creation_intent_retains_http_clear_and_explicit_permissions() {
+        let body: crate::generated::CreateAgentRequest = serde_json::from_str(
+            r#"{"prompt":"Task","model":"gpt-6-luna","effort":null,"permission_mode":"plan","workspaceMode":"shared"}"#,
+        ).unwrap();
+        let intent = super::agent_intent(&body);
+        assert_eq!(intent.model, Field::Value("gpt-6-luna".into()));
+        assert_eq!(intent.effort, Field::Null);
+        assert!(intent.fast_mode.is_missing());
+        assert_eq!(
+            intent.permission_mode,
+            Some(studio_runtime_schema::claude_permissions::PermissionMode::Plan)
+        );
+        assert_eq!(
+            intent.workspace_mode,
+            Some(studio_runtime_schema::records::WorkspaceMode::Shared)
+        );
     }
 
     #[test]
@@ -2096,14 +2235,14 @@ mod conversation_catalog_admission_tests {
         );
         assert_eq!(
             review_settings_catalog_account(
-                Some(&json!({"account_key":"selected-worker"})),
+                Some(&typed_defaults(Field::Value("selected-worker".into()))),
                 Some("stored-worker")
             )
             .as_deref(),
             Some("selected-worker")
         );
         assert_eq!(
-            review_settings_catalog_account(Some(&json!({"account_key": null})), None),
+            review_settings_catalog_account(Some(&typed_defaults(Field::Null)), None),
             None
         );
         assert_eq!(review_settings_catalog_account(None, None), None);
@@ -2111,29 +2250,18 @@ mod conversation_catalog_admission_tests {
 
     #[test]
     fn lead_worker_and_review_catalogs_follow_the_selected_worker_account() {
-        let request = json!({
-            "account_key": "claude-local",
-            "model": "default",
-            "worker_defaults": {
-                "account_key": "default",
-                "model": "gpt-6-luna",
-                "effort": "high",
-                "fast_mode": false
-            },
-            "review_defaults": {"model": "gpt-6.1-sol", "effort": "high"}
-        });
-        let worker = &request["worker_defaults"];
-        let worker_account = worker_settings_catalog_account(worker);
+        let worker = typed_defaults(Field::Value("default".into()));
+        let worker_account = worker_settings_catalog_account(&worker);
         assert_eq!(worker_account.as_deref(), Some("default"));
         assert_eq!(
-            review_settings_catalog_account(Some(worker), None).as_deref(),
+            review_settings_catalog_account(Some(&worker), None).as_deref(),
             Some("default")
         );
     }
 
     #[test]
     fn unpinned_worker_defaults_admission_uses_automatic_account_selection() {
-        for account_key in [None, Some(json!(null))] {
+        for (account_key, typed_key) in [(None, Field::Missing), (Some(json!(null)), Field::Null)] {
             let mut defaults = json!({"model": null, "effort": null, "fast_mode": false});
             if let Some(account_key) = account_key {
                 defaults["account_key"] = account_key;
@@ -2143,7 +2271,10 @@ mod conversation_catalog_admission_tests {
                     "worker_defaults": defaults
                 }))
             ));
-            assert_eq!(worker_settings_catalog_account(&defaults), None);
+            assert_eq!(
+                worker_settings_catalog_account(&typed_defaults(typed_key)),
+                None
+            );
         }
         let request = json!({
             "worker_defaults": {
@@ -2152,10 +2283,11 @@ mod conversation_catalog_admission_tests {
             }
         });
         assert!(!conversation_settings_need_conversation_account(
-            &parse_request(request.clone())
+            &parse_request(request)
         ));
         assert_eq!(
-            worker_settings_catalog_account(&request["worker_defaults"]).as_deref(),
+            worker_settings_catalog_account(&typed_defaults(Field::Value("worker-account".into())))
+                .as_deref(),
             Some("worker-account")
         );
     }

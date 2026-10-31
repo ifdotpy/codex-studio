@@ -235,13 +235,7 @@ pub fn publish_agent(transaction: &Transaction<'_>, record: &Value) -> Result<Va
 }
 
 fn same_intent(saved: &str, requested: &str) -> bool {
-    match (
-        serde_json::from_str::<Value>(saved),
-        serde_json::from_str::<Value>(requested),
-    ) {
-        (Ok(saved), Ok(requested)) => saved == requested,
-        _ => false,
-    }
+    saved == requested
 }
 
 fn replay_lead(
@@ -294,17 +288,25 @@ fn replay_lead(
 fn replay_agent(
     transaction: &Connection,
     id: &str,
-    request: &Value,
+    request: &studio_runtime_schema::creation_intent::CreationIntent,
     validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Option<Value>, CreateError> {
-    let Some(record) = load_agent_value(transaction, id, &validate)? else {
+    let Some(agent) = AgentRepository::get(transaction, &AgentId::from(id))? else {
         return Ok(None);
     };
-    if crate::event_write::truthy(record.get("deletedAt")) {
+    let record = agent.value();
+    if !validate("PersistedAgentRecord", &record) {
+        return Err(CreateError::InvalidStoredObject {
+            table: "runtime_agents",
+            id: id.to_owned(),
+        });
+    }
+    if agent.is_deleted() {
         return Err(CreateError::Deleted);
     }
-    let saved = record
-        .get("creationIntent")
+    let saved = agent
+        .creation_intent
+        .as_ref()
         .ok_or(CreateError::MissingCreationIntent)?;
     if saved != request {
         return Err(CreateError::Conflict);
@@ -421,7 +423,8 @@ pub(crate) fn ensure_project(
         "accountRevision":1,
         "homeServerId":server,
         "locations":[{"serverId":server,"path":path,"projectId":path}],
-        "locationsRevision":0
+        "locationsRevision":0,
+        "peerTeams":[]
     });
     transaction
         .execute(
@@ -475,28 +478,33 @@ fn create_agent(
     created: f64,
     validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, CreateError> {
-    create_agent_with_identity(transaction, id, prompt, record, created, validate)
+    create_agent_with_identity(transaction, id, prompt, record, created, None, validate)
 }
 
 fn create_agent_with_identity(
     transaction: &Transaction<'_>,
     id: &str,
     prompt: &str,
-    record: Value,
+    mut record: Value,
     created: f64,
+    creation_intent: Option<studio_runtime_schema::creation_intent::CreationIntent>,
     validate: impl Fn(&str, &Value) -> bool,
 ) -> Result<Value, CreateError> {
+    let mut agent: AgentRecord =
+        serde_json::from_value(record.clone()).map_err(|_| CreateError::InvalidStoredObject {
+            table: "runtime_agents",
+            id: id.to_owned(),
+        })?;
+    if let Some(intent) = creation_intent {
+        record["creationIntent"] = json!(intent);
+        agent.creation_intent = Some(intent);
+    }
     if !validate("PersistedAgentRecord", &record) {
         return Err(CreateError::InvalidStoredObject {
             table: "runtime_agents",
             id: id.to_owned(),
         });
     }
-    let agent: AgentRecord =
-        serde_json::from_value(record.clone()).map_err(|_| CreateError::InvalidStoredObject {
-            table: "runtime_agents",
-            id: id.to_owned(),
-        })?;
     let draft = record.get("needsTitle").and_then(Value::as_bool) == Some(true);
     let expected_status = if draft {
         AgentStatus::Idle
@@ -753,12 +761,93 @@ mod tests {
                  CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
                  CREATE TABLE sync_documents(seq INTEGER,scope TEXT,id TEXT,payload TEXT,deleted INTEGER);
-                 CREATE TABLE sync_versions(seq INTEGER,scope TEXT,hash TEXT,deleted INTEGER,updated REAL);"),
+                 CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);"),
             )
             .expect("agent-create tables exist");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
             .expect("volatile agent table creates");
+    }
+
+    #[test]
+    fn legacy_lead_signature_is_not_equivalent_to_new_bytes() {
+        assert!(!super::same_intent(r#"{"id": "lead"}"#, r#"{"id":"lead"}"#));
+    }
+
+    #[test]
+    fn legacy_lead_signature_conflict_does_not_create_another_agent() {
+        use studio_runtime_schema::creation_intent::CreationIntent;
+        let connection = database();
+        let legacy = r#"{"cwd":"/project","model":null,"previous":null,"worker_defaults":{"account_key":"worker","effort":"high","fast_mode":false,"model":"gpt-6-luna"},"workspaceMode":"worktree"}"#;
+        let typed: CreationIntent = serde_json::from_str(legacy).unwrap();
+        let signature = serde_json::to_string(&typed).unwrap();
+        assert_ne!(legacy, signature);
+        let record = json!({"id":"lead","rootId":"lead","epoch":0,"status":"idle","accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"compactions":0});
+        connection
+            .execute(
+                "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                rusqlite::params!["lead", record.to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO runtime_lead_requests(id,agent,signature) VALUES(?1,?2,?3)",
+                rusqlite::params!["request", "lead", legacy],
+            )
+            .unwrap();
+        assert!(matches!(
+            super::replay_lead(&connection, "request", &signature, |_, _| true),
+            Err(super::CreateError::Conflict)
+        ));
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM runtime_agents", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn old_rename_signature_is_refused_without_reexecution() {
+        let mut connection = database();
+        studio_runtime_store::receipt_schema::create(&connection).expect("receipt schema");
+        connection.execute_batch("CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);").expect("settings and sync metadata");
+        let tx = connection.transaction().expect("transaction");
+        let record = json!({"compactions":0,"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle","name":"Before","isLead":true,"autoWake":true,"cwd":"/project","serverId":"server"});
+        super::save_agent(&tx, &record, &|_, _| true).expect("agent");
+        let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+        let old_signature = "53bbc5c020499da23063082195d71442534d8185f130191aaef5286830dafa44";
+        super::rename(
+            &tx,
+            "agent",
+            Some("First"),
+            Some(&request),
+            old_signature,
+            |_, _| true,
+        )
+        .expect("legacy request");
+        super::rename(&tx, "agent", Some("Later"), None, "later", |_, _| true)
+            .expect("later rename");
+        let signature = super::operations::rename_signature("agent", Some("First"));
+        assert!(matches!(
+            super::rename(
+                &tx,
+                "agent",
+                Some("First"),
+                Some(&request),
+                &signature,
+                |_, _| true
+            ),
+            Err(super::MutationError::Request(
+                studio_runtime_store::request_results::RequestResultError::Conflict { .. }
+            ))
+        ));
+        let record = super::load_agent_value(&tx, "agent", &|_, _| true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record["name"], "Later");
     }
 
     #[test]
@@ -768,7 +857,7 @@ mod tests {
         connection.execute_batch("CREATE TABLE runtime_orchestration_settings(id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);").expect("settings and sync metadata");
         let tx = connection.transaction().expect("transaction");
-        let record = json!({"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle","name":"Before","isLead":true,"autoWake":true,"cwd":"/project","serverId":"server"});
+        let record = json!({"compactions":0,"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle","name":"Before","isLead":true,"autoWake":true,"cwd":"/project","serverId":"server"});
         super::save_agent(&tx, &record, &|_, _| true).expect("agent");
         let request = studio_runtime_schema::persistence::RequestIdentity::issue_root();
         let first = super::rename(
@@ -827,8 +916,22 @@ mod tests {
     #[test]
     fn canonical_agent_replay_checks_every_saved_value_after_rename() {
         let connection = database();
-        let intent = json!({"prompt":"Task", "name":"Original", "cwd":"/project", "role":"orchestrator", "concurrency":32, "maxAgents":64, "tokenBudget":null, "parent":null, "profile_id":null});
-        let record = json!({"id":"agent", "provider":studio_runtime_schema::ProviderKind::Codex, "name":"Renamed", "creationIntent":intent});
+        use studio_runtime_schema::{
+            creation_intent::{AgentRole, CreationIntent},
+            queue_command::Field,
+        };
+        let intent = CreationIntent {
+            prompt: Some("Task".into()),
+            name: Some("Original".into()),
+            cwd: Some("/project".into()),
+            role: Some(AgentRole::Orchestrator),
+            concurrency: Some(32),
+            max_agents: Some(64),
+            parent: Field::Null,
+            profile_id: Field::Null,
+            ..Default::default()
+        };
+        let record = json!({"id":"agent", "rootId":"agent", "epoch":0, "status":"idle", "accountKey":"default", "compactions":0, "provider":studio_runtime_schema::ProviderKind::Codex, "name":"Renamed", "creationIntent":intent});
         connection
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
@@ -840,17 +943,33 @@ mod tests {
                 .expect("replay")
                 .is_some()
         );
-        for field in intent.as_object().expect("intent object").keys() {
-            let mut changed = intent.clone();
-            changed[field] = json!("changed");
+        for changed in [
+            CreationIntent {
+                prompt: Some("Changed".into()),
+                ..intent.clone()
+            },
+            CreationIntent {
+                name: Some("Changed".into()),
+                ..intent.clone()
+            },
+            CreationIntent {
+                cwd: Some("/other".into()),
+                ..intent.clone()
+            },
+            CreationIntent {
+                max_agents: None,
+                ..intent.clone()
+            },
+            CreationIntent {
+                parent: Field::Missing,
+                ..intent
+            },
+        ] {
             assert!(
                 super::replay_agent(&connection, "agent", &changed, |_, _| true).is_err(),
-                "{field}"
+                "changed intent must conflict"
             );
         }
-        let mut omitted = intent.clone();
-        omitted.as_object_mut().expect("object").remove("maxAgents");
-        assert!(super::replay_agent(&connection, "agent", &omitted, |_, _| true).is_err());
     }
 
     #[test]
@@ -875,21 +994,14 @@ mod tests {
     fn agent_creation_is_atomic_replayable_and_publishes_sync_projection() {
         let mut connection = database();
         let tx = connection.transaction().expect("transaction starts");
-        let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+        let record = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"agent-a", "rootId":"agent-a", "epoch":0, "status":"queued",
             "name":"Agent A", "prompt":"Start the task", "cwd":"/project",
             "accountKey":"default", "serverId":"server-a", "isLead":true, "needsTitle":false, "autoWake":true,
             "creationIntent":{"name":"Agent A","prompt":"Start the task"}
         });
-        let created = create_agent(
-            &tx,
-            "agent-a",
-            "Start the task",
-            record.clone(),
-            10.0,
-            |_, _| true,
-        )
-        .expect("record and initial event persist");
+        let created = create_agent(&tx, "agent-a", "Start the task", record, 10.0, |_, _| true)
+            .expect("record and initial event persist");
         assert_eq!(created["id"], "agent-a");
         tx.commit().expect("transaction commits");
 
@@ -936,10 +1048,15 @@ mod tests {
             json!([{"serverId":"server-a","path":"/project","projectId":"/project"}])
         );
         assert_eq!(project["locationsRevision"], 0);
+        assert_eq!(project["peerTeams"], json!([]));
 
         let tx = connection.transaction().expect("replay transaction starts");
-        super::replay_agent(&tx, "agent-a", &record["creationIntent"], |_, _| true)
-            .expect("same content replays");
+        let intent = studio_runtime_schema::creation_intent::CreationIntent {
+            name: Some("Agent A".into()),
+            prompt: Some("Start the task".into()),
+            ..Default::default()
+        };
+        super::replay_agent(&tx, "agent-a", &intent, |_, _| true).expect("same content replays");
         tx.commit().expect("replay transaction commits");
         let event_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM runtime_events", [], |row| row.get(0))
@@ -956,11 +1073,9 @@ mod tests {
         let tx = connection
             .transaction()
             .expect("conflict transaction starts");
-        let mut changed = record;
-        changed["creationIntent"]["name"] = json!("Changed");
-        assert!(
-            super::replay_agent(&tx, "agent-a", &changed["creationIntent"], |_, _| true).is_err()
-        );
+        let mut changed = intent;
+        changed.name = Some("Changed".into());
+        assert!(super::replay_agent(&tx, "agent-a", &changed, |_, _| true).is_err());
         drop(tx);
         let after = connection
             .query_row(
@@ -1032,7 +1147,7 @@ mod tests {
                      BEGIN SELECT RAISE(ABORT,'injected creation failure'); END;"
                 ))
                 .expect("install targeted failpoint");
-            let record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+            let record = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"agent-failpoint", "rootId":"parent", "parentId":"parent", "epoch":0,
                 "status":"queued", "name":"Agent", "prompt":"Task", "cwd":"/project",
                 "accountKey":"default", "isLead":false, "role":"implementer",
@@ -1092,7 +1207,11 @@ mod tests {
             replay_agent(
                 &transaction,
                 "agent-failpoint",
-                &record["creationIntent"],
+                &studio_runtime_schema::creation_intent::CreationIntent {
+                    name: Some("Agent".into()),
+                    prompt: Some("Task".into()),
+                    ..Default::default()
+                },
                 |_, _| true,
             )
             .expect("same creation intent replays");

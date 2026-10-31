@@ -318,11 +318,7 @@ impl RecoveryStore {
                     }
                     if let Some(turn) = latest {
                         let turn_id = turn["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
-                        if !tx.query_row(
-                            "SELECT EXISTS(SELECT 1 FROM runtime_completed_turns WHERE id=?1)",
-                            [format!("{id}:{turn_id}")],
-                            |r| r.get::<_, bool>(0),
-                        )? {
+                        if !studio_runtime_store::domain::turn_completed(tx, id, turn_id)? {
                             return Ok(RecoveryEffectResult::plain(RecoveryOutcome::Unconfirmed));
                         }
                     }
@@ -747,10 +743,7 @@ impl CompletionWriter for LifecycleCompletionWriter {
                     updated["activeTools"] = json!([]);
                     updated["lastCompletedTurn"] = turn["id"].clone();
                     updated["lastCompletedTurnStatus"] = turn["status"].clone();
-                    tx.execute(
-                        "INSERT OR IGNORE INTO runtime_completed_turns(id) VALUES (?1)",
-                        [format!("{id}:{turn_id}")],
-                    )?;
+                    studio_runtime_store::domain::complete_turn(tx, id, turn_id)?;
                     updated
                 };
                 if !normal {
@@ -959,12 +952,17 @@ fn interrupted_continuation(
             .query_map([id], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         for raw in rows {
-            let task: Value =
+            let task: studio_runtime_store::TaskRecord =
                 serde_json::from_str(&raw).map_err(|_| RecoveryError::CommitFailed)?;
-            let name = ["command", "tool", "kind", "id"]
-                .iter()
-                .find_map(|key| task[*key].as_str().filter(|value| !value.is_empty()))
-                .unwrap_or_default();
+            let name = task
+                .command
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .or_else(|| task.tool.as_deref().filter(|value| !value.is_empty()))
+                .unwrap_or(match task.kind() {
+                    studio_runtime_schema::task_record::TaskKind::Command => "command",
+                    studio_runtime_schema::task_record::TaskKind::Tool => "tool",
+                });
             work.push(name.chars().take(160).collect::<String>());
         }
     }

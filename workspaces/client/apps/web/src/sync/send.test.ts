@@ -14,6 +14,11 @@ vi.mock("../api", async (importOriginal) => ({
   syncGet,
   refreshSession,
   syncPost,
+  // The command path sends through the same transport.
+  command: {
+    send: (body: unknown, options: unknown) =>
+      syncPost("/api/commands", body, options),
+  },
 }));
 vi.mock("./client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./client")>()),
@@ -157,7 +162,7 @@ it("deliver keeps a marked-426 message queued without changing its identity", as
       created: 1,
     }),
   };
-  // Partial RxDB document fixture: delivery only reads id/getLatest/incrementalModify.
+  // Partial document fixture: delivery only reads id/getLatest/incrementalModify.
   const partialDoc = {
     id: record.id,
     getLatest: () => record,
@@ -197,7 +202,7 @@ it("deliver preserves the existing failure behavior for an unmarked 426", async 
       created: 1,
     }),
   };
-  // Partial RxDB document fixture: delivery only reads id/getLatest/incrementalModify.
+  // Partial document fixture: delivery only reads id/getLatest/incrementalModify.
   const partialDoc = {
     id: record.id,
     getLatest: () => record,

@@ -798,6 +798,7 @@ test("an interrupt between turns prevents later paid submissions and cleanup han
     ...args: Parameters<typeof smoke.backend.post>
   ) => {
     posts.push(args);
+    return { rows: [] } as never;
   };
   smoke.answered = async () => {
     smoke.cancel.abort(new Error("interrupted"));
@@ -1030,7 +1031,7 @@ test("cleanup recovers project registration by the exact owned path after a lost
     ...args: Parameters<typeof smoke.backend.post>
   ) => {
     posts.push(args);
-    return {};
+    return { rows: [] };
   };
   try {
     await smoke.cleanup();
@@ -1302,6 +1303,8 @@ test("cancellation during Claude steering prevents steer and final message submi
     ...args: Parameters<typeof smoke.backend.post>
   ) => {
     posts.push(args);
+    // A send response carries its receipt as a row.
+    return { rows: [] } as never;
   };
   smoke.transcript = async () =>
     [{ role: "assistant", turnId: "initial" }] satisfies Transcript[];
@@ -1390,8 +1393,9 @@ test("usage chat stays idle until returned permissions have been verified", asyn
           return record;
         }
         if (route === "/api/rename") return {};
-        assert.ok(smoke.usageEvidence.permissions![body.room as string]);
-        return {};
+        assert.equal(route, "/api/commands");
+        assert.ok(smoke.usageEvidence.permissions![body.target as string]);
+        return { status: "applied", rows: [] };
       };
       try {
         if (unsafe)
@@ -1404,7 +1408,7 @@ test("usage chat stays idle until returned permissions have been verified", asyn
           false,
         );
         assert.equal(
-          posts.filter((post) => post.route === "/api/messages").length,
+          posts.filter((post) => post.route === "/api/commands").length,
           unsafe ? 0 : 1,
         );
       } finally {

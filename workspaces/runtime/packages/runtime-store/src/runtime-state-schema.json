@@ -432,13 +432,6 @@
         "type": "index"
       },
       {
-        "create_order": 189,
-        "name": "runtime_federation_nonce_age",
-        "sql": "CREATE INDEX runtime_federation_nonce_age\n          ON runtime_federation_nonces(created)",
-        "table": "runtime_federation_nonces",
-        "type": "index"
-      },
-      {
         "create_order": 184,
         "name": "runtime_federation_outbox_peer",
         "sql": "CREATE INDEX runtime_federation_outbox_peer\n          ON runtime_federation_outbox(peer_id)",
@@ -705,13 +698,6 @@
         "type": "index"
       },
       {
-        "create_order": 24,
-        "name": "graph_agents",
-        "sql": "CREATE TABLE graph_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)",
-        "table": "graph_agents",
-        "type": "table"
-      },
-      {
         "create_order": 26,
         "name": "graph_edges",
         "sql": "CREATE TABLE graph_edges (\n                  id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,\n                  kind TEXT NOT NULL, UNIQUE(source, target, kind))",
@@ -968,13 +954,6 @@
         "name": "runtime_federation_invites",
         "sql": "CREATE TABLE runtime_federation_invites (\n          id TEXT PRIMARY KEY, record TEXT NOT NULL)",
         "table": "runtime_federation_invites",
-        "type": "table"
-      },
-      {
-        "create_order": 187,
-        "name": "runtime_federation_nonces",
-        "sql": "CREATE TABLE runtime_federation_nonces (\n          peer_id TEXT NOT NULL, nonce TEXT NOT NULL, created INTEGER NOT NULL,\n          PRIMARY KEY(peer_id,nonce))",
-        "table": "runtime_federation_nonces",
         "type": "table"
       },
       {

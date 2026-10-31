@@ -804,7 +804,7 @@ impl MonitorRuntime {
         let ids = self
             .store
             .read_async("runtime-services/monitor_reattach", move |connection| {
-                let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE id>?1 AND json_extract(record,'$.status') IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2")?;
+                let mut query = connection.prepare_cached("SELECT id FROM runtime_monitors WHERE id>?1 AND monitor_status IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running' ORDER BY id LIMIT ?2")?;
                 let ids = query
                     .query_map((&after, BATCH as i64), |row| row.get::<_, String>(0))?
                     .collect::<Result<Vec<_>, _>>()?;
@@ -1256,7 +1256,10 @@ fn agent_commit_needs_tick_in(
     if rules {
         return Ok(true);
     }
-    let running = "json_extract(m.record,'$.status')='running'";
+    // The IN predicate matches the active-monitor partial index; the equality
+    // narrows it to running monitors without parsing historical records.
+    let running =
+        "m.monitor_status IN ('running','starting','approval') AND m.monitor_status='running'";
     let sql = if full {
         format!("SELECT EXISTS(SELECT 1 FROM runtime_monitors m WHERE {running})")
     } else {
@@ -1278,18 +1281,16 @@ fn agent_commit_needs_tick_in(
     Ok(needed)
 }
 
-/// The earliest persisted work deadline, in Unix seconds.
-fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, MonitorError> {
-    let monitor_deadline: Option<f64> = connection
-        .query_row(
-            "SELECT MIN(deadline) FROM (
+// Keep the small active index as the outer loop. Without it, deadline reads
+// repeatedly pull the historical monitor records into the SQLite page cache.
+const MONITOR_DEADLINE_SQL: &str = "SELECT MIN(deadline) FROM (
                 SELECT CASE
                     WHEN COALESCE(json_extract(m.record,'$.stallProbeGeneration'),-1)=json_extract(m.record,'$.activityGeneration')
                         THEN COALESCE(json_extract(m.record,'$.stallProbeStarted'),json_extract(m.record,'$.activityAt'),json_extract(m.record,'$.created'))+?1
                     ELSE COALESCE(json_extract(m.record,'$.activityAt'),json_extract(m.record,'$.created'))+COALESCE(json_extract(m.record,'$.stallTimeoutSeconds'),?2)
                 END AS deadline
-                FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
-                WHERE json_extract(m.record,'$.status')='running'
+                FROM runtime_monitors m INDEXED BY runtime_monitor_startup_active CROSS JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
+                WHERE m.monitor_status IN ('running','starting','approval') AND m.monitor_status='running'
                   AND COALESCE(json_extract(m.record,'$.reattachRecovery.status'),'')!='running'
                   AND COALESCE(json_extract(m.record,'$.cancelRequested'),0)=0
                   AND json_extract(a.record,'$.autoWake')=1
@@ -1302,8 +1303,8 @@ fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, Mo
                        OR json_type(m.record,'$.stallProbeStarted') IN ('integer','real'))
                 UNION ALL
                 SELECT COALESCE(json_extract(m.record,'$.outputWakeAt'),0)+?3
-                FROM runtime_monitors m JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
-                WHERE json_extract(m.record,'$.status')='running'
+                FROM runtime_monitors m INDEXED BY runtime_monitor_startup_active CROSS JOIN runtime_agents a ON a.id=json_extract(m.record,'$.agent')
+                WHERE m.monitor_status IN ('running','starting','approval') AND m.monitor_status='running'
                   AND COALESCE(json_extract(m.record,'$.reattachRecovery.status'),'')!='running'
                   AND json_extract(a.record,'$.autoWake')=1
                   AND COALESCE(json_extract(a.record,'$.deletedAt'),0)=0
@@ -1312,11 +1313,18 @@ fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, Mo
                   AND EXISTS(SELECT 1 FROM json_each(m.record,'$.outputMatchesPending') WHERE value>0)
                 UNION ALL
                 SELECT COALESCE(json_extract(record,'$.cancelDispatch.nextAttemptAt'),0)
-                FROM runtime_monitors
-                WHERE json_extract(record,'$.status')='running'
+                FROM runtime_monitors INDEXED BY runtime_monitor_startup_active
+                WHERE monitor_status IN ('running','starting','approval') AND monitor_status='running'
                   AND json_extract(record,'$.cancelRequested')=1
                   AND COALESCE(json_extract(record,'$.cancelDispatch.status'),'pending')='pending'
-            )",
+            )";
+
+/// The earliest persisted work deadline, in Unix seconds. Monitor reads use
+/// the active-monitor partial index before evaluating active records' JSON.
+fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, MonitorError> {
+    let monitor_deadline: Option<f64> = connection
+        .query_row(
+            MONITOR_DEADLINE_SQL,
             rusqlite::params![
                 crate::monitor_policy::PROBE_LEASE_SECONDS,
                 crate::monitor_policy::DEFAULT_MONITOR_STALL_SECONDS as i64,
@@ -1380,7 +1388,7 @@ fn next_deadline_in(connection: &rusqlite::Connection) -> Result<Option<f64>, Mo
     // An unresolved reattach recovery settles once its window ends.
     let reattach_deadline = connection
         .query_row(
-            "SELECT MIN(json_extract(record,'$.reattachRecovery.startedAt')+?1) FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running'",
+            "SELECT MIN(json_extract(record,'$.reattachRecovery.startedAt')+?1) FROM runtime_monitors WHERE monitor_status IN ('running','starting','approval') AND json_extract(record,'$.reattachRecovery.status')='running'",
             [crate::monitor_policy::MONITOR_REATTACH_WINDOW_SECONDS],
             |row| row.get::<_, Option<f64>>(0),
         )
@@ -2026,7 +2034,7 @@ mod tests {
                      ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                     rusqlite::params![
                         id,
-                        serde_json::json!({"id":id,"rootId":id,"epoch":0,"status":"idle",
+                        serde_json::json!({"compactions":0,"id":id,"rootId":id,"epoch":0,"status":"idle",
                             "provider":provider})
                         .to_string()
                     ],
@@ -2049,7 +2057,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('m',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                    "INSERT INTO runtime_monitors(id,record) VALUES ('m',?1)",
                     [
                         serde_json::json!({"id":"m","agent":"claude-agent","status":"running"})
                             .to_string(),
@@ -2117,7 +2125,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('worker',?1)",
                     [
-                        serde_json::json!({"id":"worker","rootId":"codex-agent","epoch":0,
+                        serde_json::json!({"compactions":0,"id":"worker","rootId":"codex-agent","epoch":0,
                         "status":"idle","provider":"codex"})
                         .to_string(),
                     ],
@@ -2201,7 +2209,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"owner","rootId":"owner","epoch":0,"status":"ready",
                             "autoWake":true,"accountKey":"default","threadId":"thread"
                         })
@@ -2244,7 +2252,7 @@ mod tests {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
                 [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit","outputEventIds":["event"]}).to_string()])?;
             tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES ('event','owner','user','invalid','pending',0,0)", [])?;
             Ok::<_,studio_runtime_store::StoreError>(())
@@ -2270,7 +2278,7 @@ mod tests {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
                 [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}).to_string()])?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.unwrap();
@@ -2319,7 +2327,7 @@ mod tests {
         let (_root, store, port) = fixture().await;
         insert_active_owner(&store).await;
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+            tx.execute("INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
                 [serde_json::json!({"id":"watch","agent":"owner","epoch":0,"status":"running","requestId":"request","created":0,"activityAt":0,"activityGeneration":0,"bytes":0,"command":"","cwd":std::env::temp_dir(),"interactive":false,"livenessCommand":"","log":std::env::temp_dir().join("watch.log"),"stallTimeoutSeconds":1800,"stallWakeGeneration":-1,"successExitCodes":[0],"tail":"","timeout_ms":3600000,"wakeOn":"exit"}).to_string()])?;
             Ok::<_,studio_runtime_store::StoreError>(())
         }).await.unwrap();
@@ -2571,7 +2579,7 @@ mod tests {
                 for index in 0..count {
                     let id = format!("late-{index:03}");
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES (?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
                         (
                             &id,
                             crate::monitor_policy::complete_test_monitor(serde_json::json!({
@@ -2629,7 +2637,7 @@ mod tests {
                     let id = format!("monitor-{index:03}");
                     let activity_at = if index == 64 { 0.0 } else { 100.0 };
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES (?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
                         (
                             &id,
                             crate::monitor_policy::complete_test_monitor(serde_json::json!({
@@ -2670,7 +2678,7 @@ mod tests {
         for expected_probes in 1..=2 {
             store.transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('monitor',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost')) ON CONFLICT(id) DO UPDATE SET record=excluded.record,monitor_status=excluded.monitor_status",
+                    "INSERT INTO runtime_monitors(id,record) VALUES ('monitor',?1) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                     [crate::monitor_policy::complete_test_monitor(serde_json::json!({
                         "id":"monitor","agent":"owner","epoch":0,"status":"running",
                         "created":0.0,"activityAt":0.0,"activityGeneration":1,
@@ -2699,7 +2707,7 @@ mod tests {
                 for index in 0..monitor_count {
                     let id = format!("monitor-{index:04}");
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES (?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
                         (
                             &id,
                             crate::monitor_policy::complete_test_monitor(serde_json::json!({
@@ -2768,7 +2776,7 @@ mod tests {
                         active_at
                     };
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES (?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
                         (
                             &id,
                             crate::monitor_policy::complete_test_monitor(serde_json::json!({
@@ -2903,6 +2911,67 @@ mod tests {
         assert_eq!(super::earliest_deadline([None, Some(f64::NAN)]), None);
     }
 
+    #[test]
+    fn monitor_deadlines_skip_historical_records_before_parsing() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL,monitor_status TEXT NOT NULL);
+             CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+             CREATE INDEX runtime_monitor_startup_active ON runtime_monitors(id) WHERE monitor_status IN ('running','starting','approval');
+             INSERT INTO runtime_monitors VALUES('old','{','lost');
+             INSERT INTO runtime_monitors VALUES('active','{\"status\":\"running\",\"cancelRequested\":true,\"cancelDispatch\":{\"nextAttemptAt\":42}}','running');",
+        )
+        .expect("fixtures");
+        assert_eq!(super::next_deadline_in(&db).expect("deadline"), Some(42.0));
+    }
+
+    #[test]
+    fn monitor_deadline_plan_drives_agent_lookups_from_active_monitors() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch(
+            "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT,monitor_status TEXT);
+             CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);
+             CREATE INDEX runtime_monitor_startup_active ON runtime_monitors(id) WHERE monitor_status IN ('running','starting','approval');
+             ANALYZE;
+             INSERT INTO sqlite_stat1 VALUES('runtime_agents','sqlite_autoindex_runtime_agents_1','3 1');
+             INSERT INTO sqlite_stat1 VALUES('runtime_monitors','runtime_monitor_startup_active','1000000 1');
+             INSERT INTO sqlite_stat1 VALUES('runtime_monitors',NULL,'100000000');
+             ANALYZE sqlite_master;",
+        ).expect("planner statistics");
+        let plan: Vec<String> = db
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                super::MONITOR_DEADLINE_SQL
+            ))
+            .expect("plan")
+            .query_map((1, 1, 1), |row| row.get(3))
+            .expect("plan rows")
+            .collect::<Result<_, _>>()
+            .expect("plan details");
+        assert_eq!(
+            plan.iter().filter(|step| step.contains("SCAN a")).count(),
+            0,
+            "{plan:?}"
+        );
+        assert_eq!(
+            plan.iter()
+                .filter(
+                    |step| step.contains("SEARCH a USING INDEX sqlite_autoindex_runtime_agents_1")
+                )
+                .count(),
+            2,
+            "{plan:?}"
+        );
+        assert_eq!(
+            plan.iter()
+                .filter(|step| step.contains("USING INDEX runtime_monitor_startup_active"))
+                .count(),
+            3,
+            "{plan:?}"
+        );
+    }
+
     #[tokio::test]
     async fn durable_stall_and_rule_deadlines_choose_the_earliest_timestamp() {
         let (_root, store, port) = fixture().await;
@@ -2914,7 +2983,7 @@ mod tests {
                     [serde_json::json!({"id":"owner","provider":studio_runtime_schema::ProviderKind::Codex,"epoch":1,"autoWake":true}).to_string()],
                 )?;
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('watch',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                    "INSERT INTO runtime_monitors(id,record) VALUES ('watch',?1)",
                     [serde_json::json!({
                         "id":"watch","agent":"owner","epoch":1,"status":"running",
                         "created":90.0,"activityAt":100.0,"activityGeneration":2,
@@ -2948,7 +3017,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"owner","rootId":"owner","epoch":1,"status":"interrupted",
                             "autoWake":true,"accountKey":"default","threadId":"thread",
                             "nativeFailureHold":{"reason":"pending"},
@@ -2986,7 +3055,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('owner',?1)",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"owner","rootId":"owner","epoch":1,"status":"ready",
                             "autoWake":true,"accountKey":"default","threadId":"thread",
                             "nativeFailureHold":{},
@@ -3023,7 +3092,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('legacy-monitor',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                    "INSERT INTO runtime_monitors(id,record) VALUES ('legacy-monitor',?1)",
                     [serde_json::json!({
                         "id":"legacy-monitor","agent":"owner","epoch":0,
                         "status":"running","created":100.0,"activityAt":100.0,
@@ -3049,7 +3118,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('legacy-probe',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                    "INSERT INTO runtime_monitors(id,record) VALUES ('legacy-probe',?1)",
                     [serde_json::json!({
                         "id":"legacy-probe","agent":"owner","epoch":0,
                         "status":"running","created":100.0,"activityAt":100.0,
@@ -3144,7 +3213,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES ('worker',?1)",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"worker","rootId":"owner","epoch":0,
                             "status":"running","isLead":false
                         })
@@ -3208,7 +3277,7 @@ mod tests {
                 tx.execute(
                     "UPDATE runtime_agents SET record=?1 WHERE id='worker'",
                     [
-                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                        serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                             "id":"worker","rootId":"owner","epoch":0,
                             "status":"completed","isLead":false
                         })
@@ -3346,7 +3415,7 @@ mod tests {
         store
             .transaction_with(|tx| {
                 tx.execute(
-                    "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES ('cancel',?1,COALESCE(CASE WHEN json_valid(?1) THEN json_extract(?1,'$.status') END,'lost'))",
+                    "INSERT INTO runtime_monitors(id,record) VALUES ('cancel',?1)",
                     [serde_json::json!({
                         "id":"cancel","status":"running","cancelRequested":true,
                         "cancelDispatch":{"status":"pending"}
@@ -3389,7 +3458,7 @@ mod tests {
             .transaction_with(move |tx| {
                 for (id, record) in [("fresh", fresh), ("stuck", stuck)] {
                     tx.execute(
-                        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES (?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+                        "INSERT INTO runtime_monitors(id,record) VALUES (?1,?2)",
                         (id, record.to_string()),
                     )?;
                 }

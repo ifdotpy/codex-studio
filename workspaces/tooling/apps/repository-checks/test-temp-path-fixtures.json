@@ -1,9 +1,4 @@
 {
-  "workspaces/client/apps/desktop/dictation-permissions.test.ts": [
-    "return \"/tmp\";",
-    "return \"/tmp/not-installed-studio\";",
-    "__dirname: \"/tmp\","
-  ],
   "workspaces/client/apps/desktop/install-update-test.py": [
     "{\"executable\": \"/tmp/Codex Studio.app/Contents/MacOS/studio-native-client\"},"
   ],
@@ -132,12 +127,12 @@
     "\"provider\":\"codex\",\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\",",
     "skills_root: PathBuf::from(\"/tmp/skills\"),",
     "account_home: \"/tmp/source\".into(),",
-    "\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\"}))",
+    "\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\"}),",
     "json!({\"id\":\"source\",\"home\":\"/tmp/source\",\"provider\":\"codex\"}),",
     "json!({\"id\":\"target\",\"home\":\"/tmp/target\",\"provider\":\"codex\"}),",
     "skills_root: PathBuf::from(\"/tmp/skills\"),",
     "account_home: \"/tmp/target\".into(),",
-    "\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\"}))",
+    "\"model\":\"gpt-6-astra\",\"cwd\":\"/tmp/work\",\"threadId\":\"source-thread\"}),",
     "json!({\"id\":\"source\",\"home\":\"/tmp/source\",\"provider\":\"codex\"}),",
     "json!({\"id\":\"target\",\"home\":\"/tmp/target\",\"provider\":\"codex\"}),",
     "skills_root: PathBuf::from(\"/tmp/skills\"),",
@@ -181,9 +176,6 @@
   ],
   "workspaces/runtime/packages/runtime-services/tests/provider_session_task.rs": [
     "launch: ProviderLaunchSpec::new(vec![\"fake\".into()], BTreeMap::new(), \"/tmp\".into()),"
-  ],
-  "workspaces/runtime/packages/runtime-services/tests/voice_provider_corpus.rs": [
-    "\"params\":{\"command\":\"printf safe\", \"cwd\":\"/tmp\"}"
   ],
   "workspaces/runtime/packages/runtime-services/tests/workspace_ready/effects.rs": [
     "(\"cwd\", json!(\"/var/tmp/changed\")),"

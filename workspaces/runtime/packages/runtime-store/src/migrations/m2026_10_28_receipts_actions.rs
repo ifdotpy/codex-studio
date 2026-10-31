@@ -1960,8 +1960,8 @@ mod tests {
     fn receipts_actions_legacy_numeric_ticket_remains_readable() {
         let mut db = Connection::open_in_memory().expect("database");
         fixture(&db);
-        db.execute("INSERT INTO runtime_agents VALUES('agent',?1)", [json!({"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91}}).to_string()]).expect("legacy agent");
-        db.execute("INSERT INTO runtime_agents VALUES('real',?1)", [json!({"id":"real","rootId":"real","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91.0}}).to_string()]).expect("legacy real ticket");
+        db.execute("INSERT INTO runtime_agents VALUES('agent',?1)", [json!({"compactions":0,"id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91}}).to_string()]).expect("legacy agent");
+        db.execute("INSERT INTO runtime_agents VALUES('real',?1)", [json!({"compactions":0,"id":"real","rootId":"real","provider":"codex","epoch":1,"status":"running","startAttempt":{"id":"attempt","requestTicket":91.0}}).to_string()]).expect("legacy real ticket");
         batch(&mut db, "runtime_agents").expect("migrate agent");
         let tx = db.transaction().expect("account migration transaction");
         super::super::m2026_10_28_agent_account::apply(&tx).expect("materialize accounts");
@@ -1978,8 +1978,8 @@ mod tests {
                 .expect("agent record");
             assert_eq!(
                 agent
-                    .start_attempt()
-                    .expect("typed start attempt")
+                    .start_attempt
+                    .as_ref()
                     .expect("attempt")
                     .request_ticket
                     .as_deref(),

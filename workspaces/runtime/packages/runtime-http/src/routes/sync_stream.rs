@@ -95,9 +95,7 @@ impl SubscribedResource {
     }
 
     pub(super) fn new(resource: ResourceRef) -> Result<Self, ApiError> {
-        let key = serde_json::to_value(&resource)
-            .map_err(|_| ApiError::internal())?
-            .to_string();
+        let key = serde_json::to_string(&resource).map_err(|_| ApiError::internal())?;
         Ok(Self { resource, key })
     }
 }
@@ -449,6 +447,7 @@ async fn sync_stream(
     )
     .await;
     attach_transient_snapshots(Some(&state), &mut initial_event, &mut voice_sequences).await;
+    let recent_tails_sent = attach_recent_transcripts(&state, &mut initial_event).await;
     let mut initial = VecDeque::new();
     let session_id = uuid::Uuid::new_v4().to_string();
     let (sender, receiver) = tokio::sync::mpsc::channel(1);
@@ -473,7 +472,11 @@ async fn sync_stream(
     initial.push_back(sse_event(
         "session",
         None,
-        crate::generated::SyncSessionEvent { session_id },
+        // `routes` lists the origins this server answers on now. A client learns them.
+        crate::generated::SyncSessionEvent {
+            session_id,
+            routes: state.serve_origin().into_iter().collect(),
+        },
     ));
     if renderer_hash.is_some() {
         initial.push_back(sse_event("api-schema", None, json!({"hash": server_hash})));
@@ -514,6 +517,7 @@ async fn sync_stream(
         resources,
         entity_sequence: initial_entity_sequence,
         transcript_sequences,
+        recent_tails_sent,
         terminal_cursors,
         voice_sequences,
         draft_sequence: initial_draft_sequence,
@@ -579,10 +583,11 @@ pub(super) async fn append_progress_frames(
 ) {
     for (resource, revision) in view.resources.iter().zip(&view.versions) {
         let value = match &resource.resource {
-            ResourceRef::AuthProgressResource(r) => match &state.claude_login {
-                Some(login) => login.progress(&r.request_id).await.unwrap_or(Value::Null),
-                _ => Value::Null,
-            },
+            ResourceRef::AuthProgressResource(r) => {
+                super::subscriptions::auth_progress(state, &r.request_id)
+                    .await
+                    .unwrap_or(Value::Null)
+            }
             ResourceRef::RenameProgressResource(_)
             | ResourceRef::VaultJobProgressResource(_)
             | ResourceRef::VaultReadinessResource(_) => {
@@ -750,6 +755,52 @@ fn parse_since(
     Ok(since)
 }
 
+/// Add the newest window of the most recent chats to a first frame, so that opening one
+/// of them needs no request. Only a stream that has a chat open gets them. Returns whether
+/// a chat was open. These chats are not subscribed: later changes arrive when the client
+/// subscribes to one.
+#[allow(clippy::wildcard_enum_match_arm)]
+async fn attach_recent_transcripts(state: &HttpState, event: &mut ResourceChangeEvent) -> bool {
+    use studio_runtime_schema::shared_values::SYNC_TRANSCRIPT_RECENT_CHATS;
+    let open = event
+        .resources
+        .iter()
+        .filter_map(|resource| match resource {
+            ResourceRef::TranscriptResource(transcript) => Some(transcript.agent_id.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let Some(store) = state.store.clone().filter(|_| !open.is_empty()) else {
+        return false;
+    };
+    let Ok(recent) = studio_runtime_services::transcript::recent_chats(
+        &store,
+        SYNC_TRANSCRIPT_RECENT_CHATS,
+        open,
+    )
+    .await
+    else {
+        return true;
+    };
+    for agent in recent {
+        let Ok(resource) =
+            serde_json::from_value::<ResourceRef>(json!({"kind":"transcript","agentId":agent}))
+        else {
+            continue;
+        };
+        let Ok(entry) =
+            super::subscriptions::initial_snapshot(state.clone(), resource.clone(), None).await
+        else {
+            continue;
+        };
+        if matches!(entry.transcript_snapshot, Some(Some(_))) {
+            event.resources.push(resource);
+            event.resource_versions.push(entry);
+        }
+    }
+    true
+}
+
 async fn attach_initial_entries(
     state: &HttpState,
     event: &mut ResourceChangeEvent,
@@ -760,8 +811,8 @@ async fn attach_initial_entries(
             // Scoped transfer delivery owns the baseline read and durable cursor.
             continue;
         }
-        let value = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
-        let cursor = since.get(&value.to_string()).cloned();
+        let key = serde_json::to_string(resource).map_err(|_| ApiError::internal())?;
+        let cursor = since.get(&key).cloned();
         let mut initial =
             super::subscriptions::initial_snapshot(state.clone(), resource.clone(), cursor).await?;
         if matches!(resource, ResourceRef::TerminalOutputResource(_)) {
@@ -1284,6 +1335,8 @@ struct ResourceStream {
     resources: Vec<SubscribedResource>,
     entity_sequence: i64,
     transcript_sequences: BTreeMap<String, i64>,
+    /// Set once the first frame with a chat open carried the tails of the recent chats.
+    recent_tails_sent: bool,
     terminal_cursors: BTreeMap<String, SubscriptionCursor>,
     voice_sequences: BTreeMap<String, i64>,
     draft_sequence: i64,
@@ -1430,6 +1483,9 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
                     .transcript_sequences
                     .insert(transcript.agent_id.clone(), entry.revision);
             }
+        }
+        if !state.recent_tails_sent {
+            state.recent_tails_sent = attach_recent_transcripts(http_state, &mut event).await;
         }
         state
             .initial
@@ -2312,7 +2368,7 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction_with(|tx| {
-            let agent = studio_runtime_store::AgentRecord::from_value(json!({
+            let agent = studio_runtime_store::AgentRecord::from_value(json!({"compactions":0,
                 "id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "name":"Original",
                 "provider":"codex", "model":"gpt-6", "prompt":"Title fixture", "cwd":"/fixture",
                 "accountKey":"default", "isLead":false, "needsTitle":true, "manualName":false, "autoWake":false
@@ -2536,6 +2592,11 @@ mod tests {
         .expect("login service");
         state.validators = crate::validation::Registry::compile(&[]).expect("router validators");
         state.claude_login = Some(login.clone());
+        let registry = root.path().join("accounts.json");
+        tokio::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":"codex","home":"/fixture","label":"Codex","source":"fixture","status":"ready"}},"logins":{}}).to_string()).await.expect("registry");
+        state.account_driver = Some(Arc::new(
+            studio_runtime_services::account_driver::AccountDriver::open(registry).expect("driver"),
+        ));
         let id = "e0166868-592a-4dca-8994-04d34a730af5";
         let url = "https://claude.com/cai/oauth/authorize?secret=transient-fixture";
         let mut changed = state.sync_changes.subscribe();
@@ -2604,6 +2665,53 @@ mod tests {
             "only subscribed progress selectors receive data"
         );
         login.shutdown().await.expect("owned child closed");
+    }
+
+    #[tokio::test]
+    async fn codex_login_progress_is_request_scoped_and_transient() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let registry = root.path().join("accounts.json");
+        let id = "e0166868-592a-4dca-8994-04d34a730af5";
+        tokio::fs::write(&registry, json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":"codex","home":"/fixture","label":"Codex","source":"fixture","status":"ready"}},"logins":{id:{"requestId":id,"accountKey":"default","status":"pending","userCode":"ABCD-1234","verificationUrl":"https://auth.openai.com/codex/device"}}}).to_string()).await.expect("registry");
+        let mut state = HttpState::new(
+            "".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            0,
+            None,
+            None,
+            None,
+        );
+        state.validators = crate::validation::Registry::compile(&[]).expect("validators");
+        state.account_driver = Some(Arc::new(
+            studio_runtime_services::account_driver::AccountDriver::open(registry).expect("driver"),
+        ));
+        let view = ResourceChanges {
+            cursor: state.sync_changes.snapshot(),
+            resources: fixture_resources(&[json!({"kind":"auth-progress","requestId":id})]),
+            versions: vec![1],
+            entity_reset: false,
+            overflow: false,
+        };
+        let mut frames = VecDeque::new();
+        append_progress_frames(&state, &view, &mut frames).await;
+        let frame = frame_bytes(frames.pop_front().expect("Codex progress")).await;
+        assert!(
+            std::str::from_utf8(&frame)
+                .expect("frame")
+                .contains("ABCD-1234")
+        );
+        let other = ResourceChanges {
+            resources: fixture_resources(&[json!({"kind":"auth-progress","requestId":"other"})]),
+            ..view
+        };
+        append_progress_frames(&state, &other, &mut frames).await;
+        let frame = frame_bytes(frames.pop_front().expect("empty progress")).await;
+        assert!(
+            !std::str::from_utf8(&frame)
+                .expect("frame")
+                .contains("ABCD-1234")
+        );
     }
 
     #[test]
@@ -3299,6 +3407,99 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn state_stream_with_a_wrong_contract_hash_is_refused_in_the_first_frame() {
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use futures_util::StreamExt;
+        use tower::ServiceExt;
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router(http).expect("router");
+        let request = Request::builder()
+            .uri(format!(
+                "/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%5D&tokenRates=false&{}=wrong",
+                crate::schema::API_SCHEMA_HASH_PARAM
+            ))
+            .header("host", "127.0.0.1:4321")
+            .header("x-canvas-token", "token")
+            .extension(ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 12345))))
+            .body(Body::empty())
+            .expect("request");
+        let response = app.oneshot(request).await.expect("stream");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body().into_data_stream();
+        let first = body.next().await.expect("first frame").expect("bytes");
+        let text = std::str::from_utf8(&first).expect("UTF8");
+        assert!(text.starts_with("event: api-schema\n"), "{text}");
+        let data: Value = serde_json::from_str(
+            text.lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("data"),
+        )
+        .expect("JSON");
+        assert_eq!(data[crate::schema::API_SCHEMA_MISMATCH_FIELD], true);
+        assert_eq!(data["hash"], api_schema_hash());
+        assert!(body.next().await.is_none(), "no frame follows the refusal");
+    }
+
+    #[tokio::test]
+    async fn state_stream_session_event_reports_the_serve_origin_as_a_route() {
+        use axum::extract::ConnectInfo;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        for (origin, routes) in [
+            (
+                Some("https://host.tailnet.ts.net"),
+                json!(["https://host.tailnet.ts.net"]),
+            ),
+            (None, json!([])),
+        ] {
+            let root = tempfile::tempdir().expect("isolated state");
+            let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+            let http = HttpState::new(
+                "token".into(),
+                "workspace".into(),
+                root.path().display().to_string(),
+                4321,
+                origin.map(str::to_owned),
+                Some(store),
+                None,
+            );
+            let app = crate::router(http).expect("router");
+            let request = Request::builder()
+                .uri(format!(
+                    "/api/sync/stream?protocol={SYNC_PROTOCOL_VERSION_TEXT}&resources=%5B%5D&tokenRates=false"
+                ))
+                .header("host", "127.0.0.1:4321")
+                .header("x-canvas-token", "token")
+                .extension(ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 12345))))
+                .body(Body::empty())
+                .expect("request");
+            let response = app.oneshot(request).await.expect("stream");
+            assert_eq!(response.status(), StatusCode::OK);
+            let mut body = response.into_body().into_data_stream();
+            let bytes = body.next().await.expect("session").expect("bytes");
+            let text = std::str::from_utf8(&bytes).expect("UTF8");
+            let session: Value = serde_json::from_str(
+                text.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .expect("data"),
+            )
+            .expect("JSON");
+            assert_eq!(session["routes"], routes);
+        }
+    }
+
+    #[tokio::test]
     async fn state_stream_subscription_post_token_interest_reenable_starts_full() {
         fn document_bytes(bytes: &[u8]) -> Value {
             let text = std::str::from_utf8(bytes).expect("UTF8");
@@ -3404,7 +3605,7 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('pull-count-fixture',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"pull-count-fixture","rootId":"pull-count-fixture","epoch":0,"status":"running","threadId":"thread","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('pull-count-fixture',?1)", [json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"pull-count-fixture","rootId":"pull-count-fixture","epoch":0,"status":"running","threadId":"thread","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('count-item','pull-count-fixture',?1,1)", [json!({"id":"count-item","role":"assistant","text":"message"}).to_string()])?;
             Ok(())
         }).await.expect("transcript fixture");
@@ -3505,7 +3706,7 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated resume state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('recent',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"recent","rootId":"recent","epoch":0,"status":"running","threadId":"recent","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('recent',?1)", [json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"recent","rootId":"recent","epoch":0,"status":"running","threadId":"recent","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
             for index in 0..20 {
                 let id = format!("recent:{index}");
                 tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'recent',?2,?3)", rusqlite::params![id,json!({"id":id,"role":"assistant","text":"message ".repeat(64)}).to_string(),index])?;
@@ -3571,14 +3772,15 @@ mod tests {
         assert_eq!(batch.delta.items.len(), 1);
         assert_eq!(batch.delta.items[0].id, "recent:19");
         let through = old.revision;
-        store.transaction(move |tx| {
-            tx.execute("UPDATE sync_entities SET seq=?1 WHERE collection='transcript:recent' AND id='@floor'", [through])?;
-            Ok(())
-        }).await.expect("expire retained history");
+        // The page at this number was never sent, so no delta can start from it.
+        let forgotten = SubscriptionCursor {
+            seq: cursor.seq - 1,
+            ..cursor
+        };
         let expired = super::super::subscriptions::initial_snapshot(
             http.clone(),
             resource.clone(),
-            Some(cursor),
+            Some(forgotten),
         )
         .await
         .expect("expired cursor");
@@ -3610,11 +3812,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_first_frame_with_a_chat_open_carries_the_tails_of_the_recent_chats() {
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            for index in 0..5 {
+                let agent = format!("chat{index}");
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", rusqlite::params![agent, json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":agent,"rootId":agent,"epoch":0,"status":"idle","threadId":agent,"accountKey":"default"}).to_string()])?;
+                let id = format!("{agent}:answer");
+                tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,1)", rusqlite::params![id, agent, json!({"id":id,"role":"assistant","text":format!("tail of {agent}")}).to_string()])?;
+            }
+            Ok(())
+        }).await.expect("five chats");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let mut state = test_stream(
+            &http.sync_changes,
+            &http.token_rates,
+            http.resource_notifications.clone(),
+            &[],
+        );
+        state.http_state = Some(http);
+        state.store = Some(store);
+        let resource = json!({"kind":"transcript","agentId":"chat0"});
+        for generation in [1, 2] {
+            subscription_frame(
+                &mut state,
+                SubscriptionChange {
+                    generation,
+                    resources: fixture_resources(std::slice::from_ref(&resource)),
+                    added: fixture_resources(std::slice::from_ref(&resource)),
+                    token_rates: None,
+                    since: BTreeMap::new(),
+                },
+            )
+            .await
+            .expect("subscription");
+            let ack = event_document(Ok(state.initial.pop_front().expect("ack"))).await;
+            assert_eq!(ack["gen"], generation);
+            let mut tails = Vec::new();
+            while let Some(frame) = state.initial.pop_front() {
+                let frame = event_document(Ok(frame)).await;
+                let text =
+                    frame["resourceVersions"][0]["transcriptSnapshot"]["items"][0]["text"].clone();
+                tails.push((frame["resources"][0]["agentId"].clone(), text));
+            }
+            if generation == 1 {
+                assert_eq!(
+                    tails,
+                    vec![
+                        (json!("chat0"), json!("tail of chat0")),
+                        (json!("chat4"), json!("tail of chat4")),
+                        (json!("chat3"), json!("tail of chat3")),
+                        (json!("chat2"), json!("tail of chat2")),
+                    ],
+                    "the open chat first, then the three newest others"
+                );
+            } else {
+                assert_eq!(tails.len(), 1, "the tails are sent once for a stream");
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn subscription_add_streams_bounded_transcript_snapshot_after_ack() {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('small',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"small","rootId":"small","epoch":0,"status":"running","threadId":"small","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('small',?1)", [json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"small","rootId":"small","epoch":0,"status":"running","threadId":"small","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
             for index in 0..120 {
                 let id = format!("small:{index:03}");
                 tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'small',?2,?3)", rusqlite::params![id, json!({"id":id,"role":"assistant","text":"Current answer".repeat(200),"created":index}).to_string(), index])?;
@@ -3833,7 +4105,7 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('large',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"large","rootId":"large","epoch":0,"status":"running","threadId":"large","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('large',?1)", [json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"large","rootId":"large","epoch":0,"status":"running","threadId":"large","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
             for (id, text) in [("large:zlarge", "x".repeat(SYNC_STREAM_EVENT_MAX_BYTES + 1)), ("large:small", "before".to_owned())] {
                 tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,'large',?2,1)", rusqlite::params![id, json!({"id":id,"role":"assistant","text":text}).to_string()])?;
             }
@@ -3924,7 +4196,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('open',?1)",
-                [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"open","rootId":"open","epoch":0,"status":"running","threadId":"thread","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+                [json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"open","rootId":"open","epoch":0,"status":"running","threadId":"thread","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('open:answer','open',?1,1)",
                 [json!({"id":"open:answer","role":"assistant","text":"before"}).to_string()])?;
             Ok(())
@@ -4034,7 +4306,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             for agent in ["first", "second", "last"] {
-                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", rusqlite::params![agent, json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":agent,"rootId":agent,"epoch":0,"status":"running","threadId":agent,"accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", rusqlite::params![agent, json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":agent,"rootId":agent,"epoch":0,"status":"running","threadId":agent,"accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
                 tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES(?1,?2,?3,1)", rusqlite::params![format!("{agent}:answer"), agent, json!({"id":format!("{agent}:answer"),"role":"assistant","text":"before"}).to_string()])?;
             }
             Ok(())
@@ -4074,21 +4346,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_stream_transcript_subscribers_share_one_projection_build_per_revision() {
+    async fn state_stream_transcript_subscribers_read_equal_deltas_and_write_no_copy() {
         let root = tempfile::tempdir().expect("isolated state");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('open',?1)",
-                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"open","rootId":"open","epoch":0,"status":"idle"}).to_string()])?;
+                [json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"open","rootId":"open","epoch":0,"status":"idle"}).to_string()])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('answer','open',?1,1)",
                 [json!({"id":"answer","role":"assistant","text":"before"}).to_string()])?;
-            tx.execute_batch("CREATE TABLE transcript_build_witness(count INTEGER NOT NULL);
-                INSERT INTO transcript_build_witness VALUES(0);
-                CREATE TRIGGER count_transcript_builds AFTER UPDATE OF payload ON sync_entities
-                WHEN NEW.collection='transcript:open' AND NEW.id='@revision' AND NEW.payload IS NOT NULL
-                BEGIN UPDATE transcript_build_witness SET count=count+1; END;")?;
             Ok(())
-        }).await.expect("conversation and rebuild counter");
+        }).await.expect("conversation");
         let resources = vec![json!({"kind":"transcript","agentId":"open"})];
         let mut first = BTreeMap::new();
         let mut second = BTreeMap::new();
@@ -4134,22 +4401,22 @@ mod tests {
             unrelated.is_empty(),
             "idle transcripts are never read for unrelated hints"
         );
-        let builds = store
+        let copies = store
             .read_async(
-                "transcript-build-count",
+                "transcript-copy-count",
                 |tx| -> Result<i64, studio_runtime_store::StoreError> {
-                    Ok(
-                        tx.query_row("SELECT count FROM transcript_build_witness", [], |row| {
-                            row.get(0)
-                        })?,
-                    )
+                    Ok(tx.query_row(
+                        "SELECT COUNT(*) FROM sync_entities WHERE collection LIKE 'transcript:%'",
+                        [],
+                        |row| row.get(0),
+                    )?)
                 },
             )
             .await
-            .expect("projection build count");
+            .expect("copy count");
         assert_eq!(
-            builds, 2,
-            "one page computation for baseline and one for the changed revision, shared by both subscribers"
+            copies, 0,
+            "pages are built at read time; no copy is written"
         );
     }
 
@@ -5078,6 +5345,7 @@ mod tests {
             resources: fixture_resources(&[json!({"kind": "queue", "agentId": "agent-a"})]),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            recent_tails_sent: false,
             terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
@@ -5131,6 +5399,7 @@ mod tests {
             resources: fixture_resources(&[json!({"kind":"accounts"})]),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            recent_tails_sent: false,
             terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
@@ -5335,7 +5604,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction(|tx| {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('voice-chat',?1)",
-                [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"voice-chat","rootId":"voice-chat","epoch":0,"status":"idle","isLead":true}).to_string()])?;
+                [json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"voice-chat","rootId":"voice-chat","epoch":0,"status":"idle","isLead":true}).to_string()])?;
             tx.execute("INSERT INTO voice_sessions(id,agent,created,state) VALUES('session','voice-chat',1,'ready')", [])?;
             tx.execute("INSERT INTO voice_records(id,agent,session,kind,text,item_id,previous_item_id,payload,created) VALUES('first','voice-chat','session','user','hello','','','{}',1)", [])?;
             Ok(())
@@ -5461,6 +5730,7 @@ mod tests {
             resources: fixture_resources(resources),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            recent_tails_sent: false,
             terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,
@@ -5597,7 +5867,7 @@ mod tests {
                 .expect("store"),
         );
         store.transaction(|tx| {
-            let owner = json!({"id":"owner","rootId":"owner","epoch":1,"status":"interrupted","accountKey":"default","provider":"claude","threadId":"thread","turnId":"turn","inFlight":false,"autoWake":false,"nativeResponseTurn":"turn","restartRecovery":{"stage":"held","epoch":1,"accountKey":"default","threadId":"thread","turnId":null},"disconnectRecovery":{"source":"restart","epoch":1,"accountKey":"default","threadId":"thread"}});
+            let owner = json!({"compactions":0,"id":"owner","rootId":"owner","epoch":1,"status":"interrupted","accountKey":"default","provider":"claude","threadId":"thread","turnId":"turn","inFlight":false,"autoWake":false,"nativeResponseTurn":"turn","restartRecovery":{"stage":"held","epoch":1,"accountKey":"default","threadId":"thread","turnId":null},"disconnectRecovery":{"source":"restart","epoch":1,"accountKey":"default","threadId":"thread"}});
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('owner',?1)", [owner.to_string()])?;
             Ok(())
         }).await.expect("held owner");
@@ -5848,6 +6118,7 @@ mod tests {
             resources: Vec::new(),
             entity_sequence: 0,
             transcript_sequences: BTreeMap::new(),
+            recent_tails_sent: false,
             terminal_cursors: BTreeMap::new(),
             voice_sequences: BTreeMap::new(),
             draft_sequence: 0,

@@ -323,7 +323,7 @@
     },
     {
       "accountKey": "default",
-      "agent": null,
+      "agent": "orphan",
       "connectionId": "cdd0a7b5-7876-4a7f-9955-d1325a58ecdb",
       "createdAt": 2000000000.0,
       "id": "beb71d90-e19c-4a9e-bad5-a017675f4492",

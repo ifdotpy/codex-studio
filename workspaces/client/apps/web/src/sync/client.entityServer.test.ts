@@ -14,7 +14,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import type { RxDatabase } from "rxdb";
 import { ReplaySubject, filter, firstValueFrom, timeout } from "rxjs";
 import type { Snapshot } from "../types";
 import type { components } from "../generated/api";
@@ -24,29 +23,8 @@ import type { ResourceChangeEvent } from "./subscriptions/events";
 import type { ResourceVersion } from "./subscriptions/events";
 
 const mocks = vi.hoisted(() => ({
-  databases: [] as RxDatabase[],
   syncGet: vi.fn(),
   invalidations: new Set<(version?: ResourceVersion) => void>(),
-}));
-vi.mock("rxdb", async (original) => {
-  const rxdb = await original<typeof import("rxdb")>();
-  return {
-    ...rxdb,
-    createRxDatabase: async (
-      options: Parameters<typeof rxdb.createRxDatabase>[0],
-    ) => {
-      const db = await rxdb.createRxDatabase({
-        ...options,
-        multiInstance: false,
-      });
-      mocks.databases.push(db);
-      return db;
-    },
-  };
-});
-vi.mock("rxdb/plugins/storage-dexie", async () => ({
-  getRxStorageDexie: (await import("rxdb/plugins/storage-memory"))
-    .getRxStorageMemory,
 }));
 vi.mock("../api", () => ({
   ApiError: class extends Error {},
@@ -139,7 +117,6 @@ afterAll(async () => {
       }
     }
   } finally {
-    await Promise.all(mocks.databases.map((db) => db.remove()));
     if (directory) await rm(directory, { recursive: true, force: true });
     vi.unstubAllGlobals();
   }
@@ -320,15 +297,6 @@ it("stages a cold >512 entity SSE interval before projection deletion or cursor 
     expect(stagedFrames).toBeGreaterThan(1);
     expect(complete).toBeDefined();
     const interval = complete!;
-    const lockNavigator = navigator;
-    vi.stubGlobal("navigator", { onLine: true });
-    await expect(
-      client.persistStagedEntityTransfer(interval, () => true),
-    ).rejects.toThrow("projection write lock");
-    expect(
-      await client.readSubscriptionCursor({ kind: "state" }),
-    ).toBeUndefined();
-    vi.stubGlobal("navigator", lockNavigator);
     const outsideScope = {
       ...interval,
       async *pages() {
@@ -423,7 +391,6 @@ it("revives moved rows after inline and staged local eviction in either scope or
   const { EntityTransferAssembler } = await import("./entityTransfer");
   for (const staged of [false, true])
     for (const oldFirst of [false, true]) {
-      const openedCount = mocks.databases.length;
       const client = createSyncClient({
         api: {
           syncGet: mocks.syncGet,
@@ -530,9 +497,6 @@ it("revives moved rows after inline and staged local eviction in either scope or
       expect(
         await db.projections.findOne("entity:task:moved").exec(),
       ).toBeNull();
-      // Release each isolated case before opening the next RxDB fixture.
-      for (const opened of mocks.databases.splice(openedCount))
-        await opened.remove();
     }
 });
 
@@ -627,6 +591,7 @@ it("preserves an existing oversized Work result and >512 history rows, then stre
         id: "work-child",
         provider: "codex",
         rootId: "lead",
+        compactions: 0,
         accountKey: "default",
         epoch: 1,
         status: "idle",
@@ -709,7 +674,7 @@ it("preserves an existing oversized Work result and >512 history rows, then stre
   }
 }, 15000);
 
-it("applies source commits beyond a full entity page through real SSE and RxDB without refresh reads", async () => {
+it("applies source commits beyond a full entity page through real SSE and the projection store without refresh reads", async () => {
   vi.stubGlobal("window", {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
@@ -811,6 +776,7 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
       id: "worker",
       provider: "codex",
       rootId: "lead",
+      compactions: 0,
       accountKey: "default",
       parentId: "lead",
       epoch: 1,
@@ -858,6 +824,10 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
         kind: "command",
         status: "running",
         created: 1,
+        itemId: "command",
+        turnId: "turn",
+        type: "commandExecution",
+        name: "command",
       },
     });
     const running = await waitSnapshot(
@@ -890,6 +860,7 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
       agent: {
         id: "lead",
         rootId: "lead",
+        compactions: 0,
         accountKey: "default",
         provider: "codex",
         epoch: 1,

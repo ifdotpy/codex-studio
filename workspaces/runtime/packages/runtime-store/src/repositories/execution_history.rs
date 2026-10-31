@@ -50,27 +50,87 @@ fn string_status<'de, D: serde::Deserializer<'de>>(
         .map_err(|_| serde::de::Error::custom("invalid execution status"))
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug)]
 pub struct ExecutionAttempt {
-    #[serde(flatten)]
     pub start: crate::StartAttemptView,
     pub run_id: String,
-    #[serde(default, deserialize_with = "submission")]
     pub submission: Option<AttemptSubmission>,
     pub turn_status: Option<ExecutionStatus>,
     pub input_identity: Option<Box<RawValue>>,
     pub claim_result: Option<Box<RawValue>>,
     pub provider_submission: Option<Box<RawValue>>,
     pub terminal_repair: Option<Box<RawValue>>,
-    #[serde(skip)]
     pub snapshot: Option<Box<RawValue>>,
 }
 
-fn submission<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<AttemptSubmission>, D::Error> {
-    AttemptSubmission::deserialize(deserializer).map(Some)
+#[derive(Default)]
+struct ExecutionAttemptFields {
+    start: studio_runtime_schema::start_attempt::StartAttemptFields,
+    run_id: Option<String>,
+    submission: Option<AttemptSubmission>,
+    turn_status: Option<ExecutionStatus>,
+    input_identity: Option<Box<RawValue>>,
+    claim_result: Option<Box<RawValue>>,
+    provider_submission: Option<Box<RawValue>>,
+    terminal_repair: Option<Box<RawValue>>,
+    seen: std::collections::BTreeSet<String>,
+}
+
+impl<'de> studio_runtime_schema::raw_object::RawObjectFields<'de> for ExecutionAttemptFields {
+    type Output = ExecutionAttempt;
+    fn field<M: serde::de::MapAccess<'de>>(
+        &mut self,
+        name: &str,
+        map: &mut M,
+    ) -> Result<bool, M::Error> {
+        macro_rules! field {
+            ($wire:literal, $field:ident) => {
+                if name == $wire {
+                    if !self.seen.insert(name.to_owned()) {
+                        return Err(serde::de::Error::duplicate_field($wire));
+                    }
+                    self.$field = map.next_value()?;
+                    return Ok(true);
+                }
+            };
+        }
+        field!("runId", run_id);
+        if name == "submission" {
+            if !self.seen.insert(name.to_owned()) {
+                return Err(serde::de::Error::duplicate_field("submission"));
+            }
+            self.submission = Some(map.next_value()?);
+            return Ok(true);
+        }
+        field!("turnStatus", turn_status);
+        field!("inputIdentity", input_identity);
+        field!("claimResult", claim_result);
+        field!("providerSubmission", provider_submission);
+        field!("terminalRepair", terminal_repair);
+        studio_runtime_schema::raw_object::RawObjectFields::field(&mut self.start, name, map)
+    }
+    fn finish<E: serde::de::Error>(
+        self,
+        _extra: std::collections::BTreeMap<String, Box<RawValue>>,
+    ) -> Result<Self::Output, E> {
+        Ok(ExecutionAttempt {
+            start: self.start.attempt,
+            run_id: self.run_id.ok_or_else(|| E::missing_field("runId"))?,
+            submission: self.submission,
+            turn_status: self.turn_status,
+            input_identity: self.input_identity,
+            claim_result: self.claim_result,
+            provider_submission: self.provider_submission,
+            terminal_repair: self.terminal_repair,
+            snapshot: None,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for ExecutionAttempt {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        studio_runtime_schema::raw_object::deserialize::<D, ExecutionAttemptFields>(deserializer)
+    }
 }
 
 const TABLES: &[TableRequirement] = &[
@@ -377,10 +437,11 @@ impl ExecutionHistoryRepository {
         tx: &Transaction<'_>,
         agent: &AgentRecord,
     ) -> StoreResult<Option<(String, Option<String>)>> {
-        let start = agent
-            .start_attempt()
-            .map_err(|_| Self::invalid("runtime_agents", &agent.id.0))?;
-        let pointer = if let Some(id) = start.as_ref().and_then(|attempt| attempt.id.as_deref()) {
+        let pointer = if let Some(id) = agent
+            .start_attempt
+            .as_ref()
+            .and_then(|attempt| attempt.id.as_deref())
+        {
             Self::attempt(tx, id)?.map(|attempt| (attempt.run_id, Some(id.to_owned())))
         } else {
             agent
@@ -471,27 +532,22 @@ impl ExecutionHistoryRepository {
     /// Each accepted attempt keeps its own run, so several runs can share one
     /// native turn; [`Self::terminal`] owns that contract.
     pub fn record(tx: &Transaction<'_>, agent: &AgentRecord) -> StoreResult<()> {
-        let Some(attempt) = agent
-            .extra
-            .get("startAttempt")
-            .filter(|a| a["id"].is_string())
+        let Some((attempt, id)) = agent
+            .start_attempt
+            .as_ref()
+            .and_then(|attempt| attempt.id.as_deref().map(|id| (attempt, id)))
         else {
             return Self::record_recovery(tx, agent);
         };
-        let id = attempt["id"].as_str().ok_or_else(|| invalid(&agent.id.0))?;
         let submitted = super::scheduler::ValidatedAttempt::submission(agent)?;
-        let account = match attempt.get("accountKey") {
-            Some(value) => value.as_str().unwrap_or("default"),
-            None => agent.account_key.as_str(),
-        };
+        let account = attempt.account_key.as_deref().unwrap_or(&agent.account_key);
         let thread = attempt
-            .get("threadId")
-            .cloned()
-            .or_else(|| agent.thread_id.clone().map(Value::String))
-            .unwrap_or(Value::Null);
+            .thread_id
+            .clone()
+            .or_else(|| agent.thread_id.clone());
         let run: Option<ExecutionRun> = tx.query_row(
             "SELECT r.id,r.record FROM runtime_execution_runs r WHERE r.id=(SELECT run FROM runtime_execution_attempts WHERE id=?1) OR (r.id IN (SELECT run FROM runtime_execution_inputs WHERE event=?2) AND r.agent=?3 AND r.account=?4 AND r.epoch=?5 AND r.turn IS NULL) ORDER BY (r.id=(SELECT run FROM runtime_execution_attempts WHERE id=?1)) DESC, r.created DESC LIMIT 1",
-            params![id,attempt["events"][0].as_str(),agent.id.0,account,attempt["epoch"].as_i64()],
+            params![id,attempt.events.as_ref().and_then(|events| events.first()),agent.id.0,account,attempt.epoch],
             |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional()?.map(|(id,raw)|decode("runtime_execution_runs",&id,&raw)).transpose()?;
         let mut run = match run {
             Some(run) => run,
@@ -499,14 +555,12 @@ impl ExecutionHistoryRepository {
                 id: format!("run:{id}"),
                 agent: agent.id.0.clone(),
                 account_key: account.to_owned(),
-                epoch: attempt["epoch"]
-                    .as_number()
-                    .cloned()
+                epoch: attempt
+                    .epoch
+                    .map(serde_json::Number::from)
                     .ok_or_else(|| invalid(id))?,
-                created: match attempt.get("created") {
-                    Some(value) => value.as_number().cloned().ok_or_else(|| invalid(id))?,
-                    None => serde_json::Number::from_f64(now()).ok_or_else(|| invalid(id))?,
-                },
+                created: serde_json::Number::from_f64(attempt.created.unwrap_or_else(now))
+                    .ok_or_else(|| invalid(id))?,
                 status: ExecutionStatus::Pending,
                 thread_id: Field::Null,
                 turn_id: Field::Null,
@@ -520,25 +574,21 @@ impl ExecutionHistoryRepository {
             return Err(invalid(&run.id));
         }
         let turn = attempt
-            .get("turnId")
-            .filter(|v| v.is_string())
-            .or_else(|| attempt.get("observedTurnId").filter(|v| v.is_string()));
-        let evidence = if attempt["turnId"].is_string() {
+            .turn_id
+            .as_ref()
+            .or(attempt.observed_turn_id.as_ref());
+        let evidence = if attempt.turn_id.is_some() {
             AttemptSubmission::Accepted
         } else if turn.is_some() {
             AttemptSubmission::Observed
         } else {
             attempt
-                .get("executionOutcome")
-                .map(|value| {
-                    let status = value.as_str().ok_or_else(|| {
-                        <serde_json::Error as serde::de::Error>::custom(
-                            "execution outcome must be a string",
-                        )
-                    })?;
-                    AttemptSubmission::deserialize(serde::de::value::StrDeserializer::<
-                        serde_json::Error,
-                    >::new(status))
+                .execution_outcome
+                .map(|status| {
+                    status
+                        .as_str()
+                        .parse::<AttemptSubmission>()
+                        .map_err(|_| invalid(id))
                 })
                 .transpose()?
                 .unwrap_or(
@@ -550,18 +600,12 @@ impl ExecutionHistoryRepository {
                 )
         };
         if let Some(turn) = turn {
-            run.turn_id = Field::Value(turn.as_str().expect("selected string").to_owned());
+            run.turn_id = Field::Value(turn.to_owned());
             if run.root_attempt_id.value().is_none() {
                 run.root_attempt_id = Field::Value(id.to_owned());
             }
         }
-        run.thread_id = match thread {
-            Value::String(value) => Field::Value(value),
-            Value::Null => Field::Null,
-            Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_) => {
-                return Err(invalid(&run.id));
-            }
-        };
+        run.thread_id = thread.map_or(Field::Null, Field::Value);
         if run.first_attempt_id.value().is_none() {
             run.first_attempt_id = Field::Value(id.to_owned());
         }
@@ -581,8 +625,7 @@ impl ExecutionHistoryRepository {
             };
         }
         merge_recovery(&mut run, agent);
-        let mut saved: std::collections::BTreeMap<String, Box<RawValue>> =
-            serde_json::from_str(&attempt.to_string())?;
+        let mut saved = std::collections::BTreeMap::<String, Box<RawValue>>::new();
         if let Some(previous) = Self::attempt(tx, id)? {
             let previous: std::collections::BTreeMap<String, Box<RawValue>> = serde_json::from_str(
                 previous
@@ -651,11 +694,20 @@ impl ExecutionHistoryRepository {
             "resultRunId".into(),
             serde_json::value::to_raw_value(&terminal.then_some(run_id))?,
         );
+        // The durable receipt owns this field once admitted.
+        let mut attempt_record = attempt.clone();
+        if saved.contains_key("rootRequestId") {
+            attempt_record.root_request_id = None;
+        }
+        let record = AttemptWrite {
+            attempt: &attempt_record,
+            receipt_fields: &saved,
+        };
         save_run(tx, &run)?;
         tx.execute("INSERT INTO runtime_execution_attempts(id,run,record) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET run=excluded.run,record=excluded.record",
-            params![id,run_id,serde_json::to_string(&saved)?])?;
+            params![id,run_id,serde_json::to_string(&record)?])?;
         tx.execute("INSERT OR IGNORE INTO runtime_execution_inputs(run,event) SELECT ?1,value FROM json_each(?2)",
-            params![run_id,attempt["events"].to_string()])?;
+            params![run_id,serde_json::to_string(&attempt.events)?])?;
         Ok(())
     }
     fn record_recovery(tx: &Transaction<'_>, agent: &AgentRecord) -> StoreResult<()> {
@@ -742,12 +794,39 @@ fn save_run(tx: &Transaction<'_>, run: &ExecutionRun) -> StoreResult<()> {
         params![run.id,run.agent,run.account_key,run.epoch.as_i64(),run.thread_id.value(),run.turn_id.value(),run.created.as_f64(),serde_json::to_string(run)?])?;
     Ok(())
 }
+#[derive(serde::Serialize)]
+struct AttemptWrite<'a> {
+    #[serde(flatten)]
+    attempt: &'a crate::StartAttemptView,
+    #[serde(flatten)]
+    receipt_fields: &'a std::collections::BTreeMap<String, Box<RawValue>>,
+}
+
 fn merge_recovery(run: &mut ExecutionRun, agent: &AgentRecord) {
-    for key in [
-        "disconnectRecovery",
-        "restartRecovery",
-        "connectionRecovery",
+    for (key, marker) in [
+        ("disconnectRecovery", agent.disconnect_recovery.as_deref()),
+        ("restartRecovery", agent.restart_recovery.as_deref()),
     ] {
+        if let Some(marker) = marker
+            && marker
+                .turn_id
+                .as_deref()
+                .is_none_or(|turn| Some(turn) == run.turn_id.value().map(String::as_str))
+            && marker
+                .account_key
+                .as_deref()
+                .is_none_or(|account| account == run.account_key)
+            && marker
+                .thread_id
+                .as_deref()
+                .is_none_or(|thread| Some(thread) == run.thread_id.value().map(String::as_str))
+        {
+            run.extra
+                .insert(key.into(), crate::projection_value(marker));
+        }
+    }
+    {
+        let key = "connectionRecovery";
         if let Some(marker) = agent.extra.get(key)
             && marker.get("turnId").is_none_or(|v| {
                 v.is_null()
@@ -809,20 +888,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn attempt_write_preserves_receipt_field_bytes() {
+        let attempt = crate::StartAttemptView {
+            id: Some("attempt".into()),
+            ..Default::default()
+        };
+        let raw = RawValue::from_string(r#"{ "vendor": [1, 2] }"#.into()).unwrap();
+        let fields = [("claimResult".to_owned(), raw)].into();
+        let record = serde_json::to_string(&AttemptWrite {
+            attempt: &attempt,
+            receipt_fields: &fields,
+        })
+        .unwrap();
+        let decoded: std::collections::BTreeMap<String, Box<RawValue>> =
+            serde_json::from_str(&record).unwrap();
+        assert_eq!(decoded["claimResult"].get(), r#"{ "vendor": [1, 2] }"#);
+    }
+
+    #[test]
+    fn execution_attempt_decodes_owner_fields_with_closed_start_attempt() {
+        let raw = r#"{"id":"attempt","runId":"run","submitted":false,"submission":"unsent","inputIdentity":[{"id":"event"}],"admission":{"id":"token"}}"#;
+        let attempt: ExecutionAttempt = serde_json::from_str(raw).unwrap();
+        assert_eq!(attempt.start.id.as_deref(), Some("attempt"));
+        assert_eq!(attempt.run_id, "run");
+        assert_eq!(attempt.submission, Some(AttemptSubmission::Unsent));
+        assert_eq!(attempt.input_identity.unwrap().get(), r#"[{"id":"event"}]"#);
+    }
+
+    #[test]
     fn malformed_recovery_turn_does_not_match_missing_run_turn() {
         let raw = r#"{"id":"run","agent":"agent","accountKey":"default","epoch":1,"created":1,"status":"running","turnId":null}"#;
         let mut run = decode("runtime_execution_runs", "run", raw).unwrap();
-        let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":{"turnId":false}})).unwrap();
-        merge_recovery(&mut run, &agent);
-        assert!(!run.extra.contains_key("disconnectRecovery"));
         for (marker, accepted) in [
             (json!({}), true),
             (json!({"turnId":null}), true),
-            (json!({"turnId":[]}), false),
             (json!({"turnId":"other"}), false),
         ] {
             run.extra.clear();
-            let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":marker})).unwrap();
+            let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","disconnectRecovery":marker})).unwrap();
             merge_recovery(&mut run, &agent);
             assert_eq!(run.extra.contains_key("disconnectRecovery"), accepted);
         }
@@ -949,7 +1052,7 @@ mod tests {
         let raw = r#"{"id":"run","agent":"agent","accountKey":"default","epoch":1,"created":1,"status":"running","firstAttemptId":false,"rootAttemptId":{"future":true}}"#;
         db.execute("INSERT INTO runtime_execution_runs VALUES('run',?1)", [raw])
             .unwrap();
-        let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":null}})).unwrap();
+        let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":null}})).unwrap();
         assert_eq!(
             crate::repositories::work_items::WorkItemsRepository::submission_identity(&db, &agent)
                 .unwrap(),
@@ -996,7 +1099,7 @@ mod tests {
             saved.terminal_repair.as_ref().unwrap().get(),
             r#"{"note": "preserve"}"#
         );
-        let agent = AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":"attempt"}})).expect("agent");
+        let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","activeExecution":{"runId":"run","attemptId":"attempt"}})).expect("agent");
         let tx = db.transaction().expect("transaction");
         let saved_run = ExecutionHistoryRepository::current_run(&tx, &agent)
             .expect("read")
@@ -1025,7 +1128,7 @@ mod tests {
         .expect("history");
         let tx = db.transaction().expect("transaction");
         let pointer = json!({"runId":"run","attemptId":null});
-        let mut agent=AgentRecord::from_value(json!({"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","threadId":"destination","activeExecution":pointer})).expect("current owner");
+        let mut agent=AgentRecord::from_value(json!({"compactions":0,"accountKey":"default","id":"agent","rootId":"agent","provider":"codex","epoch":1,"status":"idle","threadId":"destination","activeExecution":pointer})).expect("current owner");
         ExecutionHistoryRepository::record_current(&tx, &mut agent).expect("same account/epoch");
         assert_eq!(
             agent.extra["activeExecution"], pointer,

@@ -1,4 +1,4 @@
-import type { RxCollection } from "rxdb";
+import type { LocalCollection } from "./localCollection";
 import type { Snapshot } from "../types";
 import { createFrameBatch } from "./frameBatch";
 import { readRetryDelay, retryableReadError } from "./readRetry";
@@ -13,7 +13,7 @@ import {
 
 /** Read one baseline, then consume changed documents without a live find query. */
 export async function observeEntityProjection(
-  collection: RxCollection<EntityRow>,
+  collection: LocalCollection,
   accept: (snapshot: Snapshot) => void,
   fail: (error: unknown) => void,
   acceptUiPreferences?: (preferences: UiPreferenceProjection) => void,

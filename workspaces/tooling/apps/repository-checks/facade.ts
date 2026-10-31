@@ -275,13 +275,6 @@ const BOUNDARY_ALLOWLIST = [
       "The existing WAV encoding and helper-error witness consumes the desktop speech implementation, previously loaded from speech.cjs.",
   },
   {
-    importer: "codex-agents-desktop",
-    file: "profile-export-fixture.ts",
-    specifier: "../web/src/native/importBrowserProfile.ts",
-    reason:
-      "The extracted hidden profile fixture retains the profile-export-test runtime witness against the renderer import owner.",
-  },
-  {
     importer: "codex-studio-tooling",
     file: "workspaces/tooling/apps/repository-checks/tests/fixtures/scale-verifier-child.ts",
     specifier:
@@ -304,34 +297,6 @@ const BOUNDARY_ALLOWLIST = [
       "Bridge test configuration consumes the repository's ambient-agent environment policy.",
   },
   {
-    importer: "codex-agents-desktop",
-    file: "server-access-native.ts",
-    specifier: "../web/tests/servers/multi-server-fixture.ts",
-    reason:
-      "The native desktop integration scenario reuses the renderer's local multi-server test fixture.",
-  },
-  {
-    importer: "codex-agents-desktop",
-    file: "test.ts",
-    specifier: "../web/tests/playwright.ts",
-    reason:
-      "The native desktop scenario reuses the renderer's browser test-state helper.",
-  },
-  {
-    importer: "codex-agents-desktop",
-    file: "multi-server-memory.ts",
-    specifier: "../web/tests/servers/multi-server-fixture.ts",
-    reason:
-      "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
-  },
-  {
-    importer: "codex-agents-desktop",
-    file: "server-frames-native.ts",
-    specifier: "../web/tests/servers/multi-server-fixture.ts",
-    reason:
-      "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
-  },
-  {
     importer: "codex-studio-tooling",
     file: "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.ts",
     specifier: "../../../../client/apps/**",
@@ -344,20 +309,6 @@ const BOUNDARY_ALLOWLIST = [
     specifier: "../../../../client/apps/desktop/**",
     reason:
       "The fast tier checks the signing check and the unlock error contract of the desktop packager with a fake security tool, because the desktop package has no fast-tier test runner of its own.",
-  },
-  {
-    importer: "codex-agents-desktop",
-    file: "profile-export-test.ts",
-    specifier: "../web/src/native/importBrowserProfile.ts",
-    reason:
-      "The profile export scenario checks its output with the renderer's own browser profile import code.",
-  },
-  {
-    importer: "codex-agents-desktop",
-    file: "profile-export-test.ts",
-    specifier: "../web/src/native/combineBrowserProfiles.ts",
-    reason:
-      "The profile export scenario checks its output with the renderer's own browser profile import code.",
   },
 ];
 

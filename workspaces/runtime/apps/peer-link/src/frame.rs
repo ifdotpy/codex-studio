@@ -78,6 +78,7 @@ pub fn link_header(name: &str) -> bool {
             | "forwarded"
             | "x-real-ip"
     ) || name.starts_with("x-forwarded-")
+        || name.starts_with("x-studio-link-")
         || name.starts_with("proxy-")
         || name.starts_with("tailscale-")
 }
@@ -180,6 +181,8 @@ mod tests {
             "Tailscale-User-Login",
             "Content-Length",
             "Connection",
+            "X-Studio-Link-Token",
+            "x-studio-link-connection",
         ] {
             assert!(link_header(name), "{name}");
         }

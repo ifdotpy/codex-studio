@@ -64,6 +64,10 @@ import {
   RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS,
   RESOURCE_HEARTBEAT_TIMEOUT_MS,
   RESOURCE_PEER_TIMEOUT_MS,
+  RESOURCE_PROBE_TIMEOUT_MS,
+  RESOURCE_RETRY_BASE_MS,
+  RESOURCE_RETRY_MAX_MS,
+  RESOURCE_STABLE_MS,
   type ResourceConnectionHealth,
   type ResourceConnectionDetail,
 } from "./resourceConnection";
@@ -90,6 +94,8 @@ const authProgressStatuses = {
   ready: true,
   error: true,
   cancelled: true,
+  duplicate: true,
+  uncertain: true,
 } satisfies Record<
   NonNullable<components["schemas"]["AuthProgressEvent"]["value"]>["status"],
   true
@@ -232,6 +238,8 @@ export type OutgoingTabMessage = OutgoingMessage &
   Pick<TabMessage, "workspaceId" | "tabId" | "apiSchemaHash" | "health">;
 
 export type ResourceEventsOptions = {
+  /** Receives the origins the server answers on, once per connection. */
+  onRoutes?: (routes: readonly string[]) => void;
   api: Pick<
     import("../api").ServerApi,
     | "clearSchemaUpdateAttemptAfterMatch"
@@ -294,10 +302,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   const SCHEMA_HANDSHAKE_FAILURE_LIMIT = 3;
 
   const PEER_HEARTBEAT_MS = 3_000;
-
-  const BASE_RETRY_MS = 500;
-
-  const MAX_RETRY_MS = 15_000;
 
   const COORDINATOR_IDLE_STOP_MS = 1_000;
 
@@ -425,6 +429,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   let stopResume: (() => void) | undefined;
 
   let validatedServerFrameAt: number | undefined;
+  /** Retry count that survives a short live period; it resets after RESOURCE_STABLE_MS. */
+  let retryAttempts = 0;
+  let stableTimer: ReturnType<typeof setTimeout> | undefined;
+  /** An offline or refused connection retries only on a wakeup, never on a timer. */
+  let awaitingWakeup = false;
   let storageSlow = false;
   let healthSequence = 0;
   const peerHealth = createPeerConnectionHealth();
@@ -452,6 +461,15 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       next = { phase: "paused" };
     const previous = connectionState;
     connectionState = next;
+    if (next.phase === "reconnecting") retryAttempts = next.attempt;
+    if (next.phase !== "live") {
+      clearTimeout(stableTimer);
+      stableTimer = undefined;
+    } else if (previous.phase !== "live") {
+      stableTimer = setTimeout(() => {
+        retryAttempts = 0;
+      }, RESOURCE_STABLE_MS);
+    }
     if (
       next.phase === "reconnecting" &&
       (previous.phase !== "reconnecting" || previous.attempt !== next.attempt)
@@ -641,7 +659,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const key = resourceKey(resource);
     if (force) resourceValues.set(key, version);
     else if (!rememberResourceVersion(resource, version)) return;
-    // Draft data is admitted to RxDB in stream order. Hint coalescing may drop
+    // Draft data is admitted to the draft store in stream order. Hint coalescing may drop
     // intermediate versions, which would turn a complete interval into a gap.
     if (resource.kind === "drafts" && version.reason === "change") {
       for (const listener of subscribers.get(key) ?? []) listener(version);
@@ -1685,8 +1703,14 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   }
 
   function retryDelay(attempt: number) {
-    const ceiling = Math.min(BASE_RETRY_MS * 2 ** (attempt - 1), MAX_RETRY_MS);
-    return Math.max(100, Math.round(ceiling * (0.5 + Math.random())));
+    const ceiling = Math.min(
+      RESOURCE_RETRY_BASE_MS * 2 ** (attempt - 1),
+      RESOURCE_RETRY_MAX_MS,
+    );
+    return Math.min(
+      RESOURCE_RETRY_MAX_MS,
+      Math.max(100, Math.round(ceiling * (0.5 + Math.random()))),
+    );
   }
 
   function cancelReconnect() {
@@ -1708,13 +1732,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       (connectionState.phase === "reconnecting" &&
         connectionState.retryAt !== undefined) ||
       pageHidden() ||
+      awaitingWakeup ||
       connectionState.phase === "offline"
     )
       return;
-    const attempt =
-      connectionState.phase === "reconnecting"
-        ? connectionState.attempt + 1
-        : 1;
+    const attempt = retryAttempts + 1;
     const delay = retryDelay(attempt);
     reconnectTimer = setTimeout(() => {
       cancelReconnect();
@@ -1750,10 +1772,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   function connectionLost(failure: ReconnectCause) {
     resetConnection();
-    const attempt =
-      connectionState.phase === "reconnecting"
-        ? connectionState.attempt + 1
-        : 1;
+    const attempt = retryAttempts + 1;
     setConnection({
       phase: "reconnecting",
       attempt,
@@ -1895,6 +1914,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       coordinatorActive &&
       (owner || independent) &&
       !pageHidden() &&
+      !awaitingWakeup &&
       connectionState.phase !== "offline"
     );
   }
@@ -2042,6 +2062,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           )
             throw new TypeError("Invalid sync session");
           sessionId = event.sessionId;
+          if (Array.isArray(event.routes)) options.onRoutes?.(event.routes);
           scheduleOwnerStreamUpdate();
         } catch (error) {
           frameFailed(error);
@@ -2121,8 +2142,22 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       connected.addEventListener("token-rates", (message: Event) => {
         applyFrame(message, receiveTokenRateEvent);
       });
-      connected.onerror = () => {
+      connected.onerror = (event) => {
         if (source !== connected) return;
+        const status = (event as { status?: number } | undefined)?.status;
+        if (status === 401 || status === 403) {
+          // A refused device waits for a wakeup. A timer would repeat the refusal.
+          requireBaselineReconciliation();
+          closeSource("auth-rejected");
+          awaitingWakeup = true;
+          setConnection({
+            phase: "reconnecting",
+            attempt: retryAttempts + 1,
+            cause: "auth-rejected",
+            activity: "stopped",
+          });
+          return;
+        }
         if (connectionOpened && !schemaHandshakeReceived) {
           failHandshake("stream-error");
           return;
@@ -2397,7 +2432,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       return;
     }
     if (connectionState.phase === "offline") return;
-    cancelReconnect();
+    wake();
     if (connectionState.phase === "paused")
       setConnection({ phase: "connecting", attempt: 1, activity: "stopped" });
     if (!coordinatorReady) void initialize();
@@ -2411,8 +2446,64 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     announceSubscriptions(true);
   }
 
+  /** A wakeup ends a wait for one. It also checks an open stream before keeping it. */
+  function wake() {
+    const waiting = awaitingWakeup;
+    awaitingWakeup = false;
+    cancelReconnect();
+    if (waiting) {
+      if (connectionState.phase === "reconnecting")
+        setConnection({ ...connectionState, activity: "stopped" });
+    } else probeStream();
+  }
+
+  /**
+   * Asks the server to acknowledge an empty subscription change on the open
+   * stream. Only a missing answer replaces the stream: a socket that the system
+   * killed in suspension reports no close.
+   */
+  function probeStream() {
+    const connected = source;
+    if (
+      !connected ||
+      connected.restart ||
+      !sessionId ||
+      pendingSubscription ||
+      subscriptionRequest ||
+      connectionState.phase !== "live"
+    )
+      return;
+    const gen = ++subscriptionGen;
+    pendingSubscription = {
+      gen,
+      resources: wireResources,
+      tokenRates: wireTokenRates,
+    };
+    const controller = new AbortController();
+    subscriptionRequest = controller;
+    const lost = () => {
+      if (source === connected) reconnectNow("probe-timeout");
+    };
+    subscriptionAckTimer = setTimeout(lost, RESOURCE_PROBE_TIMEOUT_MS);
+    void post(
+      "/api/sync/subscriptions",
+      { sessionId, gen, add: [], remove: [], tokenRates: wireTokenRates },
+      { signal: controller.signal, timeoutMs: RESOURCE_PROBE_TIMEOUT_MS },
+    )
+      .catch(lost)
+      .finally(() => {
+        if (subscriptionRequest !== controller) return;
+        subscriptionRequest = undefined;
+        if (source === connected) scheduleOwnerStreamUpdate();
+      });
+  }
+
   function stopCoordinator() {
     coordinatorActive = false;
+    awaitingWakeup = false;
+    retryAttempts = 0;
+    clearTimeout(stableTimer);
+    stableTimer = undefined;
     coordinatorGeneration++;
     initializing = false;
     if (coordinatorIdleStopTimer !== undefined)
@@ -2469,16 +2560,21 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         releaseStream();
         peerHealth.clear();
       },
+      change: () => {
+        if (connectionState.phase === "live") probeStream();
+      },
       online: () => {
+        awaitingWakeup = false;
+        if (connectionState.phase === "live") {
+          probeStream();
+          return;
+        }
         if (
           connectionState.phase !== "offline" &&
           connectionState.phase !== "reconnecting"
         )
           return;
-        const attempt =
-          connectionState.phase === "reconnecting"
-            ? connectionState.attempt + 1
-            : 1;
+        const attempt = retryAttempts + 1;
         cancelReconnect();
         closeSource("network-online");
         setConnection({
@@ -2659,6 +2755,19 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     watchResourceConnection,
     watchTokenRateEvents,
     watchLiveDeltas,
+    /** Replaces the open stream, for example after the server route changed. */
+    replaceStream() {
+      if (source) reconnectNow("route-change");
+    },
+    /** The user asks for a new attempt now. */
+    retryNow() {
+      awaitingWakeup = false;
+      cancelReconnect();
+      if (!coordinatorActive || source || connectionState.phase === "live")
+        return;
+      if (!coordinatorReady) void initialize();
+      else if (owner || independent) void openSource();
+    },
     dispose() {
       stopMismatch();
       stopCoordinator();
@@ -2699,4 +2808,5 @@ export const {
   watchResourceConnection,
   watchTokenRateEvents,
   watchLiveDeltas,
+  replaceStream,
 } = defaultResourceEvents;

@@ -6,6 +6,22 @@ use std::time::Duration;
 const TOKEN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const BUILD: &str = "build-a";
 
+#[test]
+fn persisted_operation_rejects_invalid_and_unknown_fields() {
+    let body = r#"{"operationId":"op","agentId":"agent","projectId":"project","linePath":"line","slotId":"0","state":"leased","createdAt":1.0,"slotPath":"slot","derivedData":"derived","packageCache":"cache","artifactsPath":"artifacts","diskBudget":5,"macOnly":[],"features":[]}"#;
+    assert!(serde_json::from_str::<Op>(body).is_ok());
+    assert!(
+        serde_json::from_str::<Op>(
+            &body.replace(r#""features":[]"#, r#""features":[],"extension":{"z":1}"#)
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_str::<Op>(&body.replace(r#""agentId":"agent""#, r#""agentId":42"#))
+            .is_err()
+    );
+}
+
 #[tokio::test]
 async fn slot_lease_preserves_nullable_generation_number() {
     let fixture = Fixture::new();
@@ -298,6 +314,30 @@ fn the_protocol_limits_match_the_guest_owner() {
 /// The guest computes `manifestSha256` with Python `json.dumps(sort_keys=True)`;
 /// the values below are what `host_exec_protocol.scan` gives for the same tree.
 #[test]
+fn typed_manifest_hash_matches_legacy_json() {
+    let manifest = protocol::Manifest::from([
+        (
+            "café".into(),
+            protocol::ManifestEntry::File {
+                bytes: 3,
+                mode: 0o644,
+                sha256: "abc".into(),
+            },
+        ),
+        (
+            "link".into(),
+            protocol::ManifestEntry::Link {
+                target: "😀".into(),
+            },
+        ),
+        ("empty".into(), protocol::ManifestEntry::Directory),
+    ]);
+    let legacy = r#"{"caf\u00e9": {"bytes": 3, "kind": "file", "mode": 420, "sha256": "abc"}, "empty": {"kind": "directory"}, "link": {"kind": "link", "target": "\ud83d\ude00"}}"#;
+    assert_eq!(protocol::manifest_json(&manifest), legacy);
+    assert_eq!(protocol::manifest_digest(&manifest), protocol::key(legacy));
+}
+
+#[test]
 fn the_manifest_hashes_as_the_guest_hashes_it() {
     use std::os::unix::fs::PermissionsExt;
     let temp = tempfile::tempdir().unwrap();
@@ -321,7 +361,7 @@ fn the_manifest_hashes_as_the_guest_hashes_it() {
     fs::create_dir(root.join("empty")).unwrap();
     let manifest = protocol::scan(root, &[], None).unwrap();
     assert_eq!(
-        protocol::sorted_json(&protocol::manifest_value(&manifest)),
+        protocol::manifest_json(&manifest),
         r#"{"caf\u00e9 \"q\"": {"bytes": 1, "kind": "file", "mode": 384, "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"}, "empty": {"kind": "directory"}, "link": {"kind": "link", "target": "src/\u00fcber\ud83d\ude00"}, "src": {"kind": "directory"}, "src/main.swift": {"bytes": 15, "kind": "file", "mode": 420, "sha256": "18a6066e8dd25f6d99b3274b3232ebae6750fc8d1637729125863d7919df784f"}, "tool.sh": {"bytes": 17, "kind": "file", "mode": 493, "sha256": "306c6ca7407560340797866e077e053627ad409277d1b9da58106fce4cf717cb"}}"#
     );
     assert_eq!(
@@ -347,18 +387,31 @@ fn name_alias_and_page_rules() {
         ),
         "/line/file /line/file /private/var/slot/sourcex"
     );
-    let items: Vec<(String, Value)> = (0..protocol::PAGE_ENTRIES + 10)
-        .map(|index| (format!("f{index:05}"), json!({"kind": "directory"})))
+    let items: protocol::ManifestPageItems = (0..protocol::PAGE_ENTRIES + 10)
+        .map(|index| {
+            (
+                format!("f{index:05}"),
+                Some(protocol::ManifestEntry::Directory),
+            )
+        })
         .collect();
-    let first = protocol::page(&items, Some(&json!(""))).unwrap();
+    let first = protocol::page(&items, "").unwrap();
     assert_eq!(
         first["entries"].as_object().unwrap().len(),
         protocol::PAGE_ENTRIES
     );
-    let second = protocol::page(&items, Some(&first["next"])).unwrap();
+    let second = protocol::page(&items, first["next"].as_str().unwrap()).unwrap();
     assert_eq!(second["entries"].as_object().unwrap().len(), 10);
     assert!(second["next"].is_null());
-    assert!(protocol::page(&items, Some(&json!(5))).is_err());
+}
+
+#[test]
+fn hash_cache_discards_invalid_rows_without_losing_valid_rows() {
+    use std::io::Write;
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    write!(file, "{{\"bad\":[1],\"good\":[1,2,3,4,\"abc\"]}}").unwrap();
+    let hashes = protocol::load_hashes(file.path());
+    assert_eq!(hashes.len(), 1);
 }
 
 #[test]
@@ -367,11 +420,10 @@ fn the_hash_cache_keeps_only_settled_files() {
     let path = temp.path().join("file");
     fs::write(&path, "content").unwrap();
     let meta = fs::symlink_metadata(&path).unwrap();
-    let mut hashes = Map::new();
+    let mut hashes = protocol::HashCache::new();
     // A file that just changed is not kept: a second write in the same clock step would hide.
     let stamp = protocol::stamp(&meta);
-    let boundary =
-        i128::from(stamp[1].as_i64().unwrap().max(stamp[3].as_i64().unwrap())) + protocol::RACY_NS;
+    let boundary = i128::from(stamp.1.max(stamp.3)) + protocol::RACY_NS;
     let (checksum, known) =
         protocol::file_hash(&path, &meta, "file", Some(&mut hashes), boundary).unwrap();
     assert!(!known && hashes.is_empty());
@@ -379,13 +431,14 @@ fn the_hash_cache_keeps_only_settled_files() {
     let (again, known) =
         protocol::file_hash(&path, &meta, "file", Some(&mut hashes), later).unwrap();
     assert_eq!((again.as_str(), known), (checksum.as_str(), true));
-    assert_eq!(hashes["file"][4], json!(checksum));
+    assert_eq!(hashes["file"].4, checksum);
     // The cached hash answers without a read while the stat key is the same.
     fs::write(&path, "changed").unwrap();
     hashes.insert("file".into(), {
-        let mut row = protocol::stamp(&fs::symlink_metadata(&path).unwrap()).to_vec();
-        row.push(json!("cached"));
-        Value::Array(row)
+        protocol::HashRow::new(
+            protocol::stamp(&fs::symlink_metadata(&path).unwrap()),
+            "cached".into(),
+        )
     });
     let meta = fs::symlink_metadata(&path).unwrap();
     let (cached, known) =
@@ -421,11 +474,226 @@ async fn an_exact_retry_returns_the_saved_answer_and_changed_content_is_refused(
 }
 
 #[tokio::test]
+async fn receipt_replays_original_response_bytes() {
+    let fixture = Fixture::new();
+    let response = "  { \"result\" : {\"legacy\": 1}, \"id\" : \"stored-id\" }  ";
+    let params =
+        r#"{"operationId":"old","agentId":"agent","projectId":"project","linePath":"line"}"#;
+    fixture
+        .service
+        .db()
+        .execute(
+            "INSERT INTO receipts VALUES (?1,?2,?3)",
+            rusqlite::params!["stored-id", receipt_digest("acquire", params), response],
+        )
+        .unwrap();
+    let frame =
+        format!(r#"{{"id":"stored-id","method":"acquire","token":"{TOKEN}","params":{params}}}"#);
+    let actual = fixture
+        .service
+        .request_frame(frame.as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(actual, response);
+}
+
+#[tokio::test]
+async fn receipt_refuses_changed_raw_params_without_reexecution() {
+    let fixture = Fixture::new();
+    let params = json!({"operationId": "raw", "agentId": "agent", "projectId": "project", "linePath": fixture.line.display().to_string()});
+    let frame =
+        format!(r#"{{"id":"raw-id","method":"acquire","token":"{TOKEN}","params":{params}}}"#);
+    let changed = format!(
+        r#"{{"id":"raw-id","method":"acquire","token":"{TOKEN}","params": {{ {}}}}}"#,
+        &params.to_string()[1..params.to_string().len() - 1]
+    );
+    let first = fixture
+        .service
+        .request_frame(frame.as_bytes())
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .service
+            .request_frame(frame.as_bytes())
+            .await
+            .unwrap(),
+        first
+    );
+    let refused = fixture
+        .service
+        .request_frame(changed.as_bytes())
+        .await
+        .unwrap();
+    let refused: Value = serde_json::from_str(&refused).unwrap();
+    assert_eq!(refused["error"]["code"], "id_conflict");
+}
+
+#[tokio::test]
+async fn release_saves_typed_transfer_failure() {
+    let fixture = Fixture::new();
+    let acquire = json!({"operationId":"release-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});
+    fixture
+        .call("release-acquire", "acquire", acquire)
+        .await
+        .unwrap();
+    let failure = json!({"code":"sync_conflict","message":"source changed"});
+    let released = fixture
+        .call(
+            "release-failure",
+            "release",
+            json!({"operationId":"release-test","agentId":"agent","preRunError":failure}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(released["state"], "released");
+    assert_eq!(released["reason"], "sync_failed");
+    assert_eq!(released["preRunError"], failure);
+}
+
+#[tokio::test]
+async fn chunked_transfer_commits_and_deletes_a_typed_entry() {
+    let fixture = Fixture::new();
+    let acquire = json!({"operationId":"chunk-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});
+    fixture
+        .call("chunk-acquire", "acquire", acquire)
+        .await
+        .unwrap();
+    let entry = json!({"kind":"file", "bytes":1, "mode":420, "sha256":"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"});
+    fixture
+        .call(
+            "chunk-entry",
+            "sync.entry",
+            json!({"operationId":"chunk-test","agentId":"agent","path":"file","entry":entry}),
+        )
+        .await
+        .unwrap();
+    fixture.call("chunk-data", "sync.chunk", json!({"operationId":"chunk-test","agentId":"agent","path":"file","offset":0,"data":"eA=="})).await.unwrap();
+    fixture
+        .call(
+            "chunk-commit",
+            "sync.commit",
+            json!({"operationId":"chunk-test","agentId":"agent","path":"file"}),
+        )
+        .await
+        .unwrap();
+    let manifest = fixture
+        .call(
+            "chunk-manifest",
+            "manifest",
+            json!({"operationId":"chunk-test","agentId":"agent","after":""}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        manifest["entries"]["file"]["sha256"],
+        "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
+    );
+    fixture
+        .call(
+            "chunk-delete",
+            "sync.delete",
+            json!({"operationId":"chunk-test","agentId":"agent","path":"file"}),
+        )
+        .await
+        .unwrap();
+    let manifest = fixture
+        .call(
+            "chunk-manifest-after",
+            "manifest",
+            json!({"operationId":"chunk-test","agentId":"agent","after":""}),
+        )
+        .await
+        .unwrap();
+    assert!(manifest["entries"].get("file").is_none());
+}
+
+#[tokio::test]
+async fn sync_clone_skips_when_project_folder_is_absent() {
+    let fixture = Fixture::new();
+    let acquire = json!({"operationId":"clone-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});
+    fixture
+        .call("clone-acquire", "acquire", acquire)
+        .await
+        .unwrap();
+    let params = json!({"operationId":"clone-test","agentId":"agent","path":"file","entry":{"kind":"file","bytes":1,"mode":420,"sha256":"abc"}});
+    let result = fixture
+        .call("clone-file", "sync.clone", params)
+        .await
+        .unwrap();
+    assert_eq!(result["cloned"], false);
+    assert_eq!(result["reason"], "no project folder on this host");
+}
+
+#[tokio::test]
+async fn sync_mode_uses_typed_file_entries() {
+    let fixture = Fixture::new();
+    let acquire = json!({"operationId":"mode-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});
+    fixture
+        .call("mode-acquire", "acquire", acquire)
+        .await
+        .unwrap();
+    let entry = json!({"kind":"file", "bytes":1, "mode":420, "sha256":"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"});
+    let batch = json!({"operationId":"mode-test","agentId":"agent","items":[{"path":"file","entry":entry,"data":"eA=="}]});
+    fixture
+        .call("mode-batch", "sync.batch", batch)
+        .await
+        .unwrap();
+    let mode = json!({"operationId":"mode-test","agentId":"agent","items":[{"path":"file","entry":{"kind":"file", "bytes":1, "mode":493, "sha256":"2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"}}]});
+    let result = fixture
+        .call("mode-change", "sync.mode", mode)
+        .await
+        .unwrap();
+    assert_eq!(result["entries"], 1);
+}
+
+#[tokio::test]
+async fn prime_checks_typed_cache_paths_at_the_request_boundary() {
+    let fixture = Fixture::new();
+    let acquire = json!({"operationId":"prime-test","agentId":"agent","projectId":"project", "linePath":fixture.line.display().to_string()});
+    fixture
+        .call("prime-acquire", "acquire", acquire)
+        .await
+        .unwrap();
+    let params = json!({"operationId":"prime-test","agentId":"agent","caches":[]});
+    let result = fixture.call("prime-empty", "prime", params).await.unwrap();
+    assert_eq!(result["primed"].as_array().unwrap().len(), 0);
+    let invalid = json!({"operationId":"prime-test","agentId":"agent","caches":["../escape"]});
+    assert_eq!(
+        fixture
+            .call("prime-invalid", "prime", invalid)
+            .await
+            .unwrap_err()
+            .0,
+        "invalid_params"
+    );
+}
+
+#[tokio::test]
+async fn legacy_receipt_digest_is_refused_without_executing() {
+    let fixture = Fixture::new();
+    let params = json!({"operationId": "legacy", "agentId": "agent", "projectId": "project",
+                        "linePath": fixture.line.display().to_string()});
+    let legacy = protocol::key("legacy receipt digest");
+    fixture
+        .service
+        .db()
+        .execute(
+            "INSERT INTO receipts VALUES ('legacy-id', ?1, NULL)",
+            [&legacy],
+        )
+        .unwrap();
+    let response = fixture.request("legacy-id", "acquire", params).await;
+    assert_eq!(response["error"]["code"], "id_conflict");
+    assert!(!fixture.service.opdir("legacy").exists());
+}
+
+#[tokio::test]
 async fn an_unknown_receipt_never_replays() {
     let fixture = Fixture::new();
     let params = json!({"operationId": "unknown", "agentId": "agent", "projectId": "project",
                         "linePath": fixture.line.display().to_string()});
-    let digest = protocol::key(&protocol::sorted_json(&json!(["acquire", params])));
+    let digest = receipt_digest("acquire", &params.to_string());
     fixture
         .service
         .db()
@@ -540,7 +808,10 @@ async fn slots_are_exclusive_and_settings_set_the_count_and_budget() {
         (json!(300_u64 << 30), json!(["out"]))
     );
     // The smaller slot count removed the least recently used idle slot.
-    assert_eq!(one["slotId"], fixture.op_status("b")["slotId"]);
+    assert_eq!(
+        one["slotId"].as_str().unwrap(),
+        fixture.op_status("b").slot_id
+    );
     assert_eq!(fixture.acquire("two").await.unwrap_err().0, "busy");
     for (index, value) in [
         json!({"slots": 0}),
@@ -743,7 +1014,7 @@ async fn the_mac_refuses_an_invalid_tree_id_and_a_changed_manifest() {
         assert_eq!(escaped.unwrap_err().0, "invalid_params");
     }
     assert!(fixture.service.inner().commands.is_empty());
-    assert_eq!(fixture.op_status("bad")["state"], "leased");
+    assert_eq!(fixture.op_status("bad").state, State::Leased);
 }
 
 #[tokio::test]
@@ -803,7 +1074,7 @@ async fn command_group_signals_come_before_the_leader_is_reaped() {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     for operation in ["plain", "stopped"] {
-        let pid = i32::try_from(fixture.op_status(operation)["pid"].as_i64().unwrap()).unwrap();
+        let pid = fixture.op_status(operation).pid.unwrap();
         let seen = signals.get(&pid).cloned().unwrap_or_default();
         assert!(!seen.is_empty(), "{operation}: the group is signalled");
         assert!(
@@ -816,16 +1087,11 @@ async fn command_group_signals_come_before_the_leader_is_reaped() {
 #[tokio::test]
 async fn a_lost_owner_is_unknown_and_keeps_the_lease() {
     let fixture = Fixture::new();
-    let mut op = fixture
-        .acquire("lost-owner")
-        .await
-        .unwrap()
-        .as_object()
-        .unwrap()
-        .clone();
-    op.insert("state".into(), json!("running"));
+    fixture.acquire("lost-owner").await.unwrap();
+    let mut op = fixture.service.load("lost-owner").unwrap();
+    op.state = State::Running;
     fixture.service.save("lost-owner", &op).unwrap();
-    assert_eq!(fixture.op_status("lost-owner")["state"], "unknown");
+    assert_eq!(fixture.op_status("lost-owner").state, State::Unknown);
     let release = fixture
         .call(
             "release",
@@ -863,7 +1129,7 @@ async fn a_guest_restart_frees_idle_slots_and_orphans_running_commands() {
         .call("acquire-idle", "acquire", params("idle", "old"))
         .await
         .unwrap();
-    let mine = fixture
+    fixture
         .call("acquire-mine", "acquire", params("mine", "new"))
         .await
         .unwrap();
@@ -877,11 +1143,14 @@ async fn a_guest_restart_frees_idle_slots_and_orphans_running_commands() {
         .unwrap();
     assert_eq!(report["released"], json!(["idle"]));
     assert_eq!(report["releasedSlots"][0]["generation"], idle["generation"]);
-    assert_eq!(fixture.op_status("idle")["abandoned"], "guest_owner_lost");
+    assert_eq!(
+        fixture.op_status("idle").abandoned.as_deref(),
+        Some("guest_owner_lost")
+    );
     assert!(
         fixture
             .service
-            .slot(mine.as_object().unwrap())
+            .slot(&fixture.service.load("mine").unwrap())
             .unwrap()
             .join("lease.json")
             .exists()

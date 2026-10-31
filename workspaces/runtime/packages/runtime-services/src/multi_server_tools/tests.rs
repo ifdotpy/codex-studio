@@ -3,6 +3,14 @@
 use super::*;
 
 #[test]
+fn exec_environment_limit_counts_utf8_json_bytes() {
+    let valid = json!({"cwd":"/", "command":"echo", "env":{"VALUE":"雪".repeat(40_000)}});
+    assert!(validate_exec(&valid, false).is_ok());
+    let too_large = json!({"cwd":"/", "command":"echo", "env":{"VALUE":"雪".repeat(44_000)}});
+    assert!(validate_exec(&too_large, false).is_err());
+}
+
+#[test]
 fn export_request_keeps_canonical_wire_bytes() {
     let request = ExportRequest {
         cwd: Some("/workspace".into()),
@@ -174,11 +182,40 @@ impl MultiServerToolPort for ResumeFetching {
                 &json!({"worker":args["agent_id"],"branch":args["branch"],"destination":super::resolve(field(args,"destination"))}),
             );
             let input = self.input.clone();
-            self.store.transaction_with(move|tx|->Result<(),Step>{
-                let token=task_admission(tx,&key_owned,&actor_id)?.derive_result("server-fetch",&[],&signature);
-                tx.execute("INSERT INTO runtime_server_fetch(id,server,signature,state,result,admission) VALUES(?1,?2,?3,?4,?5,?6)",params![key_owned,PEER,signature,ServerFetchState::Fetching,input.as_ref().map(serde_json::to_string).transpose().map_err(StoreError::from)?,serde_json::to_string(&token).map_err(StoreError::from)?])?;
-                Ok(())
-            }).await.map_err(|error|match error {Step::Store(error)=>Error::Store(error),Step::Refused(message)|Step::Failed(message)=>Error::StoredAt(message)})?;
+            self.store
+                .transaction_with(move |tx| -> Result<(), Step> {
+                    let token = task_admission(tx, &key_owned, &actor_id)?.derive_result(
+                        "server-fetch",
+                        &[],
+                        &signature,
+                    );
+                    RemoteOutbox::put(
+                        tx,
+                        RemoteEffect::ServerFetch,
+                        PEER,
+                        &key_owned,
+                        &signature,
+                        OutboxStatus::Submitted,
+                        None,
+                        FetchEntry {
+                            state: ServerFetchState::Fetching,
+                            export: input
+                                .as_ref()
+                                .map(serde_json::to_string)
+                                .transpose()
+                                .map_err(StoreError::from)?,
+                            admission: token,
+                        },
+                        0,
+                    )
+                    .map_err(StoreError::from)?;
+                    Ok(())
+                })
+                .await
+                .map_err(|error| match error {
+                    Step::Store(error) => Error::Store(error),
+                    Step::Refused(message) | Step::Failed(message) => Error::StoredAt(message),
+                })?;
             let first = self.tools.fetch(actor, args, key, PEER).await;
             if self.input.is_none() {
                 return settle(first);
@@ -194,7 +231,7 @@ impl MultiServerToolPort for ResumeFetching {
             );
             self.store
                 .transaction(|tx| {
-                    tx.execute("UPDATE runtime_server_outbox SET next_at=0", [])?;
+                    tx.execute("UPDATE runtime_outbox SET next_at=0 WHERE kind='remote_delivery' AND status='pending'", [])?;
                     Ok(())
                 })
                 .await
@@ -263,7 +300,7 @@ async fn seeded_store_with_identity(
     let link = json!({"id": LINK, "side": "remote", "server": PEER, "parent": "home-parent",
         "parentEpoch": 4, "workers": [REMOTE, MOVED]});
     let project_record = json!({"id": project, "path": project, "name": "Fixture project",
-        "created": 1_792_510_147.0, "accountKey": "default", "accountRevision": 1,
+        "created": 1_792_510_147.0, "accountKey": "default", "accountRevision": 1, "peerTeams": [],
         "homeServerId": local, "locations": [{"serverId": local, "path": project, "projectId": project, "gitOrigin": "https://example.invalid/fixture.git"}],
         "locationsRevision": 0});
     let peer = json!({"id": PEER, "clientId": PEER, "serverId": PEER, "label": "Peer",
@@ -1059,7 +1096,7 @@ async fn a_lost_reply_is_unknown_and_an_exact_retry_does_not_send_again_in_fligh
     let body: String = store
         .test_read_transaction(|tx| {
             Ok(tx.query_row(
-                "SELECT body FROM runtime_server_outbox WHERE id=?1",
+                "SELECT json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery' AND request_id=?1",
                 [&outbox],
                 |row| row.get(0),
             )?)
@@ -1635,7 +1672,7 @@ async fn a_remote_worker_keeps_its_local_tools_and_names_the_driver_for_forwarde
     let outbox: i64 = store
         .test_read_transaction(|tx| {
             Ok(tx.query_row(
-                "SELECT count(*) FROM runtime_server_outbox WHERE json_extract(body,'$.action')='task'",
+                "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery' AND json_extract(json_extract(payload,'$.record.body'),'$.action')='task'",
                 [],
                 |row| row.get(0),
             )?)
@@ -1924,7 +1961,7 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
     let notice: String = store
         .test_read_transaction(|tx| {
             Ok(tx.query_row(
-                "SELECT body FROM runtime_server_outbox WHERE server=?1 AND json_extract(body,'$.action')='exec_event'",
+                "SELECT json_extract(payload,'$.record.body') FROM runtime_outbox WHERE kind='remote_delivery' AND target=?1 AND json_extract(json_extract(payload,'$.record.body'),'$.action')='exec_event'",
                 [PEER],
                 |row| row.get(0),
             )?)

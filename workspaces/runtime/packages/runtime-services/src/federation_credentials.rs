@@ -193,6 +193,34 @@ impl Credentials {
         .map_err(|_| CredentialError::Storage)?
     }
 
+    /// Sign `message` with the multi-server identity key (base64). The key stays in this service.
+    pub async fn sign(
+        &self,
+        store: Arc<RuntimeStore>,
+        message: String,
+    ) -> Result<String, CredentialError> {
+        let identity_cache = Arc::clone(&self.identity);
+        #[cfg(test)]
+        let write_gate = self.test_write_gate.clone();
+        self.spawn_operation(async move {
+            supported_platform()?;
+            let mut saved = identity_cache.lock().await;
+            let identity = Self::load(
+                store,
+                &mut saved,
+                #[cfg(test)]
+                write_gate,
+            )
+            .await?;
+            let signer = identity
+                .signing_identity()
+                .map_err(|_| CredentialError::Storage)?;
+            Ok(signer.sign(message.as_bytes()))
+        })?
+        .await
+        .map_err(|_| CredentialError::Storage)?
+    }
+
     pub async fn rename(
         &self,
         store: Arc<RuntimeStore>,
@@ -766,6 +794,37 @@ mod tests {
         );
         let identity = remote_transport::read_multi_server_identity(&root).expect("identity read");
         assert_eq!(identity.label, "Renamed server");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sign_proves_possession_of_the_published_identity_key() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let (_directory, _root, store) = remote_transport::tests::runtime_store_fixture().await;
+        let credentials = Credentials::default();
+        let identity = credentials
+            .identity(Arc::clone(&store), None)
+            .await
+            .expect("identity");
+        let signature = credentials
+            .sign(Arc::clone(&store), "challenge".to_owned())
+            .await
+            .expect("signature");
+        let pem = identity["publicKey"].as_str().expect("public key");
+        let body: String = pem
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect();
+        let der = STANDARD.decode(body).expect("SPKI");
+        // An Ed25519 SPKI ends with the 32 byte public key.
+        let key = &der[der.len() - 32..];
+        let signature = STANDARD.decode(signature).expect("base64 signature");
+        let verify = |message: &[u8]| {
+            ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, key)
+                .verify(message, &signature)
+        };
+        assert!(verify(b"challenge").is_ok());
+        assert!(verify(b"another challenge").is_err());
     }
 
     #[cfg(unix)]

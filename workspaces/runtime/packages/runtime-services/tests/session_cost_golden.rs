@@ -485,6 +485,12 @@ async fn session_cost_matches_the_row_scanning_golden_answers() {
     for agent in ["lead", "codex-worker", "claude-worker", "other-root"] {
         let answer =
             session_cost_with_account_profiles(&store, agent, &accounts).expect("session cost");
+        let bytes = serde_json::to_vec(&answer).expect("serialized session cost");
+        let canonical: Value = serde_json::from_slice(&bytes).expect("session cost JSON");
+        assert_eq!(
+            bytes,
+            serde_json::to_vec(&canonical).expect("canonical JSON")
+        );
         answers.insert(agent, answer);
     }
     let answers = json!(answers);

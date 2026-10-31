@@ -5,7 +5,6 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::Path;
 use studio_runtime_schema::DeliveryMoment;
-use studio_runtime_store::python_json_utf8 as python_json;
 use studio_runtime_store::{
     AnalyticsRepository, RuntimeStore, TranscriptRepository, system_reads as records,
 };
@@ -217,9 +216,10 @@ pub(crate) fn project(
 ) -> Result<Value, TranscriptError> {
     let actor =
         TranscriptRepository::agent(connection, agent)?.ok_or(TranscriptError::UnknownMessage)?;
-    if truthy(actor.get("deletedAt")) {
+    if actor.is_deleted() {
         return Err(TranscriptError::DeletedConversation);
     }
+    let actor = actor.into_value();
     let (rows, mut items): (Vec<_>, Vec<_>) = rows(connection, agent, request)?.into_iter().unzip();
     let has_cursor = [&request.before, &request.around, &request.after]
         .into_iter()
@@ -267,14 +267,16 @@ pub(crate) fn project(
         }
     }
     for item in &mut items {
+        // The record holds a preview; the client fetches the full text by hash.
+        if let Some(id) = item["id"].as_str()
+            && let Some(blob) = studio_runtime_store::text_blobs::reference(connection, id)?
+        {
+            item["fullTextBlob"] = json!({"hash": blob.hash, "size": blob.size});
+        }
         if let Some(turn) = item["turnId"].as_str()
             && !turn.is_empty()
         {
-            let ended = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM runtime_completed_turns WHERE id=?1)",
-                [format!("{agent}:{turn}")],
-                |r| r.get::<_, bool>(0),
-            )?;
+            let ended = studio_runtime_store::domain::turn_completed(connection, agent, turn)?;
             if ended && item.get("turnStatus").is_none() {
                 item["turnStatus"] = json!("ended");
             }
@@ -299,12 +301,11 @@ pub(crate) fn project(
                 item["streaming"] = json!(false);
             }
             if item["toolStatus"] == "running" {
-                item["toolStatus"] = records::get(
+                item["toolStatus"] = studio_runtime_store::TaskRepository::get(
                     connection,
-                    "runtime_tasks",
-                    item["id"].as_str().unwrap_or_default(),
+                    &studio_runtime_store::TaskId::from(item["id"].as_str().unwrap_or_default()),
                 )?
-                .map(|r| r["status"].clone())
+                .map(|task| json!(task.status()))
                 .unwrap_or(json!("interrupted"));
             }
         }
@@ -410,7 +411,7 @@ fn receipts(
                     .ok_or_else(|| invalid("runtime_assets", asset_id))?;
                 let owner = TranscriptRepository::agent(connection, owner_id)?
                     .ok_or(TranscriptError::UnknownAssetOwner)?;
-                if truthy(owner.get("deletedAt")) {
+                if owner.is_deleted() {
                     return Err(TranscriptError::DeletedAssetOwner);
                 }
                 asset
@@ -519,10 +520,25 @@ fn tool_result(
             });
             return Ok(());
         };
+        let unresolved = result.clone();
         result = crate::payload_blobs::resolve_record(state_root, &result)
             .map_err(|_| TranscriptError::Store)?;
+        apply_tool_result(result, item, now, projected)?;
+        mark_full_output(item, &unresolved);
+        return Ok(());
     }
     apply_tool_result(result, item, now, projected)
+}
+
+/// A cut tool result keeps its full content in a payload blob. Offer it to the
+/// client by hash, like the full text of a cut item.
+fn mark_full_output(item: &mut Value, unresolved: &Value) {
+    if item["truncated"] == true
+        && let Some(blob) = unresolved.pointer("/_payloadBlobs/contentItems")
+        && let (Some(hash), Some(size)) = (blob["sha256"].as_str(), blob["size"].as_u64())
+    {
+        item["fullTextBlob"] = json!({"hash": hash, "size": size});
+    }
 }
 
 fn apply_tool_result(
@@ -543,7 +559,7 @@ fn apply_tool_result(
         return Ok(());
     };
     let mut content = result.get("contentItems").cloned().unwrap_or(json!([]));
-    let encoded = python_json(&content);
+    let encoded = content.to_string();
     let limit = if projected { 20000 } else { 12000 };
     if encoded.chars().count() > limit {
         content = json!([{"type":"inputText","text":format!("{}\n[Result truncated]",encoded.chars().take(limit).collect::<String>())}]);
@@ -553,7 +569,7 @@ fn apply_tool_result(
     payload["status"] = item["toolStatus"].clone();
     payload["success"] = json!(success);
     payload["contentItems"] = content;
-    item["text"] = json!(python_json(&payload));
+    item["text"] = json!(payload.to_string());
     Ok(())
 }
 
@@ -588,6 +604,7 @@ fn project_tool_results(
                 now,
                 pending["projected"].as_bool().unwrap_or(false),
             )?;
+            mark_full_output(item, &pending["result"]);
         }
     }
     Ok(())
@@ -735,6 +752,22 @@ pub(crate) fn observed_at() -> Result<f64, TranscriptError> {
 #[cfg(test)]
 mod delivery_tests {
     use super::*;
+
+    #[test]
+    fn tool_result_projection_uses_compact_json() {
+        let mut item = json!({"text":"{}"});
+        apply_tool_result(
+            json!({"success":true,"contentItems":[{"type":"inputText","text":"雪"}]}),
+            &mut item,
+            0.0,
+            false,
+        )
+        .expect("project result");
+        assert_eq!(
+            item["text"],
+            r#"{"contentItems":[{"text":"雪","type":"inputText"}],"status":"completed","success":true}"#
+        );
+    }
 
     #[test]
     fn transcript_reasoning_decodes_each_row_before_fetching_the_next() {

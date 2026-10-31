@@ -94,7 +94,7 @@ async fn fixture(provider: &'static str) -> (State, String) {
                     AgentRepository::put(tx, &record)?;
                     record.id = AgentId::from(sibling_id.as_str());
                     record.root_id = record.id.clone();
-                    record.extra.remove("startAttempt");
+                    record.start_attempt.take();
                     record.extra.remove("preparationWake");
                     AgentRepository::put(tx, &record)
                 })

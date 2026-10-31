@@ -34,9 +34,17 @@ CREATE INDEX IF NOT EXISTS sync_entities_tombstone_order
         ON sync_entities(seq,collection,id)
         WHERE deleted=1 AND collection NOT LIKE 'transcript:%';
 CREATE TABLE IF NOT EXISTS sync_entity_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS sync_versions (
-        seq INTEGER PRIMARY KEY, scope TEXT NOT NULL UNIQUE,
-        hash TEXT NOT NULL, deleted INTEGER NOT NULL, updated REAL NOT NULL);
+-- Change numbers of the main tables (durable_seq.rs). Its numbers share the counter of
+-- sync_entities, sync_documents and sync_generation, so every allocator below reads it.
+CREATE TABLE IF NOT EXISTS durable_rows (
+        tbl TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0, at INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(tbl, id));
+CREATE INDEX IF NOT EXISTS durable_rows_seq ON durable_rows(seq);
+CREATE INDEX IF NOT EXISTS durable_rows_tombstone_at ON durable_rows(at) WHERE deleted=1;
+CREATE TABLE IF NOT EXISTS durable_floor (
+        id INTEGER PRIMARY KEY, floor INTEGER NOT NULL);
+INSERT OR IGNORE INTO durable_floor(id, floor) VALUES (1, 0);
 CREATE TRIGGER IF NOT EXISTS sync_entity_tombstone_count_insert
       AFTER INSERT ON sync_entities
       WHEN NEW.deleted=1 AND NEW.collection NOT LIKE 'transcript:%' BEGIN
@@ -164,8 +172,8 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_INSERT
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
           VALUES ('event',NEW.id,(SELECT max(seq)+1 FROM (
                     SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
-                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
-                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),
+                    SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM durable_rows)),
                   sync_entity_hash(sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0)),sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0),0)
           ON CONFLICT(collection,id) DO UPDATE SET
             seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted
@@ -173,8 +181,8 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_INSERT
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
         SELECT 'event',e.id,(SELECT max(seq) FROM (
         SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
-        SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
-        SELECT COALESCE(MAX(seq),0) FROM sync_versions))+ROW_NUMBER() OVER (ORDER BY e.created DESC,e.id),
+        SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM durable_rows))+ROW_NUMBER() OVER (ORDER BY e.created DESC,e.id),
                sync_entity_hash(sync_entity_payload('event',e.id,json_object('id',e.id,'agent',e.agent,'kind',e.kind,'status',e.status,'created',e.created,'error',e.error),0)),sync_entity_payload('event',e.id,json_object('id',e.id,'agent',e.agent,'kind',e.kind,'status',e.status,'created',e.created,'error',e.error),0),0
         FROM (SELECT id,agent,kind,status,created,error FROM runtime_events
         ORDER BY created DESC,id LIMIT 200) e
@@ -186,8 +194,8 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_INSERT
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
         SELECT 'event',s.id,(SELECT max(seq) FROM (
         SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
-        SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
-        SELECT COALESCE(MAX(seq),0) FROM sync_versions))+ROW_NUMBER() OVER (ORDER BY s.id),
+        SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM durable_rows))+ROW_NUMBER() OVER (ORDER BY s.id),
                sync_entity_hash(sync_entity_payload('event',s.id,'{}',1)),sync_entity_payload('event',s.id,'{}',1),1
         FROM sync_entities s
         WHERE s.collection='event' AND s.deleted=0
@@ -219,8 +227,8 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_UPDATE
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
           VALUES ('event',NEW.id,(SELECT max(seq)+1 FROM (
                     SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
-                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
-                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),
+                    SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM durable_rows)),
                   sync_entity_hash(sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0)),sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0),0)
           ON CONFLICT(collection,id) DO UPDATE SET
             seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted
@@ -228,8 +236,8 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_UPDATE
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
         SELECT 'event',NEW.id,(SELECT max(seq)+1 FROM (
                     SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
-                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
-                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),
+                    SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM durable_rows)),
                sync_entity_hash(sync_entity_payload('event',NEW.id,'{}',1)),sync_entity_payload('event',NEW.id,'{}',1),1
         WHERE NOT EXISTS (SELECT 1 FROM (SELECT id FROM runtime_events ORDER BY created DESC,id LIMIT 200) e WHERE e.id=NEW.id)
         ON CONFLICT(collection,id) DO UPDATE SET
@@ -258,8 +266,8 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_UPDATE_WINDOW
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
           VALUES ('event',NEW.id,(SELECT max(seq)+1 FROM (
                     SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
-                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
-                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),
+                    SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM durable_rows)),
                   sync_entity_hash(sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0)),sync_entity_payload('event',NEW.id,json_object('id',NEW.id,'agent',NEW.agent,'kind',NEW.kind,'status',NEW.status,'created',NEW.created,'error',NEW.error),0),0)
           ON CONFLICT(collection,id) DO UPDATE SET
             seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted
@@ -267,8 +275,8 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_UPDATE_WINDOW
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
         SELECT 'event',e.id,(SELECT max(seq) FROM (
         SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
-        SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
-        SELECT COALESCE(MAX(seq),0) FROM sync_versions))+ROW_NUMBER() OVER (ORDER BY e.created DESC,e.id),
+        SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM durable_rows))+ROW_NUMBER() OVER (ORDER BY e.created DESC,e.id),
                sync_entity_hash(sync_entity_payload('event',e.id,json_object('id',e.id,'agent',e.agent,'kind',e.kind,'status',e.status,'created',e.created,'error',e.error),0)),sync_entity_payload('event',e.id,json_object('id',e.id,'agent',e.agent,'kind',e.kind,'status',e.status,'created',e.created,'error',e.error),0),0
         FROM (SELECT id,agent,kind,status,created,error FROM runtime_events
         ORDER BY created DESC,id LIMIT 200) e
@@ -280,8 +288,8 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_UPDATE_WINDOW
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
         SELECT 'event',s.id,(SELECT max(seq) FROM (
         SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
-        SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
-        SELECT COALESCE(MAX(seq),0) FROM sync_versions))+ROW_NUMBER() OVER (ORDER BY s.id),
+        SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM durable_rows))+ROW_NUMBER() OVER (ORDER BY s.id),
                sync_entity_hash(sync_entity_payload('event',s.id,'{}',1)),sync_entity_payload('event',s.id,'{}',1),1
         FROM sync_entities s
         WHERE s.collection='event' AND s.deleted=0
@@ -301,8 +309,8 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_DELETE
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
           VALUES ('event',OLD.id,(SELECT max(seq)+1 FROM (
                     SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
-                    SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
-                    SELECT COALESCE(MAX(seq),0) FROM sync_versions)),
+                    SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM durable_rows)),
                   sync_entity_hash(sync_entity_payload('event',OLD.id,'{}',1)),sync_entity_payload('event',OLD.id,'{}',1),1)
           ON CONFLICT(collection,id) DO UPDATE SET
             seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=excluded.deleted
@@ -310,8 +318,8 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_DELETE
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
         SELECT 'event',e.id,(SELECT max(seq) FROM (
         SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
-        SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
-        SELECT COALESCE(MAX(seq),0) FROM sync_versions))+ROW_NUMBER() OVER (ORDER BY e.created DESC,e.id),
+        SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM durable_rows))+ROW_NUMBER() OVER (ORDER BY e.created DESC,e.id),
                sync_entity_hash(sync_entity_payload('event',e.id,json_object('id',e.id,'agent',e.agent,'kind',e.kind,'status',e.status,'created',e.created,'error',e.error),0)),sync_entity_payload('event',e.id,json_object('id',e.id,'agent',e.agent,'kind',e.kind,'status',e.status,'created',e.created,'error',e.error),0),0
         FROM (SELECT id,agent,kind,status,created,error FROM runtime_events
         ORDER BY created DESC,id LIMIT 200) e
@@ -323,8 +331,8 @@ CREATE TRIGGER IF NOT EXISTS sync_entity_event_DELETE
           INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
         SELECT 'event',s.id,(SELECT max(seq) FROM (
         SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
-        SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
-        SELECT COALESCE(MAX(seq),0) FROM sync_versions))+ROW_NUMBER() OVER (ORDER BY s.id),
+        SELECT MAX(COALESCE(MAX(seq),0),COALESCE((SELECT value FROM sync_generation WHERE id=1),0)) FROM sync_documents UNION ALL
+                    SELECT COALESCE(MAX(seq),0) FROM durable_rows))+ROW_NUMBER() OVER (ORDER BY s.id),
                sync_entity_hash(sync_entity_payload('event',s.id,'{}',1)),sync_entity_payload('event',s.id,'{}',1),1
         FROM sync_entities s
         WHERE s.collection='event' AND s.deleted=0

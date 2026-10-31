@@ -147,8 +147,10 @@ pub fn peer_link_config_line(
     backend_port: u16,
     forwarded_host: &str,
     socket: &Path,
+    link_token: &str,
 ) -> RemoteTransportResult<String> {
     if listen.parse::<std::net::SocketAddr>().is_err()
+        || link_token.is_empty()
         || peers.len() > 1024
         || forwarded_host.is_empty()
         || forwarded_host.len() > 255
@@ -168,6 +170,7 @@ pub fn peer_link_config_line(
         "backendPort": backend_port,
         "forwardedHost": forwarded_host,
         "socket": socket,
+        "linkToken": link_token,
     }))
     .map_err(|_| RemoteTransportError::InvalidIdentity)
 }
@@ -372,7 +375,12 @@ fn multi_server_request_fingerprint_normalized(
     Ok(sha256_hex(&input))
 }
 
-/// Python federation protocol: raw JSON bytes are signed with the exact method and path.
+/// Retired federation signature bytes: raw JSON bytes are signed with the exact method and path.
+///
+/// Receivers accept this scheme for one release so that peers on the previous
+/// build keep working during a rolling update. Senders still emit it next to the
+/// unified `studio-multi-server-v1` signature. Remove both in the release after
+/// the unified scheme ships (see docs/multi-server.md, "One signature scheme").
 pub fn federation_signing_bytes(
     method: &str,
     path: &str,
@@ -434,27 +442,49 @@ fn multi_server_signed_headers_normalized(
     ])
 }
 
-/// Build federation signature headers for one HTTPS request.
+/// Build the headers for one signed federation request to the peer `server_id`.
+///
+/// The request carries the unified `studio-multi-server-v1` signature (client is
+/// the sender state, server is the recipient state). It also carries the retired
+/// federation signature for one release, so a peer on the previous build still
+/// accepts it. A receiver that knows the unified headers ignores the retired ones.
+#[allow(clippy::too_many_arguments)]
 pub fn federation_signed_headers(
     identity: &RemoteIdentity,
+    server_id: &str,
     method: &str,
     url: &str,
     timestamp: i64,
     nonce: &str,
     body: &[u8],
-    now: i64,
 ) -> RemoteTransportResult<Vec<(String, String)>> {
-    validate_federation_nonce(nonce, timestamp, now)?;
+    validate_federation_nonce(nonce, timestamp, timestamp)?;
     let path = canonical_request_target(url)?;
     let signature = identity.sign(&federation_signing_bytes(
         method, &path, timestamp, nonce, body,
     ));
-    Ok(vec![
+    // A request id must start with a letter or digit; a random nonce can start with `-` or `_`.
+    let request_id = studio_runtime_schema::persistence::RequestIdentity::issue_root();
+    let mut headers = multi_server_signed_headers(
+        identity,
+        &MultiServerRequest {
+            server_id,
+            method,
+            url,
+            request_id: &request_id,
+            timestamp,
+            nonce,
+            body,
+        },
+        timestamp,
+    )?;
+    headers.extend([
         ("X-Studio-Federation-State".to_owned(), identity.id.clone()),
         ("X-Studio-Federation-Time".to_owned(), timestamp.to_string()),
         ("X-Studio-Federation-Nonce".to_owned(), nonce.to_owned()),
         ("X-Studio-Federation-Signature".to_owned(), signature),
-    ])
+    ]);
+    Ok(headers)
 }
 
 pub fn federation_message_signing_bytes(envelope: &Value) -> RemoteTransportResult<Vec<u8>> {
@@ -827,6 +857,10 @@ pub async fn exchange_multi_server(
     let headers = multi_server_signed_headers_normalized(identity, &request, &method, now)?;
     let mut owned_headers = headers;
     owned_headers.push(("Accept-Encoding".to_owned(), "identity".to_owned()));
+    owned_headers.push((
+        studio_runtime_schema::api_schema::API_SCHEMA_HASH_HEADER.to_owned(),
+        crate::sync_views::api_schema_hash().to_owned(),
+    ));
     if !input.body.is_empty() {
         owned_headers.push(("Content-Type".to_owned(), "application/json".to_owned()));
     }
@@ -1008,6 +1042,10 @@ async fn exchange_multi_server_with(
         .map(|(name, value)| (name.as_str(), value.as_str()))
         .collect::<Vec<_>>();
     headers.push(("Accept-Encoding", "identity"));
+    headers.push((
+        studio_runtime_schema::api_schema::API_SCHEMA_HASH_HEADER,
+        crate::sync_views::api_schema_hash(),
+    ));
     if !input.body.is_empty() {
         headers.push(("Content-Type", "application/json"));
     }
@@ -1082,6 +1120,8 @@ fn map_outbound_error(error: StoreError) -> RemoteTransportError {
         | StoreError::InvalidSyncObject { .. }
         | StoreError::InvalidSyncObjectField { .. }
         | StoreError::InvalidStoredRecord { .. }
+        | StoreError::TranscriptFullTextUnavailable { .. }
+        | StoreError::TranscriptInputsIncomplete { .. }
         | StoreError::SchemaObjectMismatch { .. }
         | StoreError::Sqlite(_)
         | StoreError::CommitOutcomeUnknown(_)
@@ -1651,7 +1691,7 @@ fn canonical_request_target(url: &str) -> RemoteTransportResult<String> {
         .map_or_else(|| "/".to_owned(), |value| value.as_str().to_owned()))
 }
 
-fn validate_identifier(value: &str) -> RemoteTransportResult<()> {
+pub(crate) fn validate_identifier(value: &str) -> RemoteTransportResult<()> {
     if value.is_empty()
         || value.len() > 128
         || !value.as_bytes()[0].is_ascii_alphanumeric()
@@ -2067,16 +2107,29 @@ pub(crate) mod tests {
         assert_eq!(
             federation_signed_headers(
                 &identity,
+                "peer-state",
                 "POST",
                 "https://peer.example/api/federation",
                 1_700_000_000,
                 nonce,
                 body,
-                1_700_000_000,
             )
-            .expect("federation headers sign exact path")[0]
-                .0,
-            "X-Studio-Federation-State"
+            .expect("federation headers sign exact path")
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+            [
+                "X-Studio-Client",
+                "X-Studio-Server",
+                "X-Studio-Timestamp",
+                "X-Studio-Nonce",
+                "X-Studio-Request-Id",
+                "X-Studio-Signature",
+                "X-Studio-Federation-State",
+                "X-Studio-Federation-Time",
+                "X-Studio-Federation-Nonce",
+                "X-Studio-Federation-Signature",
+            ]
         );
     }
 
@@ -2106,12 +2159,12 @@ pub(crate) mod tests {
         store
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT INTO runtime_federation_nonces(peer_id,nonce,created) VALUES('peer-a','stale',?1)",
+                    "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES('federation:peer-a','stale',?1)",
                     [now - 1_000],
                 )?;
                 for index in 0..240 {
                     transaction.execute(
-                        "INSERT INTO runtime_federation_nonces(peer_id,nonce,created) VALUES('peer-a',?1,?2)",
+                        "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES('federation:peer-a',?1,?2)",
                         rusqlite::params![format!("recent-{index}"), now],
                     )?;
                 }
@@ -2133,7 +2186,7 @@ pub(crate) mod tests {
         let connection = store.test_reader().expect("read transaction opens");
         let stale: i64 = connection
             .query_row(
-                "SELECT count(*) FROM runtime_federation_nonces WHERE nonce='stale'",
+                "SELECT count(*) FROM runtime_access_nonces WHERE nonce='stale'",
                 [],
                 |row| row.get(0),
             )
@@ -2144,7 +2197,7 @@ pub(crate) mod tests {
         store
             .transaction(move |transaction| {
                 transaction.execute(
-                    "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES('old-client','stale',?1)",
+                    "INSERT INTO runtime_access_nonces(client,nonce,created) VALUES('old-client','stale-pairing',?1)",
                     [now - 1_000],
                 )?;
                 for index in 0..1_280 {
@@ -2172,7 +2225,7 @@ pub(crate) mod tests {
         let connection = store.test_reader().expect("multi-server stale row reads");
         let stale: i64 = connection
             .query_row(
-                "SELECT count(*) FROM runtime_access_nonces WHERE nonce='stale'",
+                "SELECT count(*) FROM runtime_access_nonces WHERE nonce='stale-pairing'",
                 [],
                 |row| row.get(0),
             )
@@ -2251,9 +2304,11 @@ pub(crate) mod tests {
             store
                 .test_reader()
                 .expect("reader")
-                .query_row("SELECT count(*) FROM runtime_access_outbound", [], |row| {
-                    row.get::<_, i64>(0)
-                })
+                .query_row(
+                    "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery'",
+                    [],
+                    |row| { row.get::<_, i64>(0) }
+                )
                 .expect("count"),
             0
         );

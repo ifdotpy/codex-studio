@@ -26,13 +26,7 @@ use serde_json::{Map, Value, json};
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::sha256_hex;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    Orchestrator,
-    Implementer,
-    Reviewer,
-}
+pub use studio_runtime_schema::creation_intent::AgentRole as Role;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -126,13 +120,7 @@ pub struct Account {
     pub supervisor_identity: Option<SupervisorIdentity>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SupervisorIdentity {
-    pub state_dir: String,
-    pub handle: String,
-    pub generation: u64,
-}
+pub use studio_runtime_schema::start_attempt::SupervisorIdentity;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Root {

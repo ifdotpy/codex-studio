@@ -5,7 +5,7 @@ use studio_runtime_services::{capacity_retry, continuation::Snapshot};
 fn capacity_wait_accepts_usage_record_with_matching_embedded_id() {
     let retry = json!({"id":"same","accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","status":"scheduled","cause":"serverOverloaded","cwd":"","settings":{},"attempt":1,"maxAttempts":4});
     let usage = json!({"id":"same","accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","status":"scheduled","cause":"auth","failedAt":10});
-    let snapshot = Snapshot::from_records(json!({"agent":{"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","capacityRetry":retry},"record":usage})).unwrap();
+    let snapshot = Snapshot::from_records(json!({"agent":{"compactions":0,"accountKey":"default","id":"a","rootId":"a","epoch":1,"status":"failed","provider":"codex","capacityRetry":retry},"record":usage})).unwrap();
     let decision =
         capacity_retry::transition(&snapshot, capacity_retry::Action::Wait("wait"), 20.0).unwrap();
     let record = decision.record.unwrap().value();
@@ -21,8 +21,7 @@ fn typed_continuation_snapshot_matches_schema_shapes() {
     ))
     .expect("schema");
     let validator = jsonschema::validator_for(&schema).expect("validator");
-    let base =
-        json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"}});
+    let base = json!({"agent":{"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"}});
     for (key, value) in [
         ("ancestors", json!(null)),
         ("claims", json!(["a"])),
@@ -95,8 +94,8 @@ fn deleted_agent_blocks_new_continuations() {
 
 #[test]
 fn continuation_ignores_unread_agent_details() {
-    let input = json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"running",
-        "provider":"codex","accountKey":"default","startAttempt":{"unrelated":true},"isLead":true}});
+    let input = json!({"agent":{"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"running",
+        "provider":"codex","accountKey":"default","startAttempt":{"created":1.0},"isLead":true}});
     assert!(Snapshot::from_records(input).is_ok());
 }
 
@@ -126,8 +125,7 @@ fn enable_reschedules_a_current_cancelled_resume() {
 #[test]
 fn typed_continuation_snapshot_enforces_schema_bounds() {
     use studio_runtime_schema::continuation_snapshot::ContinuationSnapshotRecord;
-    let base =
-        json!({"agent":{"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"}});
+    let base = json!({"agent":{"compactions":0,"id":"a","rootId":"a","epoch":1,"status":"running","provider":"codex"}});
     for (key, accepted, rejected) in [
         ("claims", json!(vec!["a"; 4096]), json!(vec!["a"; 4097])),
         (
@@ -263,6 +261,7 @@ fn cases() -> Value {
         serde_json::from_str(include_str!("continuation/cases.json")).expect("corpus JSON");
     // The frozen corpus predates explicit identity for these Codex continuations.
     for case in cases.as_array_mut().expect("corpus cases") {
+        case["input"]["agent"]["compactions"] = json!(0);
         case["input"]["agent"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
         for key in ["events", "metadata", "assets", "complaints", "work"] {
             case["input"]
@@ -274,6 +273,7 @@ fn cases() -> Value {
             .as_array_mut()
             .expect("corpus ancestors")
         {
+            ancestor["compactions"] = json!(0);
             ancestor["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
         }
     }

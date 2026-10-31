@@ -330,5 +330,15 @@ async fn python_constructor_and_rust_startup_match_requests_monitors_events_and_
     }
     crate::normalize_agent_nulls(&mut python);
     crate::normalize_agent_nulls(&mut rust);
+    // Request migration canonicalizes absent and null optional connection metadata.
+    for snapshot in [&mut python, &mut rust] {
+        for request in snapshot["requests"].as_array_mut().unwrap() {
+            for field in ["connectionId", "supervisor"] {
+                if request.get(field) == Some(&Value::Null) {
+                    request.as_object_mut().unwrap().remove(field);
+                }
+            }
+        }
+    }
     assert_eq!(rust, python, "complete startup rows and projections differ");
 }

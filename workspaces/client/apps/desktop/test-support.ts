@@ -1,4 +1,3 @@
-import type { DesktopBridge } from "./api.ts";
 import type { SavedRecovery } from "./recovery.ts";
 import type { components } from "../web/src/generated/api.ts";
 import { readFileSync } from "node:fs";
@@ -8,11 +7,6 @@ import { stripTypeScriptTypes } from "node:module";
 export function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
-export type RawNativeAction = (
-  event: unknown,
-  request: unknown,
-) => ReturnType<typeof import("./main.ts").nativeAction>;
-
 export function nodeFixture(name: string, interpreter = process.execPath) {
   return `#!${interpreter}\n${stripTypeScriptTypes(readFileSync(new URL(`./fixtures/${name}.mts`, import.meta.url), "utf8"))}`;
 }
@@ -39,13 +33,3 @@ export function parseLaunchAgentJSON(source: string): Record<
 } {
   return JSON.parse(source);
 }
-
-// Preload witnesses replace IPC with an echo; retain bridge-owned parameters.
-export type PreloadProbe<Reply> = {
-  [K in keyof DesktopBridge]: NonNullable<DesktopBridge[K]> extends (
-    ...args: infer Args
-  ) => Promise<unknown>
-    ? (...args: Args) => Promise<Reply>
-    : DesktopBridge[K];
-};
-export type ProbeRequest = Pick<import("./main.ts").NativeRequest, "method">;

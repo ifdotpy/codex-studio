@@ -138,8 +138,7 @@ pub(crate) fn field_value<'a>(value: &'a Value, name: &str) -> Result<&'a str, S
         .filter(|v| !v.is_empty() && v.len() <= 16384)
         .ok_or_else(|| format!("Missing or invalid {name}."))
 }
-fn key(value: &Credential) -> Result<Ed25519KeyPair, String> {
-    let pem = value.field("privateKey")?;
+fn key(pem: &str) -> Result<Ed25519KeyPair, String> {
     let body = pem
         .strip_prefix("-----BEGIN PRIVATE KEY-----")
         .and_then(|v| v.trim().strip_suffix("-----END PRIVATE KEY-----"))
@@ -179,7 +178,83 @@ pub fn random_id() -> Result<String, String> {
     bytes[8] = (bytes[8] & 63) | 128;
     Ok(uuid::Uuid::from_bytes(bytes).to_string())
 }
-pub fn new_pair(invitation: &Value, request_id: &str) -> Result<Credential, String> {
+/// The one key of this device. It signs for every paired server. Its id is `dev-` and the
+/// SHA-256 of the SPKI public key in hex, as in the web client (`servers/deviceKey.ts`).
+pub struct Device {
+    pub id: String,
+    pub public_key: String,
+    private_key: String,
+}
+
+fn generate_device() -> Result<Device, String> {
+    let generated = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
+        .map_err(|_| "Could not create a device key.")?;
+    let key = Ed25519KeyPair::from_pkcs8(generated.as_ref())
+        .map_err(|_| "Could not read the new device key.")?;
+    let mut spki = vec![
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+    spki.extend_from_slice(key.public_key().as_ref());
+    let hash = Sha256::digest(&spki)
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect::<String>();
+    Ok(Device {
+        id: format!("dev-{hash}"),
+        public_key: pem("PUBLIC KEY", &spki),
+        private_key: pem("PRIVATE KEY", generated.as_ref()),
+    })
+}
+
+fn saved_device(state: &VaultState) -> Result<Option<Device>, String> {
+    let Some(value) = state.object().and_then(|v| v.device.as_ref()) else {
+        return Ok(None);
+    };
+    let text = |name| field(value, name).map(str::to_owned);
+    Ok(Some(Device {
+        id: text("id")?,
+        public_key: text("publicKey")?,
+        private_key: text("privateKey")?,
+    }))
+}
+
+/// The device key, created on first use. The caller serializes vault mutations.
+pub fn ensure_device(vault: &dyn Vault) -> Result<Device, String> {
+    let mut state = vault.read()?;
+    if let Some(device) = saved_device(&state)? {
+        return Ok(device);
+    }
+    let device = generate_device()?;
+    state
+        .object_mut()
+        .ok_or("Invalid server key store.")?
+        .device =
+        Some(json!({"id":device.id,"publicKey":device.public_key,"privateKey":device.private_key}));
+    vault.write(&state)?;
+    Ok(device)
+}
+
+/// A pairing made before the device key keeps its own key and client id. Every other
+/// credential signs with the device key.
+fn signing_key(vault: &dyn Vault, credential: &Credential) -> Result<Ed25519KeyPair, String> {
+    if !credential
+        .object()
+        .is_some_and(|v| matches!(v.private_key, TextField::Missing))
+    {
+        return key(credential.field("privateKey")?);
+    }
+    let device = saved_device(&vault.read()?)?.ok_or("The device key is unavailable.")?;
+    if device.id != credential.field("clientId")? {
+        return Err("The server key is unavailable. Pair this UI again.".into());
+    }
+    key(&device.private_key)
+}
+
+pub fn new_pair(
+    invitation: &Value,
+    request_id: &str,
+    device: &Device,
+) -> Result<Credential, String> {
     if invitation["protocol"] != 1 || field(invitation, "serverId")? == "local" {
         return Err("Invalid server invitation.".into());
     }
@@ -187,25 +262,15 @@ pub fn new_pair(invitation: &Value, request_id: &str) -> Result<Credential, Stri
     for name in ["inviteId", "token", "publicKey", "tailscaleUser"] {
         field(invitation, name)?;
     }
-    let generated = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
-        .map_err(|_| "Could not create a server key.")?;
-    let key = Ed25519KeyPair::from_pkcs8(generated.as_ref())
-        .map_err(|_| "Could not read the new server key.")?;
-    let mut spki = vec![
-        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
-    ];
-    spki.extend_from_slice(key.public_key().as_ref());
-    let public_key = pem("PUBLIC KEY", &spki);
-    let client_id = random_id()?;
-    let body = json!({"protocol":1,"inviteId":invitation["inviteId"],"token":invitation["token"],"clientId":client_id,"label":"Studio UI","kind":"ui","publicKey":public_key,"requestId":request_id}).to_string();
+    let body = json!({"protocol":1,"inviteId":invitation["inviteId"],"token":invitation["token"],"clientId":device.id,"label":"Studio UI","kind":"ui","publicKey":device.public_key,"requestId":request_id}).to_string();
     let mut extra = serde_json::Map::new();
-    extra.insert("publicKey".into(), Value::String(public_key));
+    extra.insert("publicKey".into(), Value::String(device.public_key.clone()));
     Ok(Credential::Object(Box::new(CredentialObject {
         origin: TextField::Text(origin),
         server_id: TextField::Text(field(invitation, "serverId")?.to_owned()),
-        client_id: TextField::Text(client_id),
+        client_id: TextField::Text(device.id.clone()),
         invite_id: TextField::Text(field(invitation, "inviteId")?.to_owned()),
-        private_key: TextField::Text(pem("PRIVATE KEY", generated.as_ref())),
+        private_key: TextField::Missing,
         body: TextField::Text(body),
         receipt: None,
         rejected: None,
@@ -213,7 +278,20 @@ pub fn new_pair(invitation: &Value, request_id: &str) -> Result<Credential, Stri
     })))
 }
 
+/// A pairing as made before the device key: its own key and a random client id.
+#[cfg(test)]
+pub(crate) fn legacy_pair(invitation: &Value, request_id: &str) -> Result<Credential, String> {
+    let device = generate_device()?;
+    let mut credential = new_pair(invitation, request_id, &device)?;
+    let object = credential.object_mut().ok_or("Invalid credential.")?;
+    object.private_key = TextField::Text(device.private_key);
+    object.client_id = TextField::Text(random_id()?);
+    Ok(credential)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn signature(
+    vault: &dyn Vault,
     credential: &Credential,
     method: &str,
     target: &str,
@@ -238,7 +316,11 @@ pub fn signature(
         &digest,
     ]
     .join("\n");
-    Ok(STANDARD.encode(key(credential)?.sign(text.as_bytes()).as_ref()))
+    Ok(STANDARD.encode(
+        signing_key(vault, credential)?
+            .sign(text.as_bytes())
+            .as_ref(),
+    ))
 }
 
 // The caller serializes vault mutations. Import is additive and refuses a
@@ -272,7 +354,7 @@ pub fn import(vault: &dyn Vault, source: &Value) -> Result<(), String> {
             credential.field("serverId")?;
             credential.field("clientId")?;
             if group == "servers" || row.get("privateKey").is_some_and(|v| !v.is_null()) {
-                key(&credential)?;
+                key(credential.field("privateKey")?)?;
             }
             if let Some(existing) = target.get(id) {
                 if existing.clone().into_value() != *row {
@@ -380,8 +462,10 @@ mod tests {
     #[test]
     fn keys_sign_exact_bytes_and_import_refuses_partial_or_conflicting_state() {
         let invitation = json!({"protocol":1,"origin":"https://fixture.tailnet.ts.net","serverId":"server","inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"});
-        let credential = new_pair(&invitation, "request").unwrap().into_value();
+        let credential = legacy_pair(&invitation, "request").unwrap().into_value();
+        let no_device = Memory(Mutex::new(json!({"drafts":{},"servers":{}})));
         let signed = signature(
+            &no_device,
             &Credential::from_value(credential.clone()),
             "POST",
             "/api/test?q=1",
@@ -401,7 +485,7 @@ mod tests {
         );
         ring::signature::UnparsedPublicKey::new(
             &ring::signature::ED25519,
-            key(&Credential::from_value(credential.clone()))
+            key(credential["privateKey"].as_str().unwrap())
                 .unwrap()
                 .public_key()
                 .as_ref(),
@@ -450,9 +534,115 @@ mod tests {
         );
         // A completed import receipt survives later credential changes.
         let mut newer = vault.read().unwrap().into_value();
-        newer["servers"]["server"] = new_pair(&invitation, "later").unwrap().into_value();
+        newer["servers"]["server"] = new_pair(&invitation, "later", &generate_device().unwrap())
+            .unwrap()
+            .into_value();
         vault.write(&VaultState::from_value(newer.clone())).unwrap();
         import(&vault, &source).unwrap();
         assert_eq!(vault.read().unwrap().into_value(), newer);
+    }
+
+    fn public_bytes(pem: &str) -> Vec<u8> {
+        let body = pem
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect::<String>();
+        // The last 32 bytes of the SPKI document are the raw Ed25519 key.
+        STANDARD.decode(body).unwrap()[12..].to_vec()
+    }
+    fn signs_for(vault: &dyn Vault, credential: &Value, public: &[u8]) {
+        let signed = signature(
+            vault,
+            &Credential::from_value(credential.clone()),
+            "GET",
+            "/api/x",
+            "1",
+            "nonce",
+            "request",
+            b"",
+        )
+        .unwrap();
+        let digest = Sha256::digest(b"")
+            .iter()
+            .map(|v| format!("{v:02x}"))
+            .collect::<String>();
+        let input = format!(
+            "studio-multi-server-v1\nGET\n/api/x\n{}\n{}\n1\nnonce\nrequest\n{digest}",
+            credential["serverId"].as_str().unwrap(),
+            credential["clientId"].as_str().unwrap()
+        );
+        ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, public)
+            .verify(input.as_bytes(), &STANDARD.decode(signed).unwrap())
+            .unwrap();
+    }
+    fn invitation(server: &str) -> Value {
+        json!({"protocol":1,"origin":format!("https://{server}.tailnet.ts.net"),"serverId":server,"inviteId":"invite","token":"test","publicKey":"fixture","tailscaleUser":"user"})
+    }
+
+    #[test]
+    fn one_device_key_signs_for_two_paired_servers() {
+        let vault = Memory(Mutex::new(json!({"drafts":{},"servers":{}})));
+        let device = ensure_device(&vault).unwrap();
+        assert!(device.id.starts_with("dev-") && device.id.len() == 68);
+        // The key is created once and kept.
+        assert_eq!(ensure_device(&vault).unwrap().id, device.id);
+        let public = public_bytes(&device.public_key);
+        let hash = Sha256::digest(
+            [
+                &[
+                    0x30u8, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+                ][..],
+                &public,
+            ]
+            .concat(),
+        )
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect::<String>();
+        assert_eq!(device.id, format!("dev-{hash}"));
+        let first = new_pair(&invitation("a"), "r1", &device)
+            .unwrap()
+            .into_value();
+        let second = new_pair(&invitation("b"), "r2", &device)
+            .unwrap()
+            .into_value();
+        assert_eq!(first["clientId"], second["clientId"]);
+        assert_eq!(first["clientId"], json!(device.id));
+        assert!(first.get("privateKey").is_none() && second.get("privateKey").is_none());
+        signs_for(&vault, &first, &public);
+        signs_for(&vault, &second, &public);
+    }
+
+    #[test]
+    fn a_pairing_made_before_the_device_key_still_signs() {
+        let old = legacy_pair(&invitation("old"), "r0").unwrap().into_value();
+        let old_public = public_bytes(old["publicKey"].as_str().unwrap());
+        let vault = Memory(Mutex::new(json!({"drafts":{},"servers":{"old":old}})));
+        let device = ensure_device(&vault).unwrap();
+        let state = vault.read().unwrap().into_value();
+        // The new device key does not touch the old pairing: its client id and key stay.
+        assert_eq!(state["servers"]["old"], old);
+        assert_ne!(old["clientId"], json!(device.id));
+        signs_for(&vault, &old, &old_public);
+        let fresh = new_pair(&invitation("new"), "r1", &device)
+            .unwrap()
+            .into_value();
+        signs_for(&vault, &fresh, &public_bytes(&device.public_key));
+        // A key-less credential of another client id is refused.
+        let mut other = fresh;
+        other["clientId"] = json!("other");
+        assert!(
+            signature(
+                &vault,
+                &Credential::from_value(other),
+                "GET",
+                "/api/x",
+                "1",
+                "n",
+                "r",
+                b""
+            )
+            .is_err()
+        );
     }
 }

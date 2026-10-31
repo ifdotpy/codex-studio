@@ -92,9 +92,9 @@ test("composer model summary wraps on phones and opens the role settings", async
         measurements.push({ width, scenario, ...geometry });
         await expect(trigger.locator(".execution-provider")).toHaveCount(0);
         await expect(trigger.locator("svg")).toHaveCount(0);
-        await expect(
-          trigger.locator(".execution-inherited-label"),
-        ).toBeVisible();
+        const inherited = trigger.locator(".execution-inherited-label");
+        if (width < 400) await expect(inherited).toBeHidden();
+        else await expect(inherited).toBeVisible();
         await trigger.focus();
         await page.keyboard.press("Enter");
         await expect(trigger).toHaveAttribute("aria-expanded", "true");

@@ -153,7 +153,7 @@ test("Chat prefetch browser", async ({
         items: [],
         padding: "unrelated transcript",
       });
-      await db.projections.bulkInsert(
+      await db.projections.hydrate(
         Array.from({ length: 64 }, (_, n) => ({
           id: `transcript:cold-${n}`,
           seq: n + 1000,
@@ -161,12 +161,11 @@ test("Chat prefetch browser", async ({
         })),
       );
       window.coldReads = [];
-      const storage = db.projections.storageInstance;
-      const original = storage.query.bind(storage);
-      storage.query = async (...args) => {
+      const original = db.projections.query.bind(db.projections);
+      db.projections.query = async (...args) => {
         const result = await original(...args);
         window.coldReads.push(
-          ...result.documents
+          ...result
             .filter((row) => row.id.startsWith("transcript:cold-"))
             .map((row) => row.id),
         );

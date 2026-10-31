@@ -1,7 +1,6 @@
 //! Payload measurements retain sizes, never prompt, image, or reasoning contents.
 use base64::Engine;
 use serde_json::{Value, json};
-use studio_runtime_store::python_json_compact;
 
 pub fn payload_size(value: &Value) -> Value {
     if value.is_null() {
@@ -10,7 +9,7 @@ pub fn payload_size(value: &Value) -> Value {
     let text = value
         .as_str()
         .map(str::to_owned)
-        .unwrap_or_else(|| python_json_compact(value));
+        .unwrap_or_else(|| value.to_string());
     let mut images = Vec::new();
     image_sizes(value, &mut images);
     let bytes = images.iter().try_fold(0u64, |sum, v| {
@@ -102,4 +101,17 @@ pub(crate) fn item_sizes(kind: &str, item: &Value) -> (Value, Value) {
         _ => {}
     }
     (payload_size(&input), payload_size(&output))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn measures_compact_serde_json_payload() {
+        let measured = payload_size(&json!({"x": 1e-6}));
+        assert_eq!(measured["bytes"], r#"{"x":1e-6}"#.len());
+        assert_eq!(measured["format"], "json");
+        assert_eq!(payload_size(&json!("hello"))["bytes"], 5);
+    }
 }

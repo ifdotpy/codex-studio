@@ -16,35 +16,42 @@ type ProjectionInspection = {
   dbName: string;
 };
 type ProjectionQuery = {
-  databaseName: string;
   documentId: string;
   sequence?: number;
   onlyIfExists?: boolean;
 };
 
-/** Self-contained callbacks inspect the renderer's projection database. */
-export async function readProjectionStores(
-  databaseName: string,
-): Promise<ProjectionInspection> {
-  const request = indexedDB.open(databaseName);
+/** Self-contained callbacks inspect the renderer's thin cache. The page is
+ * remote from its server (see REMOTE_FIXTURE_HOST); a pagehide makes it write
+ * its changed records at once. */
+export async function readProjectionStores(): Promise<ProjectionInspection> {
+  window.dispatchEvent(new Event("pagehide"));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const request = indexedDB.open("studio-thin-cache", 1);
+  request.onupgradeneeded = () => {
+    request.result.createObjectStore("cache");
+    request.result.createObjectStore("unsent");
+  };
   const db = await new Promise<IDBDatabase>((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
-  const names = [...db.objectStoreNames];
-  const tx = db.transaction(names, "readonly");
-  const stored = await Promise.all(
-    names.map(
-      (store) =>
-        new Promise<components["schemas"]["SyncDocument"][]>((resolve) => {
-          const query = tx.objectStore(store).getAll();
-          query.onsuccess = () => resolve(query.result);
-          query.onerror = () => resolve([]);
-        }),
-    ),
-  );
+  const values = await new Promise<
+    { rows: components["schemas"]["SyncDocument"][] }[]
+  >((resolve, reject) => {
+    const query = db
+      .transaction("cache", "readonly")
+      .objectStore("cache")
+      .getAll();
+    query.onsuccess = () => resolve(query.result);
+    query.onerror = () => reject(query.error);
+  });
   db.close();
-  return { names, stored, dbName: db.name };
+  return {
+    names: ["cache"],
+    stored: [values.flatMap((value) => value.rows ?? [])],
+    dbName: "studio-thin-cache",
+  };
 }
 export async function projectionIsStored(
   query: ProjectionQuery,
@@ -52,27 +59,11 @@ export async function projectionIsStored(
   if (
     query.onlyIfExists &&
     !(await indexedDB.databases()).some(
-      (database) => database.name === query.databaseName,
+      (database) => database.name === "studio-thin-cache",
     )
   )
     return false;
-  const request = indexedDB.open(query.databaseName);
-  const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-  const stored = await Promise.all(
-    [...db.objectStoreNames].map(
-      (store) =>
-        new Promise<components["schemas"]["SyncDocument"][]>((resolve) => {
-          const tx = db.transaction(store, "readonly");
-          const request = tx.objectStore(store).getAll();
-          request.onsuccess = () => resolve(request.result);
-          request.onerror = () => resolve([]);
-        }),
-    ),
-  );
-  db.close();
+  const { stored } = await readProjectionStores();
   return stored
     .flat()
     .some(

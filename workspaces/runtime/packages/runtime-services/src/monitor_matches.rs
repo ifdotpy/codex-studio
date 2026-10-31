@@ -373,48 +373,6 @@ pub struct OutputEvent {
     pub output_wakes_paused: Option<bool>,
 }
 
-impl OutputEvent {
-    /// Persist output events using the legacy Python sorted, ASCII JSON spelling.
-    pub fn python_json(&self) -> String {
-        use studio_runtime_schema::json_compat::python_quote;
-        let quote = |text: &str| python_quote(text, true);
-        let entries = self
-            .matches
-            .iter()
-            .map(|item| {
-                let mut fields = vec![format!("\"count\": {}", item.count)];
-                if let Some(excerpt) = &item.excerpt {
-                    fields.push(format!("\"excerpt\": {}", quote(excerpt)));
-                }
-                if let Some(offset) = item.log_offset {
-                    fields.push(format!("\"logOffset\": {offset}"));
-                }
-                fields.push(format!("\"pattern\": {}", quote(&item.pattern)));
-                fields.push(format!("\"stream\": {}", quote(&item.stream)));
-                format!("{{{}}}", fields.join(", "))
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut fields = vec![
-            format!("\"epoch\": {}", self.epoch),
-            format!("\"final\": {}", self.final_chunk),
-            format!("\"matches\": [{entries}]"),
-        ];
-        if let Some(message) = &self.message {
-            fields.push(format!("\"message\": {}", quote(message)));
-        }
-        fields.push(format!("\"monitorId\": {}", quote(&self.monitor_id)));
-        if let Some(paused) = self.output_wakes_paused {
-            fields.push(format!("\"outputWakesPaused\": {paused}"));
-        }
-        fields.push(format!("\"sequence\": {}", self.sequence));
-        if let Some(count) = self.suppressed_matches {
-            fields.push(format!("\"suppressedMatches\": {count}"));
-        }
-        format!("{{{}}}", fields.join(", "))
-    }
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputMatchSummary {
@@ -589,7 +547,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_event_python_bytes_match_legacy_encoding() {
+    fn output_event_uses_compact_json() {
         let payload = OutputEvent {
             monitor_id: "watch-雪".into(),
             epoch: 4,
@@ -606,11 +564,8 @@ mod tests {
             message: Some("paused 雪".into()),
             output_wakes_paused: Some(true),
         };
-        let legacy = studio_runtime_schema::json_compat::python_json(&serde_json::json!({
-            "monitorId":"watch-雪", "epoch":4, "sequence":7, "final":true,
-            "matches":[{"stream":"stdout", "pattern":"ready\n雪", "count":2, "excerpt":"é", "logOffset":13}],
-            "suppressedMatches":3, "message":"paused 雪", "outputWakesPaused":true
-        }));
-        assert_eq!(payload.python_json(), legacy);
+        let encoded = serde_json::to_string(&payload).expect("encode event");
+        assert!(encoded.contains("watch-雪"));
+        assert!(!encoded.contains(": "));
     }
 }

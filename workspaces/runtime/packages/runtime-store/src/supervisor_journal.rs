@@ -629,7 +629,7 @@ impl SupervisorJournal {
             tx.execute("INSERT INTO events(handle,sequence,kind,payload,size,generation) VALUES (?,?,?,?,?,?)",params![handle,sql(sequence)?,kind.as_str(),raw,sql(raw.len() as u64)?,sql(generation)?])?;
             if kind == JournalEventKind::Stdout {
                 if payload.get("id").and_then(Value::as_u64) == Some(1) && payload.get("result").is_some() {
-                    tx.execute("UPDATE handles SET init_result=? WHERE id=?",params![python_json(&payload["result"]),handle])?;
+                    tx.execute("UPDATE handles SET init_result=? WHERE id=?",params![serde_json::to_string(&payload["result"])?,handle])?;
                 }
                 if let Some(id) = payload.get("id").and_then(Value::as_i64).filter(|_|payload.get("method").is_none()) {
                     tx.execute("UPDATE operations SET response=?,response_sequence=? WHERE handle=? AND native_id=? AND generation=? AND substr(operation_id,1,8)='monitor:' AND response IS NULL",params![raw,sql(sequence)?,handle,id,sql(generation)?])?;
@@ -863,6 +863,34 @@ pub(crate) fn prepare_written_schema(db: &Transaction<'_>) -> crate::StoreResult
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_result_uses_native_json() {
+        let root = tempfile::tempdir().unwrap();
+        let journal = SupervisorJournal::open(root.path()).unwrap();
+        journal.reserve("handle", "signature", 1.0).unwrap();
+        let generation = journal
+            .opened("handle", "signature", 41, "start", None)
+            .unwrap();
+        journal
+            .append(
+                "handle",
+                generation,
+                1,
+                "stdout",
+                &json!({"id":1,"result":{"text":"é"}}),
+            )
+            .unwrap();
+        let db = journal.lock().unwrap();
+        let init: String = db
+            .query_row(
+                "SELECT init_result FROM handles WHERE id='handle'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(init, r#"{"text":"é"}"#);
+    }
 
     #[test]
     fn recovery_owner_preserves_open_wire_values_and_journal_writes() {

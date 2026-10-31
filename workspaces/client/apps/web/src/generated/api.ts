@@ -722,6 +722,23 @@ export interface paths {
     patch?: never | undefined;
     trace?: never | undefined;
   };
+  "/api/commands": {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    get?: never | undefined;
+    put?: never | undefined;
+    /** Command */
+    post: operations["command_api_commands_post"];
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
+  };
   "/api/complaint": {
     parameters: {
       query?: never | undefined;
@@ -1184,8 +1201,7 @@ export interface paths {
     /** Messages */
     get: operations["messages_api_messages_get"];
     put?: never | undefined;
-    /** Post Message */
-    post: operations["post_message_api_messages_post"];
+    post?: never | undefined;
     delete?: never | undefined;
     options?: never | undefined;
     head?: never | undefined;
@@ -1840,23 +1856,6 @@ export interface paths {
     patch?: never | undefined;
     trace?: never | undefined;
   };
-  "/api/stop": {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    get?: never | undefined;
-    put?: never | undefined;
-    /** Stop */
-    post: operations["stop_api_stop_post"];
-    delete?: never | undefined;
-    options?: never | undefined;
-    head?: never | undefined;
-    patch?: never | undefined;
-    trace?: never | undefined;
-  };
   "/api/studio-errors": {
     parameters: {
       query?: never | undefined;
@@ -2209,6 +2208,23 @@ export interface paths {
     };
     /** Transcript */
     get: operations["transcript_api_transcript_get"];
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
+  };
+  "/api/transcript/blob": {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    /** Transcript Blob */
+    get: operations["transcript_blob_api_transcript_blob_get"];
     put?: never | undefined;
     post?: never | undefined;
     delete?: never | undefined;
@@ -8533,7 +8549,10 @@ export interface components {
       resource: components["schemas"]["AuthProgressResource"];
       /** Revision */
       revision: number;
-      value: components["schemas"]["ClaudeLoginResponse"] | null;
+      value:
+        | components["schemas"]["ClaudeLoginResponse"]
+        | components["schemas"]["CodexLoginReceipt"]
+        | null;
       /** Workspaceid */
       workspaceId: string;
     };
@@ -10755,6 +10774,80 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    /**
+     * CommandRequest
+     * @description One write action. The owner is runtime-schema/src/command.rs.
+     */
+    CommandRequest:
+      | components["schemas"]["CommandRequestSend"]
+      | components["schemas"]["CommandRequestWithdraw"]
+      | components["schemas"]["CommandRequestStop"];
+    CommandRequestSend: {
+      body: components["schemas"]["CommandSendBody"];
+      client: string;
+      id: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "send";
+      number: number;
+      target: string;
+    };
+    CommandRequestStop: {
+      body: components["schemas"]["CommandStopBody"];
+      client: string;
+      id: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "stop";
+      number: number;
+      target: string;
+    };
+    CommandRequestWithdraw: {
+      body: components["schemas"]["CommandWithdrawBody"];
+      client: string;
+      id: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "withdraw";
+      number: number;
+      target: string;
+    };
+    CommandResponse: {
+      ref_id: string;
+      ref_kind: string;
+      rev: number;
+      rows: components["schemas"]["CommandRow"][];
+      seq: number;
+      /** @enum {string} */
+      status: "applied";
+    };
+    CommandRow: {
+      collection: string;
+      id: string;
+      payload: {
+        [key: string]: unknown;
+      };
+      seq: number;
+    };
+    CommandSendBody: {
+      /** @default [] */
+      assets?: string[] | undefined;
+      delivery?: components["schemas"]["DeliveryMomentInput"] | undefined;
+      text: string;
+    };
+    CommandStopBody: {
+      /** @default true */
+      descendants?: boolean | undefined;
+    };
+    CommandWithdrawBody: {
+      message: string;
+    };
     /** ComplaintBody */
     ComplaintBody: {
       /**
@@ -11815,6 +11908,11 @@ export interface components {
        */
       action: "create_invite";
       /**
+       * Grant
+       * @default null
+       */
+      grant?: ("full" | "observe") | null | undefined;
+      /**
        * Label
        * @default null
        */
@@ -11834,6 +11932,11 @@ export interface components {
        * @default null
        */
       expected_user?: string | null | undefined;
+      /**
+       * Grant
+       * @default null
+       */
+      grant?: ("full" | "observe") | null | undefined;
       /**
        * Label
        * @default null
@@ -12393,6 +12496,11 @@ export interface components {
       label: string;
       /** Origin */
       origin: null | string;
+      /**
+       * Proof
+       * @description Signature over the requested nonce with the server identity key; present only when a nonce was sent.
+       */
+      proof?: string | undefined;
       /**
        * Protocol
        * @constant
@@ -14436,6 +14544,17 @@ export interface components {
         | null
         | undefined;
       /**
+       * Online
+       * @description Progress of each online migration by name (docs/online-migrations.md).
+       * @default null
+       */
+      online?:
+        | {
+            [key: string]: components["schemas"]["OnlineMigration"];
+          }
+        | null
+        | undefined;
+      /**
        * Payloads
        * @default null
        */
@@ -16190,6 +16309,29 @@ export interface components {
       turnId?: string | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
+    };
+    /**
+     * OnlineMigration
+     * @description Progress of one online migration: batch copy with a high-water mark.
+     */
+    OnlineMigration: {
+      /** Complete */
+      complete: boolean;
+      /**
+       * Cursor
+       * @description High-water mark: the highest source key copied.
+       */
+      cursor: number;
+      /**
+       * Dirty
+       * @description Changed source keys waiting for a re-copy.
+       */
+      dirty: number;
+      /** Error */
+      error: null | string;
+      status: components["schemas"]["PayloadMigrationState"];
+      /** Updated */
+      updated: null | number;
     };
     /** OrchestrationSettings */
     OrchestrationSettings: {
@@ -18450,18 +18592,6 @@ export interface components {
       answers: {
         [key: string]: components["schemas"]["QuestionAnswerStrings"];
       };
-    };
-    QueueCancelBody: {
-      /**
-       * @description discriminator enum property added by openapi-typescript
-       * @enum {string}
-       */
-      action: "cancel";
-      agent?: string | null | undefined;
-      expected_revision?: string | null | undefined;
-      expectedText?: string | null | undefined;
-      id: string;
-      request_id?: string | null | undefined;
     };
     /** QueueCapabilities */
     QueueCapabilities: {
@@ -21256,6 +21386,7 @@ export interface components {
         | "update.export"
         | "update.chunk"
         | "update.release"
+        | "backup.put"
         | "task"
         | "complaint"
         | "context"
@@ -21270,7 +21401,8 @@ export interface components {
         | "add_location"
         | "remove_location"
         | "move_validate"
-        | "move_begin";
+        | "move_begin"
+        | "device_trust";
       /** @description Scoped suboperation tuple; empty for a single-step request. */
       operation: string[];
       /**
@@ -22569,7 +22701,10 @@ export interface components {
     SubscriptionDataMap: {
       accounts: components["schemas"]["AccountsResponse"];
       agentDetail: components["schemas"]["AgentDetailEntityDto"];
-      "auth-progress": components["schemas"]["ClaudeLoginResponse"] | null;
+      "auth-progress":
+        | components["schemas"]["ClaudeLoginResponse"]
+        | components["schemas"]["CodexLoginReceipt"]
+        | null;
       complaint: components["schemas"]["ComplaintDetailResponse"];
       costs: components["schemas"]["AccountCostResponse"][];
       desktop: components["schemas"]["DesktopResponse"];
@@ -23611,6 +23746,8 @@ export interface components {
     };
     /** SyncSessionEvent */
     SyncSessionEvent: {
+      /** Routes */
+      routes: string[];
       sessionId: string;
     };
     /** SyncStudioErrorEntityPayload */
@@ -24245,6 +24382,22 @@ export interface components {
      * @enum {string}
      */
     TerminalState: "running" | "exited" | "closed";
+    /** TextBlobRef */
+    TextBlobRef: {
+      /** Hash */
+      hash: string;
+      /** Size */
+      size: number;
+    };
+    /** TextBlobResponse */
+    TextBlobResponse: {
+      /** Hash */
+      hash: string;
+      /** Size */
+      size: number;
+      /** Text */
+      text: string;
+    };
     /**
      * TokenRateRecord
      * @description One active or completed agent turn's volatile token-rate snapshot.
@@ -24992,6 +25145,11 @@ export interface components {
         | undefined;
       /** @default null */
       details?: components["schemas"]["JsonValue"] | null | undefined;
+      /**
+       * Fulltextblob
+       * @default null
+       */
+      fullTextBlob?: components["schemas"]["TextBlobRef"] | null | undefined;
       /** Id */
       id: string;
       /** @description The notice confirms a completed idle compaction of a Claude session. */
@@ -31067,6 +31225,71 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
+  command_api_commands_post: {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CommandRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CommandResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
   complaint_detail_api_complaint_get: {
     parameters: {
       query?:
@@ -32695,69 +32918,6 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
-  post_message_api_messages_post: {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["ManagedMessageBody"];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["studio_api__work__models__MessageReceipt"];
-        };
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Request Timeout */
-      408: components["responses"]["ApiError408"];
-      /** @description Conflict */
-      409: components["responses"]["ApiError409"];
-      /** @description Gone */
-      410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
-      413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
-      415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
-      426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
-      502: components["responses"]["ApiError502"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
   message_receipts_api_messages_receipts_get: {
     parameters: {
       query?:
@@ -33474,7 +33634,11 @@ export interface operations {
   };
   discovery_identity_api_multi_server_v1_identity_get: {
     parameters: {
-      query?: never | undefined;
+      query?:
+        | {
+            nonce?: string | undefined;
+          }
+        | undefined;
       header?: never | undefined;
       path?: never | undefined;
       cookie?: never | undefined;
@@ -35184,7 +35348,6 @@ export interface operations {
     requestBody: {
       content: {
         "application/json":
-          | components["schemas"]["QueueCancelBody"]
           | components["schemas"]["QueueEditBody"]
           | components["schemas"]["QueueFirstBody"]
           | components["schemas"]["QueueReorderBody"];
@@ -35904,71 +36067,6 @@ export interface operations {
       429: components["responses"]["ApiError429"];
       /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
-  stop_api_stop_post: {
-    parameters: {
-      query?: never | undefined;
-      header?: never | undefined;
-      path?: never | undefined;
-      cookie?: never | undefined;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["StopRequest"];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["StopResponse"];
-        };
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Not Found */
-      404: components["responses"]["ApiError404"];
-      /** @description Request Timeout */
-      408: components["responses"]["ApiError408"];
-      /** @description Conflict */
-      409: components["responses"]["ApiError409"];
-      /** @description Gone */
-      410: components["responses"]["ApiError410"];
-      /** @description Content Too Large */
-      413: components["responses"]["ApiError413"];
-      /** @description Unsupported Media Type */
-      415: components["responses"]["ApiError415"];
-      /** @description Upgrade Required */
-      426: components["responses"]["ApiError426"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Bad Gateway */
-      502: components["responses"]["ApiError502"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
@@ -37077,6 +37175,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  transcript_blob_api_transcript_blob_get: {
+    parameters: {
+      query?:
+        | {
+            hash?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    requestBody?: never | undefined;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TextBlobResponse"];
         };
       };
       403: components["responses"]["ApiError403"];

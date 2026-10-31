@@ -28,28 +28,9 @@ pub(crate) fn routes() -> RouteGroup {
             OperationStatus::Implemented,
             delete,
         ),
-        post("/api/stop", OperationStatus::Implemented, stop),
     ])
 }
 
-async fn stop(
-    State(state): State<HttpState>,
-    ports: Option<Extension<Arc<dyn LifecyclePorts>>>,
-    ApiJson(body): ApiJson<generated::StopRequest>,
-) -> Result<Json<generated::StopResponse>, ApiError> {
-    dispatch::<generated::StopResponse>(
-        state,
-        Action::Stop {
-            target: body.id,
-            descendants: body.descendants.unwrap_or(true),
-            reason: None,
-            sender: None,
-            sender_epoch: None,
-        },
-        ports.map(|Extension(ports)| ports),
-    )
-    .await
-}
 async fn delete(
     State(state): State<HttpState>,
     ports: Option<Extension<Arc<dyn LifecyclePorts>>>,
@@ -688,7 +669,7 @@ fn unix_time() -> f64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
 }
-async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static>(
+pub(super) async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'static>(
     state: HttpState,
     action: Action,
     ports: Option<Arc<dyn LifecyclePorts>>,
@@ -704,7 +685,12 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
         }
         None => agent_management_store::execute(Arc::clone(&store), &action, now, None).await,
     }
-    .map_err(|error| match error {
+    .map_err(management_error)?;
+    super::generated_json::<T>(result).map(Json)
+}
+
+pub(super) fn management_error(error: ManagementError) -> ApiError {
+    match error {
         ManagementError::Expired => ApiError::new(StatusCode::GONE, error.to_string()),
         ManagementError::Unavailable(_) => {
             ApiError::new(StatusCode::NOT_IMPLEMENTED, error.to_string())
@@ -712,8 +698,7 @@ async fn dispatch<T: serde::de::DeserializeOwned + serde::Serialize + Send + 'st
         ManagementError::Invalid(_) => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
         ManagementError::Stored { table, id } => ApiError::invalid_stored(&table, &id),
         ManagementError::Store(error) => ApiError::stored(error),
-    })?;
-    super::generated_json::<T>(result).map(Json)
+    }
 }
 
 inventory::submit! {
@@ -837,7 +822,7 @@ mod native_review_preflight_tests {
     async fn native_action_rejects_reserved_idle_request_and_missing_id() {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
-        let agent = AgentRecord::from_value(json!({
+        let agent = AgentRecord::from_value(json!({"compactions":0,
             "id":"agent", "rootId":"agent", "epoch":1, "status":"idle", "provider":"codex", "accountKey":"default",
             "idleCompactionEpisode": {"id":"reserved", "cache":{"requestId":"cache", "ttl":"1h", "warm":true,
                 "lastActivityAt":1.0, "contextTokens":1, "prefix":"prefix"}, "fireAt":2.0, "expiresAt":3.0,
@@ -883,7 +868,7 @@ mod native_review_preflight_tests {
                 .await
                 .expect("open store"),
         );
-        let original = AgentRecord::from_value(json!({
+        let original = AgentRecord::from_value(json!({"compactions":0,
             "id":"remote",
             "rootId":"remote",
             "epoch":7,
@@ -1140,7 +1125,7 @@ mod native_review_preflight_tests {
             .await
             .expect("open store");
         let agent = AgentRecord::from_value(
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+            json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"vm-native", "rootId":"vm-native", "epoch":5,
                 "status":"idle", "executionMode":"vm", "accountKey":"vm-account"
             }),
@@ -1243,7 +1228,7 @@ mod native_review_preflight_tests {
         let store = RuntimeStore::open(Some(directory.path()))
             .await
             .expect("open store");
-        let record = AgentRecord::from_value(json!({
+        let record = AgentRecord::from_value(json!({"compactions":0,
             "id":"vm-local-archive-failure", "rootId":"vm-local-archive-failure",
             "epoch":1, "status":"starting", "provider":"codex", "executionMode":"vm", "accountKey":"default",
             "isLead":true, "autoWake":true, "cwd":missing_source,
@@ -1308,7 +1293,7 @@ mod native_review_preflight_tests {
                 .await
                 .expect("open store"),
         );
-        let record = AgentRecord::from_value(json!({
+        let record = AgentRecord::from_value(json!({"compactions":0,
             "id":"vm-lead", "rootId":"vm-lead", "epoch":7, "status":"starting",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
             "cwd":source, "hostProjectPath":source, "projectId":"logical-project-id", "threadId":"thread-vm",
@@ -1427,14 +1412,14 @@ mod native_review_preflight_tests {
                 .await
                 .expect("open store"),
         );
-        let parent = AgentRecord::from_value(json!({
+        let parent = AgentRecord::from_value(json!({"compactions":0,
             "id":"vm-parent", "rootId":"vm-parent", "epoch":2, "status":"idle", "accountKey":"default",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
             "cwd":"/home/studio/project", "layrReady":true,
             "layrProjectId":"project-key", "layrLine":"main"
         }))
         .expect("valid parent");
-        let reviewer = AgentRecord::from_value(json!({
+        let reviewer = AgentRecord::from_value(json!({"compactions":0,
             "id":"vm-reviewer", "rootId":"vm-parent", "parentId":"vm-parent",
             "epoch":4, "status":"starting", "provider":"codex", "executionMode":"vm", "accountKey":"default",
             "isLead":false, "role":"reviewer", "autoWake":true, "layrReady":false,
@@ -1529,7 +1514,7 @@ mod native_review_preflight_tests {
                 .await
                 .expect("open store"),
         );
-        let record = AgentRecord::from_value(json!({
+        let record = AgentRecord::from_value(json!({"compactions":0,
             "id":"vm-unknown", "rootId":"vm-unknown", "epoch":1, "status":"starting", "accountKey":"default",
             "provider":"codex", "executionMode":"vm", "isLead":true, "autoWake":true,
             "cwd":source, "hostProjectPath":source, "threadId":"thread-unknown",

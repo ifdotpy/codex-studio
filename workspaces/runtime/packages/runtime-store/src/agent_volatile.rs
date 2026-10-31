@@ -202,13 +202,16 @@ pub fn schema_objects() -> impl Iterator<Item = (&'static str, &'static str, &'s
     )
 }
 
-/// The table and its owner-delete trigger, for schema-only test fixtures
+/// The table and its owner-delete trigger, with the chat, turn and session
+/// tables that every agent write projects into, for schema-only test fixtures
 /// that already declare `runtime_agents`.
 pub fn agent_volatile_table_sql() -> &'static str {
     static FIXTURE_SQL: LazyLock<String> = LazyLock::new(|| {
         format!(
-            "{} CREATE TRIGGER IF NOT EXISTS {} {} ON {} BEGIN {} END;",
+            "{} {}{} CREATE TRIGGER IF NOT EXISTS {} {} ON {} BEGIN {} END;",
             *TABLE_SQL,
+            crate::domain::tables_sql(),
+            crate::domain::check_triggers_sql(),
             OWNER_DELETE.name,
             OWNER_DELETE.event,
             OWNER_DELETE.table,
@@ -494,6 +497,7 @@ pub fn put(
     agent: &Value,
     insert_only: bool,
 ) -> StoreResult<bool> {
+    let agent_value = agent;
     let agent = object(id, agent)?;
     let record = stored_record(agent)?;
     let sql = if insert_only {
@@ -505,6 +509,7 @@ pub fn put(
     let written = connection.execute_cached(sql, params![id, record])? == 1;
     if written || !insert_only {
         put_fields(connection, id, agent)?;
+        crate::domain::project(connection, id, agent_value)?;
     }
     Ok(written)
 }
@@ -512,6 +517,7 @@ pub fn put(
 /// Replace agent `id`, a checked agent object, when its row exists; returns
 /// whether it exists. An unchanged record is not rewritten.
 pub fn update(connection: &Connection, id: &str, agent: &Value) -> StoreResult<bool> {
+    let agent_value = agent;
     let agent = object(id, agent)?;
     let record = stored_record(agent)?;
     let written = connection.execute_cached(
@@ -525,6 +531,7 @@ pub fn update(connection: &Connection, id: &str, agent: &Value) -> StoreResult<b
             .is_some();
     if exists {
         put_fields(connection, id, agent)?;
+        crate::domain::project(connection, id, agent_value)?;
     }
     Ok(exists)
 }
@@ -538,11 +545,11 @@ mod tests {
 
     fn agents() -> Vec<Value> {
         vec![
-            json!({"id":"a","provider":"codex","rootId":"a","epoch":1,"status":"running","threadId":"t","accountKey":"default",
+            json!({"compactions":0,"id":"a","provider":"codex","rootId":"a","epoch":1,"status":"running","threadId":"t","accountKey":"default",
                 "events":7,"lastEvent":"2026-10-20T00:00:00Z","activity":{"phase":"writing","at":5.0},
                 "activeTools":[],"tail":"answer tail","lastAnswer":"answer","contextUsage":null,
                 "tokensUsed":120,"tokenUsageAccounting":"total","prompt":"keep"}),
-            json!({"id":"b","provider":"codex","rootId":"a","epoch":0,"status":"idle","name":"no volatile fields","accountKey":"default"}),
+            json!({"compactions":0,"id":"b","provider":"codex","rootId":"a","epoch":0,"status":"idle","name":"no volatile fields","accountKey":"default"}),
         ]
     }
 

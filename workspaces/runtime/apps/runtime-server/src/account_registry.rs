@@ -2196,7 +2196,7 @@ mod bounded_reconcile_tests {
         );
         store.transaction(|tx| {
             for id in ["bad-mode", "healthy-mode", "absent-mode", "null-mode"] {
-                let mut agent = serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"queued","autoWake":true,"inFlight":false,"accountKey":"default"});
+                let mut agent = serde_json::json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":id,"rootId":id,"epoch":1,"status":"queued","autoWake":true,"inFlight":false,"accountKey":"default"});
                 if id == "healthy-mode" { agent["workspaceMode"] = serde_json::json!("shared"); }
                 if id == "null-mode" { agent["workspaceMode"] = serde_json::Value::Null; }
                 AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
@@ -2512,7 +2512,7 @@ mod tests {
         let hints = Arc::new(RegistryHints::default());
         hints.observe(&store);
         for &(id, provider, account, parent) in agents {
-            let agent = AgentRecord::from_value(json!({
+            let agent = AgentRecord::from_value(json!({"compactions":0,
                 "id":id, "rootId":id, "parentId":parent, "name":"Registry fixture",
                 "epoch":0, "status":"queued", "autoWake":true, "inFlight":false,
                 "accountHistory":[], "provider":provider,
@@ -2599,7 +2599,7 @@ mod tests {
         }
 
         // A child's change also reaches its parent's account: held child results wait for it.
-        let kid = AgentRecord::from_value(json!({
+        let kid = AgentRecord::from_value(json!({"compactions":0,
             "id":"kid", "rootId":"parent", "parentId":"parent", "name":"Registry fixture",
             "epoch":0, "status":"running", "accountHistory":[], "provider":"claude",
             "accountKey":"acct-claude", "threadId":"kid", "turnId":"turn", "effort":"high",

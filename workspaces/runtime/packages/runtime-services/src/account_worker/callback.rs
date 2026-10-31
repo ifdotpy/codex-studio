@@ -2,9 +2,7 @@
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_providers::{Frame, ResponseBody};
-use studio_runtime_store::{
-    AgentExecutionMode, AgentRecord, JsonRecord, RuntimeStore, system_reads,
-};
+use studio_runtime_store::{AgentExecutionMode, AgentRecord, JsonRecord, RuntimeStore};
 use tokio::sync::Notify;
 
 pub enum CallbackDecision {
@@ -319,7 +317,8 @@ pub(super) async fn wait_for_managed_catalog(
 /// Without a turn id (an MCP elicitation may have none) the thread's active
 /// turn answers.
 const CALLBACK_CONTEXT_QUERY: &str = "SELECT id,record FROM runtime_agents
-WHERE thread_id=?3 AND account_key=?1 AND start_attempt_connection_generation=?2
+WHERE thread_id=?3 AND account_key=?1
+  AND EXISTS(SELECT 1 FROM turns t WHERE t.chat=runtime_agents.id AND t.attempt_connection_generation=?2)
   AND (?4 IS NULL OR turn_id=?4) AND status IN ('running','approval') AND auto_wake=1
   AND (?5 IS NULL OR id=?5)
 LIMIT 2";
@@ -568,12 +567,10 @@ pub(super) fn callback_context_in(
         return Ok(None);
     }
     let (agent_id, raw) = &candidates[0];
-    let invalid = || system_reads::invalid("runtime_agents", agent_id);
     let agent = AgentRecord::decode_stored(db, agent_id, raw)?;
     let (Some(connection), Some(epoch), Some(thread), Some(turn)) = (
         agent
-            .start_attempt()
-            .map_err(|_| invalid())?
+            .start_attempt
             .and_then(|attempt| attempt.connection_id),
         u64::try_from(agent.epoch).ok(),
         agent.thread_id,
@@ -684,7 +681,7 @@ mod tests {
         drop(connection);
 
         let agent = |id: &str| {
-            json!({
+            json!({"compactions":0,
                 "id": id, "rootId": id, "epoch": 1, "status": "running", "autoWake": true,
                 "provider": studio_runtime_schema::ProviderKind::Codex,
                 "accountKey": "account-a", "threadId": "thread-a", "turnId": "turn-a",
@@ -694,9 +691,9 @@ mod tests {
         store
             .transaction(move |transaction| {
                 for id in ["agent-a", "agent-b"] {
-                    transaction.execute(
-                        "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
-                        params![id, agent(id).to_string()],
+                    studio_runtime_store::AgentRepository::put(
+                        transaction,
+                        &studio_runtime_store::AgentRecord::from_value(agent(id))?,
                     )?;
                 }
                 Ok(())
@@ -775,7 +772,6 @@ mod tests {
 #[cfg(test)]
 mod catalog_wait_tests {
     use super::{CatalogWait, wait_for_managed_catalog};
-    use rusqlite::params;
     use serde_json::json;
     use std::sync::Mutex;
     use studio_runtime_providers::{Method, RequestFrame, RequestId};
@@ -830,7 +826,7 @@ mod catalog_wait_tests {
                 .await
                 .expect("runtime store"),
         );
-        let agent = json!({
+        let agent = json!({"compactions":0,
             "provider": "codex", "id": "agent-a", "rootId": "agent-a", "epoch": 1, "status": "running",
             "autoWake": true, "accountKey": "account-a", "threadId": "thread-a",
             "turnId": "turn-a",
@@ -838,11 +834,11 @@ mod catalog_wait_tests {
         });
         store
             .transaction(move |transaction| {
-                transaction.execute(
-                    "INSERT INTO runtime_agents(id,record) VALUES ('agent-a',?1)",
-                    params![agent.to_string()],
-                )?;
-                Ok(())
+                // The start attempt belongs to the turn row, which the repository writes.
+                studio_runtime_store::AgentRepository::put(
+                    transaction,
+                    &studio_runtime_store::AgentRecord::from_value(agent)?,
+                )
             })
             .await
             .expect("callback agent write");

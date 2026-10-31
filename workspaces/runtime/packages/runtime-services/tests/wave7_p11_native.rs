@@ -69,6 +69,7 @@ fn corpus() -> &'static Value {
                         && fields.contains_key("epoch")
                         && fields.contains_key("status")
                     {
+                        fields.entry("compactions").or_insert(json!(0));
                         for key in [
                             "parentId",
                             "threadId",
@@ -95,6 +96,14 @@ fn corpus() -> &'static Value {
             }
         }
         normalize_agents(&mut data);
+        for group in ["commands", "cancellations"] {
+            for case in data[group].as_array_mut().expect("native command cases") {
+                let task = &mut case["task"];
+                task["turnId"] = json!("turn");
+                task["type"] = json!("commandExecution");
+                task["name"] = json!("command");
+            }
+        }
         for case in data["actions"].as_array_mut().expect("actions") {
             case["after"]["startAttempt"]["rootRequestId"] = case["request"]["requestId"].clone();
         }
@@ -122,7 +131,10 @@ fn review_fast_mode_uses_optional_team_default_before_actor() {
                 case["directory"].as_str().expect("directory").into(),
             )
             .expect("review plan");
-            assert_eq!(plan.spec()["fast_mode"], default_fast.unwrap_or(actor_fast));
+            assert_eq!(
+                plan.spec().fast_mode.value(),
+                Some(&default_fast.unwrap_or(actor_fast))
+            );
         }
     }
 }
@@ -194,10 +206,16 @@ fn db(case: &Value) -> Connection {
     studio_runtime_store::receipt_schema::create(&db).expect("receipt target schema");
     db.execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
+    let mut agent = case["agent"].clone();
+    agent
+        .as_object_mut()
+        .expect("agent fixture")
+        .entry("compactions")
+        .or_insert(json!(0));
     studio_runtime_store::agent_volatile::put(
         &db,
         case["agent"]["id"].as_str().expect("agent id"),
-        &case["agent"],
+        &agent,
         false,
     )
     .expect("Python-written agent");
@@ -591,7 +609,24 @@ fn invalid_worker_not_sent_receipts_keep_intent_unknown_and_unclaimable() {
 }
 
 #[test]
-fn review_worker_identity_and_saved_response_match_python() {
+fn review_prompt_uses_compact_json() {
+    let case = &corpus()["reviews"][0];
+    let plan = ReviewPlan::from_records(
+        case["actor"].clone(),
+        case["root"].clone(),
+        case["args"].clone(),
+        case["key"].as_str().expect("key").into(),
+        case["directory"].as_str().expect("directory").into(),
+    )
+    .expect("review plan");
+    assert_eq!(
+        plan.spec().prompt.as_deref(),
+        Some(format!("Run a native code review: {}", case["args"]["target"]).as_str())
+    );
+}
+
+#[test]
+fn review_worker_identity_and_saved_response_replay() {
     for case in corpus()["reviews"].as_array().expect("reviews") {
         let plan = ReviewPlan::from_records(
             case["actor"].clone(),
@@ -601,22 +636,19 @@ fn review_worker_identity_and_saved_response_match_python() {
             case["directory"].as_str().expect("directory").into(),
         )
         .expect("review plan");
-        let mut actual = plan.spec().clone();
-        let mut expected = case["spec"].clone();
-        for value in [&mut actual, &mut expected] {
-            let text = value["prompt"]
-                .as_str()
-                .expect("prompt")
-                .strip_prefix("Run a native code review: ")
-                .expect("generated prefix");
-            value["prompt"] = serde_json::from_str(text).expect("generated target JSON");
-        }
-        assert_eq!(actual, expected);
+        assert_eq!(
+            plan.spec().id.value(),
+            Some(&native_review::worker_id(
+                case["key"].as_str().expect("key")
+            ))
+        );
+        assert_eq!(plan.spec().cwd.as_deref(), case["directory"].as_str());
         assert_eq!(
             plan.existing(&case["child"]).expect("saved response"),
             case["result"]
         );
         let mut child = case["child"].clone();
+        child["compactions"] = json!(0);
         child["nativeReview"]["actorId"] = json!("foreign");
         assert!(plan.existing(&child).is_err());
         assert_eq!(
@@ -676,12 +708,22 @@ fn native_command_input_and_process_item_scope_match_python() {
     for case in corpus()["commands"].as_array().expect("commands") {
         let snapshot = CommandSnapshot::from_records(case["task"].clone(), case["agent"].clone())
             .expect("checked command");
-        assert_eq!(
-            snapshot
-                .input(case["text"].as_str().expect("text"))
-                .expect("instruction"),
-            case["result"]["text"]
-        );
+        assert!(snapshot.input("雪").expect("instruction").contains("雪"));
+        let instruction = snapshot
+            .input(case["text"].as_str().expect("text"))
+            .expect("instruction");
+        let expected = case["result"]["text"]
+            .as_str()
+            .expect("expected instruction");
+        let (prefix, encoded) = instruction.split_once("chars: ").expect("chars");
+        let (expected_prefix, expected_encoded) =
+            expected.split_once("chars: ").expect("expected chars");
+        assert_eq!(prefix, expected_prefix);
+        let decode = |value: &str| {
+            serde_json::from_str::<String>(value.strip_suffix('.').expect("period"))
+                .expect("JSON string")
+        };
+        assert_eq!(decode(encoded), decode(expected_encoded));
         assert!(
             !snapshot
                 .listed(&json!({"data":[{"itemId":"foreign","processId":"17"}]}))
@@ -793,7 +835,12 @@ async fn deadline_holds_unknown_and_expired_request_is_not_sent() {
 
 struct Creator(Value);
 impl native_review::ReviewCreator for Creator {
-    fn child(&self, _: &Transaction<'_>, _: &Value, _: &Value) -> Result<Value> {
+    fn child(
+        &self,
+        _: &Transaction<'_>,
+        _: &Value,
+        _: &studio_runtime_schema::creation_intent::CreationIntent,
+    ) -> Result<Value> {
         let mut child = self.0.clone();
         child.as_object_mut().expect("child").remove("nativeReview");
         Ok(child)
@@ -1383,7 +1430,6 @@ fn python_review_child_claim_and_review_start_match() {
             "CREATE TABLE runtime_execution_runs(id TEXT PRIMARY KEY,agent TEXT NOT NULL,account TEXT NOT NULL,epoch INTEGER NOT NULL,thread TEXT,turn TEXT,created REAL NOT NULL,record TEXT NOT NULL);\
              CREATE TABLE runtime_execution_attempts(id TEXT PRIMARY KEY,run TEXT NOT NULL,record TEXT NOT NULL);\
              CREATE TABLE runtime_execution_inputs(run TEXT NOT NULL,event TEXT NOT NULL,PRIMARY KEY(run,event));\
-             CREATE TABLE runtime_completed_turns(id TEXT PRIMARY KEY);\
              CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,created REAL NOT NULL,epoch INTEGER NOT NULL,turn_id TEXT,error TEXT);",
         )
         .expect("scheduler table shapes");

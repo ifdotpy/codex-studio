@@ -131,11 +131,15 @@ fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiEr
     }) else {
         return Ok(empty_reported_changes());
     };
-    if studio_runtime_services::event_write::truthy(item.record.extra("afterRestore")) {
+    if item
+        .record
+        .after_restore()
+        .is_some_and(|value| !value.is_empty())
+    {
         return Ok(empty_reported_changes());
     }
     let text = TranscriptRepository::full_text(connection, &item).map_err(map_transcript_error)?;
-    if item.record.extra("truncated").and_then(Value::as_bool) == Some(true) && text.is_none() {
+    if item.record.truncated() == Some(true) && text.is_none() {
         return Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "The complete reported changes are unavailable",
@@ -151,7 +155,7 @@ fn reported_changes(connection: &Connection, agent: &str) -> Result<Value, ApiEr
     let diff = payload.diff.chars().take(300_000).collect::<String>();
     Ok(json!({
         "scope":"chat", "git":true, "files":files, "diff":diff, "patch":diff,
-        "truncated":truncated, "turnId":payload.turn_id, "reportedAt":item.record.extra("at"),
+        "truncated":truncated, "turnId":payload.turn_id, "reportedAt":item.record.at().value(),
     }))
 }
 
@@ -369,7 +373,7 @@ fn project_task_records(
         .map(|task| {
             let id = task.id().as_ref().to_owned();
             validators
-                .project_entity("task", &task.into_value())
+                .project_entity("task", &studio_runtime_store::projection_value(&task))
                 .ok_or_else(|| invalid_stored("runtime_tasks", &id))
         })
         .collect()
@@ -528,7 +532,7 @@ fn map_transcript_error(error: studio_runtime_store::TranscriptStoreError) -> Ap
     match error {
         TranscriptStoreError::InvalidStoredObject { table, id } => invalid_stored(table, &id),
         TranscriptStoreError::Store(error) => ApiError::stored(error),
-        TranscriptStoreError::Sqlite(_) | TranscriptStoreError::ActiveTurn => ApiError::internal(),
+        TranscriptStoreError::Sqlite(_) => ApiError::internal(),
     }
 }
 
@@ -569,7 +573,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"compactions":0,"accountKey":"default","provider":"codex","id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
             Ok::<_, StoreError>(())
         }).await.unwrap();
         let state = crate::HttpState::new(
@@ -633,8 +637,8 @@ mod tests {
                 json!({"diff":"full","turnId":"turn"}),
             ),
             (
-                "invalid",
-                json!({"afterRestore":true}),
+                "restored",
+                json!({"afterRestore":"true"}),
                 StatusCode::OK,
                 json!({"diff":"","turnId":null}),
             ),
@@ -712,9 +716,9 @@ mod tests {
         let root = tempfile::tempdir().expect("temporary runtime");
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
         store.transaction_with(|tx| {
-            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('agent',?1)", [json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle"}).to_string()])?;
             for (id, created) in [("a", 1), ("b", 2), ("c", 3)] {
-                tx.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":if id == "a" { "wrong" } else { id },"agent":"agent","created":created,"tail":"large tail","arguments":{},"error":"detail"}).to_string()))?;
+                tx.execute("INSERT INTO runtime_tasks VALUES(?1,?2)", (id, json!({"id":if id == "a" { "wrong" } else { id },"agent":"agent","created":created,"kind":"command","type":"commandExecution","name":"commandExecution","itemId":"item","turnId":"turn","status":"completed","tail":"large tail","arguments":"{}","error":"detail"}).to_string()))?;
             }
             Ok::<_, StoreError>(())
         }).await.expect("seed");
@@ -772,7 +776,7 @@ mod tests {
         let store = Arc::new(RuntimeStore::open(Some(root.path())).await.unwrap());
         store.transaction_with(|tx| {
             for id in ["lead", "foreign"] {
-                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", (id, json!({"accountKey":"default","provider":"codex","id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()))?;
+                tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", (id, json!({"compactions":0,"accountKey":"default","provider":"codex","id":id,"rootId":id,"epoch":0,"status":"idle"}).to_string()))?;
             }
             tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('good',?1)", [json!({"id":"good","agent":"lead","created":1,"items":["private"],"future":{"kept":true}}).to_string()])?;
             tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('foreign',?1)", [json!({"id":"wrong","agent":"foreign","created":1}).to_string()])?;

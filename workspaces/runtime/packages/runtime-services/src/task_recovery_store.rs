@@ -8,8 +8,7 @@ use crate::{
     scheduler::lifecycle_transaction_with,
     task_recovery::{TaskRecoveryEffects, TaskRecoverySnapshot},
 };
-use rusqlite::OptionalExtension;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::Arc;
 use studio_runtime_store::{
     AgentId, AgentRepository, RuntimeStore, TaskId, TaskRecord, TaskRepository, Transaction,
@@ -68,7 +67,7 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
             let a = expected.agent().record();
             let t = expected.task();
             let agent = a["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
-            let id = t["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
+            let id = t.id().as_ref();
             if !current.valid(&scope)
                 || !observation.valid(&scope)
                 || current.supervisor != observation.supervisor
@@ -77,9 +76,9 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
                     .unwrap_or("default")
                     != scope.account
                 || !expected.agent().eligibility().task_owner
-                || t["status"] != "running"
-                || t["agent"] != agent
-                || id != format!("{agent}:{}", t["itemId"].as_str().unwrap_or_default())
+                || t.status() != studio_runtime_schema::task_record::TaskStatus::Running
+                || t.agent() != agent
+                || id != format!("{agent}:{}", t.item_id())
             {
                 return Ok(false);
             }
@@ -95,22 +94,19 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
                 return Ok(false);
             }
             let stored_task = TaskRepository::get(tx, &TaskId::from(id))?;
-            if stored_task.as_ref().map(TaskRecord::value).as_ref() != Some(t)
+            if stored_task.as_ref() != Some(t)
                 || !receipts_current(tx, &expected)?
             {
                 return Ok(false);
             }
             let completed = format!(
                 "{agent}:{}",
-                t["turnId"].as_str().ok_or(RecoveryError::CommitFailed)?
+                t.turn_id()
             );
-            current.completed_turn = tx
-                .query_row(
-                    "SELECT id FROM runtime_completed_turns WHERE id=?1",
-                    [&completed],
-                    |r| r.get(0),
-                )
-                .optional()?;
+            current.completed_turn = studio_runtime_store::domain::turn_completed(
+                tx, agent, t.turn_id(),
+            )?
+            .then_some(completed);
             let decision = match decision {
                 TaskAbsenceDecision::Lost => expected.absence_decision(&current, observation.quiet),
                 hold @ TaskAbsenceDecision::Hold { .. } => hold,
@@ -118,22 +114,27 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
             let mut updated = stored_task.ok_or(RecoveryError::CommitFailed)?;
             match decision {
                 TaskAbsenceDecision::Lost => {
-                    updated.set_status(crate::task_settlement::LOST_TASK_STATUS);
-                    updated.set_finished(json!(current.at));
-                    updated.set_error(json!(LOST_COMMAND));
+                    updated.set_status(studio_runtime_schema::task_record::TaskStatus::Lost);
+                    updated.set_finished(current.at);
+                    updated.set_error(LOST_COMMAND.into());
                     updated.remove_recovery_hold();
                 }
                 TaskAbsenceDecision::Hold { reason } => {
-                    updated.set_recovery_hold(json!({"stage":"held","at":current.at,"reason":reason,"outcome":"unknown"}));
-                    updated.set_error(json!(format!("Task recovery held: {reason}. Outcome unknown; work was not replayed.")));
+                    updated.set_recovery_hold(studio_runtime_schema::task_record::TaskRecoveryHold {
+                        stage: studio_runtime_schema::task_record::RecoveryHoldStage::Held,
+                        at: current.at,
+                        reason: reason.to_owned(),
+                        outcome: studio_runtime_schema::task_record::RecoveryHoldOutcome::Unknown,
+                    });
+                    updated.set_error(format!("Task recovery held: {reason}. Outcome unknown; work was not replayed."));
                 }
             }
             TaskRepository::put(tx, &updated)?;
-            if updated.status() == Some(crate::task_settlement::LOST_TASK_STATUS) {
+            if updated.status() == studio_runtime_schema::task_record::TaskStatus::Lost {
                 tx.execute("UPDATE runtime_items SET record=json_set(record,'$.toolStatus','lost') WHERE id=?1 AND agent=?2 AND json_extract(record,'$.turnId')=?3",
-                    rusqlite::params![id, agent, t["turnId"].as_str()])?;
+                    rusqlite::params![id, agent, t.turn_id()])?;
             }
-            let projection = crate::sync_views::project_persisted_record("task", &updated.value())
+            let projection = crate::sync_views::project_persisted_record("task", &studio_runtime_store::projection_value(&updated))
                 .ok_or(RecoveryError::CommitFailed)?;
             studio_runtime_store::SyncDocumentsRepository::put_entity(
                 tx, "task", id, projection, false,
@@ -185,13 +186,13 @@ fn receipt_error(error: crate::tool_requests::ToolRequestError, key: &str) -> Re
 pub(crate) fn receipt_state(
     tx: &rusqlite::Connection,
     a: &Value,
-    t: &Value,
+    t: &TaskRecord,
 ) -> Result<ReceiptState, RecoveryError> {
-    if t["type"] != "dynamicToolCall" {
+    if t.task_type() != studio_runtime_schema::task_record::TaskType::DynamicToolCall {
         return Ok((vec![], vec![]));
     }
     let actor = a["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
-    let call = t["itemId"].as_str().ok_or(RecoveryError::CommitFailed)?;
+    let call = t.item_id();
     let Some(mut row) = crate::tool_requests::resolve(tx, actor, call)
         .map_err(|error| receipt_error(error, call))?
     else {
@@ -219,7 +220,7 @@ pub(crate) fn receipt_state(
 pub type TaskRowWriter = dyn Fn(
         &Transaction<'_>,
         &Value,
-        &Value,
+        &TaskRecord,
         &Value,
         f64,
     ) -> Result<(), crate::notification_dispatch::NotificationDispatchError>
@@ -273,17 +274,17 @@ impl TaskCompletionWriter for RuntimeTaskCompletionWriter {
                 };
                 let agent = expected.agent().record();
                 let task = expected.task();
-                let id = task["id"].as_str().ok_or(RecoveryError::CommitFailed)?;
+                let id = task.id().as_ref();
                 if agent
                     .get("accountKey")
                     .and_then(Value::as_str)
                     .unwrap_or("default")
                     != scope.account
                     || !expected.agent().eligibility().task_owner
-                    || task["status"] != "running"
-                    || task["agent"] != agent["id"]
-                    || item["id"] != task["itemId"]
-                    || item["type"] != task["type"]
+                    || task.status() != studio_runtime_schema::task_record::TaskStatus::Running
+                    || Some(task.agent()) != agent["id"].as_str()
+                    || item["id"].as_str() != Some(task.item_id())
+                    || item["type"].as_str() != Some(task.task_type().as_str())
                     || !matches!(
                         item["status"].as_str(),
                         Some("completed" | "failed" | "declined")
@@ -300,10 +301,7 @@ impl TaskCompletionWriter for RuntimeTaskCompletionWriter {
                     .map_err(|_| RecoveryError::CommitFailed)?
                     .as_ref()
                     != Some(agent)
-                    || TaskRepository::get(tx, &TaskId::from(id))?
-                        .as_ref()
-                        .map(TaskRecord::value).as_ref()
-                        != Some(task)
+                    || TaskRepository::get(tx, &TaskId::from(id))?.as_ref() != Some(task)
                     || !receipts_current(tx, &expected)?
                 {
                     return Ok(false);
@@ -317,19 +315,19 @@ impl TaskCompletionWriter for RuntimeTaskCompletionWriter {
                 })?;
                 let written = TaskRepository::get(tx, &TaskId::from(id))?
                     .ok_or(RecoveryError::CommitFailed)?;
-                if written.status() == Some("running") {
+                if written.status() == studio_runtime_schema::task_record::TaskStatus::Running {
                     return Err(RecoveryError::CommitFailed);
                 }
-                if task.get("recoveryHold").is_some() {
+                if task.has_recovery_hold() {
                     let mut clean = written;
                     clean.remove_recovery_hold();
-                    if clean.extra("error") == task.get("error")
+                    if clean.error() == task.error()
                         && item.get("error").is_none_or(Value::is_null)
                     {
                         clean.remove_error();
                     }
                     TaskRepository::put(tx, &clean)?;
-                    let projection = crate::sync_views::project_persisted_record("task", &clean.value())
+                    let projection = crate::sync_views::project_persisted_record("task", &studio_runtime_store::projection_value(&clean))
                         .ok_or(RecoveryError::CommitFailed)?;
                     studio_runtime_store::SyncDocumentsRepository::put_entity(
                         tx, "task", id, projection, false,

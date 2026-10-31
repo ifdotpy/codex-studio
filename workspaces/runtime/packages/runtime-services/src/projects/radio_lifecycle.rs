@@ -199,8 +199,8 @@ pub fn tick(
                 let context = json!({"roomId":room.id(),"selfId":id,"participants":participants});
                 let text = format!(
                     "This is a shared chat with two equal agents. It is your turn to reply. All your assistant text is visible to the user and the other participant. Reply normally here. Do not forward this conversation through messaging tools. Other independent work is not part of this room. Reply once, then yield.\nShared room (JSON):\n{}\nShared messages since your last successful reply (JSON):\n{}",
-                    python_json(&context),
-                    python_json(&json!(messages))
+                    context,
+                    json!(messages)
                 );
                 if text.chars().count() > MAX_INPUT {
                     room.blocked(
@@ -292,7 +292,7 @@ fn reconcile(
         let text = studio_runtime_store::TranscriptRepository::full_text(db, &stored)
             .map_err(|_| invalid(&id))?
             .unwrap_or_default();
-        if truthy(stored.record.extra("truncated")) && text.is_empty() {
+        if stored.record.truncated() == Some(true) && text.is_empty() {
             return Err(ProjectsError::Invalid(
                 "The full shared reply is unavailable. No truncated reply was forwarded.",
             ));
@@ -321,13 +321,13 @@ pub enum QuestionAnswerRoute {
 pub fn route_question_answer(
     db: &Transaction<'_>,
     prepared: &PreparedHost,
-    question: &Value,
+    question: &studio_runtime_schema::request_record::RequestRecord,
     text: &str,
     receipt: Option<&NativeAcceptanceReceipt>,
     now: f64,
 ) -> Result<QuestionAnswerRoute, ProjectsError> {
-    if question["method"] != "agent/asyncQuestion"
-        || question["turnId"].as_str().is_none_or(str::is_empty)
+    if question.method != studio_runtime_schema::request_record::RequestMethod::AsyncQuestion
+        || question.turn_id.as_deref().is_none_or(str::is_empty)
     {
         return Ok(QuestionAnswerRoute::OrdinaryFollowup);
     }
@@ -336,7 +336,7 @@ pub fn route_question_answer(
         let Some(active) = room.radio.active.as_ref() else {
             continue;
         };
-        if active.agent_id != question["agent"] {
+        if active.agent_id != question.agent {
             continue;
         }
         let Some(agent) = records::get(db, "runtime_agents", &active.agent_id)? else {
@@ -344,8 +344,8 @@ pub fn route_question_answer(
         };
         let event = event(db, active)?;
         let turn = turn(&agent, active, event.as_ref());
-        if turn.as_deref() != question["turnId"].as_str()
-            || question["epoch"] != active.epoch
+        if turn.as_deref() != question.turn_id.as_deref()
+            || question.epoch != Some(active.epoch)
             || agent["epoch"] != active.epoch
             || agent["threadId"] != json!(active.thread_id)
         {
@@ -359,14 +359,11 @@ pub fn route_question_answer(
                 "The shared reply is stopped or blocked",
             ));
         }
-        let key = format!(
-            "{}:answer",
-            question["id"].as_str().ok_or_else(|| invalid(room.id()))?
-        );
+        let key = format!("{}:answer", question.id);
         if let Some(receipt) = receipt {
             if receipt.agent_id != active.agent_id
                 || receipt.epoch != active.epoch
-                || Some(receipt.turn_id.as_str()) != question["turnId"].as_str()
+                || Some(receipt.turn_id.as_str()) != question.turn_id.as_deref()
                 || receipt.event_id != active.event_id
             {
                 return Ok(QuestionAnswerRoute::OrdinaryFollowup);
@@ -436,12 +433,12 @@ pub fn route_question_answer(
 pub fn record_question_answer_followup(
     db: &Transaction<'_>,
     prepared: &PreparedHost,
-    question: &Value,
+    question: &studio_runtime_schema::request_record::RequestRecord,
     text: &str,
     now: f64,
 ) -> Result<(), ProjectsError> {
-    if question["method"] != "agent/asyncQuestion"
-        || question["turnId"].as_str().is_none_or(str::is_empty)
+    if question.method != studio_runtime_schema::request_record::RequestMethod::AsyncQuestion
+        || question.turn_id.as_deref().is_none_or(str::is_empty)
     {
         return Ok(());
     }
@@ -450,14 +447,14 @@ pub fn record_question_answer_followup(
         let Some(active) = room.radio.active.as_ref() else {
             continue;
         };
-        if active.agent_id != question["agent"] || question["epoch"] != json!(active.epoch) {
+        if active.agent_id != question.agent || question.epoch != Some(active.epoch) {
             continue;
         }
         let Some(agent) = records::get(db, "runtime_agents", &active.agent_id)? else {
             continue;
         };
         let active_event = event(db, active)?;
-        if turn(&agent, active, active_event.as_ref()).as_deref() != question["turnId"].as_str() {
+        if turn(&agent, active, active_event.as_ref()).as_deref() != question.turn_id.as_deref() {
             continue;
         }
         if agent["epoch"] != active.epoch || agent["threadId"] != json!(active.thread_id) {
@@ -471,10 +468,7 @@ pub fn record_question_answer_followup(
                 "The shared reply is stopped or blocked",
             ));
         }
-        let key = format!(
-            "{}:answer",
-            question["id"].as_str().ok_or_else(|| invalid(room.id()))?
-        );
+        let key = format!("{}:answer", question.id);
         let old = db
             .query_row(
                 "SELECT text FROM runtime_chat_messages WHERE id=?1",

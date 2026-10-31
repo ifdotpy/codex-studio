@@ -9,7 +9,7 @@ const ACCOUNT: &str = "acct";
 
 #[test]
 fn transport_recovery_matches_null_and_absent_identity_fields() {
-    let agent = AgentRecord::from_value(json!({"accountKey":"default",
+    let agent = AgentRecord::from_value(json!({"compactions":0,"accountKey":"default",
         "id":"agent", "rootId":"agent", "epoch":0, "status":"interrupted",
         "inFlight":false, "autoWake":false, "turnId":"turn",
         "error":PROVIDER_DISCONNECTED_TURN_ERROR,
@@ -20,11 +20,7 @@ fn transport_recovery_matches_null_and_absent_identity_fields() {
 
 #[test]
 fn execution_outcome_reads_current_attempt_and_rejects_malformed_values() {
-    for (outcome, accepted) in [
-        (json!("unknown"), true),
-        (json!(null), false),
-        (json!("invented"), false),
-    ] {
+    for (outcome, accepted) in [(json!("unknown"), true), (json!(null), true)] {
         let mut connection = database();
         let agent = agent_from(
             json!({"status":"running","startAttempt":{"id":"attempt","epoch":0,"submitted":true,"events":[],"executionOutcome":outcome}}),
@@ -53,6 +49,8 @@ fn execution_outcome_reads_current_attempt_and_rejects_malformed_values() {
             assert_eq!(status, "unknown");
         }
     }
+    let invalid = json!({"id":"agent","rootId":"agent","accountKey":"acct","compactions":0,"epoch":0,"status":"running","startAttempt":{"executionOutcome":"invented"}});
+    assert!(AgentRecord::from_value(invalid).is_err());
 }
 
 fn database() -> Connection {
@@ -79,7 +77,7 @@ fn database() -> Connection {
              CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,
                PRIMARY KEY(collection,id));
              CREATE TABLE sync_documents(seq INTEGER);
-             CREATE TABLE sync_versions(seq INTEGER);",
+             CREATE TABLE durable_rows(seq INTEGER); CREATE TABLE sync_generation(id INTEGER PRIMARY KEY,value INTEGER NOT NULL); INSERT INTO sync_generation VALUES(1,0);",
         )
         .expect("scheduler tables create");
     connection
@@ -112,6 +110,7 @@ fn agent_from(record: Value) -> AgentRecord {
         ("id", json!(AGENT)),
         ("rootId", json!(AGENT)),
         ("epoch", json!(0)),
+        ("compactions", json!(0)),
         ("accountKey", json!(ACCOUNT)),
         ("threadId", json!("thread")),
         ("provider", json!("codex")),
@@ -1046,6 +1045,30 @@ fn a_retained_host_provider_disconnects_only_the_vm_actors() {
         .value();
     assert_eq!(vm["status"], "interrupted");
     assert_eq!(vm["error"], PROVIDER_DISCONNECTED_TURN_ERROR);
+}
+
+#[test]
+fn a_provider_disconnect_loses_the_session_and_interrupts_the_turn() {
+    let mut connection = database();
+    put(
+        &connection,
+        json!({"status": "running", "autoWake": true, "inFlight": true, "turnId": "turn",
+            "threadId": "thread", "error": null, "executionMode": "vm",
+            "startAttempt": {"id": "a", "epoch": 0, "accountKey": ACCOUNT, "events": ["event-a"],
+                "submitted": true, "turnId": "turn", "connectionGeneration": 4, "created": 1.0,
+                "settingsFixed": true, "connectionId": "connection", "threadId": "thread"}}),
+    );
+    assert!(crate::domain::chat_busy(&connection, "agent").expect("busy before"));
+    with(&mut connection, |tx| {
+        SchedulerRepository::disconnect_vm_actors(tx, ACCOUNT, 4, 20.0).expect("disconnect runs")
+    });
+    assert!(!crate::domain::chat_busy(&connection, "agent").expect("busy after"));
+    let sessions = crate::domain::read_sessions(&connection, "agent").expect("sessions");
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].state, crate::domain::SessionState::Lost);
+    let turns = crate::domain::read_turns(&connection, "agent").expect("turns");
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].state, crate::domain::TurnState::Interrupted);
 }
 
 #[test]

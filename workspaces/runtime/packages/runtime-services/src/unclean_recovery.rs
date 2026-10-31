@@ -1,4 +1,5 @@
 //! Hold obligations whose sending commit may have been lost during an unclean stop.
+use studio_runtime_store::remote_outbox::RemoteOutbox;
 use studio_runtime_store::{RuntimeStore, SchedulerRepository, StoreError};
 
 #[derive(Debug, thiserror::Error)]
@@ -27,6 +28,17 @@ pub async fn hold(store: &RuntimeStore) -> Result<(), RecoveryError> {
             crate::voice::hold_unclean_effects(tx)?;
             crate::native_actions::hold_unclean_actions(tx)?;
             crate::title_generation::hold_unclean_jobs(tx)?;
+            RemoteOutbox::hold_unclean(tx).map_err(StoreError::from)?;
+            crate::multi_server_orchestration::hold_unclean_server_requests(tx).map_err(
+                |error| match error {
+                    crate::multi_server_auth::AccessError::Store(error) => error,
+                    other @ (crate::multi_server_auth::AccessError::Refused { .. }
+                    | crate::multi_server_auth::AccessError::Stored { .. }
+                    | crate::multi_server_auth::AccessError::Sqlite(_)) => {
+                        StoreError::SchemaMismatch(other.to_string())
+                    }
+                },
+            )?;
             Ok::<_, RecoveryError>(())
         })
         .await

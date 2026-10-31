@@ -77,7 +77,6 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment for
         &self,
         _: &RuntimeStore,
         _: &studio_runtime_store::AgentRecord,
-        _: &Value,
         _: &str,
     ) -> Result<
         Box<dyn studio_runtime_services::monitor_runtime::WorkspaceAdmission + Send + Sync>,
@@ -107,7 +106,7 @@ async fn setup() -> (tempfile::TempDir, Arc<RuntimeStore>, Value) {
         .expect("canonical test path")
         .to_string_lossy()
         .into_owned();
-    let project = json!({"id":path,"path":path,"name":"Project","created":1,"homeServerId":"owner","locations":[{"serverId":"owner","path":path,"projectId":path}]});
+    let project = json!({"id":path,"path":path,"name":"Project","created":1,"peerTeams":[],"homeServerId":"owner","locations":[{"serverId":"owner","path":path,"projectId":path}]});
     let p = project.clone();
     store
         .transaction(move |tx| ProjectsRepository::put_project(tx, &p))
@@ -171,10 +170,19 @@ fn creation(path: &str, bound: bool) -> agents_create::Creation {
         workspace: Some("worktree".into()),
         catalog: true,
         project_binding: bound,
-        intent: if bound {
-            json!({"model":"gpt-fixture","project_id":path,"project_server_id":"owner"})
-        } else {
-            json!({"model":"gpt-fixture"})
+        intent: studio_runtime_schema::creation_intent::CreationIntent {
+            model: studio_runtime_schema::queue_command::Field::Value("gpt-fixture".into()),
+            project_id: if bound {
+                studio_runtime_schema::queue_command::Field::Value(path.into())
+            } else {
+                Default::default()
+            },
+            project_server_id: if bound {
+                studio_runtime_schema::queue_command::Field::Value("owner".into())
+            } else {
+                Default::default()
+            },
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -254,7 +262,7 @@ async fn project_deletion_includes_a_create_that_wins_the_writer() {
     };
     let mut request = creation(path, false);
     request.catalog = false;
-    request.intent = json!({});
+    request.intent = Default::default();
     agents_create::lead(&context, request)
         .await
         .expect("creation before deletion");
@@ -341,7 +349,7 @@ async fn project_deletion_registry_only_remove_allows_fresh_creation() {
     };
     let mut request = creation(path, false);
     request.catalog = false;
-    request.intent = json!({});
+    request.intent = Default::default();
     agents_create::lead(&context, request)
         .await
         .expect("fresh create retains registry-only remove compatibility");
@@ -425,7 +433,7 @@ async fn project_deletion_location_reservation_rechecks_the_checked_lifetime() {
             .test_reader()
             .expect("reader")
             .query_row(
-                "SELECT count(*) FROM runtime_server_outbox WHERE id='location'",
+                "SELECT count(*) FROM runtime_outbox WHERE kind='remote_delivery' AND request_id='location'",
                 [],
                 |r| r.get::<_, i64>(0)
             )
@@ -446,7 +454,7 @@ async fn seed_parent(store: &Arc<RuntimeStore>, path: &str) {
     };
     let mut request = creation(path, false);
     request.catalog = false;
-    request.intent = json!({});
+    request.intent = Default::default();
     agents_create::lead(&context, request)
         .await
         .expect("parent");
@@ -487,7 +495,12 @@ async fn agent_creation_assigns_task_and_replays_without_reassignment() {
         workspace: Some("shared".into()),
         account: Some("default".into()),
         prompt: "Task".into(),
-        intent: json!({"model":"gpt-fixture","effort":null,"task_id":"task"}),
+        intent: studio_runtime_schema::creation_intent::CreationIntent {
+            model: studio_runtime_schema::queue_command::Field::Value("gpt-fixture".into()),
+            effort: studio_runtime_schema::queue_command::Field::Null,
+            task_id: Some("task".into()),
+            ..Default::default()
+        },
         ..Default::default()
     };
     let created = agents_create::agent(&context, request.clone())
@@ -544,7 +557,13 @@ async fn project_deletion_fences_prepared_spawn_and_includes_prior_spawn() {
                     workspace: Some("shared".into()),
                     account: Some("default".into()),
                     prompt: "Task".into(),
-                    intent: json!({"model":"gpt-fixture","effort":null}),
+                    intent: studio_runtime_schema::creation_intent::CreationIntent {
+                        model: studio_runtime_schema::queue_command::Field::Value(
+                            "gpt-fixture".into(),
+                        ),
+                        effort: studio_runtime_schema::queue_command::Field::Null,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
             )
@@ -588,7 +607,7 @@ async fn project_deletion_orders_archive_restore_with_its_writer() {
             .1;
         let epoch = parent["epoch"].as_i64().expect("epoch");
         let mut worker = parent.clone();
-        for(k,v)in json!({"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"archived","rootId":"new-lead","parentId":"new-lead","isLead":false,"role":"implementer","epoch":1,"status":"paused","autoWake":false,"deletedAt":1,"agentArchive":{"at":1,"epoch":1,"cleanupPending":false},"worktree":false,"worktreeReady":false,"workspaceMode":"shared"}).as_object().expect("patch"){worker[k]=v.clone();}
+        for(k,v)in json!({"compactions":0,"accountKey":"default","provider":studio_runtime_schema::ProviderKind::Codex,"id":"archived","rootId":"new-lead","parentId":"new-lead","isLead":false,"role":"implementer","epoch":1,"status":"paused","autoWake":false,"deletedAt":1,"agentArchive":{"at":1,"epoch":1,"cleanupPending":false},"worktree":false,"worktreeReady":false,"workspaceMode":"shared"}).as_object().expect("patch"){worker[k]=v.clone();}
         store
             .transaction(move |tx| AgentRepository::put(tx, &AgentRecord::from_value(worker)?))
             .await
@@ -680,7 +699,7 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
         .expect("canonical envelope");
     let fingerprint = studio_runtime_store::sha256_hex(encoded.as_bytes());
     let saved_fingerprint = fingerprint.clone();
-    store.transaction(move|tx|{tx.execute("INSERT INTO runtime_server_outbox(id,server,body,state,created_at,next_at,attempts,fingerprint) VALUES('legacy','peer',?1,'queued',1,0,0,?2)",rusqlite::params![encoded,fingerprint])?;Ok(())}).await.expect("legacy reservation");
+    store.transaction(move|tx|{studio_runtime_store::remote_outbox::RemoteOutbox::put(tx,studio_runtime_store::remote_outbox::RemoteEffect::ServerRequest,"peer","legacy",&fingerprint,studio_runtime_schema::persistence::OutboxStatus::Pending,Some(0),serde_json::json!({"body":encoded,"admission":{"id":"legacy","signature":fingerprint,"created":1},"attempts":0,"error":null}),1)?;Ok(())}).await.expect("legacy reservation");
     let replay = payload.clone();
     store
         .transaction_with(move |tx| {
@@ -735,7 +754,10 @@ async fn project_deletion_refuses_fresh_markerless_location_reservations_but_rep
         .transaction_with(move |tx| {
             studio_runtime_services::event_write::settle_request(tx, &token, None, &saved)
                 .expect("settle legacy receipt");
-            tx.execute("DELETE FROM runtime_server_outbox WHERE id='legacy'", [])?;
+            tx.execute(
+                "DELETE FROM runtime_outbox WHERE kind='remote_delivery' AND request_id='legacy'",
+                [],
+            )?;
             Ok::<_, studio_runtime_services::multi_server_transport::AccessError>(())
         })
         .await

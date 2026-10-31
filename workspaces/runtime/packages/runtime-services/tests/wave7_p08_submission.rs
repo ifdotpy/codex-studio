@@ -260,11 +260,50 @@ fn compare(db: &rusqlite::Connection, expected: &Value, label: &str) {
     // before comparing the unchanged Python record fields.
     let mut expected = expected.clone();
     for state in [&mut actual, &mut expected] {
+        if let Some(attempts) = state
+            .get_mut("runtime_execution_attempts")
+            .and_then(Value::as_array_mut)
+        {
+            for row in attempts {
+                if let Some(source) = row
+                    .pointer_mut("/record/claudeInputRequest/source")
+                    .and_then(Value::as_object_mut)
+                {
+                    for key in ["effort", "fastMode", "nativeEffort", "parentId"] {
+                        if source.get(key).is_some_and(Value::is_null) {
+                            source.remove(key);
+                        }
+                    }
+                }
+            }
+        }
         for row in state
             .get_mut("runtime_agents")
             .and_then(Value::as_array_mut)
             .expect("agents")
         {
+            if let Some(attempt) = row
+                .pointer_mut("/record/startAttempt")
+                .and_then(Value::as_object_mut)
+            {
+                if attempt
+                    .get("supervisorIdentity")
+                    .is_some_and(Value::is_null)
+                {
+                    attempt.remove("supervisorIdentity");
+                }
+                if let Some(source) = attempt
+                    .get_mut("claudeInputRequest")
+                    .and_then(|value| value.get_mut("source"))
+                    .and_then(Value::as_object_mut)
+                {
+                    for key in ["effort", "fastMode", "nativeEffort", "parentId"] {
+                        if source.get(key).is_some_and(Value::is_null) {
+                            source.remove(key);
+                        }
+                    }
+                }
+            }
             if let Some(record) = row.get_mut("record").and_then(Value::as_object_mut) {
                 for key in ["threadId", "turnId"] {
                     if record.get(key).is_some_and(Value::is_null) {
@@ -512,7 +551,7 @@ async fn initial_binding_refuses_wrong_or_missing_prepared_generation_and_foreig
                 "saved_generation" => { tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.connectionGeneration',8)",[])?; }
                 "missing_generation" => { tx.execute("UPDATE runtime_agents SET record=json_remove(record,'$.startAttempt.connectionGeneration')",[])?; }
                 "foreign_connection" => { tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.startAttempt.connectionId','foreign')",[])?; tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.connectionId','foreign')",[])?; }
-                "foreign_supervisor" => { tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.startAttempt.supervisorIdentity',json('{\"handle\":\"foreign\"}'))",[])?; tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.supervisorIdentity',json('{\"handle\":\"foreign\"}'))",[])?; }
+                "foreign_supervisor" => { tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.startAttempt.supervisorIdentity',json('{\"stateDir\":\"/foreign\",\"handle\":\"foreign\",\"generation\":1}'))",[])?; tx.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.supervisorIdentity',json('{\"stateDir\":\"/foreign\",\"handle\":\"foreign\",\"generation\":1}'))",[])?; }
                 _ => {}
             }
             let unbound = state(tx);

@@ -640,7 +640,7 @@ async fn summary_entities_publish_at_the_source_write() {
             .1["status"],
         "delivered"
     );
-    let task = json!({"id":"task","agent":CHAT,"kind":"command","status":"running","created":1,"tail":"output","error":"failure","arguments":"Explicit read only"});
+    let task = json!({"id":"task","agent":CHAT,"itemId":"item","turnId":"turn","type":"commandExecution","name":"command","kind":"command","status":"running","created":1,"tail":"output","error":"failure","arguments":"Explicit read only"});
     write(
         &store,
         "INSERT INTO runtime_tasks(id,record) VALUES(?1,?2)",
@@ -695,7 +695,7 @@ async fn summary_entities_publish_at_the_source_write() {
 }
 
 fn chat(extra: Value) -> Value {
-    let mut record = json!({
+    let mut record = json!({"compactions":0,
         "id":CHAT,"rootId":CHAT,"epoch":1,"status":"idle","name":"Published chat",
         "provider":"codex","model":"gpt-6","prompt":"Start","cwd":"/fixture",
         "accountKey":"default","isLead":true,"autoWake":false
@@ -796,7 +796,7 @@ async fn a_raw_request_row_write_reaches_the_client_and_a_closed_one_leaves_it()
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
     let card = json!({"id":"raw-card","agent":CHAT,"method":"agent/asyncQuestion",
-        "status":"pending","params":{"message":"Continue?"}});
+        "status":"pending","createdAt":1,"params":{"message":"Continue?"}});
     write(
         &store,
         "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
@@ -839,7 +839,7 @@ async fn synced_agent_values_recompute_the_view_and_create_a_missing_entity() {
     let store = studio_runtime_store::RuntimeStore::open(Some(dir.path()))
         .await
         .expect("store");
-    let worker = json!({
+    let worker = json!({"compactions":0,
         "id":"sync-worker","rootId":CHAT,"parentId":CHAT,"epoch":1,"status":"running",
         "name":"Worker","provider":"codex","model":"gpt-6","prompt":"Task","cwd":"/fixture",
         "accountKey":"default","isLead":false,"autoWake":false
@@ -1008,7 +1008,7 @@ async fn terminal_source_writes_publish_summary_without_process_identity() {
 async fn retained_worktree_entities_follow_cleanup_even_after_worker_deletion() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let worker = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"retained-worker","rootId":CHAT,"epoch":0,"status":"completed",
+    let worker = json!({"compactions":0,"provider":studio_runtime_schema::ProviderKind::Codex,"id":"retained-worker","rootId":CHAT,"epoch":0,"status":"completed",
         "name":"Retained worker","accountKey":"default","deletedAt":1,
         "workspaceCleanupIntent":{"phase":"unknown","effect":{"kind":"remove_worktree","identity":{"cwd":"/fixture/retained"}},"receipt":{"reason":"Modified files"},"requestId":"private"}});
     write(
@@ -1036,7 +1036,7 @@ async fn retained_worktree_entities_follow_cleanup_even_after_worker_deletion() 
 async fn question_history_entities_retain_answers_after_pending_request_is_retired() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let question = json!({"id":"history-question","agent":CHAT,"method":"agent/asyncQuestion","status":"pending",
+    let question = json!({"id":"history-question","agent":CHAT,"method":"agent/asyncQuestion","status":"pending","createdAt":1,
         "params":{"message":"Continue?","questions":[{"id":"choice","question":"Continue?","options":[{"label":"Yes"}]}]}});
     write(
         &store,
@@ -1076,7 +1076,7 @@ async fn question_history_entities_retain_answers_after_pending_request_is_retir
 async fn conversation_detail_entities_remove_private_answers_and_hard_deleted_sources() {
     let (_dir, store) = store().await;
     seed_chat(&store, chat(json!({}))).await;
-    let question = json!({"id":"private-question","agent":CHAT,"method":"agent/asyncQuestion","status":"answered",
+    let question = json!({"id":"private-question","agent":CHAT,"method":"agent/asyncQuestion","status":"answered","createdAt":1,
         "params":{"questions":[{"id":"password","question":"Password?","isSecret":true}]},
         "answerHistory":[{"id":"password","question":"Password?","isSecret":true,"answer":"never-cache-this"}]});
     write(
@@ -1198,7 +1198,7 @@ async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
     let now = crate::event_write::unix_time().expect("clock");
     write(
         &store,
-        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
         vec!["lost-watch".into(), lost_monitor("lost-watch", CHAT, now)],
     )
     .await;
@@ -1215,7 +1215,7 @@ async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
     );
     write(
         &store,
-        "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
         vec!["running".into(), running.to_string()],
     )
     .await;
@@ -1229,7 +1229,7 @@ async fn a_write_that_cannot_change_studio_errors_does_not_rebuild_them() {
         "error":"","ruleId":"rule","created":now,"finished":now});
     write(
         &store,
-        "INSERT INTO runtime_monitors(id,record,monitor_status,monitor_error_candidate) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'),0)",
+        "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
         vec!["own-exit".into(), own_exit.to_string()],
     )
     .await;
@@ -1272,7 +1272,7 @@ async fn every_studio_error_change_still_publishes_with_its_source_write() {
     for id in ["lost-a", "lost-b"] {
         write(
             &store,
-            "INSERT INTO runtime_monitors(id,record,monitor_status) VALUES(?1,?2,COALESCE(CASE WHEN json_valid(?2) THEN json_extract(?2,'$.status') END,'lost'))",
+            "INSERT INTO runtime_monitors(id,record) VALUES(?1,?2)",
             vec![id.into(), lost_monitor(id, CHAT, now)],
         )
         .await;
@@ -1360,4 +1360,75 @@ async fn every_studio_error_change_still_publishes_with_its_source_write() {
             .0
     );
     assert_published_list(&store);
+}
+
+/// The view log lists exactly the view ids that the publisher wrote, at the same numbers.
+/// A reader that learns changed view ids from the log after a cursor therefore sees what a
+/// reader of `sync_entities` sees.
+#[tokio::test]
+async fn the_view_log_matches_the_published_views_of_agents_requests_and_work() {
+    use std::collections::BTreeSet;
+    use studio_runtime_store::durable_seq::{VIEW_COLLECTIONS, view_changes_since};
+    type View = (String, String, i64, bool);
+
+    fn published(store: &studio_runtime_store::RuntimeStore) -> BTreeSet<View> {
+        store
+            .test_read_transaction(|tx| {
+                let mut views = BTreeSet::new();
+                let mut statement =
+                    tx.prepare("SELECT collection,id,seq,deleted FROM sync_entities")?;
+                for row in statement.query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get::<_, i64>(3)? != 0,
+                    ))
+                })? {
+                    let view: View = row?;
+                    if VIEW_COLLECTIONS.contains(&view.0.as_str()) {
+                        views.insert(view);
+                    }
+                }
+                Ok(views)
+            })
+            .expect("published views")
+    }
+    fn logged(store: &studio_runtime_store::RuntimeStore) -> BTreeSet<View> {
+        store
+            .test_read_transaction(|tx| {
+                Ok(view_changes_since(tx, 0)?
+                    .into_iter()
+                    .map(|c| (c.collection, c.id, c.seq, c.deleted))
+                    .collect())
+            })
+            .expect("logged views")
+    }
+
+    let (_dir, store) = store().await;
+    seed_chat(&store, chat(json!({}))).await;
+    let card = json!({"id":"parity-card","agent":CHAT,"method":"agent/asyncQuestion",
+        "status":"pending","params":{"message":"Continue?"}});
+    write(
+        &store,
+        "INSERT INTO runtime_requests(id,record) VALUES(?1,?2)",
+        vec!["parity-card".to_owned(), card.to_string()],
+    )
+    .await;
+    assert_eq!(logged(&store), published(&store), "after inserts");
+    write(
+        &store,
+        "UPDATE runtime_requests SET record=json_set(record,'$.status','answered') WHERE id=?1",
+        vec!["parity-card".to_owned()],
+    )
+    .await;
+    write(
+        &store,
+        "UPDATE runtime_agents SET record=json_set(record,'$.name','Renamed') WHERE id=?1",
+        vec![CHAT.to_owned()],
+    )
+    .await;
+    let after = published(&store);
+    assert!(!after.is_empty());
+    assert_eq!(logged(&store), after, "after updates and a retired card");
 }
