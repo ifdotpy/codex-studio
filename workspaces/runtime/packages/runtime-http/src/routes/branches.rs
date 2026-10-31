@@ -964,27 +964,6 @@ async fn branch_needs_catalog(
 struct BranchTurn {
     turn_id: Option<String>,
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct BranchItem {
-    #[serde(default)]
-    turn_id: Option<String>,
-    role: Option<String>,
-    title: Option<String>,
-    text: Option<String>,
-    assets: Option<Vec<TranscriptAssetView>>,
-    inputs: Option<Vec<BranchInput>>,
-}
-#[derive(Deserialize)]
-struct BranchInput {
-    id: Option<String>,
-    kind: Option<studio_runtime_schema::persistence::EventKind>,
-    created: Option<serde_json::Number>,
-    at: Option<serde_json::Number>,
-    assets: Option<Vec<TranscriptAssetView>>,
-    text: Option<String>,
-}
-
 struct BranchCopy<'a> {
     source: &'a str,
     target: &'a str,
@@ -1045,13 +1024,13 @@ async fn copy_branch_history(
         };
         let mut assets=BTreeMap::<String,TranscriptAssetView>::new();
         for (old_id, raw, _created) in rows.into_iter().take_while(|(_, _, created)| *created <= cutoff) {
-            let source_record = serde_json::from_str::<studio_runtime_schema::json_object::JsonObject<BranchItem>>(&raw)
-                .map_err(|_| studio_runtime_store::StoreError::InvalidStoredObject { table: "runtime_items", id: old_id.clone() })?.0;
-            if before && source_record.turn_id.as_deref()==selected.record.turn_id().value().map(String::as_str){continue;}
+            let source_record = serde_json::from_str::<studio_runtime_schema::transcript_record::TranscriptItemRecord>(&raw)
+                .map_err(|_| studio_runtime_store::StoreError::InvalidStoredObject { table: "runtime_items", id: old_id.clone() })?;
+            if before && source_record.turn_id().value()==selected.record.turn_id().value(){continue;}
             let local_id=old_id.split_once(':').map(|(_,id)|id).unwrap_or(&old_id);
             let id=format!("{target}:{local_id}");
-            let role = source_record.role.as_deref().unwrap_or("assistant");
-            let source_title = source_record.title.as_deref()
+            let role = source_record.role().as_str();
+            let source_title = source_record.title()
                 .filter(|title| !title.is_empty());
             let index_kind = source_title.unwrap_or(role).to_owned();
             let title = source_title.map(str::to_owned).unwrap_or_else(|| match role {
@@ -1060,32 +1039,33 @@ async fn copy_branch_history(
                     "system" => "System".to_owned(),
                     other => other.to_owned(),
                 });
-            let mut item_assets = source_record.assets.clone().unwrap_or_default();
+            let mut item_assets = decode_asset_views(source_record.assets())?;
             copy_asset_views(tx,&target,&mut item_assets,&mut assets)?;
-            let source_inputs = source_record.inputs.as_ref();
+            let source_inputs = source_record.inputs().value();
             let mut inputs = Vec::new();
             if let Some(source_inputs) = source_inputs {
                 let mut remaining = 20_000usize;
                 for input in source_inputs {
-                    if input.id.is_none() || input.kind.is_none() || input.created.as_ref().or(input.at.as_ref()).is_none() || input.text.is_none() || input.assets.is_none() {
+                    let timestamp = input.created_or_at()?;
+                    if input.id().is_none() || input.kind().is_none() || timestamp.is_none() || input.text().is_none() || input.assets().value().is_none() {
                         return Err(studio_runtime_store::StoreError::TranscriptInputsIncomplete { id: old_id.clone() });
                     }
-                    let mut input_assets = input.assets.clone().unwrap_or_default();
+                    let mut input_assets = decode_asset_views(input.assets())?;
                     copy_asset_views(tx,&target,&mut input_assets,&mut assets)?;
-                    let input_text = input.text.as_deref().unwrap_or_default();
+                    let input_text = input.text().unwrap_or_default();
                     let excerpt = input_text.chars().take(remaining).collect::<String>();
                     remaining = remaining.saturating_sub(excerpt.chars().count());
                     inputs.push(json!({
-                        "id":input.id,
-                        "at":input.created.as_ref().or(input.at.as_ref()),
-                        "kind":input.kind,
+                        "id":input.id(),
+                        "at":timestamp,
+                        "kind":input.kind(),
                         "text":excerpt,
                         "truncated":excerpt.chars().count() < input_text.chars().count(),
                         "assets":input_assets
                     }));
                 }
             }
-            let text = source_record.text.as_deref().unwrap_or_default();
+            let text = source_record.text().value().map(String::as_str).unwrap_or_default();
             let visible_text = text.chars().take(20_000).collect::<String>();
             let copied_at = unix_time();
             let mut record = json!({
@@ -1095,7 +1075,7 @@ async fn copy_branch_history(
                 "text":visible_text,
                 "truncated":text.chars().count() > 20_000,
                 "at":copied_at,
-                "turnId":source_record.turn_id,
+                "turnId":source_record.turn_id().value(),
                 "streaming":false,
                 "assets":item_assets
             });
@@ -1359,14 +1339,29 @@ mod tests {
 
     #[test]
     fn branch_item_rejects_non_string_turn_id() {
-        assert!(serde_json::from_str::<BranchItem>(r#"{"turnId":7}"#).is_err());
-        assert!(serde_json::from_str::<BranchItem>(r#"{"turnId":"turn"}"#).is_ok());
+        assert!(
+            serde_json::from_str::<studio_runtime_schema::transcript_record::TranscriptItemRecord>(
+                r#"{"id":"i","role":"assistant","turnId":7}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<studio_runtime_schema::transcript_record::TranscriptItemRecord>(
+                r#"{"id":"i","role":"assistant","turnId":"turn"}"#
+            )
+            .is_ok()
+        );
     }
 
     #[test]
     fn branch_item_rejects_invalid_asset_view() {
-        assert!(serde_json::from_str::<BranchItem>(r#"{"assets":[{"id":5}]}"#).is_err());
-        assert!(serde_json::from_str::<BranchItem>(r#"{"assets":[{"id":"asset"}]}"#).is_ok());
+        let invalid: studio_runtime_schema::transcript_record::TranscriptItemRecord =
+            serde_json::from_str(r#"{"id":"i","role":"assistant","assets":[{"id":5}]}"#).unwrap();
+        let valid: studio_runtime_schema::transcript_record::TranscriptItemRecord =
+            serde_json::from_str(r#"{"id":"i","role":"assistant","assets":[{"id":"asset"}]}"#)
+                .unwrap();
+        assert!(decode_asset_views(invalid.assets()).is_err());
+        assert!(decode_asset_views(valid.assets()).is_ok());
     }
 
     #[tokio::test]
@@ -1410,7 +1405,7 @@ mod tests {
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES('child',?1)", [child.to_string()])?;
             tx.execute("INSERT INTO runtime_workspace_operations(id,record) VALUES('op',?1)", [json!({"source":source_identity,"signature":"s","phase":"provider_ready"}).to_string()])?;
             tx.execute("INSERT INTO runtime_assets(id,record) VALUES('asset',?1)", [json!({"id":"asset","agent":"source","name":"file.txt","path":asset_path,"mime":"text/plain","image":false,"size":1,"hash":"h","created":1}).to_string()])?;
-            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:a','source',?1,1)", [r#"{"role":"assistant","text":"first","turnId":"t","assets":[{"id":"asset"}],"inputs":[{"text":"second","created":null,"at":2,"assets":[{"id":"asset"}]}]}"#])?;
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:a','source',?1,1)", [r#"{"id":"source:a","role":"assistant","text":"first","turnId":"t","assets":[{"id":"asset"}],"inputs":[{"text":"second","created":null,"at":2,"assets":[{"id":"asset"}]}]}"#])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:b','source',?1,1)", [r#"{"turnId":"t","text":null,"assets":null}"#])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:c','source',?1,1)", [json!({"turnId":7,"text":"🦀".repeat(20_001),"inputs":[{"text":"Ж".repeat(19_999)},{"text":"AB"}]}).to_string()])?;
             tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:after','source',?1,2)", [r#"{"turnId":"later","future":1e400}"#])?;
@@ -1730,6 +1725,41 @@ mod tests {
                 selected: &selected,
                 message_id: "message",
                 fork_turn: None,
+                before: false,
+                provider: &provider,
+                operation_id: "operation",
+            },
+            Arc::new(tokio::sync::Notify::new()),
+        )
+        .await;
+        assert!(result.is_err());
+        assert_stored_status(&store, "child", "queued");
+    }
+
+    #[tokio::test]
+    async fn branch_copy_refuses_unreconstructible_transcript_row() {
+        let (_root, store) = status_fixture().await;
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('source:legacy','source',?1,1)", [r#"{"turnId":"t","text":"legacy"}"#])?;
+            Ok(())
+        }).await.unwrap();
+        let selected = studio_runtime_store::TranscriptItem {
+            id: "source:legacy".into(),
+            agent: "source".into(),
+            record: serde_json::from_str(
+                r#"{"id":"source:legacy","role":"assistant","turnId":"t"}"#,
+            )
+            .unwrap(),
+        };
+        let provider = json!({"thread":{"id":"new-thread"}});
+        let result = copy_branch_history(
+            &store,
+            BranchCopy {
+                source: "source",
+                target: "child",
+                selected: &selected,
+                message_id: "source:legacy",
+                fork_turn: Some("t"),
                 before: false,
                 provider: &provider,
                 operation_id: "operation",
