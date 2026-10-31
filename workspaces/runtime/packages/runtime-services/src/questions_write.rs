@@ -221,7 +221,7 @@ pub fn answer_async_question(
     let agent_id = row.agent.as_str();
     let agent = stored_agent(transaction, agent_id)?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
-    if !agent.is_lead == Some(true) {
+    if agent.is_lead != Some(true) {
         return Err(QuestionsWriteError::InvalidRequest(
             "Only the orchestrator can ask the user. The subagent must contact its orchestrator.",
         ));
@@ -378,11 +378,7 @@ pub fn delete_question(
     let mut row = approval_request(transaction, id)?;
     let agent = stored_agent(transaction, row.agent.as_str())?
         .ok_or(QuestionsWriteError::InvalidRequest("Unknown agent"))?;
-    if !delete_allowed(
-        &row,
-        agent.is_deleted(),
-        true,
-    )? {
+    if !delete_allowed(&row, agent.is_deleted(), true)? {
         return Ok(json!({"id":id,"status":"deleted"}));
     }
     hide(&mut row, unix_time()?);

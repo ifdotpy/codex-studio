@@ -13,10 +13,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+pub(crate) use studio_runtime_schema::approvals::BrowserRedirect;
 use studio_runtime_schema::approvals::{
     AgentId, Answer, Approval, ApprovalId, ApprovalState, BrowserCard, BrowserOutcome,
-    BrowserPhase, BrowserRedirect, BrowserSource, CloseReason, Decision, Detail, Principal,
-    ProviderObject, Request, Timestamp,
+    BrowserPhase, BrowserSource, CloseReason, Decision, Detail, Principal, ProviderObject, Request,
+    Timestamp,
 };
 use studio_runtime_store::approvals::{self, ApprovalError, NewApproval};
 use studio_runtime_store::{RuntimeStore, Transaction};

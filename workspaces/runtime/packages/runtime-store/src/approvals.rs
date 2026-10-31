@@ -687,8 +687,7 @@ fn settle_open(
             },
             ApprovalState::Answered { .. }
             | ApprovalState::Unknown { .. }
-            | ApprovalState::Closed { .. }
-            | ApprovalState::Pending => continue,
+            | ApprovalState::Closed { .. } => continue,
         };
         set_state(tx, &row.id, &state)?;
     }
